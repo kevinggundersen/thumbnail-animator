@@ -669,6 +669,7 @@ function stopPeriodicCleanup() {
 // Track window minimized state
 let isWindowMinimized = false;
 let isLightboxOpen = false;
+let isWindowBlurred = false;
 
 // Pause all resource-intensive operations when window is minimized
 function pauseWhenMinimized() {
@@ -806,7 +807,7 @@ function pauseThumbnailVideos() {
 // Resume all grid thumbnail videos and unfreeze GIFs when lightbox is closed
 function resumeThumbnailVideos() {
     isLightboxOpen = false;
-    if (isWindowMinimized) return;
+    if (isWindowMinimized || isWindowBlurred) return;
     const allVideos = gridContainer.querySelectorAll('video');
     allVideos.forEach(video => {
         const playPromise = video.play();
@@ -6915,6 +6916,47 @@ window.addEventListener('DOMContentLoaded', async () => {
         }
     });
     
+    // Pause thumbnails and freeze GIFs when window loses focus
+    window.addEventListener('blur', () => {
+        if (isWindowBlurred || isWindowMinimized) return;
+        isWindowBlurred = true;
+        // Pause all grid videos
+        const allVideos = gridContainer.querySelectorAll('video');
+        allVideos.forEach(video => {
+            video.pause();
+        });
+        // Freeze animated GIFs
+        const allImages = gridContainer.querySelectorAll('img.media-thumbnail');
+        allImages.forEach(img => {
+            if (img.dataset.animatedSrc && img.dataset.staticFrame) {
+                img.src = img.dataset.staticFrame;
+            }
+        });
+    });
+
+    // Resume thumbnails and unfreeze GIFs when window regains focus
+    window.addEventListener('focus', () => {
+        if (!isWindowBlurred || isWindowMinimized) return;
+        isWindowBlurred = false;
+        // Don't resume grid media if lightbox is open (they should stay paused)
+        if (isLightboxOpen) return;
+        // Resume all grid videos
+        const allVideos = gridContainer.querySelectorAll('video');
+        allVideos.forEach(video => {
+            const playPromise = video.play();
+            if (playPromise !== undefined) {
+                playPromise.catch(() => {});
+            }
+        });
+        // Restore animated GIFs
+        const allImages = gridContainer.querySelectorAll('img.media-thumbnail');
+        allImages.forEach(img => {
+            if (img.dataset.animatedSrc && img.src !== img.dataset.animatedSrc) {
+                img.src = img.dataset.animatedSrc;
+            }
+        });
+    });
+
     // Initialize new features
     initKeyboardShortcuts();
     initTheme();

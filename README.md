@@ -1,6 +1,10 @@
 # Thumbnail Animator
 
+
 A desktop application built with Electron for browsing and viewing media files (videos and images) with an intuitive thumbnail-based interface.
+
+
+![Banner2](https://github.com/user-attachments/assets/305da94e-4341-4937-bee0-ddf9701412f3)
 
 ## Features
 

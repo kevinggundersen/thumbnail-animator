@@ -787,16 +787,23 @@ function resumeWhenRestored() {
     retryPendingVideos();
 }
 
-// Pause all grid thumbnail videos when lightbox is open
+// Pause all grid thumbnail videos and freeze GIFs when lightbox is open
 function pauseThumbnailVideos() {
     isLightboxOpen = true;
     const allVideos = gridContainer.querySelectorAll('video');
     allVideos.forEach(video => {
         video.pause();
     });
+    // Freeze animated GIFs by swapping to their static first-frame snapshot
+    const allImages = gridContainer.querySelectorAll('img.media-thumbnail');
+    allImages.forEach(img => {
+        if (img.dataset.animatedSrc && img.dataset.staticFrame) {
+            img.src = img.dataset.staticFrame;
+        }
+    });
 }
 
-// Resume all grid thumbnail videos when lightbox is closed
+// Resume all grid thumbnail videos and unfreeze GIFs when lightbox is closed
 function resumeThumbnailVideos() {
     isLightboxOpen = false;
     if (isWindowMinimized) return;
@@ -805,6 +812,13 @@ function resumeThumbnailVideos() {
         const playPromise = video.play();
         if (playPromise !== undefined) {
             playPromise.catch(() => {});
+        }
+    });
+    // Restore animated GIFs by swapping back to the original src
+    const allImages = gridContainer.querySelectorAll('img.media-thumbnail');
+    allImages.forEach(img => {
+        if (img.dataset.animatedSrc && img.src !== img.dataset.animatedSrc) {
+            img.src = img.dataset.animatedSrc;
         }
     });
 }
@@ -2063,6 +2077,12 @@ function createImageForCard(card, imageUrl) {
     img.style.imageRendering = 'auto';
     img.style.willChange = 'contents';
     
+    // For animated GIFs, capture the first frame as a static snapshot
+    const isGif = imageUrl.toLowerCase().endsWith('.gif');
+    if (isGif) {
+        img.dataset.animatedSrc = imageUrl;
+    }
+
     // Track loading state
     img.addEventListener('load', () => {
         // Detect and apply aspect ratio to card
@@ -2070,13 +2090,30 @@ function createImageForCard(card, imageUrl) {
         if (img.naturalWidth && img.naturalHeight && !card.dataset.aspectRatio) {
             const aspectRatioName = getClosestAspectRatio(img.naturalWidth, img.naturalHeight);
             applyAspectRatioToCard(card, aspectRatioName);
-            
+
             // Create resolution label if not already created
             if (!card.dataset.mediaWidth) {
                 createResolutionLabel(card, img.naturalWidth, img.naturalHeight);
             }
         }
-    });
+        // Capture first frame for GIF freezing (only once)
+        if (isGif && !img.dataset.staticFrame) {
+            try {
+                const canvas = document.createElement('canvas');
+                canvas.width = img.naturalWidth;
+                canvas.height = img.naturalHeight;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0);
+                img.dataset.staticFrame = canvas.toDataURL('image/png');
+                // If lightbox is already open, freeze immediately
+                if (isLightboxOpen) {
+                    img.src = img.dataset.staticFrame;
+                }
+            } catch (e) {
+                // Ignore cross-origin or other canvas errors
+            }
+        }
+    }, { once: true });
     
     // Add error handler - retry on error with exponential backoff
     img.addEventListener('error', () => {

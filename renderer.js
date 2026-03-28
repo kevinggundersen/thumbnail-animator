@@ -1514,7 +1514,8 @@ function createCardFromItem(item) {
         const card = document.createElement('div');
         card.className = 'folder-card';
         card.dataset.folderPath = item.path;
-        
+        card.dataset.searchText = item.name.toLowerCase();
+
         // Create folder icon (use textContent instead of innerHTML for better performance)
         const folderIcon = document.createElement('div');
         folderIcon.className = 'folder-icon';
@@ -1527,16 +1528,6 @@ function createCardFromItem(item) {
         card.appendChild(folderIcon);
         card.appendChild(info);
 
-        card.addEventListener('click', () => {
-            // Use setTimeout to yield control back to event loop, making button responsive
-            setTimeout(() => {
-                navigateToFolder(item.path).catch(err => {
-                    console.error('Error navigating to folder:', err);
-                    hideLoadingIndicator();
-                });
-            }, 0);
-        });
-
         return { card, isMedia: false };
     } else {
         // Create media card
@@ -1546,6 +1537,7 @@ function createCardFromItem(item) {
         card.dataset.path = item.path; // Store file path for context menu actions and star ratings
         card.dataset.filePath = item.path; // Keep for backward compatibility
         card.dataset.name = item.name;
+        card.dataset.searchText = item.name.toLowerCase();
         card.dataset.mediaType = item.type;
         
         // Extract file extension for label (optimized - use lastIndexOf instead of split)
@@ -1590,34 +1582,11 @@ function createCardFromItem(item) {
             star.textContent = '★';
             star.style.pointerEvents = 'auto';
             star.style.cursor = 'pointer';
-            star.addEventListener('click', (e) => {
-                e.stopPropagation();
-                e.preventDefault();
-                setFileRating(item.path, i);
-            });
             starContainer.appendChild(star);
         }
         card.appendChild(starContainer);
         
         card.appendChild(info);
-
-        // Add hover handlers for video time label
-        if (item.type === 'video') {
-            card.addEventListener('mouseenter', () => {
-                const video = card.querySelector('video');
-                if (video) {
-                    showScrubber(card, video);
-                }
-            });
-            
-            card.addEventListener('mouseleave', () => {
-                hideScrubber(card);
-            });
-        }
-
-        card.addEventListener('click', () => {
-            openLightbox(item.url, item.path, item.name);
-        });
 
         return { card, isMedia: true };
     }
@@ -1836,6 +1805,7 @@ function renderItems(items) {
     while (gridContainer.firstChild) {
         gridContainer.removeChild(gridContainer.firstChild);
     }
+    currentHoveredCard = null;
     gridContainer.classList.remove('masonry'); // Reset masonry state
     gridContainer.classList.remove('grid'); // Reset grid state
 
@@ -2762,10 +2732,9 @@ function applyFilters() {
     
     const query = searchBox.value.toLowerCase().trim();
     
-    // Batch DOM reads: collect all card info first
+    // Read cached search text from dataset (set at card creation time, avoids DOM traversal)
     const cardData = Array.from(cards).map(card => {
-        const info = card.querySelector('.video-info, .folder-info');
-        const fileName = info ? info.textContent.toLowerCase() : '';
+        const fileName = card.dataset.searchText || '';
         return { card, fileName };
     });
     
@@ -2902,6 +2871,67 @@ function performSearch(searchQuery) {
         applyFilters();
     }, 150); // Wait 150ms after user stops typing
 }
+
+// --- Delegated Event Handlers for Grid Cards ---
+// Instead of attaching listeners to each card, delegate from gridContainer
+
+let currentHoveredCard = null;
+
+gridContainer.addEventListener('click', (e) => {
+    // Star click (check first so stopPropagation prevents card click)
+    const star = e.target.closest('.star');
+    if (star) {
+        e.stopPropagation();
+        e.preventDefault();
+        const card = star.closest('.video-card');
+        if (card && card.dataset.path) {
+            const stars = Array.from(star.parentElement.children);
+            const starIndex = stars.indexOf(star) + 1;
+            if (starIndex > 0) {
+                setFileRating(card.dataset.path, starIndex);
+            }
+        }
+        return;
+    }
+
+    // Media card click
+    const mediaCard = e.target.closest('.video-card');
+    if (mediaCard) {
+        openLightbox(mediaCard.dataset.src, mediaCard.dataset.path, mediaCard.dataset.name);
+        return;
+    }
+
+    // Folder card click
+    const folderCard = e.target.closest('.folder-card');
+    if (folderCard) {
+        setTimeout(() => {
+            navigateToFolder(folderCard.dataset.folderPath).catch(err => {
+                console.error('Error navigating to folder:', err);
+                hideLoadingIndicator();
+            });
+        }, 0);
+    }
+});
+
+gridContainer.addEventListener('mouseover', (e) => {
+    const card = e.target.closest('.video-card');
+    if (card && card !== currentHoveredCard && card.dataset.mediaType === 'video') {
+        currentHoveredCard = card;
+        const video = card.querySelector('video');
+        if (video) {
+            showScrubber(card, video);
+        }
+    }
+});
+
+gridContainer.addEventListener('mouseout', (e) => {
+    if (!currentHoveredCard) return;
+    const relatedCard = e.relatedTarget ? e.relatedTarget.closest('.video-card') : null;
+    if (relatedCard !== currentHoveredCard) {
+        hideScrubber(currentHoveredCard);
+        currentHoveredCard = null;
+    }
+});
 
 // --- Event Listeners ---
 
@@ -5080,6 +5110,7 @@ function switchToTab(tabId) {
         } else {
             // If tab has no path, clear the grid
             gridContainer.innerHTML = '';
+            currentHoveredCard = null;
             currentFolderPath = null;
             currentItems = [];
             updateBreadcrumb(null);

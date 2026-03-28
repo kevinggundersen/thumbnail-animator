@@ -262,6 +262,25 @@ ipcMain.handle('trigger-gc', () => {
     }
 });
 
+// Concurrency-limited async pool: runs at most `limit` tasks at a time, preserves result order
+async function asyncPool(limit, items, fn) {
+    const results = [];
+    const executing = new Set();
+    for (const [index, item] of items.entries()) {
+        const p = Promise.resolve().then(() => fn(item, index));
+        results.push(p);
+        executing.add(p);
+        const clean = () => executing.delete(p);
+        p.then(clean, clean);
+        if (executing.size >= limit) {
+            await Promise.race(executing);
+        }
+    }
+    return Promise.all(results);
+}
+
+const IO_CONCURRENCY_LIMIT = 20;
+
 ipcMain.handle('scan-folder', async (event, folderPath, options = {}) => {
     try {
         const { skipStats = false, scanImageDimensions = false } = options; // Skip stats if sorting by name, optionally scan image dimensions
@@ -299,8 +318,8 @@ ipcMain.handle('scan-folder', async (event, folderPath, options = {}) => {
             }
         }
         
-        // Process folders in parallel (skip stats if not needed)
-        const folderPromises = folderItems.map(async (item) => {
+        // Process folders with concurrency limit (skip stats if not needed)
+        const folderResultsPromise = asyncPool(IO_CONCURRENCY_LIMIT, folderItems, async (item) => {
             const itemPath = path.join(folderPath, item.name);
             if (skipStats) {
                 // Skip stat call for faster loading when sorting by name
@@ -443,13 +462,12 @@ ipcMain.handle('scan-folder', async (event, folderPath, options = {}) => {
                 }
             }
         } else {
-            // For smaller folders or when not scanning dimensions, process all in parallel
-            const filePromises = fileItems.map(processFile);
-            fileResults = await Promise.all(filePromises);
+            // For smaller folders or when not scanning dimensions, process with concurrency limit
+            fileResults = await asyncPool(IO_CONCURRENCY_LIMIT, fileItems, processFile);
         }
         
-        // Wait for all folder operations to complete in parallel
-        const folderResults = await Promise.all(folderPromises);
+        // Wait for all folder operations to complete
+        const folderResults = await folderResultsPromise;
         
         folders.push(...folderResults);
         mediaFiles.push(...fileResults);

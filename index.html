@@ -14,15 +14,35 @@
                 <button id="back-btn" class="nav-btn" title="Back" disabled>←</button>
                 <button id="forward-btn" class="nav-btn" title="Forward" disabled>→</button>
             </div>
-            <div id="breadcrumb-container" class="breadcrumb-container">
-                <span id="current-path">No folder selected</span>
-            </div>
             <div class="filter-buttons">
                 <button id="filter-all" class="filter-btn active">All</button>
                 <button id="filter-videos" class="filter-btn">Videos</button>
                 <button id="filter-images" class="filter-btn">Images</button>
                 <button id="filter-audio" class="filter-btn">Audio</button>
+                <button id="filter-stars" class="filter-btn" title="Filter by Star Rating">⭐</button>
             </div>
+            <button id="organize-btn" class="header-btn" title="Organize Files">📁</button>
+            <div class="quick-access-container">
+                <button id="favorites-btn" class="quick-access-btn" title="Favorites">⭐</button>
+                <div id="favorites-dropdown" class="quick-access-dropdown hidden">
+                    <div class="quick-access-header">Favorites</div>
+                    <div id="favorites-list" class="quick-access-list"></div>
+                    <div class="quick-access-footer">
+                        <button id="add-favorite-btn" class="quick-access-action-btn">+ Add Current Folder</button>
+                    </div>
+                </div>
+            </div>
+            <div class="quick-access-container">
+                <button id="recent-files-btn" class="quick-access-btn" title="Recent Files">🕒</button>
+                <div id="recent-files-dropdown" class="quick-access-dropdown hidden">
+                    <div class="quick-access-header">Recent Files</div>
+                    <div id="recent-files-list" class="quick-access-list"></div>
+                    <div class="quick-access-footer">
+                        <button id="clear-recent-btn" class="quick-access-action-btn">Clear History</button>
+                    </div>
+                </div>
+            </div>
+            <div class="tabs-container" id="tabs-container"></div>
             <div class="settings-container">
                 <button id="settings-btn" class="settings-btn" title="Settings">⚙️</button>
                 <div id="settings-dropdown" class="settings-dropdown hidden">
@@ -48,6 +68,16 @@
                     </div>
                     <div class="settings-item">
                         <label class="settings-label">
+                            <span>Include Moving Images:</span>
+                            <div class="toggle-switch">
+                                <input type="checkbox" id="include-moving-images-toggle" checked>
+                                <span class="toggle-slider"></span>
+                            </div>
+                            <span class="toggle-label" id="include-moving-images-label">On</span>
+                        </label>
+                    </div>
+                    <div class="settings-item">
+                        <label class="settings-label">
                             <span>Sort By:</span>
                             <select id="sort-type-select" class="settings-select">
                                 <option value="name">Name</option>
@@ -64,25 +94,190 @@
                             </select>
                         </label>
                     </div>
+                    <div class="settings-item">
+                        <label class="settings-label">
+                            <span>Theme:</span>
+                            <select id="theme-select" class="settings-select">
+                                <option value="dark">Dark</option>
+                                <option value="light">Light</option>
+                            </select>
+                        </label>
+                    </div>
+                    <div class="settings-item">
+                        <label class="settings-label">
+                            <span>Thumbnail Quality:</span>
+                            <select id="thumbnail-quality-select" class="settings-select">
+                                <option value="low">Low (Fast)</option>
+                                <option value="medium" selected>Medium (Balanced)</option>
+                                <option value="high">High (Best)</option>
+                            </select>
+                        </label>
+                    </div>
+                    <div class="settings-item">
+                        <label class="settings-label">
+                            <span>Zoom Level:</span>
+                            <input type="range" id="zoom-slider" min="50" max="200" value="100" step="10" class="zoom-slider">
+                            <span class="zoom-value" id="zoom-value">100%</span>
+                        </label>
+                    </div>
                 </div>
             </div>
-            <input type="text" id="search-box" placeholder="Search files..." autocomplete="off">
+            <div class="search-box-container">
+                <input type="text" id="search-box" placeholder="Search files..." autocomplete="off">
+                <button id="advanced-search-btn" class="search-box-icon-btn" title="Advanced Search">🔍</button>
+            </div>
         </header>
+        <div id="breadcrumb-container" class="breadcrumb-container">
+            <span id="current-path">No folder selected</span>
+        </div>
         <main id="grid-container">
             <!-- Videos and folders will be injected here -->
         </main>
+        <div id="loading-indicator" class="loading-indicator hidden">
+            <div class="loading-spinner"></div>
+            <div class="loading-text">Loading...</div>
+        </div>
+        <div id="video-scrubber" class="video-scrubber hidden">
+            <canvas id="scrubber-canvas"></canvas>
+            <div class="scrubber-time" id="scrubber-time">00:00</div>
+        </div>
         <div id="lightbox" class="hidden">
             <div class="lightbox-content">
                 <video id="lightbox-video" controls></video>
                 <img id="lightbox-image" style="display: none;">
-                <button id="close-lightbox">&times;</button>
-                <div class="lightbox-file-info">
-                    <div class="lightbox-filename" id="lightbox-filename"></div>
-                    <div class="lightbox-copy-buttons">
-                        <button class="copy-btn" id="copy-path-btn" title="Copy file path">Copy Path</button>
-                        <button class="copy-btn" id="copy-name-btn" title="Copy file name">Copy Name</button>
+            </div>
+            <button id="close-lightbox">&times;</button>
+            <button id="lightbox-prev" class="lightbox-nav-btn" title="Previous (←)">‹</button>
+            <button id="lightbox-next" class="lightbox-nav-btn" title="Next (→)">›</button>
+            <div class="lightbox-zoom-controls">
+                <label class="lightbox-zoom-label">
+                    <span>Zoom:</span>
+                    <input type="range" id="lightbox-zoom-slider" min="25" max="500" value="100" step="5" class="lightbox-zoom-slider">
+                    <span class="lightbox-zoom-value" id="lightbox-zoom-value">100%</span>
+                </label>
+            </div>
+            <div class="lightbox-video-menu-container">
+                <button id="lightbox-video-menu-btn" class="lightbox-video-menu-btn" title="Video Options">⋮</button>
+                <div id="lightbox-video-menu" class="lightbox-video-menu hidden">
+                    <div class="lightbox-menu-item" id="lightbox-speed-menu-item">
+                        <span>Playback Speed:</span>
+                        <button id="lightbox-speed-btn" class="lightbox-menu-btn">1x</button>
+                    </div>
+                    <div class="lightbox-menu-item" id="lightbox-loop-menu-item">
+                        <span>Loop:</span>
+                        <button id="lightbox-loop-btn" class="lightbox-menu-btn">Off</button>
+                    </div>
+                    <div class="lightbox-menu-item" id="lightbox-repeat-menu-item">
+                        <span>Repeat:</span>
+                        <button id="lightbox-repeat-btn" class="lightbox-menu-btn">Off</button>
                     </div>
                 </div>
+            </div>
+            <div class="lightbox-file-info">
+                <div class="lightbox-filename" id="lightbox-filename"></div>
+                <div class="lightbox-copy-buttons">
+                    <button class="copy-btn" id="copy-path-btn" title="Copy file path">Copy Path</button>
+                    <button class="copy-btn" id="copy-name-btn" title="Copy file name">Copy Name</button>
+                    <button class="copy-btn" id="lightbox-info-btn" title="File Information">ℹ️</button>
+                </div>
+            </div>
+        </div>
+        <div id="file-info-panel" class="file-info-panel hidden">
+            <div class="file-info-content">
+                <div class="file-info-header">
+                    <h3>File Information</h3>
+                    <button id="file-info-close" class="file-info-close-btn">&times;</button>
+                </div>
+                <div id="file-info-details"></div>
+            </div>
+        </div>
+        <div id="advanced-search-panel" class="advanced-search-panel hidden">
+            <div class="advanced-search-content">
+                <h3>Advanced Search</h3>
+                <div class="search-filter-group">
+                    <label>File Size:</label>
+                    <select id="search-size-operator">
+                        <option value="">Any</option>
+                        <option value="<">Less than</option>
+                        <option value=">">Greater than</option>
+                        <option value="=">Equal to</option>
+                    </select>
+                    <input type="number" id="search-size-value" placeholder="Size in MB" step="0.1">
+                </div>
+                <div class="search-filter-group">
+                    <label>Date Range:</label>
+                    <input type="date" id="search-date-from" placeholder="From">
+                    <input type="date" id="search-date-to" placeholder="To">
+                </div>
+                <div class="search-filter-group">
+                    <label>Dimensions:</label>
+                    <input type="number" id="search-width" placeholder="Width">
+                    <span>x</span>
+                    <input type="number" id="search-height" placeholder="Height">
+                </div>
+                <div class="search-filter-group">
+                    <label>Aspect Ratio:</label>
+                    <select id="search-aspect-ratio">
+                        <option value="">Any</option>
+                        <option value="16:9">16:9</option>
+                        <option value="4:3">4:3</option>
+                        <option value="1:1">1:1</option>
+                        <option value="9:16">9:16</option>
+                        <option value="21:9">21:9</option>
+                    </select>
+                </div>
+                <div class="search-filter-group">
+                    <label>Star Rating:</label>
+                    <select id="search-star-rating">
+                        <option value="">Any</option>
+                        <option value="1">1 Star</option>
+                        <option value="2">2 Stars</option>
+                        <option value="3">3 Stars</option>
+                        <option value="4">4 Stars</option>
+                        <option value="5">5 Stars</option>
+                    </select>
+                </div>
+                <div class="search-filter-group">
+                    <label>Sort By:</label>
+                    <select id="advanced-sort-type">
+                        <option value="name">Name</option>
+                        <option value="date">Date</option>
+                        <option value="size">Size</option>
+                        <option value="dimensions">Dimensions</option>
+                        <option value="rating">Rating</option>
+                    </select>
+                </div>
+                <div class="advanced-search-buttons">
+                    <button id="apply-advanced-search" class="search-btn">Apply</button>
+                    <button id="clear-advanced-search" class="search-btn">Clear</button>
+                    <button id="close-advanced-search" class="search-btn">Close</button>
+                </div>
+            </div>
+        </div>
+        <div id="progress-indicator" class="progress-indicator hidden">
+            <div class="progress-content">
+                <div class="progress-bar">
+                    <div id="progress-bar-fill" class="progress-bar-fill"></div>
+                </div>
+                <div id="progress-text" class="progress-text">Processing...</div>
+                <button id="cancel-progress" class="progress-cancel-btn">Cancel</button>
+            </div>
+        </div>
+        <div id="organize-dialog" class="organize-dialog hidden">
+            <div class="organize-dialog-content">
+                <h3>Organize Files</h3>
+                <div class="organize-options">
+                    <button id="create-folder-btn" class="organize-btn">Create Folder</button>
+                    <button id="move-to-folder-btn" class="organize-btn">Move to Folder</button>
+                    <button id="organize-by-date-btn" class="organize-btn">Organize by Date</button>
+                    <button id="organize-by-type-btn" class="organize-btn">Organize by Type</button>
+                </div>
+                <div id="organize-folder-input-container" class="organize-input-container hidden">
+                    <input type="text" id="organize-folder-name" placeholder="Folder name">
+                    <button id="organize-confirm-btn" class="organize-confirm-btn">Confirm</button>
+                    <button id="organize-cancel-btn" class="organize-cancel-btn">Cancel</button>
+                </div>
+                <button id="close-organize-dialog" class="organize-close-btn">Close</button>
             </div>
         </div>
         <div id="context-menu" class="context-menu hidden">

@@ -1,9 +1,64 @@
+// ============================================================================
+// CONFIGURATION CONSTANTS - Adjust these values to fine-tune performance
+// ============================================================================
+
+// Media Loading Configuration
+const MAX_VIDEOS = 120; // Max concurrent videos
+const MAX_IMAGES = 120; // Max concurrent images
+const MAX_TOTAL_MEDIA = MAX_VIDEOS + MAX_IMAGES; // Total media limit
+const PARALLEL_LOAD_LIMIT = 10; // Load up to N items in parallel for faster initial load
+const PRELOAD_BUFFER_PX = 1000; // Preload content N pixels before it enters viewport
+
+// Cleanup & Performance Configuration
+const CLEANUP_COOLDOWN_MS = 5; // Cooldown between cleanup operations (ms)
+const VIEWPORT_CACHE_TTL = 100; // Cache viewport bounds for N ms
+const MEDIA_COUNT_CACHE_TTL = 50; // Cache media counts for N ms
+
+// Progressive Rendering Configuration
+const PROGRESSIVE_RENDER_THRESHOLD = 1000; // Use progressive rendering for N+ items
+const PROGRESSIVE_RENDER_CHUNK_SIZE = 50; // Render N items per frame
+const PROGRESSIVE_RENDER_INITIAL_CHUNK = 100; // Render first N items immediately
+
+// Scroll & Observer Configuration
+const SCROLL_THROTTLE_MS = 16; // Throttle scroll events to ~60fps (ms)
+const SCROLL_DEBOUNCE_MS = 150; // Debounce cleanup after scroll stops (ms)
+const OBSERVER_CLEANUP_THROTTLE_MS = 16; // Throttle IntersectionObserver cleanup to ~60fps (ms)
+
+// Retry Configuration
+const MAX_RETRY_ATTEMPTS = 5; // Maximum number of retry attempts per card
+const RETRY_INITIAL_DELAY_MS = 500; // Initial retry delay (ms)
+const RETRY_BACKOFF_MULTIPLIER = 2; // Exponential backoff multiplier
+const RETRY_MAX_DELAY_MS = 5000; // Maximum delay between retries (ms)
+
+// Cache Configuration
+const FOLDER_CACHE_TTL = 30000; // Tab cache TTL (30 seconds)
+const GLOBAL_CACHE_TTL = 60000; // Global folder cache TTL (60 seconds)
+const INDEXEDDB_CACHE_TTL = 3600000; // IndexedDB persistent cache TTL (1 hour)
+
+// IndexedDB Configuration
+const DB_NAME = 'ThumbnailAnimatorCache';
+const DB_VERSION = 1;
+const STORE_NAME = 'folderCache';
+
+// ============================================================================
+// END CONFIGURATION CONSTANTS
+// ============================================================================
+
+// Get DOM elements - these are safe to get at script load time since script is at end of body
 const selectFolderBtn = document.getElementById('select-folder-btn');
 const backBtn = document.getElementById('back-btn');
 const forwardBtn = document.getElementById('forward-btn');
-const currentPathSpan = document.getElementById('current-path');
+let currentPathSpan = document.getElementById('current-path');
 const breadcrumbContainer = document.getElementById('breadcrumb-container');
 const gridContainer = document.getElementById('grid-container');
+
+// Safety check
+if (!breadcrumbContainer) {
+    console.error('breadcrumbContainer not found!');
+}
+if (!gridContainer) {
+    console.error('gridContainer not found!');
+}
 const searchBox = document.getElementById('search-box');
 const filterAllBtn = document.getElementById('filter-all');
 const filterVideosBtn = document.getElementById('filter-videos');
@@ -15,8 +70,27 @@ const layoutModeToggle = document.getElementById('layout-mode-toggle');
 const layoutModeLabel = document.getElementById('layout-mode-label');
 const rememberFolderToggle = document.getElementById('remember-folder-toggle');
 const rememberFolderLabel = document.getElementById('remember-folder-label');
+const includeMovingImagesToggle = document.getElementById('include-moving-images-toggle');
+const includeMovingImagesLabel = document.getElementById('include-moving-images-label');
 const sortTypeSelect = document.getElementById('sort-type-select');
 const sortOrderSelect = document.getElementById('sort-order-select');
+const themeSelect = document.getElementById('theme-select');
+const thumbnailQualitySelect = document.getElementById('thumbnail-quality-select');
+const zoomSlider = document.getElementById('zoom-slider');
+const zoomValue = document.getElementById('zoom-value');
+const favoritesBtn = document.getElementById('favorites-btn');
+const favoritesDropdown = document.getElementById('favorites-dropdown');
+const favoritesList = document.getElementById('favorites-list');
+const addFavoriteBtn = document.getElementById('add-favorite-btn');
+const recentFilesBtn = document.getElementById('recent-files-btn');
+const recentFilesDropdown = document.getElementById('recent-files-dropdown');
+const recentFilesList = document.getElementById('recent-files-list');
+const clearRecentBtn = document.getElementById('clear-recent-btn');
+const tabsContainer = document.getElementById('tabs-container');
+const videoScrubber = document.getElementById('video-scrubber');
+const scrubberCanvas = document.getElementById('scrubber-canvas');
+const scrubberTime = document.getElementById('scrubber-time');
+const loadingIndicator = document.getElementById('loading-indicator');
 
 // Track current folder path for navigation
 let currentFolderPath = null;
@@ -33,9 +107,250 @@ let layoutMode = 'masonry'; // Default to masonry
 // Track whether to remember last folder
 let rememberLastFolder = true; // Default to true
 
+// Track whether to include moving images (gif, webp) in image filter
+let includeMovingImages = true; // Default to true
+
 // Track sorting preferences
 let sortType = 'name'; // 'name' or 'date'
 let sortOrder = 'ascending'; // 'ascending' or 'descending'
+
+// Track theme
+let currentTheme = 'dark'; // 'dark' or 'light'
+
+// Track thumbnail quality
+let thumbnailQuality = 'medium'; // 'low', 'medium', 'high'
+
+// Track zoom level
+let zoomLevel = 100; // Percentage
+
+// Track favorites
+let favorites = []; // Array of { path, name }
+
+// Track recent files
+let recentFiles = []; // Array of { path, name, url, type, timestamp }
+
+// Track tabs
+let tabs = []; // Array of { id, path, name, sortType, sortOrder }
+let activeTabId = null;
+let tabIdCounter = 0;
+
+// Track lightbox navigation
+let currentLightboxIndex = -1;
+let lightboxItems = []; // Filtered items for lightbox navigation
+
+// Track star ratings
+let fileRatings = {}; // Map<filePath, rating (1-5)>
+
+// Track advanced search filters
+let advancedSearchFilters = {
+    sizeOperator: '',
+    sizeValue: null,
+    dateFrom: null,
+    dateTo: null,
+    width: null,
+    height: null,
+    aspectRatio: '',
+    starRating: ''
+};
+
+// Track video playback state
+let videoPlaybackSpeed = 1.0;
+let videoLoop = false;
+let videoRepeat = false;
+
+// Track progress
+let currentProgress = null; // { current: number, total: number, cancelled: boolean }
+
+// Cache folder contents per tab to avoid re-scanning
+const tabContentCache = new Map(); // Map<tabId, { items, timestamp }>
+
+// Cache folder contents globally (for recently accessed folders)
+const folderCache = new Map(); // Map<folderPath, { items, timestamp }>
+
+// IndexedDB persistent cache
+let db = null;
+
+// Initialize IndexedDB
+async function initIndexedDB() {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open(DB_NAME, DB_VERSION);
+        
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => {
+            db = request.result;
+            resolve(db);
+        };
+        
+        request.onupgradeneeded = (event) => {
+            const database = event.target.result;
+            if (!database.objectStoreNames.contains(STORE_NAME)) {
+                const objectStore = database.createObjectStore(STORE_NAME, { keyPath: 'path' });
+                objectStore.createIndex('timestamp', 'timestamp', { unique: false });
+            }
+        };
+    });
+}
+
+// Store folder contents in IndexedDB
+async function storeFolderInIndexedDB(folderPath, items) {
+    if (!db) {
+        try {
+            await initIndexedDB();
+        } catch (error) {
+            console.warn('IndexedDB not available:', error);
+            return;
+        }
+    }
+    
+    try {
+        const normalizedPath = normalizePath(folderPath);
+        const transaction = db.transaction([STORE_NAME], 'readwrite');
+        const store = transaction.objectStore(STORE_NAME);
+        
+        await store.put({
+            path: normalizedPath,
+            items: items,
+            timestamp: Date.now()
+        });
+    } catch (error) {
+        console.warn('Failed to store folder in IndexedDB:', error);
+    }
+}
+
+// Retrieve folder contents from IndexedDB
+async function getFolderFromIndexedDB(folderPath) {
+    if (!db) {
+        try {
+            await initIndexedDB();
+        } catch (error) {
+            console.warn('IndexedDB not available:', error);
+            return null;
+        }
+    }
+    
+    try {
+        const normalizedPath = normalizePath(folderPath);
+        const transaction = db.transaction([STORE_NAME], 'readonly');
+        const store = transaction.objectStore(STORE_NAME);
+        const request = store.get(normalizedPath);
+        
+        return new Promise((resolve) => {
+            request.onsuccess = () => {
+                const result = request.result;
+                if (result) {
+                    const age = Date.now() - result.timestamp;
+                    if (age < INDEXEDDB_CACHE_TTL) {
+                        resolve(result.items);
+                    } else {
+                        // Cache expired, remove it
+                        const deleteTransaction = db.transaction([STORE_NAME], 'readwrite');
+                        deleteTransaction.objectStore(STORE_NAME).delete(normalizedPath);
+                        resolve(null);
+                    }
+                } else {
+                    resolve(null);
+                }
+            };
+            request.onerror = () => resolve(null);
+        });
+    } catch (error) {
+        console.warn('Failed to retrieve folder from IndexedDB:', error);
+        return null;
+    }
+}
+
+// Remove folder from IndexedDB cache
+async function removeFolderFromIndexedDB(folderPath) {
+    if (!db) return;
+    
+    try {
+        const normalizedPath = normalizePath(folderPath);
+        const transaction = db.transaction([STORE_NAME], 'readwrite');
+        const store = transaction.objectStore(STORE_NAME);
+        await store.delete(normalizedPath);
+    } catch (error) {
+        console.warn('Failed to remove folder from IndexedDB:', error);
+    }
+}
+
+// Clean up old IndexedDB entries
+async function cleanupIndexedDBCache() {
+    if (!db) {
+        try {
+            await initIndexedDB();
+        } catch (error) {
+            return;
+        }
+    }
+    
+    try {
+        const transaction = db.transaction([STORE_NAME], 'readwrite');
+        const store = transaction.objectStore(STORE_NAME);
+        const index = store.index('timestamp');
+        const now = Date.now();
+        
+        const request = index.openCursor();
+        request.onsuccess = (event) => {
+            const cursor = event.target.result;
+            if (cursor) {
+                const age = now - cursor.value.timestamp;
+                if (age >= INDEXEDDB_CACHE_TTL) {
+                    cursor.delete();
+                }
+                cursor.continue();
+            }
+        };
+    } catch (error) {
+        console.warn('Failed to cleanup IndexedDB cache:', error);
+    }
+}
+
+// Initialize IndexedDB on page load
+initIndexedDB().catch(() => {
+    // IndexedDB not available, continue without persistent cache
+    console.warn('IndexedDB initialization failed, using memory cache only');
+});
+
+// Normalize path for consistent cache lookups (handle Windows path variations)
+function normalizePath(path) {
+    if (!path) return path;
+    // Normalize separators and remove trailing separators
+    return path.replace(/\\/g, '/').replace(/\/+$/, '') || path;
+}
+
+// Function to invalidate cache for a folder and its parent
+async function invalidateFolderCache(folderPath) {
+    const normalizedPath = normalizePath(folderPath);
+    
+    // Remove from IndexedDB cache
+    await removeFolderFromIndexedDB(folderPath);
+    
+    // Invalidate the folder itself (try both normalized and original)
+    folderCache.delete(normalizedPath);
+    folderCache.delete(folderPath);
+    
+    // Invalidate parent folder cache (since file list changed)
+    const pathParts = normalizedPath.split('/');
+    if (pathParts.length > 1) {
+        const parentPath = pathParts.slice(0, -1).join('/');
+        folderCache.delete(parentPath);
+    }
+    
+    // Invalidate all tab caches that reference this folder
+    tabContentCache.forEach((cache, tabId) => {
+        const cachePathNormalized = normalizePath(cache.path);
+        if (cachePathNormalized === normalizedPath || cache.path === folderPath) {
+            tabContentCache.delete(tabId);
+        }
+    });
+}
+
+// Track currently focused card for keyboard navigation
+let focusedCardIndex = -1;
+let visibleCards = [];
+
+// Video scrubber state
+let scrubberCard = null;
 
 // Navigation history for back/forward functionality
 const navigationHistory = {
@@ -86,6 +401,17 @@ const lightbox = document.getElementById('lightbox');
 const lightboxVideo = document.getElementById('lightbox-video');
 const lightboxImage = document.getElementById('lightbox-image');
 const closeLightboxBtn = document.getElementById('close-lightbox');
+const lightboxZoomSlider = document.getElementById('lightbox-zoom-slider');
+const lightboxZoomValue = document.getElementById('lightbox-zoom-value');
+
+// Lightbox zoom state
+let currentZoomLevel = 100;
+let cachedZoomValue = 1.0; // Cache zoom value to avoid recalculation during panning
+let isDragging = false;
+let dragStartX = 0;
+let dragStartY = 0;
+let currentTranslateX = 0;
+let currentTranslateY = 0;
 
 // Context Menu Elements
 const contextMenu = document.getElementById('context-menu');
@@ -120,23 +446,36 @@ let cleanupCheckTimeout;
 function performCleanupCheck() {
     // Check all media cards and clean up media that aren't intersecting
     const allCards = gridContainer.querySelectorAll('.video-card');
+    if (allCards.length === 0) return;
+    
     let cleaned = false;
     
     // Calculate viewport bounds with a buffer zone for cleanup
     // Media outside this buffer zone will be cleaned up aggressively
-    const viewportTop = -100; // 100px buffer above viewport
-    const viewportBottom = window.innerHeight + 100; // 100px buffer below viewport
-    const viewportLeft = -100; // 100px buffer left of viewport
-    const viewportRight = window.innerWidth + 100; // 100px buffer right of viewport
+    // Use same buffer as PRELOAD_BUFFER_PX for consistency
+    const viewportTop = -PRELOAD_BUFFER_PX;
+    const viewportBottom = window.innerHeight + PRELOAD_BUFFER_PX;
+    const viewportLeft = -PRELOAD_BUFFER_PX;
+    const viewportRight = window.innerWidth + PRELOAD_BUFFER_PX
+    
+    // Batch DOM reads: collect cards with media first, then batch getBoundingClientRect calls
+    const cardsWithMedia = Array.from(allCards).filter(card => {
+        const videos = card.querySelectorAll('video');
+        const images = card.querySelectorAll('img.media-thumbnail');
+        return videos.length > 0 || images.length > 0;
+    });
+    
+    if (cardsWithMedia.length === 0) return;
+    
+    // Batch all getBoundingClientRect calls together to minimize layout thrashing
+    const rects = cardsWithMedia.map(card => card.getBoundingClientRect());
     
     // First pass: Remove media from cards outside the buffer zone
-    allCards.forEach(card => {
+    cardsWithMedia.forEach((card, index) => {
+        const rect = rects[index];
         const videos = card.querySelectorAll('video');
         const images = card.querySelectorAll('img.media-thumbnail');
         
-        if (videos.length === 0 && images.length === 0) return;
-        
-        const rect = card.getBoundingClientRect();
         // Check if card is within buffer zone
         const isInBufferZone = (
             rect.top < viewportBottom &&
@@ -184,13 +523,17 @@ function performCleanupCheck() {
     // Second pass: If we still have too many videos, aggressively remove furthest ones
     const remainingVideos = Array.from(gridContainer.querySelectorAll('video'));
     if (remainingVideos.length > MAX_VIDEOS) {
+        // Batch getBoundingClientRect calls for all video cards
+        const videoCards = remainingVideos.map(video => video.closest('.video-card')).filter(Boolean);
+        const videoRects = videoCards.map(card => card.getBoundingClientRect());
+        
         // Calculate distance from viewport center for each video
-        const videoDistances = remainingVideos.map(video => {
-            const card = video.closest('.video-card');
+        const viewportCenterY = window.innerHeight / 2;
+        const viewportCenterX = window.innerWidth / 2;
+        const videoDistances = remainingVideos.map((video, index) => {
+            const card = videoCards[index];
             if (!card) return { video, distance: Infinity };
-            const rect = card.getBoundingClientRect();
-            const viewportCenterY = window.innerHeight / 2;
-            const viewportCenterX = window.innerWidth / 2;
+            const rect = videoRects[index];
             const cardCenterY = rect.top + rect.height / 2;
             const cardCenterX = rect.left + rect.width / 2;
             
@@ -225,11 +568,15 @@ function performCleanupCheck() {
             ...Array.from(gridContainer.querySelectorAll('img.media-thumbnail')).map(i => ({ element: i, type: 'image' }))
         ];
         
-        const mediaDistances = allMedia.map(({ element, type }) => {
-            const card = element.closest('.video-card');
+        // Batch getBoundingClientRect calls for all media cards
+        const mediaCards = allMedia.map(({ element }) => element.closest('.video-card')).filter(Boolean);
+        const mediaRects = mediaCards.map(card => card.getBoundingClientRect());
+        
+        const viewportCenterY = window.innerHeight / 2;
+        const mediaDistances = allMedia.map(({ element, type }, index) => {
+            const card = mediaCards[index];
             if (!card) return { element, distance: Infinity, type };
-            const rect = card.getBoundingClientRect();
-            const viewportCenterY = window.innerHeight / 2;
+            const rect = mediaRects[index];
             const cardCenterY = rect.top + rect.height / 2;
             // Only consider vertical distance for safety cleanup
             const distance = Math.abs(cardCenterY - viewportCenterY);
@@ -266,26 +613,45 @@ function startPeriodicCleanup() {
     cleanupCheckInterval = setInterval(() => {
         performCleanupCheck();
         retryPendingVideos(); // Also retry pending videos
+        proactiveLoadMedia(); // Proactively load media for cards in preload zone
     }, 16);
     
     // Also trigger cleanup immediately on scroll start and after scroll stops
-    let scrollTimeout;
+    // Optimized scroll handler with debouncing and throttling
+    let scrollTimeout = null;
+    let scrollThrottleTimeout = null;
     let lastScrollTime = 0;
+    let isScrolling = false;
+    // Using configuration constants from top of file
+    
     gridContainer.addEventListener('scroll', () => {
         const now = Date.now();
-        // Throttle scroll cleanup to max once per 16ms
-        if (now - lastScrollTime >= 16) {
-            performCleanupCheck();
-            retryPendingVideos();
-            lastScrollTime = now;
+        isScrolling = true;
+        
+        // Throttle scroll cleanup during active scrolling (max once per 16ms)
+        if (!scrollThrottleTimeout) {
+            scrollThrottleTimeout = requestAnimationFrame(() => {
+                if (now - lastScrollTime >= SCROLL_THROTTLE_MS) {
+                    performCleanupCheck();
+                    retryPendingVideos();
+                    lastScrollTime = now;
+                }
+                scrollThrottleTimeout = null;
+            });
         }
         
-        // Also cleanup after scroll stops
+        // Debounce cleanup after scroll stops
         clearTimeout(scrollTimeout);
         scrollTimeout = setTimeout(() => {
+            isScrolling = false;
+            // Final cleanup after scroll stops
             performCleanupCheck();
             retryPendingVideos();
-        }, 50);
+            proactiveLoadMedia(); // Also proactively load media after scroll stops
+            // Invalidate viewport cache after scroll stops
+            cachedViewportBounds = null;
+            viewportBoundsCacheTime = 0;
+        }, SCROLL_DEBOUNCE_MS);
     }, { passive: true });
 }
 
@@ -302,23 +668,49 @@ function stopPeriodicCleanup() {
 
 // Track window minimized state
 let isWindowMinimized = false;
+let isLightboxOpen = false;
 
 // Pause all resource-intensive operations when window is minimized
 function pauseWhenMinimized() {
     if (isWindowMinimized) return; // Already paused
     isWindowMinimized = true;
     
-    // Pause all videos in the grid
+    // Destroy all videos in the grid to release VRAM
+    // Simply pausing videos doesn't release GPU memory - we need to destroy them
     const allVideos = gridContainer.querySelectorAll('video');
     allVideos.forEach(video => {
-        if (!video.paused) {
-            video.pause();
-        }
+        destroyVideoElement(video);
+        activeVideoCount = Math.max(0, activeVideoCount - 1);
     });
     
-    // Pause lightbox video if it's open
-    if (lightboxVideo && !lightboxVideo.paused) {
+    // Clear lightbox video src to release VRAM (but keep element for restoration)
+    if (lightboxVideo && lightboxVideo.src) {
+        // Store the URL in dataset before clearing so we can restore it
+        lightboxVideo.dataset.src = lightboxVideo.src;
         lightboxVideo.pause();
+        lightboxVideo.src = '';
+        lightboxVideo.removeAttribute('src');
+        if (lightboxVideo.srcObject) {
+            lightboxVideo.srcObject = null;
+        }
+        lightboxVideo.load(); // Flush decoder
+    }
+    
+    // Also clear lightbox image src if it exists
+    const lightboxImage = document.getElementById('lightbox-image');
+    if (lightboxImage && lightboxImage.src) {
+        // Store the URL in dataset before clearing
+        lightboxImage.dataset.src = lightboxImage.src;
+        lightboxImage.src = '';
+        lightboxImage.removeAttribute('src');
+    }
+    
+    // Clear scrubber canvas if it exists (release any GPU resources)
+    if (scrubberCanvas) {
+        const ctx = scrubberCanvas.getContext('2d');
+        if (ctx) {
+            ctx.clearRect(0, 0, scrubberCanvas.width, scrubberCanvas.height);
+        }
     }
     
     // Stop periodic cleanup interval (runs every 16ms)
@@ -332,6 +724,13 @@ function pauseWhenMinimized() {
     
     // Trigger GC to free up memory
     scheduleGC();
+    
+    // Force garbage collection after a short delay to ensure VRAM is released
+    setTimeout(() => {
+        if (window.electronAPI && window.electronAPI.triggerGC) {
+            window.electronAPI.triggerGC();
+        }
+    }, 100);
 }
 
 // Resume all operations when window is restored
@@ -340,64 +739,145 @@ function resumeWhenRestored() {
     isWindowMinimized = false;
     
     // Reconnect IntersectionObserver for all cards
+    // This will automatically recreate videos for visible cards
     const allCards = gridContainer.querySelectorAll('.video-card, .folder-card');
     allCards.forEach(card => {
         observer.observe(card);
     });
     
-    // Resume videos that are in viewport
-    const allVideos = gridContainer.querySelectorAll('video');
-    allVideos.forEach(video => {
-        const card = video.closest('.video-card');
-        if (card) {
-            const rect = card.getBoundingClientRect();
-            const isInViewport = (
-                rect.top < window.innerHeight &&
-                rect.bottom > 0 &&
-                rect.left < window.innerWidth &&
-                rect.right > 0
-            );
-            if (isInViewport) {
-                const playPromise = video.play();
-                if (playPromise !== undefined) {
-                    playPromise.catch(() => {
-                        // Ignore play errors
-                    });
-                }
+    // Trigger IntersectionObserver to check visibility immediately
+    // This will recreate videos for cards currently in viewport
+    performCleanupCheck();
+    
+    // Restore lightbox media if lightbox is open
+    if (!lightbox.classList.contains('hidden')) {
+        const lightboxImage = document.getElementById('lightbox-image');
+        
+        // Restore video if it was cleared
+        if (lightboxVideo && lightboxVideo.dataset.src && !lightboxVideo.src) {
+            const mediaUrl = lightboxVideo.dataset.src;
+            lightboxVideo.src = mediaUrl;
+            const playPromise = lightboxVideo.play();
+            if (playPromise !== undefined) {
+                playPromise.catch(() => {
+                    // Ignore play errors
+                });
+            }
+        } else if (lightboxVideo && lightboxVideo.src && lightboxVideo.paused) {
+            // Video source is still there, just resume playback
+            const playPromise = lightboxVideo.play();
+            if (playPromise !== undefined) {
+                playPromise.catch(() => {
+                    // Ignore play errors
+                });
             }
         }
-    });
-    
-    // Resume lightbox video if lightbox is open
-    if (!lightbox.classList.contains('hidden') && lightboxVideo && lightboxVideo.paused) {
-        const playPromise = lightboxVideo.play();
-        if (playPromise !== undefined) {
-            playPromise.catch(() => {
-                // Ignore play errors
-            });
+        
+        // Restore image if it was cleared
+        if (lightboxImage && lightboxImage.dataset.src && !lightboxImage.src) {
+            lightboxImage.src = lightboxImage.dataset.src;
         }
     }
     
     // Restart periodic cleanup
     startPeriodicCleanup();
     
-    // Trigger immediate cleanup check
+    // Trigger immediate cleanup check to recreate visible videos
     performCleanupCheck();
     retryPendingVideos();
+}
+
+// Pause all grid thumbnail videos when lightbox is open
+function pauseThumbnailVideos() {
+    isLightboxOpen = true;
+    const allVideos = gridContainer.querySelectorAll('video');
+    allVideos.forEach(video => {
+        video.pause();
+    });
+}
+
+// Resume all grid thumbnail videos when lightbox is closed
+function resumeThumbnailVideos() {
+    isLightboxOpen = false;
+    if (isWindowMinimized) return;
+    const allVideos = gridContainer.querySelectorAll('video');
+    allVideos.forEach(video => {
+        const playPromise = video.play();
+        if (playPromise !== undefined) {
+            playPromise.catch(() => {});
+        }
+    });
 }
 
 // Track active media elements and pending creations
 let activeVideoCount = 0;
 let activeImageCount = 0;
 let pendingMediaCreations = new Set();
-let mediaToRetry = new Map(); // Track cards that need media retry
+// Track cards that need media retry: Map<card, { url, attempts, nextRetryTime }>
+let mediaToRetry = new Map();
 let lastCleanupTime = 0;
-const MAX_VIDEOS = 120; // Max concurrent videos (increased for faster loading)
-const MAX_IMAGES = 250; // Max concurrent images (increased - images are lighter)
-const MAX_TOTAL_MEDIA = MAX_VIDEOS + MAX_IMAGES; // Total media limit
-const CLEANUP_COOLDOWN_MS = 5; // Reduced cooldown to 5ms for faster loading
-const PRELOAD_BUFFER_PX = 500; // Preload content 300px before it enters viewport
-const PARALLEL_LOAD_LIMIT = 10; // Load up to 3 items in parallel for faster initial load
+
+// Performance optimization: Cache viewport bounds and media counts
+let cachedViewportBounds = null;
+let viewportBoundsCacheTime = 0;
+let cachedMediaCounts = { videos: 0, images: 0, timestamp: 0 };
+let cardRectCache = new WeakMap(); // Cache getBoundingClientRect results
+
+// Optimized function to get media counts with caching
+function getMediaCounts() {
+    const now = Date.now();
+    if (now - cachedMediaCounts.timestamp < MEDIA_COUNT_CACHE_TTL) {
+        return { videos: cachedMediaCounts.videos, images: cachedMediaCounts.images };
+    }
+    
+    // Update cache
+    cachedMediaCounts.videos = gridContainer.querySelectorAll('video').length;
+    cachedMediaCounts.images = gridContainer.querySelectorAll('img.media-thumbnail').length;
+    cachedMediaCounts.timestamp = now;
+    
+    return { videos: cachedMediaCounts.videos, images: cachedMediaCounts.images };
+}
+
+// Optimized function to get viewport bounds with caching
+function getViewportBounds() {
+    const now = Date.now();
+    if (cachedViewportBounds && (now - viewportBoundsCacheTime < VIEWPORT_CACHE_TTL)) {
+        return cachedViewportBounds;
+    }
+    
+    // Update cache
+    cachedViewportBounds = {
+        top: -PRELOAD_BUFFER_PX,
+        bottom: window.innerHeight + PRELOAD_BUFFER_PX,
+        left: -PRELOAD_BUFFER_PX,
+        right: window.innerWidth + PRELOAD_BUFFER_PX,
+        centerY: window.innerHeight / 2
+    };
+    viewportBoundsCacheTime = now;
+    
+    return cachedViewportBounds;
+}
+
+// Optimized function to check if card is in preload zone
+// Uses viewport coordinates since IntersectionObserver uses viewport as root
+function isCardInPreloadZone(card) {
+    const cardRect = card.getBoundingClientRect();
+    const bounds = getViewportBounds();
+    
+    return (
+        cardRect.top < bounds.bottom &&
+        cardRect.bottom > bounds.top &&
+        cardRect.left < bounds.right &&
+        cardRect.right > bounds.left
+    );
+}
+
+// Cache getBoundingClientRect results (with very short TTL to avoid stale positions)
+function getCachedCardRect(card) {
+    // For now, always get fresh rect to avoid issues with masonry layout changes
+    // The caching can be re-enabled later if needed, but it's safer to always get fresh values
+    return card.getBoundingClientRect();
+}
 
 // Helper function to detect file type from URL
 function getFileType(url) {
@@ -455,6 +935,26 @@ const ASPECT_RATIOS = [
     { name: '2:1', ratio: 2.0 },      // Panoramic
 ];
 
+// Calculate exact aspect ratio as a simplified fraction
+function calculateAspectRatio(width, height) {
+    if (!width || !height) return 'N/A';
+    
+    // Find GCD to simplify the ratio
+    const gcd = (a, b) => b === 0 ? a : gcd(b, a % b);
+    const divisor = gcd(width, height);
+    const simplifiedWidth = width / divisor;
+    const simplifiedHeight = height / divisor;
+    
+    // If numbers are too large, round to common ratios
+    if (simplifiedWidth > 100 || simplifiedHeight > 100) {
+        const ratio = width / height;
+        // Round to 2 decimal places for display
+        return ratio.toFixed(2) + ':1';
+    }
+    
+    return `${simplifiedWidth}:${simplifiedHeight}`;
+}
+
 // Map video aspect ratio to closest predefined ratio
 function getClosestAspectRatio(videoWidth, videoHeight) {
     if (!videoWidth || !videoHeight) return '16:9'; // Default fallback
@@ -474,6 +974,30 @@ function getClosestAspectRatio(videoWidth, videoHeight) {
     }
     
     return closest.name;
+}
+
+// Create or update resolution label for a card
+function createResolutionLabel(card, width, height) {
+    if (!width || !height) return;
+    
+    // Check if label already exists
+    let resolutionLabel = card.querySelector('.resolution-label');
+    
+    if (!resolutionLabel) {
+        resolutionLabel = document.createElement('div');
+        resolutionLabel.className = 'resolution-label';
+        card.appendChild(resolutionLabel);
+    }
+    
+    // Calculate aspect ratio
+    const aspectRatio = calculateAspectRatio(width, height);
+    
+    // Update label text
+    resolutionLabel.textContent = `${width}×${height} • ${aspectRatio}`;
+    
+    // Store dimensions on card for later use
+    card.dataset.mediaWidth = width;
+    card.dataset.mediaHeight = height;
 }
 
 // Apply aspect ratio to card
@@ -507,7 +1031,8 @@ let masonryResizeHandler = null;
 function calculateMasonryColumns() {
     const containerWidth = gridContainer.clientWidth - (parseInt(getComputedStyle(gridContainer).paddingLeft) * 2);
     const gap = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--gap')) || 16;
-    const minColumnWidth = 250; // Minimum card width
+    const baseMinColumnWidth = 250;
+    const minColumnWidth = baseMinColumnWidth * (zoomLevel / 100); // Scale with zoom
     const columns = Math.max(1, Math.floor((containerWidth + gap) / (minColumnWidth + gap)));
     return columns;
 }
@@ -736,6 +1261,11 @@ function initMasonry() {
     
     // Recalculate on window resize (debounced)
     masonryResizeHandler = () => {
+        // Invalidate viewport cache on resize
+        cachedViewportBounds = null;
+        viewportBoundsCacheTime = 0;
+        cardRectCache = new WeakMap(); // Clear rect cache on resize
+        
         clearTimeout(resizeTimeout);
         resizeTimeout = setTimeout(() => {
             if (layoutMode === 'masonry') {
@@ -857,6 +1387,9 @@ function switchLayoutMode() {
         initGrid();
     }
     
+    // Apply zoom after layout change
+    applyZoom();
+    
     // Force a reflow to ensure layout is applied
     void gridContainer.offsetHeight;
     
@@ -881,6 +1414,48 @@ function toggleRememberFolder() {
     if (!rememberLastFolder) {
         localStorage.removeItem('lastFolderPath');
     }
+}
+
+function toggleIncludeMovingImages() {
+    includeMovingImages = includeMovingImagesToggle.checked;
+    
+    // Update label
+    includeMovingImagesLabel.textContent = includeMovingImages ? 'On' : 'Off';
+    
+    // Save preference to localStorage
+    localStorage.setItem('includeMovingImages', includeMovingImages.toString());
+    
+    // Re-apply filters if image filter is active
+    if (currentFilter === 'image') {
+        applyFilters();
+    }
+}
+
+// Function to filter items based on current filter (before rendering)
+function filterItems(items) {
+    if (currentFilter === 'stars') {
+        // Filter to only show items with star ratings (exclude folders)
+        return items.filter(item => {
+            // Exclude folders - they don't have star ratings
+            if (item.type === 'folder') return false;
+            // Must have a valid path
+            if (!item.path) return false;
+            // Check rating - must be > 0
+            const rating = getFileRating(item.path);
+            return rating > 0; // Only show items with rating > 0
+        });
+    } else if (currentFilter === 'video') {
+        // Filter to only show video files
+        return items.filter(item => item.type === 'video');
+    } else if (currentFilter === 'image') {
+        // Filter to only show image files
+        return items.filter(item => item.type === 'image');
+    } else if (currentFilter === 'audio') {
+        // Filter to only show video files (audio filter is handled at card level)
+        return items.filter(item => item.type === 'video');
+    }
+    // 'all' - return all items
+    return items;
 }
 
 // Function to sort items based on current sorting preferences
@@ -921,6 +1496,15 @@ function sortItems(items) {
             if (comparison === 0) {
                 comparison = a.name.localeCompare(b.name);
             }
+        } else if (sortType === 'rating' || currentFilter === 'stars') {
+            // Sort by star rating (highest to lowest: 5 to 1)
+            const aRating = getFileRating(a.path);
+            const bRating = getFileRating(b.path);
+            comparison = bRating - aRating; // Descending order (5 stars first)
+            // If ratings are equal, fall back to name
+            if (comparison === 0) {
+                comparison = a.name.localeCompare(b.name);
+            }
         }
         return sortOrder === 'ascending' ? comparison : -comparison;
     });
@@ -932,8 +1516,9 @@ function sortItems(items) {
 // Function to apply sorting and reload current folder
 function applySorting() {
     if (currentFolderPath && currentItems.length > 0) {
-        // Re-sort and re-render without re-fetching
-        const sortedItems = sortItems(currentItems);
+        // Filter items based on current filter, then sort and render
+        const filteredItems = filterItems(currentItems);
+        const sortedItems = sortItems(filteredItems);
         renderItems(sortedItems);
     } else if (currentFolderPath) {
         // If no items cached, reload from backend
@@ -941,11 +1526,309 @@ function applySorting() {
     }
 }
 
+// Progressive rendering uses constants defined at top of file
+
+// Function to create a card element from an item
+function createCardFromItem(item) {
+    if (item.type === 'folder') {
+        // Create folder card
+        const card = document.createElement('div');
+        card.className = 'folder-card';
+        card.dataset.folderPath = item.path;
+        
+        // Create folder icon (use textContent instead of innerHTML for better performance)
+        const folderIcon = document.createElement('div');
+        folderIcon.className = 'folder-icon';
+        folderIcon.textContent = '📁';
+        
+        const info = document.createElement('div');
+        info.className = 'folder-info';
+        info.textContent = item.name;
+
+        card.appendChild(folderIcon);
+        card.appendChild(info);
+
+        card.addEventListener('click', () => {
+            // Use setTimeout to yield control back to event loop, making button responsive
+            setTimeout(() => {
+                navigateToFolder(item.path).catch(err => {
+                    console.error('Error navigating to folder:', err);
+                    hideLoadingIndicator();
+                });
+            }, 0);
+        });
+
+        return { card, isMedia: false };
+    } else {
+        // Create media card
+        const card = document.createElement('div');
+        card.className = 'video-card';
+        card.dataset.src = item.url;
+        card.dataset.path = item.path; // Store file path for context menu actions and star ratings
+        card.dataset.filePath = item.path; // Keep for backward compatibility
+        card.dataset.name = item.name;
+        card.dataset.mediaType = item.type;
+        
+        // Extract file extension for label (optimized - use lastIndexOf instead of split)
+        const lastDot = item.name.lastIndexOf('.');
+        const fileExtension = lastDot !== -1 ? item.name.substring(lastDot + 1).toUpperCase() : '';
+        
+        // Create extension label with color
+        const extensionLabel = document.createElement('div');
+        extensionLabel.className = 'extension-label';
+        extensionLabel.textContent = fileExtension;
+        const extensionColor = getExtensionColor(fileExtension);
+        extensionLabel.style.backgroundColor = hexToRgba(extensionColor, 0.87);
+        
+        // Apply aspect ratio immediately if dimensions are available (pre-scanned)
+        // This prevents card shifting in masonry mode
+        if (item.width && item.height && item.type === 'image') {
+            const aspectRatioName = getClosestAspectRatio(item.width, item.height);
+            applyAspectRatioToCard(card, aspectRatioName);
+            // Store dimensions on card for later use
+            card.dataset.width = item.width;
+            card.dataset.height = item.height;
+            card.dataset.mediaWidth = item.width; // Keep for backward compatibility
+            card.dataset.mediaHeight = item.height; // Keep for backward compatibility
+            // Create resolution label immediately
+            createResolutionLabel(card, item.width, item.height);
+        }
+
+        const info = document.createElement('div');
+        info.className = 'video-info';
+        info.textContent = item.name;
+
+        card.appendChild(extensionLabel);
+        
+        // Always add star rating (even if 0, so user can rate)
+        const rating = getFileRating(item.path);
+        const starContainer = document.createElement('div');
+        starContainer.className = 'star-rating';
+        starContainer.style.pointerEvents = 'auto'; // Ensure stars are clickable
+        for (let i = 1; i <= 5; i++) {
+            const star = document.createElement('span');
+            star.className = `star ${i <= rating ? 'active' : ''}`;
+            star.textContent = '★';
+            star.style.pointerEvents = 'auto';
+            star.style.cursor = 'pointer';
+            star.addEventListener('click', (e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                setFileRating(item.path, i);
+            });
+            starContainer.appendChild(star);
+        }
+        card.appendChild(starContainer);
+        
+        card.appendChild(info);
+
+        // Add hover handlers for video time label
+        if (item.type === 'video') {
+            card.addEventListener('mouseenter', () => {
+                const video = card.querySelector('video');
+                if (video) {
+                    showScrubber(card, video);
+                }
+            });
+            
+            card.addEventListener('mouseleave', () => {
+                hideScrubber(card);
+            });
+        }
+
+        card.addEventListener('click', () => {
+            openLightbox(item.url, item.path, item.name);
+        });
+
+        return { card, isMedia: true };
+    }
+}
+
+// Progressive rendering function for large lists
+function renderItemsProgressive(items) {
+    const cardsToObserve = [];
+    let currentIndex = 0;
+    
+    // Render initial chunk immediately for perceived performance
+    const initialFragment = document.createDocumentFragment();
+    const initialEnd = Math.min(PROGRESSIVE_RENDER_INITIAL_CHUNK, items.length);
+    
+    for (let i = 0; i < initialEnd; i++) {
+        const { card, isMedia } = createCardFromItem(items[i]);
+        initialFragment.appendChild(card);
+        if (isMedia) {
+            cardsToObserve.push(card);
+            videoCards.add(card);
+        }
+    }
+    
+    gridContainer.appendChild(initialFragment);
+    currentIndex = initialEnd;
+    
+    // Initialize layout mode class (but don't calculate layout yet for better performance)
+    if (layoutMode === 'masonry') {
+        gridContainer.classList.add('masonry');
+        gridContainer.classList.remove('grid');
+    } else {
+        gridContainer.classList.add('grid');
+        gridContainer.classList.remove('masonry');
+    }
+    
+    // Batch observer registration for initial chunk AFTER layout is ready
+    requestAnimationFrame(() => {
+        // Wait for layout to calculate before observing
+        requestAnimationFrame(() => {
+            cardsToObserve.forEach(card => {
+                observer.observe(card);
+            });
+            
+            // Trigger initial layout calculation only for visible cards
+            if (layoutMode === 'masonry') {
+                layoutMasonry();
+            }
+            
+            // Start proactive loading for initial chunk
+            scheduleProactiveLoadForChunk();
+        });
+    });
+    
+    // Continue rendering remaining items in chunks
+    function renderNextChunk() {
+        if (currentIndex >= items.length) {
+            // All items rendered, trigger final layout update
+            requestAnimationFrame(() => {
+                if (layoutMode === 'masonry') {
+                    layoutMasonry();
+                }
+                // Final proactive load after all rendered
+                scheduleProactiveLoadForChunk();
+            });
+            return;
+        }
+        
+        const chunkEnd = Math.min(currentIndex + PROGRESSIVE_RENDER_CHUNK_SIZE, items.length);
+        const fragment = document.createDocumentFragment();
+        const chunkCardsToObserve = [];
+        
+        for (let i = currentIndex; i < chunkEnd; i++) {
+            const { card, isMedia } = createCardFromItem(items[i]);
+            fragment.appendChild(card);
+            if (isMedia) {
+                chunkCardsToObserve.push(card);
+                videoCards.add(card);
+            }
+        }
+        
+        gridContainer.appendChild(fragment);
+        currentIndex = chunkEnd;
+        
+        // Wait for layout before observing and loading
+        requestAnimationFrame(() => {
+            // Batch observer registration for this chunk
+            chunkCardsToObserve.forEach(card => {
+                observer.observe(card);
+                cardsToObserve.push(card);
+            });
+            
+            // Update layout incrementally (only for new cards)
+            if (layoutMode === 'masonry') {
+                layoutMasonry();
+            }
+            
+            // Trigger proactive loading for this chunk
+            scheduleProactiveLoadForChunk();
+        });
+        
+        // Continue rendering next chunk after allowing UI to breathe
+        if ('requestIdleCallback' in window) {
+            requestIdleCallback(() => {
+                requestAnimationFrame(renderNextChunk);
+            }, { timeout: 50 });
+        } else {
+            setTimeout(() => {
+                requestAnimationFrame(renderNextChunk);
+            }, 16); // ~60fps fallback
+        }
+    }
+    
+    // Start rendering remaining chunks after initial render settles
+    if ('requestIdleCallback' in window) {
+        requestIdleCallback(() => {
+            requestAnimationFrame(renderNextChunk);
+        }, { timeout: 100 });
+    } else {
+        setTimeout(() => {
+            requestAnimationFrame(renderNextChunk);
+        }, 50); // Fallback delay
+    }
+    
+    // Helper function to schedule proactive loading for current chunk
+    function scheduleProactiveLoadForChunk() {
+        // Use requestIdleCallback to avoid blocking UI
+        if ('requestIdleCallback' in window) {
+            requestIdleCallback(() => {
+                loadVisibleMedia();
+            }, { timeout: 50 });
+        } else {
+            setTimeout(() => {
+                loadVisibleMedia();
+            }, 0);
+        }
+    }
+    
+    // Function to load media for cards currently visible/in preload zone
+    function loadVisibleMedia() {
+        const allCards = gridContainer.querySelectorAll('.video-card');
+        if (allCards.length === 0) return;
+        
+        const cardsToCheck = Array.from(allCards).filter(card => {
+            if (card.classList.contains('folder-card')) return false;
+            const videos = card.querySelectorAll('video');
+            const images = card.querySelectorAll('img.media-thumbnail');
+            return videos.length === 0 && images.length === 0 && !pendingMediaCreations.has(card);
+        });
+        
+        if (cardsToCheck.length === 0) return;
+        
+        // Use viewport bounds (consistent with IntersectionObserver root: null)
+        const bounds = getViewportBounds();
+        const cardsToLoadNow = [];
+        
+        // Check each card's position relative to viewport
+        cardsToCheck.forEach(card => {
+            if (isCardInPreloadZone(card)) {
+                const cardRect = card.getBoundingClientRect();
+                const cardCenterY = cardRect.top + (cardRect.height / 2);
+                const distance = Math.abs(cardCenterY - bounds.centerY);
+                cardsToLoadNow.push({ card, mediaUrl: card.dataset.src, distance });
+            }
+        });
+        
+        // Sort by distance and load closest items first
+        cardsToLoadNow.sort((a, b) => a.distance - b.distance);
+        cardsToLoadNow.slice(0, PARALLEL_LOAD_LIMIT * 2).forEach(({ card, mediaUrl }) => {
+            createMediaForCard(card, mediaUrl);
+        });
+    }
+    
+    // Apply filters after initial render
+    requestAnimationFrame(() => {
+        applyFilters();
+    });
+    
+    // Start periodic cleanup check
+    startPeriodicCleanup();
+}
+
 // Function to render items (extracted from loadVideos for re-use)
 function renderItems(items) {
     // Clean up all existing media before rendering
+    // Use a single querySelectorAll and batch operations
     const existingCards = gridContainer.querySelectorAll('.video-card, .folder-card');
-    existingCards.forEach(card => {
+    const cardsArray = Array.from(existingCards);
+    
+    // Batch unobserve and cleanup
+    cardsArray.forEach(card => {
         observer.unobserve(card);
         const videos = card.querySelectorAll('video');
         const images = card.querySelectorAll('img.media-thumbnail');
@@ -959,6 +1842,10 @@ function renderItems(items) {
     pendingMediaCreations.clear();
     mediaToRetry.clear();
     lastCleanupTime = 0;
+    // Clear caches
+    cachedMediaCounts = { videos: 0, images: 0, timestamp: 0 };
+    cardRectCache = new WeakMap();
+    cachedViewportBounds = null;
     
     // Clean up masonry spacer if it exists
     const spacer = gridContainer.querySelector('.masonry-spacer');
@@ -966,78 +1853,35 @@ function renderItems(items) {
         spacer.remove();
     }
     
-    gridContainer.innerHTML = '';
+    // Use textContent for faster clearing (more efficient than innerHTML)
+    while (gridContainer.firstChild) {
+        gridContainer.removeChild(gridContainer.firstChild);
+    }
     gridContainer.classList.remove('masonry'); // Reset masonry state
     gridContainer.classList.remove('grid'); // Reset grid state
 
     if (items.length === 0) {
-        gridContainer.innerHTML = '<p style="grid-column: 1/-1; text-align: center;">No folders or supported media found.</p>';
+        const emptyMsg = document.createElement('p');
+        emptyMsg.style.cssText = 'grid-column: 1/-1; text-align: center;';
+        emptyMsg.textContent = 'No folders or supported media found.';
+        gridContainer.appendChild(emptyMsg);
         return;
     }
 
+    // Use progressive rendering for large lists
+    if (items.length >= PROGRESSIVE_RENDER_THRESHOLD) {
+        renderItemsProgressive(items);
+        return;
+    }
+
+    // For smaller lists, render all at once (existing behavior)
     const fragment = document.createDocumentFragment();
     const cardsToObserve = []; // Batch observer registration
 
     items.forEach(item => {
-        if (item.type === 'folder') {
-            // Create folder card
-            const card = document.createElement('div');
-            card.className = 'folder-card';
-            card.dataset.folderPath = item.path;
-            
-            // Create folder icon (use textContent instead of innerHTML for better performance)
-            const folderIcon = document.createElement('div');
-            folderIcon.className = 'folder-icon';
-            folderIcon.textContent = '📁';
-            
-            const info = document.createElement('div');
-            info.className = 'folder-info';
-            info.textContent = item.name;
-
-            card.appendChild(folderIcon);
-            card.appendChild(info);
-
-            card.addEventListener('click', () => {
-                navigateToFolder(item.path);
-            });
-
-            fragment.appendChild(card);
-        } else {
-            // Create media card (existing code)
-            const card = document.createElement('div');
-            card.className = 'video-card';
-            card.dataset.src = item.url;
-            card.dataset.filePath = item.path; // Store file path for context menu actions
-            // Use item.type directly - already provided by backend, no need to call getFileType
-            card.dataset.mediaType = item.type;
-            
-            // Extract file extension for label (optimized - use lastIndexOf instead of split)
-            const lastDot = item.name.lastIndexOf('.');
-            const fileExtension = lastDot !== -1 ? item.name.substring(lastDot + 1).toUpperCase() : '';
-            
-            // Create extension label with color
-            const extensionLabel = document.createElement('div');
-            extensionLabel.className = 'extension-label';
-            extensionLabel.textContent = fileExtension;
-            const extensionColor = getExtensionColor(fileExtension);
-            // Add opacity to the background color for better readability
-            extensionLabel.style.backgroundColor = hexToRgba(extensionColor, 0.87);
-            
-            // Apply stored aspect ratio if available (from previous load)
-            // Otherwise, default will be applied via CSS
-
-            const info = document.createElement('div');
-            info.className = 'video-info';
-            info.textContent = item.name;
-
-            card.appendChild(extensionLabel);
-            card.appendChild(info);
-
-            card.addEventListener('click', () => {
-                openLightbox(item.url, item.path, item.name);
-            });
-
-            fragment.appendChild(card);
+        const { card, isMedia } = createCardFromItem(item);
+        fragment.appendChild(card);
+        if (isMedia) {
             cardsToObserve.push(card);
             videoCards.add(card);
         }
@@ -1045,14 +1889,17 @@ function renderItems(items) {
 
     gridContainer.appendChild(fragment);
     
-    // Batch observer registration for better performance
-    cardsToObserve.forEach(card => {
-        observer.observe(card);
-    });
-    
-    // Defer layout initialization to allow DOM to render first
+    // Defer layout initialization and observer registration to allow DOM to render first
     // This improves perceived performance
     requestAnimationFrame(() => {
+        // Wait for layout to calculate before observing
+        requestAnimationFrame(() => {
+            // Batch observer registration after layout is ready
+            cardsToObserve.forEach(card => {
+                observer.observe(card);
+            });
+        });
+        
         if (layoutMode === 'masonry') {
             initMasonry();
         } else {
@@ -1060,48 +1907,55 @@ function renderItems(items) {
         }
     });
     
-        // Proactively load cards that are in the preload zone immediately
-        // This ensures preloading works even if IntersectionObserver hasn't fired yet
-        requestAnimationFrame(() => {
-            const allCards = gridContainer.querySelectorAll('.video-card');
-            const cardsToLoadNow = [];
-            
-            allCards.forEach(card => {
-                // Skip folder cards - they don't need media loading
-                if (card.classList.contains('folder-card')) return;
-                
-                const videos = card.querySelectorAll('video');
-                const images = card.querySelectorAll('img.media-thumbnail');
-                
-                if (videos.length === 0 && images.length === 0 && !pendingMediaCreations.has(card)) {
-                    const rect = card.getBoundingClientRect();
-                    const viewportTop = -PRELOAD_BUFFER_PX;
-                    const viewportBottom = window.innerHeight + PRELOAD_BUFFER_PX;
-                    const viewportLeft = -PRELOAD_BUFFER_PX;
-                    const viewportRight = window.innerWidth + PRELOAD_BUFFER_PX;
-                    
-                    const isInPreloadZone = (
-                        rect.top < viewportBottom &&
-                        rect.bottom > viewportTop &&
-                        rect.left < viewportRight &&
-                        rect.right > viewportLeft
-                    );
-                    
-                    if (isInPreloadZone) {
-                        const viewportCenterY = window.innerHeight / 2;
-                        const cardCenterY = rect.top + rect.height / 2;
-                        const distance = Math.abs(cardCenterY - viewportCenterY);
-                        cardsToLoadNow.push({ card, mediaUrl: card.dataset.src, distance });
-                    }
-                }
-            });
-            
-            // Sort by distance and load up to PARALLEL_LOAD_LIMIT items immediately
-            cardsToLoadNow.sort((a, b) => a.distance - b.distance);
-            cardsToLoadNow.slice(0, PARALLEL_LOAD_LIMIT * 2).forEach(({ card, mediaUrl }) => {
-                createMediaForCard(card, mediaUrl);
-            });
+    // Proactively load cards that are in the preload zone using idle callback
+    // This batches DOM reads to avoid layout thrashing with large folders
+    const scheduleProactiveLoad = (callback) => {
+        if ('requestIdleCallback' in window) {
+            requestIdleCallback(callback, { timeout: 100 });
+        } else {
+            // Fallback for browsers without requestIdleCallback
+            setTimeout(callback, 0);
+        }
+    };
+    
+    scheduleProactiveLoad(() => {
+        loadVisibleMediaRegular();
+    });
+    
+    // Helper function for regular (non-progressive) rendering
+    function loadVisibleMediaRegular() {
+        const allCards = gridContainer.querySelectorAll('.video-card');
+        if (allCards.length === 0) return;
+        
+        const cardsToCheck = Array.from(allCards).filter(card => {
+            if (card.classList.contains('folder-card')) return false;
+            const videos = card.querySelectorAll('video');
+            const images = card.querySelectorAll('img.media-thumbnail');
+            return videos.length === 0 && images.length === 0 && !pendingMediaCreations.has(card);
         });
+        
+        if (cardsToCheck.length === 0) return;
+        
+        // Use viewport bounds (consistent with IntersectionObserver root: null)
+        const bounds = getViewportBounds();
+        const cardsToLoadNow = [];
+        
+        // Check each card's position relative to viewport
+        cardsToCheck.forEach(card => {
+            if (isCardInPreloadZone(card)) {
+                const cardRect = card.getBoundingClientRect();
+                const cardCenterY = cardRect.top + (cardRect.height / 2);
+                const distance = Math.abs(cardCenterY - bounds.centerY);
+                cardsToLoadNow.push({ card, mediaUrl: card.dataset.src, distance });
+            }
+        });
+        
+        // Sort by distance and load closest items first
+        cardsToLoadNow.sort((a, b) => a.distance - b.distance);
+        cardsToLoadNow.slice(0, PARALLEL_LOAD_LIMIT * 2).forEach(({ card, mediaUrl }) => {
+            createMediaForCard(card, mediaUrl);
+        });
+    }
     
     // Apply filters after loading (in case a filter is active)
     requestAnimationFrame(() => {
@@ -1117,7 +1971,17 @@ function updateSorting() {
     sortType = sortTypeSelect.value;
     sortOrder = sortOrderSelect.value;
     
-    // Save preferences to localStorage
+    // Save to active tab instead of global localStorage
+    if (activeTabId) {
+        const tab = tabs.find(t => t.id === activeTabId);
+        if (tab) {
+            tab.sortType = sortType;
+            tab.sortOrder = sortOrder;
+            saveTabs();
+        }
+    }
+    
+    // Also save to localStorage as fallback/default for new tabs
     localStorage.setItem('sortType', sortType);
     localStorage.setItem('sortOrder', sortOrder);
     
@@ -1137,21 +2001,29 @@ function createMediaForCard(card, mediaUrl) {
     if (pendingMediaCreations.has(card)) return false;
     
     const fileType = card.dataset.mediaType || getFileType(mediaUrl);
-    const currentVideoCount = gridContainer.querySelectorAll('video').length;
-    const currentImageCount = gridContainer.querySelectorAll('img.media-thumbnail').length;
+    const { videos: currentVideoCount, images: currentImageCount } = getMediaCounts();
     const totalMediaCount = currentVideoCount + currentImageCount;
     
     // Check limits based on file type
     if (fileType === 'video' && currentVideoCount >= MAX_VIDEOS) {
-        mediaToRetry.set(card, mediaUrl);
+        // Add to retry queue with initial retry info
+        if (!mediaToRetry.has(card)) {
+            mediaToRetry.set(card, { url: mediaUrl, attempts: 0, nextRetryTime: Date.now() });
+        }
         return false;
     }
     if (fileType === 'image' && currentImageCount >= MAX_IMAGES) {
-        mediaToRetry.set(card, mediaUrl);
+        // Add to retry queue with initial retry info
+        if (!mediaToRetry.has(card)) {
+            mediaToRetry.set(card, { url: mediaUrl, attempts: 0, nextRetryTime: Date.now() });
+        }
         return false;
     }
     if (totalMediaCount >= MAX_TOTAL_MEDIA) {
-        mediaToRetry.set(card, mediaUrl);
+        // Add to retry queue with initial retry info
+        if (!mediaToRetry.has(card)) {
+            mediaToRetry.set(card, { url: mediaUrl, attempts: 0, nextRetryTime: Date.now() });
+        }
         return false;
     }
     
@@ -1166,11 +2038,14 @@ function createMediaForCard(card, mediaUrl) {
 
 function createImageForCard(card, imageUrl) {
     activeImageCount++;
+    // Invalidate media count cache since we're adding an image
+    cachedMediaCounts.timestamp = 0;
     
-    // Calculate card size to limit image resolution
-    const rect = card.getBoundingClientRect();
-    const decodeWidth = Math.max(1, Math.floor(rect.width * 0.3));
-    const decodeHeight = Math.max(1, Math.floor(rect.height * 0.3));
+    // Calculate card size to limit image resolution based on quality setting
+    const rect = getCachedCardRect(card);
+    const qualityMultiplier = getThumbnailQualityMultiplier();
+    const decodeWidth = Math.max(1, Math.floor(rect.width * qualityMultiplier));
+    const decodeHeight = Math.max(1, Math.floor(rect.height * qualityMultiplier));
     
     const img = document.createElement('img');
     img.src = imageUrl;
@@ -1191,36 +2066,46 @@ function createImageForCard(card, imageUrl) {
     // Track loading state
     img.addEventListener('load', () => {
         // Detect and apply aspect ratio to card
-        if (img.naturalWidth && img.naturalHeight) {
+        // Only update if aspect ratio wasn't already set from pre-scanned dimensions
+        if (img.naturalWidth && img.naturalHeight && !card.dataset.aspectRatio) {
             const aspectRatioName = getClosestAspectRatio(img.naturalWidth, img.naturalHeight);
             applyAspectRatioToCard(card, aspectRatioName);
+            
+            // Create resolution label if not already created
+            if (!card.dataset.mediaWidth) {
+                createResolutionLabel(card, img.naturalWidth, img.naturalHeight);
+            }
         }
     });
     
-    // Add error handler - retry on error
+    // Add error handler - retry on error with exponential backoff
     img.addEventListener('error', () => {
         destroyImageElement(img);
         activeImageCount = Math.max(0, activeImageCount - 1);
         pendingMediaCreations.delete(card);
+        // Invalidate media count cache
+        cachedMediaCounts.timestamp = 0;
         
-        // Retry after a short delay if card is still in preload zone
-        setTimeout(() => {
-            const rect = card.getBoundingClientRect();
-            // Check if in preload zone (accounting for rootMargin)
-            const viewportTop = -PRELOAD_BUFFER_PX;
-            const viewportBottom = window.innerHeight + PRELOAD_BUFFER_PX;
-            const viewportLeft = -PRELOAD_BUFFER_PX;
-            const viewportRight = window.innerWidth + PRELOAD_BUFFER_PX;
-            const isInPreloadZone = (
-                rect.top < viewportBottom &&
-                rect.bottom > viewportTop &&
-                rect.left < viewportRight &&
-                rect.right > viewportLeft
-            );
-            if (isInPreloadZone && !card.querySelector('img.media-thumbnail')) {
-                mediaToRetry.set(card, imageUrl);
-            }
-        }, 500);
+        // Get existing retry info or create new
+        const retryInfo = mediaToRetry.get(card) || { url: imageUrl, attempts: 0, nextRetryTime: Date.now() };
+        retryInfo.attempts++;
+        retryInfo.url = imageUrl; // Update URL in case it changed
+        
+        // Calculate exponential backoff delay
+        const delay = Math.min(
+            RETRY_INITIAL_DELAY_MS * Math.pow(RETRY_BACKOFF_MULTIPLIER, retryInfo.attempts - 1),
+            RETRY_MAX_DELAY_MS
+        );
+        retryInfo.nextRetryTime = Date.now() + delay;
+        
+        // Only retry if we haven't exceeded max attempts
+        if (retryInfo.attempts <= MAX_RETRY_ATTEMPTS) {
+            mediaToRetry.set(card, retryInfo);
+        } else {
+            // Remove from retry queue if max attempts exceeded
+            mediaToRetry.delete(card);
+            console.warn(`Image failed to load after ${MAX_RETRY_ATTEMPTS} attempts:`, imageUrl);
+        }
     });
     
     const info = card.querySelector('.video-info');
@@ -1263,13 +2148,14 @@ function createSoundLabel(card) {
 
 function createVideoForCard(card, videoUrl) {
     activeVideoCount++;
+    // Invalidate media count cache since we're adding a video
+    cachedMediaCounts.timestamp = 0;
     
-    // Calculate card size to limit video resolution
-    const rect = card.getBoundingClientRect();
-    // Limit decode resolution to reduce VRAM - decode at 60% of card size (reduces VRAM by ~64%)
-    // This is a good balance between quality and VRAM usage
-    const decodeWidth = Math.max(1, Math.floor(rect.width * 0.3));
-    const decodeHeight = Math.max(1, Math.floor(rect.height * 0.3));
+    // Calculate card size to limit video resolution based on quality setting
+    const rect = getCachedCardRect(card);
+    const qualityMultiplier = getThumbnailQualityMultiplier();
+    const decodeWidth = Math.max(1, Math.floor(rect.width * qualityMultiplier));
+    const decodeHeight = Math.max(1, Math.floor(rect.height * qualityMultiplier));
     
     const video = document.createElement('video');
     video.src = videoUrl;
@@ -1314,6 +2200,9 @@ function createVideoForCard(card, videoUrl) {
         if (video.videoWidth && video.videoHeight) {
             const aspectRatioName = getClosestAspectRatio(video.videoWidth, video.videoHeight);
             applyAspectRatioToCard(card, aspectRatioName);
+            
+            // Create resolution label
+            createResolutionLabel(card, video.videoWidth, video.videoHeight);
         }
         
         // After metadata loads, ensure video dimensions are constrained
@@ -1362,42 +2251,47 @@ function createVideoForCard(card, videoUrl) {
         video.addEventListener('canplay', checkAudio, { once: true });
     });
     
-    // Add error handler - retry on error
+    // Add error handler - retry on error with exponential backoff
     video.addEventListener('error', () => {
         destroyVideoElement(video);
         activeVideoCount = Math.max(0, activeVideoCount - 1);
         pendingMediaCreations.delete(card);
         
-        // Retry after a short delay if card is still in preload zone
-        setTimeout(() => {
-            const rect = card.getBoundingClientRect();
-            // Check if in preload zone (accounting for rootMargin)
-            const viewportTop = -PRELOAD_BUFFER_PX;
-            const viewportBottom = window.innerHeight + PRELOAD_BUFFER_PX;
-            const viewportLeft = -PRELOAD_BUFFER_PX;
-            const viewportRight = window.innerWidth + PRELOAD_BUFFER_PX;
-            const isInPreloadZone = (
-                rect.top < viewportBottom &&
-                rect.bottom > viewportTop &&
-                rect.left < viewportRight &&
-                rect.right > viewportLeft
-            );
-            if (isInPreloadZone && !card.querySelector('video')) {
-                mediaToRetry.set(card, videoUrl);
-            }
-        }, 500);
+        // Get existing retry info or create new
+        const retryInfo = mediaToRetry.get(card) || { url: videoUrl, attempts: 0, nextRetryTime: Date.now() };
+        retryInfo.attempts++;
+        retryInfo.url = videoUrl; // Update URL in case it changed
+        
+        // Calculate exponential backoff delay
+        const delay = Math.min(
+            RETRY_INITIAL_DELAY_MS * Math.pow(RETRY_BACKOFF_MULTIPLIER, retryInfo.attempts - 1),
+            RETRY_MAX_DELAY_MS
+        );
+        retryInfo.nextRetryTime = Date.now() + delay;
+        
+        // Only retry if we haven't exceeded max attempts
+        if (retryInfo.attempts <= MAX_RETRY_ATTEMPTS) {
+            mediaToRetry.set(card, retryInfo);
+        } else {
+            // Remove from retry queue if max attempts exceeded
+            mediaToRetry.delete(card);
+            console.warn(`Video failed to load after ${MAX_RETRY_ATTEMPTS} attempts:`, videoUrl);
+        }
     });
 
     const info = card.querySelector('.video-info');
     card.insertBefore(video, info);
 
-    const playPromise = video.play();
-    if (playPromise !== undefined) {
-        playPromise.catch(() => {
-            // Ignore play errors
-        });
+    // Don't auto-play if lightbox is open (thumbnails are paused)
+    if (!isLightboxOpen) {
+        const playPromise = video.play();
+        if (playPromise !== undefined) {
+            playPromise.catch(() => {
+                // Ignore play errors
+            });
+        }
     }
-    
+
     pendingMediaCreations.delete(card);
     return true;
 }
@@ -1438,8 +2332,9 @@ function processEntries(entries) {
     });
     
     // Update count after cleanup
-    activeVideoCount = gridContainer.querySelectorAll('video').length;
-    activeImageCount = gridContainer.querySelectorAll('img.media-thumbnail').length;
+    const counts = getMediaCounts();
+    activeVideoCount = counts.videos;
+    activeImageCount = counts.images;
     
     // Check if cooldown has passed
     const timeSinceCleanup = now - lastCleanupTime;
@@ -1474,9 +2369,12 @@ function processEntries(entries) {
             
             // If no media exists and not pending, add to load queue
             if (videos.length === 0 && images.length === 0 && !pendingMediaCreations.has(card)) {
-                const rect = card.getBoundingClientRect();
+                // Use IntersectionObserver entry data for accurate positioning
+                // entry.boundingClientRect is relative to viewport
+                // Calculate distance from viewport center for prioritization
+                const cardRect = entry.boundingClientRect;
                 const viewportCenterY = window.innerHeight / 2;
-                const cardCenterY = rect.top + rect.height / 2;
+                const cardCenterY = cardRect.top + cardRect.height / 2;
                 const distance = Math.abs(cardCenterY - viewportCenterY);
                 cardsToLoad.push({ card, mediaUrl: card.dataset.src, distance });
             }
@@ -1489,26 +2387,17 @@ function processEntries(entries) {
     // Load media in parallel batches for faster initial loading
     let loadedInBatch = 0;
     cardsToLoad.forEach(({ card, mediaUrl }) => {
-        const currentVideoCount = gridContainer.querySelectorAll('video').length;
-        const currentImageCount = gridContainer.querySelectorAll('img.media-thumbnail').length;
+        const { videos: currentVideoCount, images: currentImageCount } = getMediaCounts();
         const totalMediaCount = currentVideoCount + currentImageCount;
         
         if (totalMediaCount >= MAX_TOTAL_MEDIA) {
             // If at limit, only load if this card is in the preload zone
-            const rect = card.getBoundingClientRect();
-            const viewportTop = -PRELOAD_BUFFER_PX;
-            const viewportBottom = window.innerHeight + PRELOAD_BUFFER_PX;
-            const viewportLeft = -PRELOAD_BUFFER_PX;
-            const viewportRight = window.innerWidth + PRELOAD_BUFFER_PX;
-            const isInPreloadZone = (
-                rect.top < viewportBottom &&
-                rect.bottom > viewportTop &&
-                rect.left < viewportRight &&
-                rect.right > viewportLeft
-            );
             // Only load if in preload zone when at limit
-            if (!isInPreloadZone) {
-                mediaToRetry.set(card, mediaUrl);
+            if (!isCardInPreloadZone(card)) {
+                // Add to retry queue with initial retry info
+                if (!mediaToRetry.has(card)) {
+                    mediaToRetry.set(card, { url: mediaUrl, attempts: 0, nextRetryTime: Date.now() });
+                }
                 return;
             }
         }
@@ -1537,55 +2426,163 @@ function processEntries(entries) {
     }
 }
 
-// Retry mechanism for media that couldn't load due to limit
-function retryPendingVideos() {
-    if (mediaToRetry.size === 0) return;
-    
-    const currentVideoCount = gridContainer.querySelectorAll('video').length;
-    const currentImageCount = gridContainer.querySelectorAll('img.media-thumbnail').length;
+// Proactive media loading - checks all cards and loads media for those in preload zone
+// This ensures preloading works even if IntersectionObserver doesn't fire immediately
+function proactiveLoadMedia() {
+    const { videos: currentVideoCount, images: currentImageCount } = getMediaCounts();
     const totalMediaCount = currentVideoCount + currentImageCount;
     
+    // Don't load if we're at capacity
     if (totalMediaCount >= MAX_TOTAL_MEDIA) return;
     
-    // Try to create multiple media from retry queue in parallel (faster loading)
-    // Use IntersectionObserver to check if cards are in preload zone
-    let retriedCount = 0;
-    for (const [card, mediaUrl] of mediaToRetry.entries()) {
-        if (retriedCount >= PARALLEL_LOAD_LIMIT) break; // Limit parallel retries
-        
-        // Check if card is intersecting (respects rootMargin from IntersectionObserver)
-        // We need to manually check intersection since we're in retry queue
-        const rect = card.getBoundingClientRect();
-        const viewportTop = -PRELOAD_BUFFER_PX;
-        const viewportBottom = window.innerHeight + PRELOAD_BUFFER_PX;
-        const viewportLeft = -PRELOAD_BUFFER_PX;
-        const viewportRight = window.innerWidth + PRELOAD_BUFFER_PX;
-        
-        const isInPreloadZone = (
-            rect.top < viewportBottom &&
-            rect.bottom > viewportTop &&
-            rect.left < viewportRight &&
-            rect.right > viewportLeft
-        );
-        
-        if (isInPreloadZone && card.querySelectorAll('video').length === 0 && 
-            card.querySelectorAll('img.media-thumbnail').length === 0) {
-            if (createMediaForCard(card, mediaUrl)) {
-                mediaToRetry.delete(card);
-                retriedCount++;
-            }
-        } else if (!isInPreloadZone) {
-            // Remove from retry queue if card is outside preload zone
-            mediaToRetry.delete(card);
+    // Get all cards that need media
+    const allCards = gridContainer.querySelectorAll('.video-card');
+        const cardsNeedingMedia = Array.from(allCards).filter(card => {
+            if (card.classList.contains('folder-card')) return false;
+            const videos = card.querySelectorAll('video');
+            const images = card.querySelectorAll('img.media-thumbnail');
+            // Check if card is in retry queue but ready to retry
+            const retryInfo = mediaToRetry.get(card);
+            const isReadyToRetry = retryInfo && Date.now() >= retryInfo.nextRetryTime;
+            return videos.length === 0 && 
+                   images.length === 0 && 
+                   !pendingMediaCreations.has(card) &&
+                   (!mediaToRetry.has(card) || isReadyToRetry) &&
+                   card.dataset.src; // Must have a source
+        });
+    
+    if (cardsNeedingMedia.length === 0) return;
+    
+    // Check which cards are in the preload zone
+    const bounds = getViewportBounds();
+    const cardsToLoad = [];
+    
+    cardsNeedingMedia.forEach(card => {
+        if (isCardInPreloadZone(card)) {
+            const cardRect = card.getBoundingClientRect();
+            const cardCenterY = cardRect.top + (cardRect.height / 2);
+            const distance = Math.abs(cardCenterY - bounds.centerY);
+            cardsToLoad.push({ card, mediaUrl: card.dataset.src, distance });
+        }
+    });
+    
+    if (cardsToLoad.length === 0) return;
+    
+    // Sort by distance and load closest items first
+    cardsToLoad.sort((a, b) => a.distance - b.distance);
+    
+    // Calculate how many we can load
+    const remainingCapacity = MAX_TOTAL_MEDIA - totalMediaCount;
+    const maxToLoad = Math.min(remainingCapacity, PARALLEL_LOAD_LIMIT * 2, cardsToLoad.length);
+    
+    // Load the closest cards
+    for (let i = 0; i < maxToLoad; i++) {
+        const { card, mediaUrl } = cardsToLoad[i];
+        if (createMediaForCard(card, mediaUrl)) {
+            // Successfully started loading
         }
     }
 }
 
+// Retry mechanism for media that couldn't load due to limit or errors
+function retryPendingVideos() {
+    if (mediaToRetry.size === 0) return;
+    
+    const { videos: currentVideoCount, images: currentImageCount } = getMediaCounts();
+    const totalMediaCount = currentVideoCount + currentImageCount;
+    
+    if (totalMediaCount >= MAX_TOTAL_MEDIA) return;
+    
+    const now = Date.now();
+    let retriedCount = 0;
+    const cardsToRemove = [];
+    
+    // Try to create multiple media from retry queue in parallel
+    for (const [card, retryInfo] of mediaToRetry.entries()) {
+        if (retriedCount >= PARALLEL_LOAD_LIMIT * 2) break;
+        
+        // Check if it's time to retry (respect exponential backoff)
+        if (now < retryInfo.nextRetryTime) continue;
+        
+        // Check if card still exists and needs media
+        if (!card.parentNode) {
+            // Card was removed from DOM
+            cardsToRemove.push(card);
+            continue;
+        }
+        
+        const videos = card.querySelectorAll('video');
+        const images = card.querySelectorAll('img.media-thumbnail');
+        const hasMedia = videos.length > 0 || images.length > 0;
+        
+        if (hasMedia) {
+            // Media already loaded, remove from retry queue
+            cardsToRemove.push(card);
+            continue;
+        }
+        
+        // Check if card is in preload zone (but don't remove if it's not - keep retrying)
+        const isInPreloadZone = isCardInPreloadZone(card);
+        
+        // Only retry if in preload zone or if we've exhausted attempts (final attempt)
+        if (isInPreloadZone && !pendingMediaCreations.has(card)) {
+            if (createMediaForCard(card, retryInfo.url)) {
+                // Successfully started loading - remove from retry queue
+                cardsToRemove.push(card);
+                retriedCount++;
+            } else {
+                // Failed to create (likely at limit) - update retry time for next attempt
+                const delay = Math.min(
+                    RETRY_INITIAL_DELAY_MS * Math.pow(RETRY_BACKOFF_MULTIPLIER, retryInfo.attempts),
+                    RETRY_MAX_DELAY_MS
+                );
+                retryInfo.nextRetryTime = now + delay;
+            }
+        } else if (retryInfo.attempts >= MAX_RETRY_ATTEMPTS) {
+            // Max attempts exceeded, remove from queue
+            cardsToRemove.push(card);
+            console.warn(`Removing card from retry queue after ${MAX_RETRY_ATTEMPTS} attempts:`, retryInfo.url);
+        }
+        // If card is outside preload zone but hasn't exceeded max attempts, keep it in queue
+    }
+    
+    // Remove cards that succeeded or exceeded max attempts
+    cardsToRemove.forEach(card => mediaToRetry.delete(card));
+    
+    // Also proactively load media for cards in preload zone that aren't in retry queue
+    // This catches cards that IntersectionObserver might have missed
+    if (retriedCount < PARALLEL_LOAD_LIMIT * 2) {
+        const allCards = gridContainer.querySelectorAll('.video-card');
+        const cardsToLoad = Array.from(allCards).filter(card => {
+            if (card.classList.contains('folder-card')) return false;
+            const videos = card.querySelectorAll('video');
+            const images = card.querySelectorAll('img.media-thumbnail');
+            return videos.length === 0 && images.length === 0 && 
+                   !pendingMediaCreations.has(card) && 
+                   !mediaToRetry.has(card) &&
+                   isCardInPreloadZone(card);
+        });
+        
+        // Load up to remaining capacity
+        const remainingCapacity = PARALLEL_LOAD_LIMIT * 2 - retriedCount;
+        cardsToLoad.slice(0, remainingCapacity).forEach(card => {
+            const mediaUrl = card.dataset.src;
+            if (mediaUrl && createMediaForCard(card, mediaUrl)) {
+                retriedCount++;
+            }
+        });
+    }
+}
+
 // --- Intersection Observer ---
-// Use viewport as root (null) instead of gridContainer for proper intersection detection
-// Preload content before it enters viewport for smoother scrolling
+// IMPORTANT: Using viewport (null) as root is actually correct here!
+// Even though gridContainer scrolls, IntersectionObserver with viewport root
+// will correctly detect when cards enter/exit the visible viewport area.
+// The rootMargin expands the detection zone for preloading.
+// Using gridContainer as root causes issues because entry.boundingClientRect
+// is always relative to viewport, not the root element.
 const observerOptions = {
-    root: null, // Use viewport instead of gridContainer
+    root: null, // Use viewport as root - this works correctly with scrolling containers
     // rootMargin format: "top right bottom left" - expands viewport for preloading
     rootMargin: `${PRELOAD_BUFFER_PX}px ${PRELOAD_BUFFER_PX}px ${PRELOAD_BUFFER_PX}px ${PRELOAD_BUFFER_PX}px`,
     threshold: 0.0 // Trigger as soon as any part intersects
@@ -1733,27 +2730,45 @@ function destroyImageElement(img) {
     }
 }
 
+// Throttle cleanup check in IntersectionObserver callback
+let observerCleanupThrottle = null;
+// Using OBSERVER_CLEANUP_THROTTLE_MS from configuration constants at top of file
+
 const observer = new IntersectionObserver((entries) => {
     // Process entries immediately - no throttling that could cause missed cleanups
     processEntries(entries);
     
-    // Also trigger immediate cleanup check synchronously
-    performCleanupCheck();
-    
-    // Retry pending videos
-    retryPendingVideos();
+    // Throttle cleanup check to avoid excessive calls when many entries change at once
+    if (!observerCleanupThrottle) {
+        observerCleanupThrottle = setTimeout(() => {
+            performCleanupCheck();
+            retryPendingVideos();
+            proactiveLoadMedia(); // Also proactively load media when observer fires
+            observerCleanupThrottle = null;
+        }, OBSERVER_CLEANUP_THROTTLE_MS);
+    }
 }, observerOptions);
 
 
 // --- Filter and Search Functionality ---
+// Debounce timer for search input
+let filterDebounceTimer = null;
+
 function applyFilters() {
     const cards = gridContainer.querySelectorAll('.video-card, .folder-card');
+    if (cards.length === 0) return;
+    
     const query = searchBox.value.toLowerCase().trim();
     
-    cards.forEach(card => {
+    // Batch DOM reads: collect all card info first
+    const cardData = Array.from(cards).map(card => {
         const info = card.querySelector('.video-info, .folder-info');
         const fileName = info ? info.textContent.toLowerCase() : '';
-        
+        return { card, fileName };
+    });
+    
+    // Process all cards in a single pass
+    cardData.forEach(({ card, fileName }) => {
         // Check if card matches search query
         const matchesSearch = query === '' || fileName.includes(query);
         
@@ -1764,7 +2779,14 @@ function applyFilters() {
             matchesFilter = card.classList.contains('video-card') && card.dataset.mediaType === 'video';
         } else if (currentFilter === 'image') {
             // Show only image files (not folders or videos)
-            matchesFilter = card.classList.contains('video-card') && card.dataset.mediaType === 'image';
+            const isImage = card.classList.contains('video-card') && card.dataset.mediaType === 'image';
+            if (isImage && !includeMovingImages) {
+                // Check if it's a moving image type (gif, webp)
+                const isMovingImage = fileName.endsWith('.gif') || fileName.endsWith('.webp');
+                matchesFilter = !isMovingImage; // Exclude moving images if toggle is off
+            } else {
+                matchesFilter = isImage; // Include all images if toggle is on
+            }
         } else if (currentFilter === 'audio') {
             // Show videos that have audio OR are still loading (hasAudio not set yet)
             // This ensures videos show up immediately, then get filtered out if no audio once metadata loads
@@ -1772,18 +2794,98 @@ function applyFilters() {
             const hasAudio = card.dataset.hasAudio === 'true';
             const audioNotChecked = card.dataset.hasAudio === undefined || card.dataset.hasAudio === '';
             matchesFilter = isVideo && (hasAudio || audioNotChecked);
+        } else if (currentFilter === 'stars') {
+            // Show only files with star ratings (exclude folders)
+            // Match the pattern of video/image filters: check card type first
+            const isVideoCard = card.classList.contains('video-card');
+            if (!isVideoCard) {
+                matchesFilter = false; // Folders don't have star ratings
+            } else {
+                const filePath = card.dataset.path;
+                if (filePath) {
+                    const rating = getFileRating(filePath);
+                    matchesFilter = rating > 0; // Only show files with rating > 0
+                } else {
+                    matchesFilter = false; // No file path means no rating
+                }
+            }
         } else {
             // 'all' - show everything
             matchesFilter = true;
         }
         
-        // Show card only if it matches both search and filter
+        // Apply advanced search filters
+        let matchesAdvancedSearch = true;
         if (matchesSearch && matchesFilter) {
+            const filePath = card.dataset.path;
+            
+            // Dimension filter
+            if (advancedSearchFilters.width || advancedSearchFilters.height) {
+                const width = parseInt(card.dataset.width);
+                const height = parseInt(card.dataset.height);
+                if (advancedSearchFilters.width && width !== advancedSearchFilters.width) matchesAdvancedSearch = false;
+                if (advancedSearchFilters.height && height !== advancedSearchFilters.height) matchesAdvancedSearch = false;
+            }
+            
+            // Aspect ratio filter
+            if (advancedSearchFilters.aspectRatio && matchesAdvancedSearch) {
+                const width = parseInt(card.dataset.width);
+                const height = parseInt(card.dataset.height);
+                if (width && height) {
+                    const ratio = width / height;
+                    const targetRatio = parseAspectRatio(advancedSearchFilters.aspectRatio);
+                    if (Math.abs(ratio - targetRatio) > 0.1) matchesAdvancedSearch = false;
+                } else {
+                    matchesAdvancedSearch = false; // No dimensions available
+                }
+            }
+            
+            // Star rating filter
+            if (advancedSearchFilters.starRating !== null && filePath && matchesAdvancedSearch) {
+                const rating = getFileRating(filePath);
+                if (rating < advancedSearchFilters.starRating) matchesAdvancedSearch = false;
+            }
+        }
+        
+        // Show card only if it matches search, filter, and advanced search
+        if (matchesSearch && matchesFilter && matchesAdvancedSearch) {
             card.style.display = '';
         } else {
             card.style.display = 'none';
         }
     });
+    
+    // Sort by star rating if stars filter is active (highest to lowest: 5 to 1)
+    if (currentFilter === 'stars') {
+        const visibleCards = Array.from(cards).filter(card => card.style.display !== 'none');
+        visibleCards.sort((a, b) => {
+            // Exclude folders from sorting
+            const aIsFolder = a.classList.contains('folder-card');
+            const bIsFolder = b.classList.contains('folder-card');
+            
+            if (aIsFolder && bIsFolder) return 0;
+            if (aIsFolder) return 1; // Folders go to end
+            if (bIsFolder) return -1; // Folders go to end
+            
+            const aPath = a.dataset.path;
+            const bPath = b.dataset.path;
+            
+            if (!aPath && !bPath) return 0;
+            if (!aPath) return 1; // No path goes to end
+            if (!bPath) return -1; // No path goes to end
+            
+            const aRating = getFileRating(aPath);
+            const bRating = getFileRating(bPath);
+            
+            // Sort from highest to lowest (5 stars to 1 star)
+            return bRating - aRating;
+        });
+        
+        // Reorder cards in DOM
+        visibleCards.forEach(card => {
+            gridContainer.appendChild(card);
+        });
+    }
     
     // Recalculate layout after filtering
     if (layoutMode === 'masonry' && gridContainer.classList.contains('masonry')) {
@@ -1794,7 +2896,11 @@ function applyFilters() {
 }
 
 function performSearch(searchQuery) {
-    applyFilters();
+    // Debounce search to avoid excessive filtering while typing
+    clearTimeout(filterDebounceTimer);
+    filterDebounceTimer = setTimeout(() => {
+        applyFilters();
+    }, 150); // Wait 150ms after user stops typing
 }
 
 // --- Event Listeners ---
@@ -1808,7 +2914,29 @@ selectFolderBtn.addEventListener('click', async () => {
         if (rememberLastFolder) {
             localStorage.setItem('lastFolderPath', folderPath);
         }
-        navigateToFolder(folderPath);
+        // Update current tab if it exists and has no path, otherwise create new tab
+        if (activeTabId) {
+            const tab = tabs.find(t => t.id === activeTabId);
+            if (tab && !tab.path) {
+                // Update empty tab
+                tab.path = folderPath;
+                tab.name = folderPath.split(/[/\\]/).pop();
+                saveTabs();
+                renderTabs();
+            } else {
+                // Create new tab
+                createTab(folderPath, folderPath.split(/[/\\]/).pop());
+            }
+        } else {
+            createTab(folderPath, folderPath.split(/[/\\]/).pop());
+        }
+        // Use setTimeout to yield control back to event loop, making button responsive
+        setTimeout(() => {
+            navigateToFolder(folderPath).catch(err => {
+                console.error('Error navigating to folder:', err);
+                hideLoadingIndicator();
+            });
+        }, 0);
     }
 });
 
@@ -1881,8 +3009,14 @@ async function showDrivesSelection() {
             driveItem.textContent = drive.name;
             driveItem.addEventListener('click', (e) => {
                 e.stopPropagation();
-                navigateToFolder(drive.path);
                 dropdown.remove();
+                // Use setTimeout to yield control back to event loop, making button responsive
+                setTimeout(() => {
+                    navigateToFolder(drive.path).catch(err => {
+                        console.error('Error navigating to drive:', err);
+                        hideLoadingIndicator();
+                    });
+                }, 0);
             });
             dropdown.appendChild(driveItem);
         });
@@ -1933,8 +3067,11 @@ async function showDrivesSelection() {
 // Function to update breadcrumb navigation
 function updateBreadcrumb(folderPath) {
     if (!folderPath) {
-        currentPathSpan.textContent = 'No folder selected';
+        if (currentPathSpan) {
+            currentPathSpan.textContent = 'No folder selected';
+        }
         breadcrumbContainer.innerHTML = '<span id="current-path" class="breadcrumb-editable">No folder selected</span>';
+        currentPathSpan = document.getElementById('current-path');
         return;
     }
 
@@ -2007,12 +3144,23 @@ function updateBreadcrumb(folderPath) {
             
             // Special handling for "Computer" item
             if (targetPath === 'computer') {
-                await showDrivesSelection();
+                // Use setTimeout to yield control back to event loop
+                setTimeout(() => {
+                    showDrivesSelection().catch(err => {
+                        console.error('Error showing drives:', err);
+                    });
+                }, 0);
                 return;
             }
             
             const normalizedTargetPath = targetPath.replace(/\\\\/g, '\\');
-            navigateToFolder(normalizedTargetPath);
+            // Use setTimeout to yield control back to event loop, making button responsive
+            setTimeout(() => {
+                navigateToFolder(normalizedTargetPath).catch(err => {
+                    console.error('Error navigating to folder:', err);
+                    hideLoadingIndicator();
+                });
+            }, 0);
         });
     });
     
@@ -2025,45 +3173,139 @@ function updateBreadcrumb(folderPath) {
         
         // Show input, hide breadcrumb items
         breadcrumbItems.forEach(item => item.style.display = 'none');
-        breadcrumbInput.style.display = 'block';
-        breadcrumbInput.focus();
-        breadcrumbInput.select();
+        if (breadcrumbInput) {
+            breadcrumbInput.style.display = 'block';
+            breadcrumbInput.focus();
+            breadcrumbInput.select();
+        }
     });
     
     // Handle input events
-    breadcrumbInput.addEventListener('blur', () => {
-        // Hide input, show breadcrumb items
-        breadcrumbItems.forEach(item => item.style.display = '');
-        breadcrumbInput.style.display = 'none';
-    });
-    
-    breadcrumbInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') {
-            e.preventDefault();
-            const newPath = breadcrumbInput.value.trim();
-            if (newPath) {
-                // Validate and navigate to the path
-                // The navigateToFolder function will handle errors if path doesn't exist
-                navigateToFolder(newPath);
-            } else {
-                // Reset to current path if empty
+    if (breadcrumbInput) {
+        breadcrumbInput.addEventListener('blur', () => {
+            // Hide input, show breadcrumb items
+            breadcrumbItems.forEach(item => item.style.display = '');
+            breadcrumbInput.style.display = 'none';
+        });
+        
+        breadcrumbInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                const newPath = breadcrumbInput.value.trim();
+                if (newPath) {
+                    // Validate and navigate to the path
+                    // Use setTimeout to yield control back to event loop, making button responsive
+                    setTimeout(() => {
+                        navigateToFolder(newPath).catch(err => {
+                            console.error('Error navigating to folder:', err);
+                            hideLoadingIndicator();
+                        });
+                    }, 0);
+                } else {
+                    // Reset to current path if empty
+                    breadcrumbInput.value = folderPath;
+                    breadcrumbInput.blur();
+                }
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                // Reset to current path
                 breadcrumbInput.value = folderPath;
                 breadcrumbInput.blur();
             }
-        } else if (e.key === 'Escape') {
-            e.preventDefault();
-            // Reset to current path
-            breadcrumbInput.value = folderPath;
-            breadcrumbInput.blur();
+        });
+    }
+}
+
+// Loading indicator helpers
+function showLoadingIndicator() {
+    if (loadingIndicator) {
+        loadingIndicator.classList.remove('hidden');
+    }
+}
+
+function hideLoadingIndicator() {
+    if (loadingIndicator) {
+        loadingIndicator.classList.add('hidden');
+    }
+}
+
+// Helper function to yield control back to the event loop
+function yieldToEventLoop() {
+    return new Promise(resolve => {
+        // Use setImmediate if available (Node.js), otherwise setTimeout
+        if (typeof setImmediate !== 'undefined') {
+            setImmediate(resolve);
+        } else {
+            setTimeout(resolve, 0);
         }
     });
 }
 
 // Function to navigate to a folder
-async function navigateToFolder(folderPath, addToHistory = true) {
+async function navigateToFolder(folderPath, addToHistory = true, forceReload = false) {
     try {
-        // Validate path exists by trying to scan it
-        const items = await window.electronAPI.scanFolder(folderPath);
+        // If forcing reload, invalidate cache first
+        if (forceReload) {
+            invalidateFolderCache(folderPath);
+        }
+        
+        // Check cache first - if we have cached content, skip validation scan
+        const now = Date.now();
+        let hasCachedContent = false;
+        let cacheAge = Infinity;
+        const CACHE_STALE_THRESHOLD = 5000; // 5 seconds - if cache is older, refresh to show new files
+        
+        if (!forceReload) {
+            const normalizedPath = normalizePath(folderPath);
+            
+            // Check tab cache
+            if (activeTabId) {
+                const tabCache = tabContentCache.get(activeTabId);
+                if (tabCache) {
+                    const cachePathNormalized = normalizePath(tabCache.path);
+                    if ((cachePathNormalized === normalizedPath || tabCache.path === folderPath) && 
+                        (now - tabCache.timestamp) < FOLDER_CACHE_TTL) {
+                        hasCachedContent = true;
+                        cacheAge = now - tabCache.timestamp;
+                    }
+                }
+            }
+            
+            // Check global folder cache
+            if (!hasCachedContent) {
+                const globalCache = folderCache.get(normalizedPath) || folderCache.get(folderPath);
+                if (globalCache && (now - globalCache.timestamp) < GLOBAL_CACHE_TTL) {
+                    hasCachedContent = true;
+                    cacheAge = now - globalCache.timestamp;
+                }
+            }
+            
+            // If cache exists but is stale (older than threshold), force reload to show new files
+            // This ensures that when navigating back to a folder, new files are visible
+            if (hasCachedContent && cacheAge > CACHE_STALE_THRESHOLD) {
+                forceReload = true;
+                invalidateFolderCache(folderPath);
+                hasCachedContent = false;
+            }
+        }
+        
+        // Only validate path if we don't have cached content (faster)
+        if (!hasCachedContent) {
+            // Show loading indicator
+            showLoadingIndicator();
+            try {
+                // Validate path exists by trying to scan it
+                // Skip stats if sorting by name for faster validation
+                const skipStats = sortType === 'name';
+                await window.electronAPI.scanFolder(folderPath, { skipStats });
+            } finally {
+                // Hide loading indicator after a short delay to prevent flicker
+                setTimeout(() => hideLoadingIndicator(), 100);
+            }
+        }
+        
+        // Yield control to allow UI to update
+        await yieldToEventLoop();
         
         // If scan succeeds (even with empty results), path is valid
         currentFolderPath = folderPath;
@@ -2074,6 +3316,10 @@ async function navigateToFolder(folderPath, addToHistory = true) {
         if (addToHistory) {
             navigationHistory.add(folderPath);
         }
+        
+        // Update current tab
+        updateCurrentTab(folderPath, folderPath.split(/[/\\]/).pop());
+        
         updateBreadcrumb(folderPath);
         searchBox.value = ''; // Clear search when navigating
         currentFilter = 'all'; // Reset filter when navigating
@@ -2081,7 +3327,10 @@ async function navigateToFolder(folderPath, addToHistory = true) {
         filterVideosBtn.classList.remove('active');
         filterImagesBtn.classList.remove('active');
         filterAudioBtn.classList.remove('active');
-        loadVideos(folderPath);
+        loadVideos(folderPath, !forceReload); // Use cache unless forcing reload
+        
+        // Reset keyboard focus
+        focusedCardIndex = -1;
     } catch (error) {
         // Path doesn't exist or is invalid - show error and revert breadcrumb
         console.error('Invalid path:', folderPath, error);
@@ -2098,18 +3347,30 @@ async function navigateToFolder(folderPath, addToHistory = true) {
 async function goBack() {
     const path = navigationHistory.goBack();
     if (path) {
-        await navigateToFolder(path, false); // Don't add to history since we're navigating history
+        // Use setTimeout to yield control back to event loop, making button responsive
+        setTimeout(() => {
+            navigateToFolder(path, false).catch(err => {
+                console.error('Error navigating back:', err);
+                hideLoadingIndicator();
+            });
+        }, 0);
     }
 }
 
 async function goForward() {
     const path = navigationHistory.goForward();
     if (path) {
-        await navigateToFolder(path, false); // Don't add to history since we're navigating history
+        // Use setTimeout to yield control back to event loop, making button responsive
+        setTimeout(() => {
+            navigateToFolder(path, false).catch(err => {
+                console.error('Error navigating forward:', err);
+                hideLoadingIndicator();
+            });
+        }, 0);
     }
 }
 
-// Live search as user types
+// Live search as user types (debounced)
 searchBox.addEventListener('input', (e) => {
     performSearch(e.target.value);
 });
@@ -2121,6 +3382,8 @@ filterAllBtn.addEventListener('click', () => {
     filterVideosBtn.classList.remove('active');
     filterImagesBtn.classList.remove('active');
     filterAudioBtn.classList.remove('active');
+    const filterStarsBtn = document.getElementById('filter-stars');
+    if (filterStarsBtn) filterStarsBtn.classList.remove('active');
     applyFilters();
 });
 
@@ -2130,6 +3393,8 @@ filterVideosBtn.addEventListener('click', () => {
     filterVideosBtn.classList.add('active');
     filterImagesBtn.classList.remove('active');
     filterAudioBtn.classList.remove('active');
+    const filterStarsBtn = document.getElementById('filter-stars');
+    if (filterStarsBtn) filterStarsBtn.classList.remove('active');
     applyFilters();
 });
 
@@ -2139,6 +3404,8 @@ filterImagesBtn.addEventListener('click', () => {
     filterVideosBtn.classList.remove('active');
     filterImagesBtn.classList.add('active');
     filterAudioBtn.classList.remove('active');
+    const filterStarsBtn = document.getElementById('filter-stars');
+    if (filterStarsBtn) filterStarsBtn.classList.remove('active');
     applyFilters();
 });
 
@@ -2148,6 +3415,8 @@ filterAudioBtn.addEventListener('click', () => {
     filterVideosBtn.classList.remove('active');
     filterImagesBtn.classList.remove('active');
     filterAudioBtn.classList.add('active');
+    const filterStarsBtn = document.getElementById('filter-stars');
+    if (filterStarsBtn) filterStarsBtn.classList.remove('active');
     applyFilters();
 });
 
@@ -2174,6 +3443,11 @@ rememberFolderToggle.addEventListener('change', () => {
     toggleRememberFolder();
 });
 
+// Include moving images toggle event listener
+includeMovingImagesToggle.addEventListener('change', () => {
+    toggleIncludeMovingImages();
+});
+
 // Sorting dropdown event listeners
 sortTypeSelect.addEventListener('change', () => {
     updateSorting();
@@ -2183,8 +3457,83 @@ sortOrderSelect.addEventListener('change', () => {
     updateSorting();
 });
 
+// Theme select event listener
+themeSelect.addEventListener('change', () => {
+    currentTheme = themeSelect.value;
+    applyTheme();
+});
+
+// Thumbnail quality select event listener
+thumbnailQualitySelect.addEventListener('change', () => {
+    thumbnailQuality = thumbnailQualitySelect.value;
+    localStorage.setItem('thumbnailQuality', thumbnailQuality);
+    // Reload current folder to apply new quality
+    if (currentFolderPath) {
+        loadVideos(currentFolderPath);
+    }
+});
+
+// Zoom slider event listener
+zoomSlider.addEventListener('input', (e) => {
+    zoomLevel = parseInt(e.target.value, 10);
+    zoomValue.textContent = `${zoomLevel}%`;
+    localStorage.setItem('zoomLevel', zoomLevel.toString());
+    applyZoom();
+});
+
+// Favorites button event listener
+favoritesBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    favoritesDropdown.classList.toggle('hidden');
+    recentFilesDropdown.classList.add('hidden');
+});
+
+// Add favorite button event listener
+addFavoriteBtn.addEventListener('click', () => {
+    if (currentFolderPath) {
+        addFavorite(currentFolderPath, currentFolderPath.split(/[/\\]/).pop());
+    }
+    favoritesDropdown.classList.add('hidden');
+});
+
+// Recent files button event listener
+recentFilesBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    recentFilesDropdown.classList.toggle('hidden');
+    favoritesDropdown.classList.add('hidden');
+});
+
+// Clear recent files button event listener
+clearRecentBtn.addEventListener('click', () => {
+    clearRecentFiles();
+});
+
+// Close dropdowns when clicking outside
+document.addEventListener('click', (e) => {
+    if (!favoritesBtn.contains(e.target) && !favoritesDropdown.contains(e.target)) {
+        favoritesDropdown.classList.add('hidden');
+    }
+    if (!recentFilesBtn.contains(e.target) && !recentFilesDropdown.contains(e.target)) {
+        recentFilesDropdown.classList.add('hidden');
+    }
+});
+
 function openLightbox(mediaUrl, filePath, fileName) {
     const mediaType = getFileType(mediaUrl);
+    
+    // Track current index for navigation
+    lightboxItems = getFilteredMediaItems();
+    currentLightboxIndex = lightboxItems.findIndex(item => item.path === filePath);
+    if (currentLightboxIndex === -1) {
+        currentLightboxIndex = 0;
+    }
+    
+    // Store current file info globally for info button
+    window.currentLightboxFilePath = filePath;
+    window.currentLightboxFileUrl = mediaUrl;
+    
+    // Add to recent files
+    addRecentFile(filePath, fileName, mediaUrl, mediaType);
     
     // Store file info for copy buttons
     const lightboxFilename = document.getElementById('lightbox-filename');
@@ -2204,19 +3553,311 @@ function openLightbox(mediaUrl, filePath, fileName) {
         copyNameBtn.dataset.fileName = fileName;
     }
     
+    // If file info panel is open, update it with new file info instead of closing
+    const fileInfoPanel = document.getElementById('file-info-panel');
+    if (fileInfoPanel && !fileInfoPanel.classList.contains('hidden')) {
+        // Panel is open, update it with the new file's info
+        showFileInfo(filePath);
+    }
+    
+    // Pause thumbnail videos while lightbox is open
+    pauseThumbnailVideos();
+
+    // Reset zoom when opening new media
+    resetZoom();
+
+    // Attach zoom slider listeners if not already attached
+    attachZoomSliderListeners();
+    
+    // Verify zoom controls exist
+    const slider = document.getElementById('lightbox-zoom-slider');
+    const zoomValueDisplay = document.getElementById('lightbox-zoom-value');
+    if (!slider) {
+        console.error('lightboxZoomSlider not found when opening lightbox!');
+    }
+    if (!zoomValueDisplay) {
+        console.error('lightboxZoomValue not found when opening lightbox!');
+    }
+    
     if (mediaType === 'image') {
         // Hide video, show image
         lightboxVideo.style.display = 'none';
         lightboxImage.style.display = 'block';
-        lightboxImage.src = mediaUrl;
+        
+        // Hide video menu button for images
+        const videoMenuContainer = document.getElementById('lightbox-video-menu-container');
+        if (videoMenuContainer) videoMenuContainer.style.display = 'none';
+        
         lightbox.classList.remove('hidden');
+        // Ensure initial transform is set and constraints are consistent
+        lightboxImage.style.transform = 'scale(1)';
+        lightboxImage.style.maxWidth = '90vw';
+        lightboxImage.style.maxHeight = '90vh';
+        lightboxImage.style.width = 'auto';
+        lightboxImage.style.height = 'auto';
+        
+        // Wait for image to load, then capture its displayed size for zoom calculations
+        const handleImageLoad = () => {
+            // Use requestAnimationFrame to ensure layout is complete
+            requestAnimationFrame(() => {
+                const rect = lightboxImage.getBoundingClientRect();
+                lightboxImage.dataset.baseWidth = rect.width.toString();
+                lightboxImage.dataset.baseHeight = rect.height.toString();
+                console.log('Image loaded, captured base size:', rect.width, 'x', rect.height);
+            });
+            lightboxImage.removeEventListener('load', handleImageLoad);
+        };
+        
+        // If image is already loaded, capture size immediately
+        if (lightboxImage.complete && lightboxImage.naturalWidth > 0) {
+            handleImageLoad();
+        } else {
+            lightboxImage.addEventListener('load', handleImageLoad);
+        }
+        
+        lightboxImage.src = mediaUrl;
+        lightboxImage.dataset.src = mediaUrl; // Store for restoration after minimize
     } else {
         // Hide image, show video
         lightboxImage.style.display = 'none';
         lightboxVideo.style.display = 'block';
         lightboxVideo.src = mediaUrl;
+        lightboxVideo.dataset.src = mediaUrl; // Store for restoration after minimize
         lightbox.classList.remove('hidden');
+        // Ensure initial transform is set and constraints are consistent
+        lightboxVideo.style.transform = 'scale(1)';
+        lightboxVideo.style.maxWidth = '90vw';
+        lightboxVideo.style.maxHeight = '90vh';
+        
+        // Set video playback controls
+        lightboxVideo.playbackRate = videoPlaybackSpeed;
+        lightboxVideo.loop = videoLoop;
+        
+        // Show video menu button
+        const videoMenuContainer = document.getElementById('lightbox-video-menu-container');
+        if (videoMenuContainer) videoMenuContainer.style.display = 'block';
+        
+        // Update UI buttons
+        const speedBtn = document.getElementById('lightbox-speed-btn');
+        if (speedBtn) speedBtn.textContent = `${videoPlaybackSpeed}x`;
+        const loopBtn = document.getElementById('lightbox-loop-btn');
+        if (loopBtn) {
+            loopBtn.textContent = videoLoop ? 'On' : 'Off';
+            loopBtn.classList.toggle('active', videoLoop);
+        }
+        const repeatBtn = document.getElementById('lightbox-repeat-btn');
+        if (repeatBtn) {
+            repeatBtn.textContent = videoRepeat ? 'On' : 'Off';
+            repeatBtn.classList.toggle('active', videoRepeat);
+        }
+        
+        // Set up repeat handler
+        if (videoRepeat) {
+            lightboxVideo.addEventListener('ended', handleVideoRepeat);
+        }
+        
         lightboxVideo.play();
+    }
+    
+    // Reset keyboard focus
+    focusedCardIndex = -1;
+}
+
+function applyLightboxZoom(zoomLevel, mouseX = null, mouseY = null) {
+    console.log('applyLightboxZoom called with:', zoomLevel);
+    const previousZoomLevel = currentZoomLevel;
+    // Calculate previous zoom value accurately
+    let previousZoomValue;
+    if (previousZoomLevel <= 100) {
+        previousZoomValue = previousZoomLevel / 100;
+    } else {
+        previousZoomValue = Math.pow(1.06, (previousZoomLevel - 100) / 5);
+    }
+    currentZoomLevel = zoomLevel;
+    
+    // Use exponential scaling for consistent visual zoom steps
+    // Each step multiplies the visual size by the same factor
+    // This makes 100%→110% feel the same as 400%→410%
+    let zoomValue;
+    
+    if (zoomLevel <= 100) {
+        // Linear scaling for zoom out (0-100%)
+        zoomValue = zoomLevel / 100;
+    } else {
+        // Exponential scaling: scale = base^((zoomLevel - 100) / stepSize)
+        // Each slider step (5%) multiplies size by the base factor
+        // This ensures consistent visual zoom increments at all levels
+        const base = 1.06; // Each 5% step multiplies by ~6% visually (more noticeable)
+        const stepSize = 5; // Slider step size (matches HTML step="5")
+        const steps = (zoomLevel - 100) / stepSize;
+        zoomValue = Math.pow(base, steps);
+        
+        // At 500%: 1.06^80 ≈ 108x zoom (very high zoom capability)
+        // Each 5% step always feels like the same visual increase (~6%)
+    }
+    
+    // Cache the zoom value for efficient panning
+    cachedZoomValue = zoomValue;
+    
+    // Check which media is currently visible
+    const imageInlineDisplay = lightboxImage.style.display;
+    const videoInlineDisplay = lightboxVideo.style.display;
+    const isImageVisible = imageInlineDisplay === 'block' || 
+                          (imageInlineDisplay === '' && window.getComputedStyle(lightboxImage).display !== 'none');
+    const isVideoVisible = videoInlineDisplay === 'block' || 
+                          (videoInlineDisplay === '' && window.getComputedStyle(lightboxVideo).display !== 'none');
+    
+    // Reset translation when zooming back to 100% or below
+    if (zoomLevel <= 100) {
+        currentTranslateX = 0;
+        currentTranslateY = 0;
+    } else if (mouseX !== null && mouseY !== null && zoomLevel > 100) {
+        // Zoom at pointer position: adjust translate to keep the point under cursor fixed
+        // Get the visible element
+        const visibleElement = isImageVisible ? lightboxImage : (isVideoVisible ? lightboxVideo : null);
+        if (visibleElement) {
+            // Get the viewport center (where the element is naturally centered)
+            const viewportCenterX = window.innerWidth / 2;
+            const viewportCenterY = window.innerHeight / 2;
+            
+            // Calculate mouse position relative to viewport center
+            const mouseOffsetX = mouseX - viewportCenterX;
+            const mouseOffsetY = mouseY - viewportCenterY;
+            
+            // Calculate zoom ratio (new zoom / old zoom)
+            const zoomRatio = zoomValue / previousZoomValue;
+            
+            // Adjust translate to keep the point under cursor fixed
+            // Formula derived: tx_new = (1 - zoomRatio) * mouseOffset + zoomRatio * tx_old
+            // This keeps the point under the cursor stationary during zoom
+            currentTranslateX = (1 - zoomRatio) * mouseOffsetX + zoomRatio * currentTranslateX;
+            currentTranslateY = (1 - zoomRatio) * mouseOffsetY + zoomRatio * currentTranslateY;
+        }
+    }
+    
+    // Special handling for the transition from 100% to >100% on images
+    // Capture the current displayed size before removing constraints
+    if (isImageVisible && previousZoomLevel === 100 && zoomLevel > 100) {
+        const rect = lightboxImage.getBoundingClientRect();
+        // Store the current displayed dimensions
+        lightboxImage.dataset.baseWidth = rect.width.toString();
+        lightboxImage.dataset.baseHeight = rect.height.toString();
+        console.log('Captured base size at 100%:', rect.width, 'x', rect.height);
+    }
+    
+    // Build transform string
+    // Use translate() scale() order so translate happens in screen space
+    // CSS applies right-to-left: translate() scale() means scale first, then translate
+    let transformString;
+    if (zoomLevel <= 100) {
+        transformString = `scale(${zoomValue})`;
+    } else {
+        // Order: translate first (applied last), scale second (applied first)
+        // This makes translate happen in screen space (1:1 with mouse)
+        transformString = `translate(${currentTranslateX}px, ${currentTranslateY}px) scale(${zoomValue})`;
+    }
+    
+    // Always apply to both - let CSS handle visibility
+    lightboxImage.style.transform = transformString;
+    lightboxVideo.style.transform = transformString;
+    
+    if (zoomLevel > 100) {
+        lightboxImage.classList.add('zoomed');
+        lightboxVideo.classList.add('zoomed');
+        
+        // For images, set explicit dimensions to prevent size jump when removing constraints
+        if (isImageVisible && lightboxImage.dataset.baseWidth) {
+            const baseWidth = parseFloat(lightboxImage.dataset.baseWidth);
+            const baseHeight = parseFloat(lightboxImage.dataset.baseHeight);
+            // Set explicit dimensions to maintain the base size
+            lightboxImage.style.width = `${baseWidth}px`;
+            lightboxImage.style.height = `${baseHeight}px`;
+            lightboxImage.style.maxWidth = 'none';
+            lightboxImage.style.maxHeight = 'none';
+        } else {
+            // For videos or if base size not captured, just remove constraints
+            lightboxImage.style.maxWidth = 'none';
+            lightboxImage.style.maxHeight = 'none';
+            lightboxVideo.style.maxWidth = 'none';
+            lightboxVideo.style.maxHeight = 'none';
+        }
+    } else {
+        lightboxImage.classList.remove('zoomed');
+        lightboxVideo.classList.remove('zoomed');
+        // Restore max constraints when at or below 100%
+        lightboxImage.style.maxWidth = '90vw';
+        lightboxImage.style.maxHeight = '90vh';
+        lightboxImage.style.width = 'auto';
+        lightboxImage.style.height = 'auto';
+        delete lightboxImage.dataset.baseWidth;
+        delete lightboxImage.dataset.baseHeight;
+        lightboxVideo.style.maxWidth = '90vw';
+        lightboxVideo.style.maxHeight = '90vh';
+    }
+    
+    // Update slider and value display
+    const slider = document.getElementById('lightbox-zoom-slider');
+    const zoomValueDisplay = document.getElementById('lightbox-zoom-value');
+    if (slider) {
+        slider.value = zoomLevel;
+    }
+    if (zoomValueDisplay) {
+        zoomValueDisplay.textContent = `${zoomLevel}%`;
+    }
+}
+
+function applyPan(deltaX, deltaY) {
+    if (currentZoomLevel <= 100) return;
+    
+    currentTranslateX += deltaX;
+    currentTranslateY += deltaY;
+    
+    // Use cached zoom value for performance
+    const zoomValue = cachedZoomValue;
+    
+    // Build transform string once
+    const transformString = `scale(${zoomValue}) translate(${currentTranslateX}px, ${currentTranslateY}px)`;
+    
+    // Apply to visible element only
+    const imageDisplay = lightboxImage.style.display;
+    const videoDisplay = lightboxVideo.style.display;
+    const isImageVisible = imageDisplay === 'block' || 
+                          (imageDisplay === '' && window.getComputedStyle(lightboxImage).display !== 'none');
+    const isVideoVisible = videoDisplay === 'block' || 
+                          (videoDisplay === '' && window.getComputedStyle(lightboxVideo).display !== 'none');
+    
+    if (isImageVisible) {
+        lightboxImage.style.transform = transformString;
+    }
+    
+    if (isVideoVisible) {
+        lightboxVideo.style.transform = transformString;
+    }
+}
+
+function resetZoom() {
+    currentZoomLevel = 100;
+    currentTranslateX = 0;
+    currentTranslateY = 0;
+    lightboxImage.style.transform = 'scale(1)';
+    lightboxVideo.style.transform = 'scale(1)';
+    lightboxImage.classList.remove('zoomed');
+    lightboxVideo.classList.remove('zoomed');
+    // Reset max constraints and explicit dimensions
+    lightboxImage.style.maxWidth = '90vw';
+    lightboxImage.style.maxHeight = '90vh';
+    lightboxImage.style.width = 'auto';
+    lightboxImage.style.height = 'auto';
+    lightboxVideo.style.maxWidth = '90vw';
+    lightboxVideo.style.maxHeight = '90vh';
+    // Clear stored base dimensions
+    delete lightboxImage.dataset.baseWidth;
+    delete lightboxImage.dataset.baseHeight;
+    if (lightboxZoomSlider) {
+        lightboxZoomSlider.value = 100;
+    }
+    if (lightboxZoomValue) {
+        lightboxZoomValue.textContent = '100%';
     }
 }
 
@@ -2230,7 +3871,19 @@ function closeLightbox() {
     lightboxImage.src = "";
     lightboxImage.removeAttribute('src');
     
+    // Reset zoom
+    resetZoom();
+    
+    // Close file info panel if open
+    const fileInfoPanel = document.getElementById('file-info-panel');
+    if (fileInfoPanel && !fileInfoPanel.classList.contains('hidden')) {
+        fileInfoPanel.classList.add('hidden');
+    }
+    
     lightbox.classList.add('hidden');
+
+    // Resume thumbnail videos
+    resumeThumbnailVideos();
 
     // Trigger GC after closing lightbox too
     scheduleGC();
@@ -2243,6 +3896,226 @@ lightbox.addEventListener('click', (e) => {
         closeLightbox();
     }
 });
+
+// Function to attach zoom slider listeners
+function attachZoomSliderListeners() {
+    const slider = document.getElementById('lightbox-zoom-slider');
+    if (slider && !slider.dataset.listenersAttached) {
+        console.log('Attaching zoom slider listeners');
+        slider.addEventListener('input', (e) => {
+            const zoomLevel = parseInt(e.target.value);
+            console.log('Slider input:', zoomLevel);
+            applyLightboxZoom(zoomLevel);
+        });
+        slider.addEventListener('change', (e) => {
+            const zoomLevel = parseInt(e.target.value);
+            console.log('Slider change:', zoomLevel);
+            applyLightboxZoom(zoomLevel);
+        });
+        slider.dataset.listenersAttached = 'true';
+    }
+}
+
+// Try to attach immediately
+if (lightboxZoomSlider) {
+    attachZoomSliderListeners();
+} else {
+    console.warn('lightboxZoomSlider not found at script load time');
+}
+
+// Scrollwheel zoom functionality
+let zoomTimeout;
+function handleLightboxWheel(e) {
+    console.log('Wheel event triggered');
+    // Only zoom if lightbox is visible and not clicking on controls
+    if (lightbox.classList.contains('hidden')) {
+        console.log('Lightbox is hidden, ignoring wheel');
+        return;
+    }
+    if (e.target === lightboxZoomSlider || e.target.closest('.lightbox-zoom-controls')) {
+        console.log('Wheel on controls, ignoring');
+        return;
+    }
+    
+    e.preventDefault();
+    e.stopPropagation();
+    
+    // Determine zoom direction
+    const zoomDelta = e.deltaY > 0 ? -10 : 10;
+    const newZoomLevel = Math.max(30, Math.min(500, currentZoomLevel + zoomDelta));
+    
+    // Get mouse position for zooming at pointer
+    const mouseX = e.clientX;
+    const mouseY = e.clientY;
+    
+    console.log('Wheel zoom:', currentZoomLevel, '->', newZoomLevel);
+    applyLightboxZoom(newZoomLevel, mouseX, mouseY);
+    
+    // Clear existing timeout
+    clearTimeout(zoomTimeout);
+    
+    // Show zoom value briefly
+    if (lightboxZoomValue) {
+        lightboxZoomValue.style.opacity = '1';
+        zoomTimeout = setTimeout(() => {
+            if (lightboxZoomValue) {
+                lightboxZoomValue.style.opacity = '0.7';
+            }
+        }, 1000);
+    }
+}
+
+// Attach wheel event to lightbox and media elements
+console.log('Attaching wheel listeners');
+if (lightbox) {
+    lightbox.addEventListener('wheel', handleLightboxWheel, { passive: false });
+    console.log('Wheel listener attached to lightbox');
+}
+if (lightboxImage) {
+    lightboxImage.addEventListener('wheel', handleLightboxWheel, { passive: false });
+    console.log('Wheel listener attached to lightboxImage');
+}
+if (lightboxVideo) {
+    lightboxVideo.addEventListener('wheel', handleLightboxWheel, { passive: false });
+    console.log('Wheel listener attached to lightboxVideo');
+}
+
+// Pan/drag functionality when zoomed
+// Panning functionality - optimized with requestAnimationFrame
+let lastPanX = 0;
+let lastPanY = 0;
+let initialMouseX = 0;
+let initialMouseY = 0;
+let initialTranslateX = 0;
+let initialTranslateY = 0;
+let panRAF = null;
+let pendingPanUpdate = false;
+let hasDragged = false; // Track if we actually dragged (vs just clicked)
+
+function applyPanTransform() {
+    if (!isDragging || currentZoomLevel <= 100) {
+        panRAF = null;
+        pendingPanUpdate = false;
+        return;
+    }
+    
+    // Apply transform with translate first (applied last, so in screen space)
+    const zoomValue = cachedZoomValue;
+    const transformString = `translate(${currentTranslateX}px, ${currentTranslateY}px) scale(${zoomValue})`;
+    
+    const imageDisplay = lightboxImage.style.display;
+    const videoDisplay = lightboxVideo.style.display;
+    const isImageVisible = imageDisplay === 'block' || 
+                          (imageDisplay === '' && window.getComputedStyle(lightboxImage).display !== 'none');
+    const isVideoVisible = videoDisplay === 'block' || 
+                          (videoDisplay === '' && window.getComputedStyle(lightboxVideo).display !== 'none');
+    
+    if (isImageVisible) {
+        lightboxImage.style.transform = transformString;
+    }
+    
+    if (isVideoVisible) {
+        lightboxVideo.style.transform = transformString;
+    }
+    
+    panRAF = null;
+    pendingPanUpdate = false;
+}
+
+lightboxImage.addEventListener('mousedown', (e) => {
+    if (currentZoomLevel > 100 && e.button === 0) {
+        isDragging = true;
+        hasDragged = false; // Reset drag flag
+        // Store initial positions
+        initialMouseX = e.clientX;
+        initialMouseY = e.clientY;
+        initialTranslateX = currentTranslateX;
+        initialTranslateY = currentTranslateY;
+        lastPanX = e.clientX;
+        lastPanY = e.clientY;
+        e.preventDefault();
+        e.stopPropagation();
+    }
+});
+
+lightboxVideo.addEventListener('mousedown', (e) => {
+    if (currentZoomLevel > 100 && e.button === 0) {
+        isDragging = true;
+        hasDragged = false; // Reset drag flag
+        // Store initial positions
+        initialMouseX = e.clientX;
+        initialMouseY = e.clientY;
+        initialTranslateX = currentTranslateX;
+        initialTranslateY = currentTranslateY;
+        lastPanX = e.clientX;
+        lastPanY = e.clientY;
+        e.preventDefault();
+        e.stopPropagation();
+    }
+});
+
+document.addEventListener('mousemove', (e) => {
+    if (isDragging && currentZoomLevel > 100) {
+        // Calculate total mouse movement from initial click
+        const totalDeltaX = e.clientX - initialMouseX;
+        const totalDeltaY = e.clientY - initialMouseY;
+        
+        // Check if we've moved enough to consider it a drag (more than 3 pixels)
+        const dragDistance = Math.sqrt(totalDeltaX * totalDeltaX + totalDeltaY * totalDeltaY);
+        if (dragDistance > 3) {
+            hasDragged = true;
+        }
+        
+        // Update translation values immediately
+        currentTranslateX = initialTranslateX + totalDeltaX;
+        currentTranslateY = initialTranslateY + totalDeltaY;
+        
+        // Schedule transform update via requestAnimationFrame for smooth rendering
+        if (!pendingPanUpdate) {
+            pendingPanUpdate = true;
+            if (!panRAF) {
+                panRAF = requestAnimationFrame(applyPanTransform);
+            }
+        }
+        
+        e.preventDefault();
+    }
+});
+
+document.addEventListener('mouseup', (e) => {
+    if (isDragging) {
+        isDragging = false;
+        // Ensure final position is applied
+        if (panRAF) {
+            cancelAnimationFrame(panRAF);
+            panRAF = null;
+        }
+        applyPanTransform();
+        
+        // If we dragged (not just clicked), prevent video play/pause
+        if (hasDragged && currentZoomLevel > 100) {
+            e.preventDefault();
+            e.stopPropagation();
+            // Also prevent the click event that might fire after mouseup
+            setTimeout(() => {
+                if (lightboxVideo && !lightboxVideo.paused) {
+                    // Video was playing, keep it playing
+                } else if (lightboxVideo && lightboxVideo.paused) {
+                    // Video was paused, keep it paused
+                }
+            }, 0);
+        }
+    }
+});
+
+// Prevent click events on video when we've just finished dragging
+lightboxVideo.addEventListener('click', (e) => {
+    if (hasDragged && currentZoomLevel > 100) {
+        e.preventDefault();
+        e.stopPropagation();
+        hasDragged = false; // Reset after handling
+    }
+}, true); // Use capture phase to catch it early
 
 // Copy button functionality
 const copyPathBtn = document.getElementById('copy-path-btn');
@@ -2390,9 +4263,10 @@ contextMenu.addEventListener('click', async (e) => {
                 if (confirm(`Are you sure you want to delete "${fileName}"?`)) {
                     const result = await window.electronAPI.deleteFile(filePath);
                     if (result.success) {
-                        // Reload the current folder to reflect the change
+                        // Invalidate cache and reload the current folder to reflect the change
                         if (currentFolderPath) {
-                            await loadVideos(currentFolderPath);
+                            invalidateFolderCache(currentFolderPath);
+                            await loadVideos(currentFolderPath, false); // Force reload, don't use cache
                         }
                     } else {
                         alert(`Error deleting file: ${result.error}`);
@@ -2445,9 +4319,10 @@ async function handleRenameConfirm() {
         if (result.success) {
             renameDialog.classList.add('hidden');
             renamePendingFile = null;
-            // Reload the current folder to reflect the change
+            // Invalidate cache and reload the current folder to reflect the change
             if (currentFolderPath) {
-                await loadVideos(currentFolderPath);
+                invalidateFolderCache(currentFolderPath);
+                await loadVideos(currentFolderPath, false); // Force reload, don't use cache
             }
         } else {
             alert(`Error renaming file: ${result.error}`);
@@ -2483,23 +4358,2442 @@ renameDialog.addEventListener('click', (e) => {
     }
 });
 
-async function loadVideos(folderPath) {
+async function loadVideos(folderPath, useCache = true) {
     // Stop periodic cleanup during folder switch
     stopPeriodicCleanup();
     
-    window.electronAPI.triggerGC(); // GC before loading new folder
-
-    const items = await window.electronAPI.scanFolder(folderPath);
+    // Show loading indicator if we need to scan
+    let needsScan = false;
+    if (useCache) {
+        const normalizedPath = normalizePath(folderPath);
+        const now = Date.now();
+        
+        // Quick check if we have cached data
+        let hasCache = false;
+        if (activeTabId) {
+            const tabCache = tabContentCache.get(activeTabId);
+            if (tabCache) {
+                const cachePathNormalized = normalizePath(tabCache.path);
+                if ((cachePathNormalized === normalizedPath || tabCache.path === folderPath) && 
+                    (now - tabCache.timestamp) < FOLDER_CACHE_TTL) {
+                    hasCache = true;
+                }
+            }
+        }
+        if (!hasCache) {
+            const globalCache = folderCache.get(normalizedPath) || folderCache.get(folderPath);
+            if (globalCache && (now - globalCache.timestamp) < GLOBAL_CACHE_TTL) {
+                hasCache = true;
+            }
+        }
+        needsScan = !hasCache;
+    } else {
+        needsScan = true;
+    }
     
-    // Store items for re-sorting without re-fetching
-    currentItems = items;
-
-    // Apply sorting to items before displaying
-    const sortedItems = sortItems(items);
+    if (needsScan) {
+        showLoadingIndicator();
+    }
     
-    // Render the sorted items
-    renderItems(sortedItems);
+    try {
+        // Yield control to allow UI to update and show loading indicator
+        await yieldToEventLoop();
+        
+        window.electronAPI.triggerGC(); // GC before loading new folder
+
+        // Check cache first
+        let items = null;
+        const now = Date.now();
+        
+        if (useCache) {
+            const normalizedPath = normalizePath(folderPath);
+            
+            // Check tab cache first (fastest)
+            if (activeTabId) {
+                const tabCache = tabContentCache.get(activeTabId);
+                if (tabCache) {
+                    const cachePathNormalized = normalizePath(tabCache.path);
+                    if ((cachePathNormalized === normalizedPath || tabCache.path === folderPath) && 
+                        (now - tabCache.timestamp) < FOLDER_CACHE_TTL) {
+                        items = tabCache.items;
+                    }
+                }
+            }
+            
+            // Check global folder cache (try both normalized and original path)
+            if (!items) {
+                const globalCache = folderCache.get(normalizedPath) || folderCache.get(folderPath);
+                if (globalCache && (now - globalCache.timestamp) < GLOBAL_CACHE_TTL) {
+                    items = globalCache.items;
+                }
+            }
+            
+            // Check IndexedDB persistent cache (slower but persistent)
+            if (!items) {
+                // Yield control periodically during IndexedDB lookup
+                await yieldToEventLoop();
+                items = await getFolderFromIndexedDB(folderPath);
+            }
+        }
+        
+        // If not cached, scan folder
+        if (!items) {
+            // Yield control before starting scan to keep UI responsive
+            await yieldToEventLoop();
+            
+            // Skip stats if sorting by name (faster loading)
+            const skipStats = sortType === 'name';
+            // Scan image dimensions when in masonry mode to prevent card shifting
+            const scanImageDimensions = layoutMode === 'masonry';
+            items = await window.electronAPI.scanFolder(folderPath, { skipStats, scanImageDimensions });
+            
+            // Yield control after scan completes
+            await yieldToEventLoop();
+            
+            // Cache the results (use normalized path for consistency)
+            const normalizedPath = normalizePath(folderPath);
+            if (activeTabId) {
+                tabContentCache.set(activeTabId, {
+                    items: items,
+                    path: normalizedPath, // Store normalized path
+                    timestamp: now
+                });
+            }
+            folderCache.set(normalizedPath, {
+                items: items,
+                timestamp: now
+            });
+            
+            // Store in IndexedDB for persistence (async, don't wait)
+            storeFolderInIndexedDB(folderPath, items).catch(() => {
+                // Ignore errors, IndexedDB is optional
+            });
+            
+            // Clean up old cache entries (keep cache size reasonable)
+            if (folderCache.size > 50) {
+                const entries = Array.from(folderCache.entries());
+                entries.sort((a, b) => b[1].timestamp - a[1].timestamp);
+                folderCache.clear();
+                entries.slice(0, 25).forEach(([path, data]) => folderCache.set(path, data));
+            }
+            
+            // Periodically clean up IndexedDB cache (every 10 folder loads)
+            if (Math.random() < 0.1) {
+                cleanupIndexedDBCache().catch(() => {
+                    // Ignore cleanup errors
+                });
+            }
+        }
+        
+        // Yield control before sorting/rendering
+        await yieldToEventLoop();
+        
+        // Store items for re-sorting without re-fetching
+        currentItems = items;
+
+        // Filter items based on current filter, then sort
+        const filteredItems = filterItems(items);
+        const sortedItems = sortItems(filteredItems);
+        
+        // Yield control before rendering
+        await yieldToEventLoop();
+        
+        // Render the filtered and sorted items
+        renderItems(sortedItems);
+        
+        // Start watching folder for changes
+        await startWatchingFolder(folderPath);
+    } finally {
+        // Hide loading indicator
+        hideLoadingIndicator();
+    }
 }
+
+// ==================== KEYBOARD SHORTCUTS ====================
+function initKeyboardShortcuts() {
+    document.addEventListener('keydown', (e) => {
+        // Don't trigger shortcuts when typing in inputs
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) {
+            // Allow Escape to close dialogs even when in inputs
+            if (e.key === 'Escape') {
+                if (!renameDialog.classList.contains('hidden')) {
+                    handleRenameCancel();
+                } else if (!lightbox.classList.contains('hidden')) {
+                    closeLightbox();
+                } else if (!settingsDropdown.classList.contains('hidden')) {
+                    closeSettingsDropdown();
+                } else if (!favoritesDropdown.classList.contains('hidden')) {
+                    favoritesDropdown.classList.add('hidden');
+                } else if (!recentFilesDropdown.classList.contains('hidden')) {
+                    recentFilesDropdown.classList.add('hidden');
+                }
+            }
+            return;
+        }
+
+        // Ctrl/Cmd + F: Focus search
+        if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+            e.preventDefault();
+            searchBox.focus();
+            searchBox.select();
+            return;
+        }
+
+        // Ctrl/Cmd + O: Open folder
+        if ((e.ctrlKey || e.metaKey) && e.key === 'o') {
+            e.preventDefault();
+            selectFolderBtn.click();
+            return;
+        }
+
+        // Escape: Close dialogs/lightbox
+        if (e.key === 'Escape') {
+            if (!lightbox.classList.contains('hidden')) {
+                closeLightbox();
+            } else if (!renameDialog.classList.contains('hidden')) {
+                handleRenameCancel();
+            } else if (!settingsDropdown.classList.contains('hidden')) {
+                closeSettingsDropdown();
+            } else if (!favoritesDropdown.classList.contains('hidden')) {
+                favoritesDropdown.classList.add('hidden');
+            } else if (!recentFilesDropdown.classList.contains('hidden')) {
+                recentFilesDropdown.classList.add('hidden');
+            }
+            return;
+        }
+
+        // Arrow keys: Navigate thumbnails
+        if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+            e.preventDefault();
+            navigateCards(e.key);
+            return;
+        }
+
+        // Enter: Open focused card
+        if (e.key === 'Enter' && focusedCardIndex >= 0) {
+            e.preventDefault();
+            const card = visibleCards[focusedCardIndex];
+            if (card) {
+                if (card.classList.contains('folder-card')) {
+                    const path = card.dataset.folderPath;
+                    if (path) {
+                        // Use setTimeout to yield control back to event loop, making button responsive
+                        setTimeout(() => {
+                            navigateToFolder(path).catch(err => {
+                                console.error('Error navigating to folder:', err);
+                                hideLoadingIndicator();
+                            });
+                        }, 0);
+                    }
+                } else {
+                    const url = card.dataset.src;
+                    const path = card.dataset.filePath;
+                    const name = card.querySelector('.video-info')?.textContent || '';
+                    if (url) openLightbox(url, path, name);
+                }
+            }
+            return;
+        }
+
+        // Delete: Delete focused file
+        if (e.key === 'Delete' && focusedCardIndex >= 0) {
+            e.preventDefault();
+            const card = visibleCards[focusedCardIndex];
+            if (card && !card.classList.contains('folder-card')) {
+                const path = card.dataset.filePath;
+                const name = card.querySelector('.video-info')?.textContent || '';
+                if (path && confirm(`Are you sure you want to delete "${name}"?`)) {
+                    window.electronAPI.deleteFile(path).then(result => {
+                        if (result.success && currentFolderPath) {
+                            loadVideos(currentFolderPath);
+                        }
+                    });
+                }
+            }
+            return;
+        }
+
+        // F2: Rename focused file
+        if (e.key === 'F2' && focusedCardIndex >= 0) {
+            e.preventDefault();
+            const card = visibleCards[focusedCardIndex];
+            if (card && !card.classList.contains('folder-card')) {
+                const path = card.dataset.filePath;
+                const name = card.querySelector('.video-info')?.textContent || '';
+                if (path) {
+                    renamePendingFile = { filePath: path, fileName: name };
+                    renameInput.value = name;
+                    renameDialog.classList.remove('hidden');
+                    renameInput.focus();
+                    renameInput.select();
+                }
+            }
+            return;
+        }
+
+        // Backspace: Go back (when not in input)
+        if (e.key === 'Backspace' && !e.target.tagName === 'INPUT') {
+            if (navigationHistory.canGoBack()) {
+                e.preventDefault();
+                goBack();
+            }
+            return;
+        }
+
+        // Ctrl/Cmd + B: Go back
+        if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
+            e.preventDefault();
+            if (navigationHistory.canGoBack()) {
+                goBack();
+            }
+            return;
+        }
+
+        // Ctrl/Cmd + Shift + B: Go forward
+        if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'B') {
+            e.preventDefault();
+            if (navigationHistory.canGoForward()) {
+                goForward();
+            }
+            return;
+        }
+
+        // Number keys: Switch filters
+        if (e.key >= '1' && e.key <= '4') {
+            const filterMap = { '1': 'all', '2': 'video', '3': 'image', '4': 'audio' };
+            const filter = filterMap[e.key];
+            if (filter) {
+                e.preventDefault();
+                switchFilter(filter);
+            }
+            return;
+        }
+    });
+}
+
+function navigateCards(direction) {
+    const cards = Array.from(gridContainer.querySelectorAll('.video-card, .folder-card'))
+        .filter(card => card.style.display !== 'none');
+    
+    if (cards.length === 0) return;
+
+    visibleCards = cards;
+
+    if (focusedCardIndex < 0) {
+        // Find first visible card
+        const firstVisible = cards.find(card => {
+            const rect = card.getBoundingClientRect();
+            return rect.top >= 0 && rect.top < window.innerHeight;
+        });
+        focusedCardIndex = firstVisible ? cards.indexOf(firstVisible) : 0;
+    } else {
+        // Navigate based on direction
+        const currentCard = cards[focusedCardIndex];
+        if (!currentCard) {
+            focusedCardIndex = 0;
+        } else {
+            const rect = currentCard.getBoundingClientRect();
+            const cardCenterX = rect.left + rect.width / 2;
+            const cardCenterY = rect.top + rect.height / 2;
+
+            let nextIndex = focusedCardIndex;
+            if (direction === 'ArrowRight' || direction === 'ArrowDown') {
+                // Find next card
+                for (let i = focusedCardIndex + 1; i < cards.length; i++) {
+                    nextIndex = i;
+                    break;
+                }
+            } else if (direction === 'ArrowLeft' || direction === 'ArrowUp') {
+                // Find previous card
+                for (let i = focusedCardIndex - 1; i >= 0; i--) {
+                    nextIndex = i;
+                    break;
+                }
+            }
+
+            focusedCardIndex = Math.max(0, Math.min(cards.length - 1, nextIndex));
+        }
+    }
+
+    // Update focus visual
+    cards.forEach((card, index) => {
+        if (index === focusedCardIndex) {
+            card.style.outline = '2px solid var(--accent-color)';
+            card.style.outlineOffset = '2px';
+            card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        } else {
+            card.style.outline = '';
+            card.style.outlineOffset = '';
+        }
+    });
+}
+
+function switchFilter(filter) {
+    currentFilter = filter;
+    filterAllBtn.classList.remove('active');
+    filterVideosBtn.classList.remove('active');
+    filterImagesBtn.classList.remove('active');
+    filterAudioBtn.classList.remove('active');
+    
+    if (filter === 'all') filterAllBtn.classList.add('active');
+    else if (filter === 'video') filterVideosBtn.classList.add('active');
+    else if (filter === 'image') filterImagesBtn.classList.add('active');
+    else if (filter === 'audio') filterAudioBtn.classList.add('active');
+    
+    applyFilters();
+    focusedCardIndex = -1; // Reset focus
+}
+
+// ==================== FAVORITES ====================
+function loadFavorites() {
+    const saved = localStorage.getItem('favorites');
+    if (saved) {
+        try {
+            favorites = JSON.parse(saved);
+        } catch (e) {
+            favorites = [];
+        }
+    }
+    renderFavorites();
+}
+
+function saveFavorites() {
+    localStorage.setItem('favorites', JSON.stringify(favorites));
+}
+
+function renderFavorites() {
+    favoritesList.innerHTML = '';
+    if (favorites.length === 0) {
+        favoritesList.innerHTML = '<div style="padding: 16px; text-align: center; color: rgba(224, 224, 224, 0.5); font-size: 12px;">No favorites yet</div>';
+        return;
+    }
+    favorites.forEach((fav, index) => {
+        const item = document.createElement('div');
+        item.className = 'quick-access-item';
+        item.innerHTML = `
+            <span class="quick-access-item-name" title="${fav.path}">${fav.name}</span>
+            <span class="quick-access-item-remove" data-index="${index}">×</span>
+        `;
+        item.addEventListener('click', (e) => {
+            if (e.target.classList.contains('quick-access-item-remove')) {
+                e.stopPropagation();
+                removeFavorite(index);
+            } else {
+                favoritesDropdown.classList.add('hidden');
+                // Use setTimeout to yield control back to event loop, making button responsive
+                setTimeout(() => {
+                    navigateToFolder(fav.path).catch(err => {
+                        console.error('Error navigating to favorite:', err);
+                        hideLoadingIndicator();
+                    });
+                }, 0);
+            }
+        });
+        favoritesList.appendChild(item);
+    });
+}
+
+function addFavorite(path, name) {
+    if (!path || favorites.some(f => f.path === path)) return;
+    favorites.push({ path, name: name || path.split(/[/\\]/).pop() });
+    saveFavorites();
+    renderFavorites();
+}
+
+function removeFavorite(index) {
+    favorites.splice(index, 1);
+    saveFavorites();
+    renderFavorites();
+}
+
+// ==================== RECENT FILES ====================
+function loadRecentFiles() {
+    const saved = localStorage.getItem('recentFiles');
+    if (saved) {
+        try {
+            recentFiles = JSON.parse(saved);
+            // Keep only last 50
+            recentFiles = recentFiles.slice(0, 50);
+        } catch (e) {
+            recentFiles = [];
+        }
+    }
+    renderRecentFiles();
+}
+
+function saveRecentFiles() {
+    localStorage.setItem('recentFiles', JSON.stringify(recentFiles));
+}
+
+function addRecentFile(path, name, url, type) {
+    // Remove if already exists
+    recentFiles = recentFiles.filter(f => f.path !== path);
+    // Add to beginning
+    recentFiles.unshift({
+        path,
+        name: name || path.split(/[/\\]/).pop(),
+        url,
+        type,
+        timestamp: Date.now()
+    });
+    // Keep only last 50
+    recentFiles = recentFiles.slice(0, 50);
+    saveRecentFiles();
+    renderRecentFiles();
+}
+
+function renderRecentFiles() {
+    recentFilesList.innerHTML = '';
+    if (recentFiles.length === 0) {
+        recentFilesList.innerHTML = '<div style="padding: 16px; text-align: center; color: rgba(224, 224, 224, 0.5); font-size: 12px;">No recent files</div>';
+        return;
+    }
+    recentFiles.forEach((file) => {
+        const item = document.createElement('div');
+        item.className = 'recent-file-item quick-access-item';
+        const timeAgo = getTimeAgo(file.timestamp);
+        item.innerHTML = `
+            <span class="quick-access-item-name" title="${file.path}">${file.name}</span>
+            <span style="font-size: 11px; opacity: 0.6;">${timeAgo}</span>
+        `;
+        
+        // Add preview on hover
+        if (file.type === 'image' || file.type === 'video') {
+            item.addEventListener('mouseenter', (e) => {
+                const preview = document.createElement('div');
+                preview.className = 'recent-file-preview';
+                
+                if (file.type === 'image') {
+                    const img = document.createElement('img');
+                    img.src = file.url;
+                    preview.appendChild(img);
+                } else if (file.type === 'video') {
+                    const video = document.createElement('video');
+                    video.src = file.url;
+                    video.muted = true;
+                    video.loop = true;
+                    video.play().catch(() => {});
+                    preview.appendChild(video);
+                }
+                
+                document.body.appendChild(preview);
+                
+                // Position preview
+                const itemRect = item.getBoundingClientRect();
+                let left = itemRect.right + 10;
+                let top = itemRect.top;
+                
+                preview.style.top = `${top}px`;
+                preview.style.left = `${left}px`;
+                preview.style.display = 'block';
+                
+                // Adjust if preview goes off screen (after it renders)
+                setTimeout(() => {
+                    const previewRect = preview.getBoundingClientRect();
+                    if (left + previewRect.width > window.innerWidth) {
+                        left = itemRect.left - previewRect.width - 10;
+                        preview.style.left = `${left}px`;
+                    }
+                    if (top + previewRect.height > window.innerHeight) {
+                        top = window.innerHeight - previewRect.height - 10;
+                        preview.style.top = `${top}px`;
+                    }
+                }, 10);
+                
+                item.dataset.previewId = 'preview-' + Date.now();
+                preview.id = item.dataset.previewId;
+            });
+            
+            item.addEventListener('mouseleave', () => {
+                const previewId = item.dataset.previewId;
+                if (previewId) {
+                    const preview = document.getElementById(previewId);
+                    if (preview) {
+                        preview.remove();
+                        delete item.dataset.previewId;
+                    }
+                }
+            });
+        }
+        
+        item.addEventListener('click', () => {
+            openLightbox(file.url, file.path, file.name);
+            recentFilesDropdown.classList.add('hidden');
+        });
+        recentFilesList.appendChild(item);
+    });
+}
+
+function getTimeAgo(timestamp) {
+    const seconds = Math.floor((Date.now() - timestamp) / 1000);
+    if (seconds < 60) return 'Just now';
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    return `${days}d ago`;
+}
+
+function clearRecentFiles() {
+    recentFiles = [];
+    saveRecentFiles();
+    renderRecentFiles();
+}
+
+// ==================== TABS ====================
+function loadTabs() {
+    const saved = localStorage.getItem('tabs');
+    if (saved) {
+        try {
+            tabs = JSON.parse(saved);
+            tabIdCounter = Math.max(...tabs.map(t => t.id), 0) + 1;
+        } catch (e) {
+            tabs = [];
+        }
+    }
+    if (tabs.length === 0) {
+        // Create initial tab if none exist
+        createTab(null, 'Home');
+    }
+    renderTabs();
+    if (activeTabId && tabs.find(t => t.id === activeTabId)) {
+        switchToTab(activeTabId);
+    } else if (tabs.length > 0) {
+        switchToTab(tabs[0].id);
+    }
+}
+
+function saveTabs() {
+    localStorage.setItem('tabs', JSON.stringify(tabs));
+    localStorage.setItem('activeTabId', activeTabId);
+}
+
+function createTab(path, name) {
+    const tab = {
+        id: tabIdCounter++,
+        path: path || null,
+        name: name || (path ? path.split(/[/\\]/).pop() : 'Home'),
+        sortType: sortType || 'name', // Use current sorting or default
+        sortOrder: sortOrder || 'ascending' // Use current order or default
+    };
+    tabs.push(tab);
+    saveTabs();
+    renderTabs();
+    switchToTab(tab.id);
+    if (path) {
+        // Use setTimeout to yield control back to event loop, making button responsive
+        setTimeout(() => {
+            navigateToFolder(path).catch(err => {
+                console.error('Error navigating to tab folder:', err);
+                hideLoadingIndicator();
+            });
+        }, 0);
+    }
+    return tab.id;
+}
+
+function closeTab(tabId) {
+    if (tabs.length <= 1) return; // Don't close last tab
+    tabs = tabs.filter(t => t.id !== tabId);
+    if (activeTabId === tabId) {
+        activeTabId = tabs[0]?.id || null;
+    }
+    saveTabs();
+    renderTabs();
+    if (activeTabId) {
+        switchToTab(activeTabId);
+    }
+}
+
+function switchToTab(tabId) {
+    activeTabId = tabId;
+    const tab = tabs.find(t => t.id === tabId);
+    if (tab) {
+        // Restore tab's sorting preferences
+        sortType = tab.sortType || 'name';
+        sortOrder = tab.sortOrder || 'ascending';
+        
+        // Update UI to reflect tab's sorting preferences
+        if (sortTypeSelect) sortTypeSelect.value = sortType;
+        if (sortOrderSelect) sortOrderSelect.value = sortOrder;
+        
+        if (tab.path) {
+            // Check if we have cached content for this tab
+            const tabCache = tabContentCache.get(tabId);
+            const now = Date.now();
+            const normalizedTabPath = normalizePath(tab.path);
+            
+            if (tabCache) {
+                const cachePathNormalized = normalizePath(tabCache.path);
+                if ((cachePathNormalized === normalizedTabPath || tabCache.path === tab.path) && 
+                    (now - tabCache.timestamp) < FOLDER_CACHE_TTL) {
+                    // Use cached content - instant tab switching!
+                    currentFolderPath = tab.path;
+                    currentItems = tabCache.items;
+                    updateBreadcrumb(tab.path);
+                    searchBox.value = '';
+                    currentFilter = 'all';
+                    filterAllBtn.classList.add('active');
+                    filterVideosBtn.classList.remove('active');
+                    filterImagesBtn.classList.remove('active');
+                    filterAudioBtn.classList.remove('active');
+                    
+                    // Filter, sort and render immediately
+                    const filteredItems = filterItems(tabCache.items);
+                    const sortedItems = sortItems(filteredItems);
+                    renderItems(sortedItems);
+                } else {
+                    // Cache expired or path mismatch, navigate normally
+                    // Use setTimeout to yield control back to event loop, making button responsive
+                    setTimeout(() => {
+                        navigateToFolder(tab.path, false).catch(err => {
+                            console.error('Error navigating to tab folder:', err);
+                            hideLoadingIndicator();
+                        });
+                    }, 0);
+                }
+            } else {
+                // No cache, navigate normally
+                // Use setTimeout to yield control back to event loop, making button responsive
+                setTimeout(() => {
+                    navigateToFolder(tab.path, false).catch(err => {
+                        console.error('Error navigating to tab folder:', err);
+                        hideLoadingIndicator();
+                    });
+                }, 0);
+            }
+        } else {
+            // If tab has no path, clear the grid
+            gridContainer.innerHTML = '';
+            currentFolderPath = null;
+            currentItems = [];
+            updateBreadcrumb(null);
+        }
+    }
+    saveTabs();
+    renderTabs();
+}
+
+function updateCurrentTab(path, name) {
+    if (!activeTabId) return;
+    const tab = tabs.find(t => t.id === activeTabId);
+    if (tab) {
+        tab.path = path;
+        tab.name = name || (path ? path.split(/[/\\]/).pop() : 'Home');
+        // Preserve sorting preferences when updating tab
+        tab.sortType = tab.sortType || sortType;
+        tab.sortOrder = tab.sortOrder || sortOrder;
+        saveTabs();
+        renderTabs();
+    }
+}
+
+function renderTabs() {
+    tabsContainer.innerHTML = '';
+    tabs.forEach(tab => {
+        const tabEl = document.createElement('div');
+        tabEl.className = `tab ${tab.id === activeTabId ? 'active' : ''}`;
+        tabEl.innerHTML = `
+            <span class="tab-name" title="${tab.path || 'Home'}">${tab.name}</span>
+            <span class="tab-close" data-tab-id="${tab.id}">×</span>
+        `;
+        tabEl.addEventListener('click', (e) => {
+            if (e.target.classList.contains('tab-close')) {
+                e.stopPropagation();
+                closeTab(tab.id);
+            } else {
+                switchToTab(tab.id);
+            }
+        });
+        tabsContainer.appendChild(tabEl);
+    });
+    
+    // Add "+" button
+    const addBtn = document.createElement('div');
+    addBtn.className = 'tab-add';
+    addBtn.textContent = '+';
+    addBtn.title = 'New Tab';
+    addBtn.addEventListener('click', () => {
+        selectFolderBtn.click();
+    });
+    tabsContainer.appendChild(addBtn);
+}
+
+// ==================== VIDEO SCRUBBER ====================
+function initVideoScrubber() {
+    // Event listeners are now attached directly to cards in renderItems
+    // This function is kept for compatibility but does nothing
+}
+
+function showScrubber(card, video) {
+    if (!video || !card) return;
+    
+    // Get or create the time label element
+    let timeLabel = card.querySelector('.video-time-label');
+    if (!timeLabel) {
+        timeLabel = document.createElement('div');
+        timeLabel.className = 'video-time-label';
+        card.appendChild(timeLabel);
+    }
+    
+    // Update the label with current time vs total duration
+    const updateTimeDisplay = () => {
+        if (!timeLabel || !card.contains(timeLabel)) return;
+        
+        const currentTime = video.currentTime || 0;
+        const duration = (video.duration && !isNaN(video.duration) && video.duration > 0) ? video.duration : 0;
+        const currentTimeFormatted = formatTime(currentTime);
+        const durationFormatted = duration > 0 ? formatTime(duration) : '--:--';
+        timeLabel.textContent = `${currentTimeFormatted} / ${durationFormatted}`;
+    };
+    
+    // Initial update
+    updateTimeDisplay();
+    
+    // Update when video time changes (if video is playing)
+    const timeUpdateHandler = updateTimeDisplay;
+    video.addEventListener('timeupdate', timeUpdateHandler);
+    
+    // Also update when metadata loads (duration becomes available)
+    const metadataHandler = () => {
+        updateTimeDisplay();
+    };
+    video.addEventListener('loadedmetadata', metadataHandler);
+    
+    // Store the handlers so we can remove them later
+    card._timeUpdateHandler = timeUpdateHandler;
+    card._metadataHandler = metadataHandler;
+    
+    // Show the label
+    timeLabel.classList.add('show');
+}
+
+function hideScrubber(card) {
+    if (!card) return;
+    
+    const timeLabel = card.querySelector('.video-time-label');
+    if (timeLabel) {
+        timeLabel.classList.remove('show');
+    }
+    
+    // Remove listeners if they exist
+    const video = card.querySelector('video');
+    if (video) {
+        if (card._timeUpdateHandler) {
+            video.removeEventListener('timeupdate', card._timeUpdateHandler);
+            delete card._timeUpdateHandler;
+        }
+        if (card._metadataHandler) {
+            video.removeEventListener('loadedmetadata', card._metadataHandler);
+            delete card._metadataHandler;
+        }
+    }
+}
+
+function formatTime(seconds) {
+    if (!seconds || isNaN(seconds)) return '00:00';
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+}
+
+// ==================== ZOOM CONTROLS ====================
+function initZoom() {
+    const savedZoom = localStorage.getItem('zoomLevel');
+    if (savedZoom) {
+        zoomLevel = parseInt(savedZoom, 10);
+        zoomSlider.value = zoomLevel;
+        zoomValue.textContent = `${zoomLevel}%`;
+    }
+    applyZoom();
+}
+
+function applyZoom() {
+    const scale = zoomLevel / 100;
+    // Update CSS variable for zoom
+    document.documentElement.style.setProperty('--zoom-level', zoomLevel);
+    
+    // Adjust grid container gap and card sizes
+    const baseGap = 16;
+    const scaledGap = baseGap * scale;
+    gridContainer.style.setProperty('--gap', `${scaledGap}px`);
+    
+    // For grid layout, adjust column width
+    if (layoutMode === 'grid') {
+        const baseMinWidth = 250;
+        const scaledMinWidth = baseMinWidth * scale;
+        gridContainer.style.setProperty('--grid-min-width', `${scaledMinWidth}px`);
+        // Force grid recalculation
+        requestAnimationFrame(() => {
+            gridContainer.style.display = 'none';
+            void gridContainer.offsetHeight; // Force reflow
+            gridContainer.style.display = 'grid';
+        });
+    }
+    
+    // Recalculate masonry layout if needed
+    if (layoutMode === 'masonry') {
+        requestAnimationFrame(() => {
+            layoutMasonry();
+        });
+    }
+}
+
+// ==================== THEME ====================
+function initTheme() {
+    const savedTheme = localStorage.getItem('theme');
+    if (savedTheme === 'light' || savedTheme === 'dark') {
+        currentTheme = savedTheme;
+        themeSelect.value = currentTheme;
+    }
+    applyTheme();
+}
+
+function applyTheme() {
+    if (currentTheme === 'light') {
+        document.documentElement.classList.add('light-theme');
+    } else {
+        document.documentElement.classList.remove('light-theme');
+    }
+    localStorage.setItem('theme', currentTheme);
+}
+
+// ==================== THUMBNAIL QUALITY ====================
+function initThumbnailQuality() {
+    const savedQuality = localStorage.getItem('thumbnailQuality');
+    if (savedQuality && ['low', 'medium', 'high'].includes(savedQuality)) {
+        thumbnailQuality = savedQuality;
+        thumbnailQualitySelect.value = thumbnailQuality;
+    }
+}
+
+function getThumbnailQualityMultiplier() {
+    switch (thumbnailQuality) {
+        case 'low': return 0.2;
+        case 'high': return 0.5;
+        default: return 0.3; // medium
+    }
+}
+
+// ==================== NEW FEATURES IMPLEMENTATION ====================
+
+// Get current filtered items for lightbox navigation
+function getFilteredMediaItems() {
+    const cards = gridContainer.querySelectorAll('.video-card:not(.folder-card)');
+    const items = [];
+    cards.forEach(card => {
+        if (card.style.display !== 'none') {
+            const url = card.dataset.src;
+            const path = card.dataset.path;
+            const name = card.dataset.name || card.querySelector('.video-info')?.textContent || '';
+            const type = card.dataset.mediaType || 'video';
+            if (url && path) {
+                items.push({ url, path, name, type });
+            }
+        }
+    });
+    return items;
+}
+
+// Lightbox navigation
+function navigateLightbox(direction) {
+    if (lightboxItems.length === 0) {
+        lightboxItems = getFilteredMediaItems();
+    }
+    if (lightboxItems.length === 0) return;
+    
+    if (direction === 'next') {
+        currentLightboxIndex = (currentLightboxIndex + 1) % lightboxItems.length;
+    } else {
+        currentLightboxIndex = (currentLightboxIndex - 1 + lightboxItems.length) % lightboxItems.length;
+    }
+    
+    const item = lightboxItems[currentLightboxIndex];
+    if (item) {
+        openLightbox(item.url, item.path, item.name);
+    }
+}
+
+// Video playback controls
+function setVideoPlaybackSpeed(speed) {
+    videoPlaybackSpeed = speed;
+    if (lightboxVideo) {
+        lightboxVideo.playbackRate = speed;
+    }
+    const speedBtn = document.getElementById('lightbox-speed-btn');
+    if (speedBtn) {
+        speedBtn.textContent = `${speed}x`;
+    }
+}
+
+function toggleVideoLoop() {
+    videoLoop = !videoLoop;
+    if (lightboxVideo) {
+        lightboxVideo.loop = videoLoop;
+    }
+    const loopBtn = document.getElementById('lightbox-loop-btn');
+    if (loopBtn) {
+        loopBtn.textContent = videoLoop ? 'On' : 'Off';
+        loopBtn.classList.toggle('active', videoLoop);
+    }
+}
+
+function toggleVideoRepeat() {
+    videoRepeat = !videoRepeat;
+    const repeatBtn = document.getElementById('lightbox-repeat-btn');
+    if (repeatBtn) {
+        repeatBtn.textContent = videoRepeat ? 'On' : 'Off';
+        repeatBtn.classList.toggle('active', videoRepeat);
+    }
+    if (videoRepeat && lightboxVideo) {
+        lightboxVideo.addEventListener('ended', handleVideoRepeat);
+    } else if (lightboxVideo) {
+        lightboxVideo.removeEventListener('ended', handleVideoRepeat);
+    }
+}
+
+function handleVideoRepeat() {
+    if (videoRepeat && lightboxVideo) {
+        lightboxVideo.currentTime = 0;
+        lightboxVideo.play();
+    }
+}
+
+function stepVideoFrame(direction) {
+    if (!lightboxVideo || lightboxVideo.readyState < 2) return;
+    
+    const frameTime = 1 / 30; // Assume 30fps, could be improved with actual fps detection
+    if (direction === 'next') {
+        lightboxVideo.currentTime = Math.min(lightboxVideo.duration, lightboxVideo.currentTime + frameTime);
+    } else {
+        lightboxVideo.currentTime = Math.max(0, lightboxVideo.currentTime - frameTime);
+    }
+}
+
+// Helper function to escape HTML
+function escapeHtml(text) {
+    if (typeof text !== 'string') return text;
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// Extract common ComfyUI parameters from workflow
+function extractComfyUIParameters(workflow) {
+    if (!workflow || typeof workflow !== 'object') return null;
+    
+    const params = {
+        prompt: null,
+        negativePrompt: null,
+        cfgScale: null,
+        steps: null,
+        sampler: null,
+        seed: null,
+        model: null,
+        width: null,
+        height: null
+    };
+    
+    // ComfyUI workflow structure: workflow.prompt contains node data
+    // Each node has class_type and inputs
+    const promptData = workflow.prompt || workflow;
+    
+    if (typeof promptData === 'object') {
+        const clipTextNodes = [];
+        
+        // First pass: collect all CLIPTextEncode nodes
+        for (const nodeId in promptData) {
+            const node = promptData[nodeId];
+            if (!node || typeof node !== 'object') continue;
+            
+            const classType = node.class_type || '';
+            const inputs = node.inputs || {};
+            
+            // Collect CLIPTextEncode nodes
+            if (classType.includes('CLIPTextEncode') && inputs.text) {
+                const nodeTitle = (node.title || nodeId || '').toLowerCase();
+                const isNegative = nodeTitle.includes('negative') || 
+                                  nodeTitle.includes('neg') ||
+                                  nodeTitle.includes('n_prompt');
+                clipTextNodes.push({
+                    text: inputs.text,
+                    isNegative: isNegative,
+                    nodeId: nodeId
+                });
+            }
+            
+            // Find KSampler or Sampler nodes - these contain the actual generation parameters
+            // Only take the first instance of each parameter
+            if (classType === 'KSampler' || classType === 'KSamplerAdvanced' || classType.includes('KSampler')) {
+                // Only set CFG scale if not already set (first instance)
+                if (params.cfgScale === null && inputs.cfg !== undefined && inputs.cfg !== null) {
+                    params.cfgScale = inputs.cfg;
+                }
+                // Only set steps if not already set (first instance)
+                if (params.steps === null && inputs.steps !== undefined && inputs.steps !== null) {
+                    params.steps = inputs.steps;
+                }
+                // Seed in KSampler should be a large integer (typically 10+ digits), not a small float
+                // Only set seed if not already set (first instance)
+                if (params.seed === null && inputs.seed !== undefined && inputs.seed !== null) {
+                    const seedValue = inputs.seed;
+                    // Only accept if it's a very large integer (seeds are typically 10+ digits)
+                    if (typeof seedValue === 'number') {
+                        // Reject small numbers or floats (like 82.9)
+                        if (seedValue > 1000000 && Number.isInteger(seedValue)) {
+                            params.seed = seedValue;
+                        } else if (seedValue > 1000000) {
+                            // Large number but not integer - might be seed as float, floor it
+                            params.seed = Math.floor(seedValue);
+                        }
+                    } else if (typeof seedValue === 'string') {
+                        const parsed = parseInt(seedValue);
+                        // Only accept if it's a very large number
+                        if (!isNaN(parsed) && parsed > 1000000) {
+                            params.seed = parsed;
+                        }
+                    }
+                }
+                // Only set sampler name if not already set (first instance)
+                if (!params.sampler && inputs.sampler_name) {
+                    params.sampler = inputs.sampler_name;
+                }
+            }
+            
+            // Check for seed in CR Module Pipe Loader or other pipe loader nodes
+            // Only take the first instance
+            if (params.seed === null && (classType.includes('Pipe') || classType.includes('Module')) && inputs.seed !== undefined && inputs.seed !== null) {
+                const seedValue = inputs.seed;
+                // Only accept very large integers
+                if (typeof seedValue === 'number' && seedValue > 1000000) {
+                    params.seed = Math.floor(seedValue);
+                } else if (typeof seedValue === 'string') {
+                    const parsed = parseInt(seedValue);
+                    if (!isNaN(parsed) && parsed > 1000000) {
+                        params.seed = parsed;
+                    }
+                }
+            }
+            
+            // Find seed in RandomSeed node (often used for seed control) - prioritize this
+            // Only take the first instance
+            if (params.seed === null && (classType === 'RandomSeed' || classType === 'Seed')) {
+                if (inputs.seed !== undefined && inputs.seed !== null) {
+                    const seedValue = inputs.seed;
+                    // Only accept very large numbers (seeds are typically 10+ digits)
+                    if (typeof seedValue === 'number' && seedValue > 1000000) {
+                        params.seed = Math.floor(seedValue);
+                    } else if (typeof seedValue === 'string') {
+                        const parsed = parseInt(seedValue);
+                        if (!isNaN(parsed) && parsed > 1000000) {
+                            params.seed = parsed;
+                        }
+                    }
+                }
+                // Sometimes seed is in 'value' field
+                if (params.seed === null && inputs.value !== undefined && inputs.value !== null) {
+                    const seedValue = inputs.value;
+                    if (typeof seedValue === 'number' && seedValue > 1000000) {
+                        params.seed = Math.floor(seedValue);
+                    } else if (typeof seedValue === 'string') {
+                        const parsed = parseInt(seedValue);
+                        if (!isNaN(parsed) && parsed > 1000000) {
+                            params.seed = parsed;
+                        }
+                    }
+                }
+            }
+            
+            // Find model (CheckpointLoaderSimple, CheckpointLoader, etc.)
+            if (classType.includes('Checkpoint') || classType.includes('Model')) {
+                if (inputs.ckpt_name) params.model = inputs.ckpt_name;
+                if (inputs.model_name) params.model = inputs.model_name;
+            }
+            
+            // Find resolution from Resolution node (has longer_side and aspect_ratio)
+            if (classType === 'Resolution' || classType.includes('Resolution')) {
+                if (inputs.longer_side !== undefined && inputs.longer_side !== null) {
+                    const longerSide = typeof inputs.longer_side === 'string' ? parseInt(inputs.longer_side) : inputs.longer_side;
+                    if (longerSide && longerSide >= 100) {
+                        // Calculate dimensions from aspect ratio
+                        if (inputs.aspect_ratio) {
+                            const aspectRatio = inputs.aspect_ratio;
+                            // Parse aspect ratio like "2:3 (Portrait)" or "16:9"
+                            const ratioMatch = aspectRatio.match(/(\d+):(\d+)/);
+                            if (ratioMatch) {
+                                const ratioW = parseFloat(ratioMatch[1]);
+                                const ratioH = parseFloat(ratioMatch[2]);
+                                const ratio = ratioW / ratioH;
+                                
+                                // Check if portrait is mentioned
+                                const isPortrait = aspectRatio.toLowerCase().includes('portrait') || ratio < 1;
+                                
+                                if (isPortrait) {
+                                    // Portrait: height is longer, width is shorter
+                                    params.height = longerSide;
+                                    params.width = Math.round(longerSide * ratio);
+                                } else {
+                                    // Landscape: width is longer, height is shorter
+                                    params.width = longerSide;
+                                    params.height = Math.round(longerSide / ratio);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Find resolution from ImageScaleToMaxDimension node
+            if (classType === 'ImageScaleToMaxDimension' || classType.includes('ImageScale')) {
+                if (inputs.largest_size !== undefined && inputs.largest_size !== null) {
+                    const largestSize = typeof inputs.largest_size === 'string' ? parseInt(inputs.largest_size) : inputs.largest_size;
+                    if (largestSize && largestSize >= 100) {
+                        // This gives us the longer side, but we need aspect ratio to calculate both dimensions
+                        // Store it for later if we don't have dimensions yet
+                        if (!params.width || !params.height) {
+                            // We'll need to calculate from aspect ratio if available
+                        }
+                    }
+                }
+            }
+            
+            // Find image dimensions (EmptyLatentImage is most common)
+            // Only accept reasonable dimensions (typically 64+ pixels, and usually multiples of 8 or 64)
+            // But be careful - these might be latent dimensions, not final image dimensions
+            if (classType === 'EmptyLatentImage' || classType.includes('EmptyLatentImage')) {
+                // Only use if we don't already have dimensions from Resolution node
+                if (!params.width || !params.height) {
+                    if (inputs.width !== undefined && inputs.width !== null) {
+                        const width = typeof inputs.width === 'string' ? parseInt(inputs.width) : inputs.width;
+                        // Only accept if it's a reasonable dimension (not tiny like 80)
+                        if (width && width >= 100 && Number.isInteger(width)) {
+                            params.width = width;
+                        }
+                    }
+                    if (inputs.height !== undefined && inputs.height !== null) {
+                        const height = typeof inputs.height === 'string' ? parseInt(inputs.height) : inputs.height;
+                        if (height && height >= 100 && Number.isInteger(height)) {
+                            params.height = height;
+                        }
+                    }
+                }
+            }
+            
+            // Check for dimensions in other node types, but be more selective
+            if ((!params.width || params.width < 100) || (!params.height || params.height < 100)) {
+                // Look for width/height in other nodes, but filter out small values
+                if (inputs.width !== undefined && inputs.height !== undefined) {
+                    const width = typeof inputs.width === 'string' ? parseInt(inputs.width) : inputs.width;
+                    const height = typeof inputs.height === 'string' ? parseInt(inputs.height) : inputs.height;
+                    // Only accept reasonable dimensions (reject tiny values like 80)
+                    if (width && height && width >= 100 && height >= 100 && Number.isInteger(width) && Number.isInteger(height)) {
+                        if (!params.width || params.width < 100) params.width = width;
+                        if (!params.height || params.height < 100) params.height = height;
+                    }
+                }
+            }
+        }
+        
+        // Determine positive and negative prompts from collected nodes
+        if (clipTextNodes.length > 0) {
+            // Sort by nodeId to get consistent order (but note: nodeId order may not match workflow order)
+            clipTextNodes.sort((a, b) => a.nodeId.localeCompare(b.nodeId));
+            
+            // If we have explicit negative markers, use those
+            const negativeNode = clipTextNodes.find(n => n.isNegative);
+            const positiveNodes = clipTextNodes.filter(n => !n.isNegative);
+            
+            if (negativeNode) {
+                params.negativePrompt = negativeNode.text;
+            }
+            
+            // First non-negative node is positive prompt
+            if (positiveNodes.length > 0) {
+                params.prompt = positiveNodes[0].text;
+            }
+            
+            // If we have 2 nodes and one is marked negative, the other is positive
+            if (clipTextNodes.length === 2) {
+                if (negativeNode && positiveNodes.length === 1) {
+                    params.prompt = positiveNodes[0].text;
+                } else if (!negativeNode) {
+                    // If neither is marked, swap the order (user reported they were swapped)
+                    // Second node is positive, first is negative
+                    params.prompt = clipTextNodes[1].text;
+                    params.negativePrompt = clipTextNodes[0].text;
+                }
+            }
+            
+            // If no explicit negative but we have 2+ unmarked nodes, swap order
+            if (!params.negativePrompt && clipTextNodes.length >= 2 && positiveNodes.length >= 2) {
+                // User says they're swapped, so reverse: last is positive, first is negative
+                params.prompt = positiveNodes[positiveNodes.length - 1].text;
+                params.negativePrompt = positiveNodes[0].text;
+            }
+            
+            // Fallback: if only one node found and no negative marker, assume it's positive
+            if (!params.prompt && clipTextNodes.length === 1) {
+                params.prompt = clipTextNodes[0].text;
+            }
+        }
+        
+        // Try to get dimensions from workflow metadata or extra data
+        if ((!params.width || params.width < 100) || (!params.height || params.height < 100)) {
+            // Check workflow.extra for dimensions
+            if (workflow.extra) {
+                if (workflow.extra.dworkflow) {
+                    const dworkflow = workflow.extra.dworkflow;
+                    if (dworkflow.width && dworkflow.width >= 100) params.width = dworkflow.width;
+                    if (dworkflow.height && dworkflow.height >= 100) params.height = dworkflow.height;
+                }
+                // Sometimes dimensions are directly in extra
+                if (workflow.extra.width && workflow.extra.width >= 100) params.width = workflow.extra.width;
+                if (workflow.extra.height && workflow.extra.height >= 100) params.height = workflow.extra.height;
+            }
+            
+            // Check workflow output or other metadata
+            if (workflow.output) {
+                if (workflow.output.width && workflow.output.width >= 100) params.width = workflow.output.width;
+                if (workflow.output.height && workflow.output.height >= 100) params.height = workflow.output.height;
+            }
+        }
+        
+        // Final check: look for seed in workflow.extra or other metadata (seeds are large integers, 10+ digits)
+        if (!params.seed || params.seed < 1000000) {
+            if (workflow.extra) {
+                if (workflow.extra.seed !== undefined && workflow.extra.seed !== null) {
+                    const seedValue = workflow.extra.seed;
+                    if (typeof seedValue === 'number' && seedValue > 1000000) {
+                        params.seed = Math.floor(seedValue);
+                    } else if (typeof seedValue === 'string') {
+                        const parsed = parseInt(seedValue);
+                        if (!isNaN(parsed) && parsed > 1000000) {
+                            params.seed = parsed;
+                        }
+                    }
+                }
+            }
+            // Also check workflow directly for seed
+            if ((!params.seed || params.seed < 1000000) && workflow.seed !== undefined && workflow.seed !== null) {
+                const seedValue = workflow.seed;
+                if (typeof seedValue === 'number' && seedValue > 1000000) {
+                    params.seed = Math.floor(seedValue);
+                } else if (typeof seedValue === 'string') {
+                    const parsed = parseInt(seedValue);
+                    if (!isNaN(parsed) && parsed > 1000000) {
+                        params.seed = parsed;
+                    }
+                }
+            }
+        }
+    }
+    
+    return params;
+}
+
+// File info panel (popover)
+async function showFileInfo(filePath) {
+    console.log('showFileInfo called with filePath:', filePath);
+    const panel = document.getElementById('file-info-panel');
+    const details = document.getElementById('file-info-details');
+    if (!panel || !details) {
+        console.error('File info panel elements not found', { panel: !!panel, details: !!details });
+        return;
+    }
+    
+    // Position panel using CSS bottom and right properties relative to button
+    const infoBtn = document.getElementById('lightbox-info-btn');
+    if (infoBtn) {
+        const btnRect = infoBtn.getBoundingClientRect();
+        const viewportHeight = window.innerHeight;
+        const viewportWidth = window.innerWidth;
+        
+        // Calculate bottom offset (distance from bottom of viewport to top of button + gap)
+        const bottomOffset = viewportHeight - btnRect.top + 10;
+        
+        // Calculate right offset (distance from right of viewport to right of button)
+        const rightOffset = viewportWidth - btnRect.right;
+        
+        // Use CSS bottom and right properties for positioning
+        panel.style.top = 'auto';
+        panel.style.left = 'auto';
+        panel.style.bottom = `${bottomOffset}px`;
+        panel.style.right = `${rightOffset}px`;
+        panel.style.transform = 'none';
+        
+        console.log('Positioned panel using CSS bottom/right:', { 
+            bottom: panel.style.bottom,
+            right: panel.style.right,
+            buttonTop: btnRect.top,
+            buttonRight: btnRect.right
+        });
+    } else {
+        // Center the panel if button not found
+        panel.style.top = '50%';
+        panel.style.left = '50%';
+        panel.style.bottom = 'auto';
+        panel.style.right = 'auto';
+        panel.style.transform = 'translate(-50%, -50%)';
+        console.log('Centered panel (button not found)');
+    }
+    
+    // Show panel
+    panel.classList.remove('hidden');
+    panel.style.display = 'block';
+    panel.style.pointerEvents = 'auto';
+    panel.style.visibility = 'visible';
+    panel.style.opacity = '1';
+    
+    // Verify panel is actually visible
+    const computedStyle = window.getComputedStyle(panel);
+    console.log('Panel hidden class removed, panel should be visible now', {
+        hasHidden: panel.classList.contains('hidden'),
+        display: panel.style.display,
+        computedDisplay: computedStyle.display,
+        computedVisibility: computedStyle.visibility,
+        computedOpacity: computedStyle.opacity,
+        computedZIndex: computedStyle.zIndex,
+        computedPointerEvents: computedStyle.pointerEvents,
+        panelRect: panel.getBoundingClientRect()
+    });
+    
+    try {
+        const result = await window.electronAPI.getFileInfo(filePath);
+        if (result && result.success && result.info) {
+            const info = result.info;
+            console.log('File info received:', {
+                hasComfyUIWorkflow: !!info.comfyUIWorkflow,
+                workflowData: info.comfyUIWorkflow
+            });
+            details.innerHTML = `
+                <div class="file-info-detail-row">
+                    <span class="file-info-detail-label">Name:</span>
+                    <span class="file-info-detail-value">${info.name}</span>
+                </div>
+                <div class="file-info-detail-row file-info-path-row">
+                    <span class="file-info-detail-label">Path:</span>
+                    <span class="file-info-detail-value">${info.path}</span>
+                </div>
+                <div class="file-info-detail-row">
+                    <span class="file-info-detail-label">Size:</span>
+                    <span class="file-info-detail-value">${info.sizeFormatted}</span>
+                </div>
+                <div class="file-info-detail-row">
+                    <span class="file-info-detail-label">Created:</span>
+                    <span class="file-info-detail-value">${new Date(info.created).toLocaleString()}</span>
+                </div>
+                <div class="file-info-detail-row">
+                    <span class="file-info-detail-label">Modified:</span>
+                    <span class="file-info-detail-value">${new Date(info.modified).toLocaleString()}</span>
+                </div>
+                ${info.width && info.height ? `
+                <div class="file-info-detail-row">
+                    <span class="file-info-detail-label">Dimensions:</span>
+                    <span class="file-info-detail-value">${info.width} x ${info.height}</span>
+                </div>
+                ` : ''}
+                ${info.type === 'video' ? `
+                <div class="file-info-detail-row">
+                    <span class="file-info-detail-label">Type:</span>
+                    <span class="file-info-detail-value">Video</span>
+                </div>
+                ` : info.type === 'image' ? `
+                <div class="file-info-detail-row">
+                    <span class="file-info-detail-label">Type:</span>
+                    <span class="file-info-detail-value">Image</span>
+                </div>
+                ` : ''}
+                ${info.comfyUIWorkflow ? (() => {
+                    let workflow = info.comfyUIWorkflow.workflow;
+                    if (!workflow && info.comfyUIWorkflow.raw) {
+                        try {
+                            workflow = typeof info.comfyUIWorkflow.raw === 'string' 
+                                ? JSON.parse(info.comfyUIWorkflow.raw) 
+                                : info.comfyUIWorkflow.raw;
+                        } catch (e) {
+                            console.warn('Failed to parse workflow raw data:', e);
+                            workflow = null;
+                        }
+                    }
+                    const params = workflow ? extractComfyUIParameters(workflow) : null;
+                    return `
+                <div class="file-info-detail-row file-info-comfyui-section">
+                    <div class="file-info-comfyui-header">
+                        <span class="file-info-detail-label">ComfyUI Workflow:</span>
+                        <button class="file-info-toggle-btn" data-toggle-workflow>▼</button>
+                    </div>
+                    <div class="file-info-comfyui-content">
+                        ${params && (params.prompt || params.cfgScale !== null || params.steps !== null || params.seed !== null) ? `
+                        <div class="file-info-comfyui-params">
+                            <div class="file-info-comfyui-params-header">Generation Parameters</div>
+                            ${params.prompt ? `
+                            <div class="file-info-detail-row file-info-prompt-row">
+                                <span class="file-info-detail-label">Prompt:</span>
+                                <div class="file-info-prompt-value">${escapeHtml(params.prompt)}</div>
+                            </div>
+                            ` : ''}
+                            ${params.negativePrompt ? `
+                            <div class="file-info-detail-row file-info-prompt-row">
+                                <span class="file-info-detail-label">Negative Prompt:</span>
+                                <div class="file-info-prompt-value">${escapeHtml(params.negativePrompt)}</div>
+                            </div>
+                            ` : ''}
+                            <div class="file-info-comfyui-params-grid">
+                                ${params.cfgScale !== null ? `
+                                <div class="file-info-detail-row">
+                                    <span class="file-info-detail-label">CFG Scale:</span>
+                                    <span class="file-info-detail-value">${params.cfgScale}</span>
+                                </div>
+                                ` : ''}
+                                ${params.steps !== null ? `
+                                <div class="file-info-detail-row">
+                                    <span class="file-info-detail-label">Steps:</span>
+                                    <span class="file-info-detail-value">${params.steps}</span>
+                                </div>
+                                ` : ''}
+                                ${params.sampler ? `
+                                <div class="file-info-detail-row">
+                                    <span class="file-info-detail-label">Sampler:</span>
+                                    <span class="file-info-detail-value">${escapeHtml(params.sampler)}</span>
+                                </div>
+                                ` : ''}
+                                ${params.seed !== null ? `
+                                <div class="file-info-detail-row">
+                                    <span class="file-info-detail-label">Seed:</span>
+                                    <span class="file-info-detail-value">${params.seed}</span>
+                                </div>
+                                ` : ''}
+                                ${params.model ? `
+                                <div class="file-info-detail-row">
+                                    <span class="file-info-detail-label">Model:</span>
+                                    <span class="file-info-detail-value">${escapeHtml(params.model)}</span>
+                                </div>
+                                ` : ''}
+                                ${params.width && params.height ? `
+                                <div class="file-info-detail-row">
+                                    <span class="file-info-detail-label">Resolution:</span>
+                                    <span class="file-info-detail-value">${params.width} x ${params.height}</span>
+                                </div>
+                                ` : ''}
+                            </div>
+                        </div>
+                        ` : ''}
+                        <div class="file-info-detail-row">
+                            <span class="file-info-detail-label">Metadata Key:</span>
+                            <span class="file-info-detail-value">${escapeHtml(info.comfyUIWorkflow.key)}</span>
+                        </div>
+                        ${info.comfyUIWorkflow.workflow ? `
+                        <div class="file-info-detail-row">
+                            <span class="file-info-detail-label">Workflow Data:</span>
+                            <div class="file-info-workflow-json">
+                                <pre class="file-info-json-pre">${escapeHtml(JSON.stringify(info.comfyUIWorkflow.workflow, null, 2))}</pre>
+                                <button class="file-info-copy-json-btn" data-copy-workflow-json>Copy JSON</button>
+                            </div>
+                        </div>
+                        ` : `
+                        <div class="file-info-detail-row">
+                            <span class="file-info-detail-label">Raw Data:</span>
+                            <div class="file-info-workflow-json">
+                                <pre class="file-info-json-pre">${escapeHtml(info.comfyUIWorkflow.raw.substring(0, 500))}${info.comfyUIWorkflow.raw.length > 500 ? '...' : ''}</pre>
+                                <button class="file-info-copy-json-btn" data-copy-workflow-raw>Copy Raw</button>
+                            </div>
+                        </div>
+                        `}
+                    </div>
+                </div>
+                `;
+                })() : ''}
+            `;
+            
+            // Set up event listeners for ComfyUI workflow buttons (inside the success block where info is in scope)
+            const toggleBtn = details.querySelector('[data-toggle-workflow]');
+            if (toggleBtn) {
+                toggleBtn.addEventListener('click', function() {
+                    const content = this.parentElement.nextElementSibling;
+                    content.classList.toggle('hidden');
+                    this.textContent = this.textContent === '▼' ? '▶' : '▼';
+                });
+            }
+
+            const copyJsonBtn = details.querySelector('[data-copy-workflow-json]');
+            if (copyJsonBtn && info.comfyUIWorkflow && info.comfyUIWorkflow.workflow) {
+                const workflowJson = JSON.stringify(info.comfyUIWorkflow.workflow, null, 2);
+                copyJsonBtn.addEventListener('click', function() {
+                    navigator.clipboard.writeText(workflowJson).then(() => {
+                        const originalText = this.textContent;
+                        this.textContent = 'Copied!';
+                        setTimeout(() => {
+                            this.textContent = originalText;
+                        }, 2000);
+                    });
+                });
+            }
+
+            const copyRawBtn = details.querySelector('[data-copy-workflow-raw]');
+            if (copyRawBtn && info.comfyUIWorkflow && info.comfyUIWorkflow.raw) {
+                const rawData = info.comfyUIWorkflow.raw;
+                copyRawBtn.addEventListener('click', function() {
+                    navigator.clipboard.writeText(rawData).then(() => {
+                        const originalText = this.textContent;
+                        this.textContent = 'Copied!';
+                        setTimeout(() => {
+                            this.textContent = originalText;
+                        }, 2000);
+                    });
+                });
+            }
+        } else {
+            details.innerHTML = `<div class="file-info-detail-row">Error: ${result.error || 'Unknown error'}</div>`;
+        }
+        
+        // No need to reposition - CSS bottom/right positioning handles it automatically
+    } catch (error) {
+        console.error('Error in showFileInfo:', error);
+        details.innerHTML = `<div class="file-info-detail-row">Error: ${error.message || 'Unknown error occurred'}</div>`;
+    }
+}
+
+// Star ratings
+function getFileRating(filePath) {
+    if (!filePath) return 0;
+    // Check both original path and normalized path to handle Windows path variations
+    const normalizedPath = normalizePath(filePath);
+    return fileRatings[filePath] || fileRatings[normalizedPath] || 0;
+}
+
+function setFileRating(filePath, rating) {
+    if (!filePath) return;
+    // Store with both original and normalized path for consistent lookups
+    fileRatings[filePath] = rating;
+    const normalizedPath = normalizePath(filePath);
+    if (normalizedPath !== filePath) {
+        fileRatings[normalizedPath] = rating;
+    }
+    saveRatings();
+    
+    // Update all cards with the same path immediately - use updateCardRating which calls updateCardStars
+    updateCardRating(filePath, rating);
+}
+
+function updateCardStars(card, rating, filePath) {
+    let starContainer = card.querySelector('.star-rating');
+    if (!starContainer) {
+        // Create star container if it doesn't exist
+        starContainer = document.createElement('div');
+        starContainer.className = 'star-rating';
+        starContainer.style.pointerEvents = 'auto';
+        // Insert before the info element
+        const info = card.querySelector('.video-info');
+        if (info) {
+            card.insertBefore(starContainer, info);
+        } else {
+            card.appendChild(starContainer);
+        }
+    }
+    
+    // Clear and rebuild stars
+    starContainer.innerHTML = '';
+    for (let i = 1; i <= 5; i++) {
+        const star = document.createElement('span');
+        star.className = `star ${i <= rating ? 'active' : ''}`;
+        star.textContent = '★';
+        star.style.pointerEvents = 'auto';
+        star.style.cursor = 'pointer';
+        star.addEventListener('click', (e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            setFileRating(filePath, i);
+        });
+        starContainer.appendChild(star);
+    }
+}
+
+function saveRatings() {
+    localStorage.setItem('fileRatings', JSON.stringify(fileRatings));
+}
+
+function loadRatings() {
+    try {
+        const saved = localStorage.getItem('fileRatings');
+        if (saved) {
+            fileRatings = JSON.parse(saved);
+        }
+    } catch (error) {
+        console.error('Error loading ratings:', error);
+        fileRatings = {};
+    }
+}
+
+function updateCardRating(filePath, rating) {
+    // Normalize path for matching
+    const normalizedPath = filePath.replace(/\\/g, '/');
+    
+    // Find all cards - try multiple selectors and path formats
+    const allCards = gridContainer.querySelectorAll('.video-card:not(.folder-card)');
+    allCards.forEach(card => {
+        const cardPath = card.dataset.path || card.dataset.filePath;
+        if (cardPath) {
+            const normalizedCardPath = cardPath.replace(/\\/g, '/');
+            // Match exact path or normalized path (case-insensitive)
+            if (normalizedCardPath === normalizedPath || cardPath === filePath || 
+                normalizedCardPath.toLowerCase() === normalizedPath.toLowerCase() ||
+                cardPath.toLowerCase() === filePath.toLowerCase()) {
+                updateCardStars(card, rating, filePath);
+            }
+        }
+    });
+}
+
+// Advanced search
+function applyAdvancedSearch() {
+    const sizeOp = document.getElementById('search-size-operator')?.value || '';
+    const sizeVal = parseFloat(document.getElementById('search-size-value')?.value);
+    const dateFrom = document.getElementById('search-date-from')?.value;
+    const dateTo = document.getElementById('search-date-to')?.value;
+    const width = parseInt(document.getElementById('search-width')?.value);
+    const height = parseInt(document.getElementById('search-height')?.value);
+    const aspectRatio = document.getElementById('search-aspect-ratio')?.value || '';
+    const starRating = parseInt(document.getElementById('search-star-rating')?.value);
+    
+    advancedSearchFilters = {
+        sizeOperator: sizeOp,
+        sizeValue: isNaN(sizeVal) ? null : sizeVal * 1024 * 1024, // Convert MB to bytes
+        dateFrom: dateFrom ? new Date(dateFrom).getTime() : null,
+        dateTo: dateTo ? new Date(dateTo).getTime() + 86400000 : null, // Add 1 day to include the full day
+        width: isNaN(width) ? null : width,
+        height: isNaN(height) ? null : height,
+        aspectRatio: aspectRatio,
+        starRating: isNaN(starRating) ? null : starRating
+    };
+    
+    applyFilters();
+    const panel = document.getElementById('advanced-search-panel');
+    if (panel) panel.classList.add('hidden');
+}
+
+function clearAdvancedSearch() {
+    advancedSearchFilters = {
+        sizeOperator: '',
+        sizeValue: null,
+        dateFrom: null,
+        dateTo: null,
+        width: null,
+        height: null,
+        aspectRatio: '',
+        starRating: ''
+    };
+    
+    document.getElementById('search-size-operator').value = '';
+    document.getElementById('search-size-value').value = '';
+    document.getElementById('search-date-from').value = '';
+    document.getElementById('search-date-to').value = '';
+    document.getElementById('search-width').value = '';
+    document.getElementById('search-height').value = '';
+    document.getElementById('search-aspect-ratio').value = '';
+    document.getElementById('search-star-rating').value = '';
+    
+    applyFilters();
+}
+
+// File organization
+async function createFolder(folderName) {
+    if (!currentFolderPath || !folderName) return;
+    try {
+        const result = await window.electronAPI.createFolder(currentFolderPath, folderName);
+        if (result.success) {
+            await navigateToFolder(currentFolderPath); // Refresh
+        } else {
+            alert('Error creating folder: ' + result.error);
+        }
+    } catch (error) {
+        alert('Error creating folder: ' + error.message);
+    }
+}
+
+async function moveFilesToFolder(filePaths, destFolder) {
+    if (!filePaths || filePaths.length === 0) return;
+    
+    showProgress(0, filePaths.length, 'Moving files...');
+    let success = 0;
+    let failed = 0;
+    
+    for (let i = 0; i < filePaths.length; i++) {
+        if (currentProgress && currentProgress.cancelled) break;
+        
+        const filePath = filePaths[i];
+        const fileName = filePath.substring(Math.max(filePath.lastIndexOf('\\'), filePath.lastIndexOf('/')) + 1);
+        const separator = destFolder.includes('\\') ? '\\' : '/';
+        const destPath = destFolder + (destFolder.endsWith('\\') || destFolder.endsWith('/') ? '' : separator) + fileName;
+        
+        try {
+            const result = await window.electronAPI.moveFile(filePath, destPath);
+            if (result.success) {
+                success++;
+            } else {
+                failed++;
+            }
+        } catch (error) {
+            failed++;
+        }
+        
+        updateProgress(i + 1, filePaths.length);
+    }
+    
+    hideProgress();
+    if (success > 0) {
+        await navigateToFolder(currentFolderPath); // Refresh
+    }
+    if (failed > 0) {
+        alert(`Failed to move ${failed} file(s)`);
+    }
+}
+
+async function organizeByDate() {
+    if (!currentFolderPath) return;
+    
+    const items = currentItems.filter(item => item.type !== 'folder');
+    if (items.length === 0) return;
+    
+    showProgress(0, items.length, 'Organizing by date...');
+    
+    const dateFolders = {};
+    
+    for (let i = 0; i < items.length; i++) {
+        if (currentProgress && currentProgress.cancelled) break;
+        
+        const item = items[i];
+        try {
+            // Get file stats via IPC
+            const result = await window.electronAPI.getFileInfo(item.path);
+            if (result.success && result.info) {
+                const date = new Date(result.info.modified);
+                const folderName = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+                
+                if (!dateFolders[folderName]) {
+                    dateFolders[folderName] = [];
+                }
+                dateFolders[folderName].push(item.path);
+            }
+        } catch (error) {
+            console.error('Error getting file stats:', error);
+        }
+        
+        updateProgress(i + 1, items.length);
+    }
+    
+    // Create folders and move files
+    for (const [folderName, filePaths] of Object.entries(dateFolders)) {
+        const separator = currentFolderPath.includes('\\') ? '\\' : '/';
+        const folderPath = currentFolderPath + (currentFolderPath.endsWith('\\') || currentFolderPath.endsWith('/') ? '' : separator) + folderName;
+        await window.electronAPI.createFolder(currentFolderPath, folderName);
+        await moveFilesToFolder(filePaths, folderPath);
+    }
+    
+    hideProgress();
+    await navigateToFolder(currentFolderPath);
+}
+
+async function organizeByType() {
+    if (!currentFolderPath) return;
+    
+    const items = currentItems.filter(item => item.type !== 'folder');
+    if (items.length === 0) return;
+    
+    showProgress(0, items.length, 'Organizing by type...');
+    
+    const typeFolders = {};
+    
+    for (let i = 0; i < items.length; i++) {
+        if (currentProgress && currentProgress.cancelled) break;
+        
+        const item = items[i];
+        const ext = item.name.substring(item.name.lastIndexOf('.') + 1).toLowerCase();
+        const folderName = ext.toUpperCase() || 'Other';
+        
+        if (!typeFolders[folderName]) {
+            typeFolders[folderName] = [];
+        }
+        typeFolders[folderName].push(item.path);
+        
+        updateProgress(i + 1, items.length);
+    }
+    
+    // Create folders and move files
+    for (const [folderName, filePaths] of Object.entries(typeFolders)) {
+        const folderPath = currentFolderPath + (currentFolderPath.endsWith('\\') || currentFolderPath.endsWith('/') ? '' : '\\') + folderName;
+        await window.electronAPI.createFolder(currentFolderPath, folderName);
+        await moveFilesToFolder(filePaths, folderPath);
+    }
+    
+    hideProgress();
+    await navigateToFolder(currentFolderPath);
+}
+
+// Progress indicators
+function showProgress(current, total, text) {
+    currentProgress = { current, total, cancelled: false };
+    const indicator = document.getElementById('progress-indicator');
+    const progressText = document.getElementById('progress-text');
+    const progressFill = document.getElementById('progress-bar-fill');
+    
+    if (indicator) indicator.classList.remove('hidden');
+    if (progressText) progressText.textContent = text || 'Processing...';
+    updateProgress(current, total);
+}
+
+function updateProgress(current, total) {
+    if (!currentProgress) return;
+    currentProgress.current = current;
+    currentProgress.total = total;
+    
+    const progressFill = document.getElementById('progress-bar-fill');
+    if (progressFill && total > 0) {
+        const percent = (current / total) * 100;
+        progressFill.style.width = `${percent}%`;
+    }
+    
+    const progressText = document.getElementById('progress-text');
+    if (progressText && total > 0) {
+        progressText.textContent = `Processing... ${current} of ${total}`;
+    }
+}
+
+function hideProgress() {
+    currentProgress = null;
+    const indicator = document.getElementById('progress-indicator');
+    if (indicator) indicator.classList.add('hidden');
+}
+
+function cancelProgress() {
+    if (currentProgress) {
+        currentProgress.cancelled = true;
+    }
+    hideProgress();
+}
+
+// File watching
+let currentWatchedFolder = null;
+
+async function startWatchingFolder(folderPath) {
+    // Normalize path for consistent comparison
+    const normalizedPath = normalizePath(folderPath);
+    if (currentWatchedFolder && normalizePath(currentWatchedFolder) === normalizedPath) return;
+    
+    // Stop watching previous folder
+    if (currentWatchedFolder) {
+        await window.electronAPI.unwatchFolder(currentWatchedFolder);
+    }
+    
+    // Start watching new folder
+    try {
+        const result = await window.electronAPI.watchFolder(folderPath);
+        if (result.success) {
+            currentWatchedFolder = folderPath;
+        }
+    } catch (error) {
+        console.error('Error watching folder:', error);
+    }
+}
+
+// Recent files preview is now handled inline in renderRecentFiles
+
+// Update applyFilters to include advanced search
+const originalApplyFilters = applyFilters;
+applyFilters = function() {
+    originalApplyFilters();
+    
+    // Apply advanced search filters
+    const cards = gridContainer.querySelectorAll('.video-card:not(.folder-card)');
+    cards.forEach(card => {
+        if (card.style.display === 'none') return;
+        
+        const filePath = card.dataset.path;
+        
+        // If stars filter is active, hide cards without filePath or without ratings
+        if (currentFilter === 'stars') {
+            if (!filePath) {
+                card.style.display = 'none';
+                return;
+            }
+            const rating = getFileRating(filePath);
+            if (rating === 0) {
+                card.style.display = 'none';
+                return;
+            }
+        }
+        
+        if (!filePath) return;
+        
+        let matches = true;
+        
+        // Size filter
+        if (advancedSearchFilters.sizeOperator && advancedSearchFilters.sizeValue !== null) {
+            // We'd need file size in card data - for now skip
+        }
+        
+        // Date filter
+        if (advancedSearchFilters.dateFrom || advancedSearchFilters.dateTo) {
+            // We'd need file date in card data - for now skip
+        }
+        
+        // Dimension filter
+        if (advancedSearchFilters.width || advancedSearchFilters.height) {
+            const width = parseInt(card.dataset.width);
+            const height = parseInt(card.dataset.height);
+            if (advancedSearchFilters.width && width !== advancedSearchFilters.width) matches = false;
+            if (advancedSearchFilters.height && height !== advancedSearchFilters.height) matches = false;
+        }
+        
+        // Aspect ratio filter
+        if (advancedSearchFilters.aspectRatio) {
+            const width = parseInt(card.dataset.width);
+            const height = parseInt(card.dataset.height);
+            if (width && height) {
+                const ratio = width / height;
+                const targetRatio = parseAspectRatio(advancedSearchFilters.aspectRatio);
+                if (Math.abs(ratio - targetRatio) > 0.1) matches = false;
+            }
+        }
+        
+        // Star rating filter
+        if (advancedSearchFilters.starRating !== null) {
+            const rating = getFileRating(filePath);
+            if (rating < advancedSearchFilters.starRating) matches = false;
+        }
+        
+        if (!matches) {
+            card.style.display = 'none';
+        }
+    });
+    
+    // Recalculate layout
+    if (layoutMode === 'masonry' && gridContainer.classList.contains('masonry')) {
+        requestAnimationFrame(() => {
+            layoutMasonry();
+        });
+    }
+};
+
+function parseAspectRatio(ratioStr) {
+    const [w, h] = ratioStr.split(':').map(Number);
+    return w / h;
+}
+
+// Initialize new features
+function initNewFeatures() {
+    // Lightbox navigation buttons
+    const prevBtn = document.getElementById('lightbox-prev');
+    const nextBtn = document.getElementById('lightbox-next');
+    if (prevBtn) prevBtn.addEventListener('click', () => navigateLightbox('prev'));
+    if (nextBtn) nextBtn.addEventListener('click', () => navigateLightbox('next'));
+    
+    // Video menu
+    const videoMenuBtn = document.getElementById('lightbox-video-menu-btn');
+    const videoMenu = document.getElementById('lightbox-video-menu');
+    if (videoMenuBtn && videoMenu) {
+        videoMenuBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            videoMenu.classList.toggle('hidden');
+        });
+        
+        // Close menu when clicking outside
+        document.addEventListener('click', (e) => {
+            if (!videoMenuBtn.contains(e.target) && !videoMenu.contains(e.target)) {
+                videoMenu.classList.add('hidden');
+            }
+        });
+    }
+    
+    const speedBtn = document.getElementById('lightbox-speed-btn');
+    if (speedBtn) {
+        speedBtn.addEventListener('click', () => {
+            const speeds = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
+            const currentIndex = speeds.indexOf(videoPlaybackSpeed);
+            const nextIndex = (currentIndex + 1) % speeds.length;
+            setVideoPlaybackSpeed(speeds[nextIndex]);
+        });
+    }
+    
+    const loopBtn = document.getElementById('lightbox-loop-btn');
+    const repeatBtn = document.getElementById('lightbox-repeat-btn');
+    if (loopBtn) loopBtn.addEventListener('click', toggleVideoLoop);
+    if (repeatBtn) repeatBtn.addEventListener('click', toggleVideoRepeat);
+    
+    // File info button - attach listener directly to button
+    const infoBtn = document.getElementById('lightbox-info-btn');
+    console.log('Initializing file info button:', infoBtn);
+    if (infoBtn) {
+        // Remove any existing listeners by cloning and replacing
+        const newInfoBtn = infoBtn.cloneNode(true);
+        infoBtn.parentNode.replaceChild(newInfoBtn, infoBtn);
+        
+        // Use event delegation or direct attachment
+        newInfoBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            console.log('File info button clicked!');
+            
+            const panel = document.getElementById('file-info-panel');
+            
+            // Toggle panel: if it's open, close it; if it's closed, open it
+            if (panel && !panel.classList.contains('hidden')) {
+                // Panel is open, close it
+                panel.classList.add('hidden');
+                console.log('File info panel closed');
+                return;
+            }
+            
+            // Panel is closed, open it with file info
+            // Try multiple ways to get the file path
+            let filePath = window.currentLightboxFilePath;
+            console.log('Trying to get file path:', { 
+                currentLightboxFilePath: window.currentLightboxFilePath,
+                lightboxItemsLength: lightboxItems.length,
+                currentLightboxIndex: currentLightboxIndex
+            });
+            
+            if (!filePath) {
+                const copyPathBtn = document.getElementById('copy-path-btn');
+                filePath = copyPathBtn?.dataset.filePath;
+                console.log('Got filePath from copyPathBtn:', filePath);
+            }
+            if (!filePath && lightboxItems.length > 0 && currentLightboxIndex >= 0) {
+                filePath = lightboxItems[currentLightboxIndex]?.path;
+                console.log('Got filePath from lightboxItems:', filePath);
+            }
+            if (!filePath && lightboxVideo && lightboxVideo.src) {
+                // Try to extract path from video src
+                const src = lightboxVideo.src;
+                if (src.startsWith('file://')) {
+                    filePath = src.replace('file:///', '').replace(/\//g, '\\');
+                    console.log('Got filePath from video src:', filePath);
+                }
+            }
+            if (!filePath && lightboxImage && lightboxImage.src) {
+                // Try to extract path from image src
+                const src = lightboxImage.src;
+                if (src.startsWith('file://')) {
+                    filePath = src.replace('file:///', '').replace(/\//g, '\\');
+                    console.log('Got filePath from image src:', filePath);
+                }
+            }
+            
+            console.log('Final filePath for info panel:', filePath);
+            if (filePath) {
+                try {
+                    await showFileInfo(filePath);
+                } catch (error) {
+                    console.error('Error showing file info:', error);
+                    const details = document.getElementById('file-info-details');
+                    if (panel && details) {
+                        panel.classList.remove('hidden');
+                        panel.style.display = 'block';
+                        details.innerHTML = `<div class="file-info-detail-row">Error: ${error.message}</div>`;
+                    }
+                }
+            } else {
+                console.warn('Could not determine file path for info panel');
+                // Show error in panel instead of alert
+                const details = document.getElementById('file-info-details');
+                if (panel && details) {
+                    panel.classList.remove('hidden');
+                    panel.style.display = 'block';
+                    details.innerHTML = '<div class="file-info-detail-row">Error: Could not determine file path</div>';
+                }
+            }
+        });
+        console.log('File info button listener attached');
+    } else {
+        console.error('File info button not found!');
+    }
+    
+    const fileInfoCloseBtn = document.getElementById('file-info-close');
+    const fileInfoPanel = document.getElementById('file-info-panel');
+    if (fileInfoCloseBtn) {
+        fileInfoCloseBtn.addEventListener('click', () => {
+            if (fileInfoPanel) fileInfoPanel.classList.add('hidden');
+        });
+    }
+    
+    // Prevent clicks inside panel from closing it
+    if (fileInfoPanel) {
+        fileInfoPanel.addEventListener('click', (e) => {
+            e.stopPropagation();
+        });
+        
+        // Close when clicking outside the lightbox (but keep open when clicking inside lightbox)
+        document.addEventListener('click', (e) => {
+            const infoBtn = document.getElementById('lightbox-info-btn');
+            const lightbox = document.getElementById('lightbox');
+            
+            // Don't close if:
+            // - Panel is hidden (no need to check)
+            // - Clicking on the panel itself
+            // - Clicking on the info button (toggles the panel)
+            // - Clicking anywhere inside the lightbox (navigation, controls, content, etc.)
+            const isClickOnPanel = fileInfoPanel.contains(e.target);
+            const isClickOnInfoBtn = infoBtn && infoBtn.contains(e.target);
+            const isClickInsideLightbox = lightbox && !lightbox.classList.contains('hidden') && 
+                                         (lightbox.contains(e.target) || e.target.closest('#lightbox'));
+            
+            if (!fileInfoPanel.classList.contains('hidden') && 
+                !isClickOnPanel && 
+                !isClickOnInfoBtn &&
+                !isClickInsideLightbox) {
+                // Only close if clicking outside the lightbox entirely
+                fileInfoPanel.classList.add('hidden');
+            }
+        });
+    }
+    
+    // Advanced search
+    const advancedSearchBtn = document.getElementById('advanced-search-btn');
+    const advancedSearchPanel = document.getElementById('advanced-search-panel');
+    const applyAdvancedSearchBtn = document.getElementById('apply-advanced-search');
+    const clearAdvancedSearchBtn = document.getElementById('clear-advanced-search');
+    const closeAdvancedSearchBtn = document.getElementById('close-advanced-search');
+    
+    if (advancedSearchBtn) {
+        advancedSearchBtn.addEventListener('click', () => {
+            if (advancedSearchPanel) advancedSearchPanel.classList.toggle('hidden');
+        });
+    }
+    
+    if (applyAdvancedSearchBtn) {
+        applyAdvancedSearchBtn.addEventListener('click', applyAdvancedSearch);
+    }
+    
+    if (clearAdvancedSearchBtn) {
+        clearAdvancedSearchBtn.addEventListener('click', clearAdvancedSearch);
+    }
+    
+    if (closeAdvancedSearchBtn) {
+        closeAdvancedSearchBtn.addEventListener('click', () => {
+            if (advancedSearchPanel) advancedSearchPanel.classList.add('hidden');
+        });
+    }
+    
+    // Organize dialog
+    const organizeBtn = document.getElementById('organize-btn');
+    const organizeDialog = document.getElementById('organize-dialog');
+    const createFolderBtn = document.getElementById('create-folder-btn');
+    const moveToFolderBtn = document.getElementById('move-to-folder-btn');
+    const organizeByDateBtn = document.getElementById('organize-by-date-btn');
+    const organizeByTypeBtn = document.getElementById('organize-by-type-btn');
+    const organizeInputContainer = document.getElementById('organize-folder-input-container');
+    const organizeFolderName = document.getElementById('organize-folder-name');
+    const organizeConfirmBtn = document.getElementById('organize-confirm-btn');
+    const organizeCancelBtn = document.getElementById('organize-cancel-btn');
+    const closeOrganizeDialogBtn = document.getElementById('close-organize-dialog');
+    let organizeMode = null;
+    
+    if (organizeBtn) {
+        organizeBtn.addEventListener('click', () => {
+            if (organizeDialog) organizeDialog.classList.remove('hidden');
+        });
+    }
+    
+    if (createFolderBtn) {
+        createFolderBtn.addEventListener('click', () => {
+            organizeMode = 'create';
+            if (organizeInputContainer) organizeInputContainer.classList.remove('hidden');
+            if (organizeFolderName) organizeFolderName.value = '';
+        });
+    }
+    
+    if (moveToFolderBtn) {
+        moveToFolderBtn.addEventListener('click', () => {
+            organizeMode = 'move';
+            if (organizeInputContainer) organizeInputContainer.classList.remove('hidden');
+            if (organizeFolderName) organizeFolderName.value = '';
+        });
+    }
+    
+    if (organizeByDateBtn) {
+        organizeByDateBtn.addEventListener('click', () => {
+            organizeByDate();
+            if (organizeDialog) organizeDialog.classList.add('hidden');
+        });
+    }
+    
+    if (organizeByTypeBtn) {
+        organizeByTypeBtn.addEventListener('click', () => {
+            organizeByType();
+            if (organizeDialog) organizeDialog.classList.add('hidden');
+        });
+    }
+    
+    if (organizeConfirmBtn) {
+        organizeConfirmBtn.addEventListener('click', async () => {
+            const folderName = organizeFolderName?.value.trim();
+            if (!folderName) return;
+            
+            if (organizeMode === 'create') {
+                await createFolder(folderName);
+            } else if (organizeMode === 'move') {
+                // Get selected files - for now, move all files
+                const selectedFiles = currentItems.filter(item => item.type !== 'folder').map(item => item.path);
+                if (selectedFiles.length > 0) {
+                    const separator = currentFolderPath.includes('\\') ? '\\' : '/';
+                    const destFolder = currentFolderPath + (currentFolderPath.endsWith('\\') || currentFolderPath.endsWith('/') ? '' : separator) + folderName;
+                    await window.electronAPI.createFolder(currentFolderPath, folderName);
+                    await moveFilesToFolder(selectedFiles, destFolder);
+                }
+            }
+            
+            if (organizeInputContainer) organizeInputContainer.classList.add('hidden');
+            if (organizeDialog) organizeDialog.classList.add('hidden');
+        });
+    }
+    
+    if (organizeCancelBtn) {
+        organizeCancelBtn.addEventListener('click', () => {
+            if (organizeInputContainer) organizeInputContainer.classList.add('hidden');
+            organizeMode = null;
+        });
+    }
+    
+    if (closeOrganizeDialogBtn) {
+        closeOrganizeDialogBtn.addEventListener('click', () => {
+            if (organizeDialog) organizeDialog.classList.add('hidden');
+            if (organizeInputContainer) organizeInputContainer.classList.add('hidden');
+            organizeMode = null;
+        });
+    }
+    
+    // Progress cancel button
+    const cancelProgressBtn = document.getElementById('cancel-progress');
+    if (cancelProgressBtn) {
+        cancelProgressBtn.addEventListener('click', cancelProgress);
+    }
+    
+    // Star rating filter - filter to show only rated files
+    const filterStarsBtn = document.getElementById('filter-stars');
+    if (filterStarsBtn) {
+        filterStarsBtn.addEventListener('click', () => {
+            if (currentFilter === 'stars') {
+                // Toggle off - go back to 'all'
+                currentFilter = 'all';
+                filterStarsBtn.classList.remove('active');
+                filterAllBtn.classList.add('active');
+            } else {
+                // Toggle on - filter to stars
+                currentFilter = 'stars';
+                filterStarsBtn.classList.add('active');
+                filterAllBtn.classList.remove('active');
+                filterVideosBtn.classList.remove('active');
+                filterImagesBtn.classList.remove('active');
+                filterAudioBtn.classList.remove('active');
+            }
+            // Re-render with filtered items (like video/image filters)
+            if (currentFolderPath && currentItems.length > 0) {
+                const filteredItems = filterItems(currentItems);
+                const sortedItems = sortItems(filteredItems);
+                renderItems(sortedItems);
+            } else {
+                applyFilters();
+            }
+        });
+    }
+    
+    // File watching
+    window.electronAPI.onFolderChanged((event, data) => {
+        if (!currentFolderPath) return;
+        
+        // Normalize paths for consistent comparison (case-insensitive on Windows)
+        const normalizedWatchedPath = normalizePath(data.folderPath).toLowerCase();
+        const normalizedCurrentPath = normalizePath(currentFolderPath).toLowerCase();
+        
+        // Check if the change is in the currently viewed folder or any of its subfolders
+        // The watched folder should match the current folder, OR
+        // the changed file should be within the current folder tree
+        const isInCurrentFolder = normalizedWatchedPath === normalizedCurrentPath;
+        let isInSubfolder = false;
+        let subfolderPath = null;
+        
+        if (data.filePath) {
+            const normalizedFilePath = normalizePath(data.filePath).toLowerCase();
+            // Check if file is in current folder or any subfolder
+            // Add '/' to ensure we match folders, not just prefix matches
+            const currentPathWithSlash = normalizedCurrentPath + '/';
+            isInSubfolder = normalizedFilePath.startsWith(currentPathWithSlash) || 
+                           normalizedFilePath === normalizedCurrentPath;
+            
+            // Extract the subfolder path from the file path
+            // This is the folder containing the changed file
+            if (isInSubfolder && normalizedFilePath !== normalizedCurrentPath) {
+                // Get the directory containing the file (this is the subfolder)
+                // Use the original filePath and normalize it
+                const lastSlashIndex = Math.max(
+                    data.filePath.lastIndexOf('/'),
+                    data.filePath.lastIndexOf('\\')
+                );
+                if (lastSlashIndex !== -1) {
+                    subfolderPath = data.filePath.substring(0, lastSlashIndex);
+                }
+            }
+        }
+        
+        if (isInCurrentFolder || isInSubfolder) {
+            // If change is in a subfolder, invalidate that subfolder's cache
+            // This ensures that when navigating into the subfolder, fresh data is loaded
+            if (subfolderPath) {
+                invalidateFolderCache(subfolderPath);
+                
+                // If we're currently viewing that subfolder, refresh it immediately
+                const normalizedSubfolderPath = normalizePath(subfolderPath).toLowerCase();
+                if (normalizedSubfolderPath === normalizedCurrentPath) {
+                    setTimeout(() => {
+                        navigateToFolder(currentFolderPath, false, true); // forceReload = true to ensure fresh data
+                    }, 100);
+                    return; // Don't refresh parent if we're already refreshing the subfolder
+                }
+            }
+            
+            // Refresh current folder (parent) to show newly created/modified/deleted files
+            // Use a small delay to ensure file system operations are complete
+            setTimeout(() => {
+                navigateToFolder(currentFolderPath, false, true); // forceReload = true to ensure fresh data
+            }, 100);
+        }
+    });
+    
+    // Update keyboard shortcuts to include arrow keys and frame controls for lightbox
+    document.addEventListener('keydown', (e) => {
+        if (!lightbox.classList.contains('hidden')) {
+            // Don't trigger if typing in an input
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) {
+                return;
+            }
+            
+            if (e.key === 'ArrowLeft') {
+                e.preventDefault();
+                navigateLightbox('prev');
+            } else if (e.key === 'ArrowRight') {
+                e.preventDefault();
+                navigateLightbox('next');
+            } else if (e.key === ',' || e.key === '<') {
+                // Previous frame (comma key)
+                e.preventDefault();
+                if (lightboxVideo && lightboxVideo.style.display !== 'none') {
+                    stepVideoFrame('prev');
+                }
+            } else if (e.key === '.' || e.key === '>') {
+                // Next frame (period key)
+                e.preventDefault();
+                if (lightboxVideo && lightboxVideo.style.display !== 'none') {
+                    stepVideoFrame('next');
+                }
+            }
+        }
+    });
+}
+
+// openLightbox already updated above to track current index
+
+// Hook into navigateToFolder to start watching (will be called after navigation completes)
+// This is handled in the navigateToFolder function itself
 
 // Restore last folder and layout mode on app startup
 window.addEventListener('DOMContentLoaded', async () => {
@@ -2511,6 +6805,14 @@ window.addEventListener('DOMContentLoaded', async () => {
         rememberFolderLabel.textContent = rememberLastFolder ? 'On' : 'Off';
     }
     
+    // Restore include moving images preference
+    const savedIncludeMovingImages = localStorage.getItem('includeMovingImages');
+    if (savedIncludeMovingImages !== null) {
+        includeMovingImages = savedIncludeMovingImages === 'true';
+        includeMovingImagesToggle.checked = includeMovingImages;
+        includeMovingImagesLabel.textContent = includeMovingImages ? 'On' : 'Off';
+    }
+    
     // Restore layout mode preference
     const savedLayoutMode = localStorage.getItem('layoutMode');
     if (savedLayoutMode === 'grid' || savedLayoutMode === 'masonry') {
@@ -2520,18 +6822,22 @@ window.addEventListener('DOMContentLoaded', async () => {
         layoutModeLabel.textContent = layoutMode === 'grid' ? 'Rigid' : 'Dynamic';
     }
     
-    // Restore sorting preferences
+    // Restore sorting preferences (will be overridden by tab's preferences in loadTabs)
     const savedSortType = localStorage.getItem('sortType');
     if (savedSortType === 'name' || savedSortType === 'date') {
         sortType = savedSortType;
-        sortTypeSelect.value = sortType;
+    } else {
+        sortType = 'name'; // Default
     }
     
     const savedSortOrder = localStorage.getItem('sortOrder');
     if (savedSortOrder === 'ascending' || savedSortOrder === 'descending') {
         sortOrder = savedSortOrder;
-        sortOrderSelect.value = sortOrder;
+    } else {
+        sortOrder = 'ascending'; // Default
     }
+    
+    // Note: UI will be updated by switchToTab when tabs are loaded
     
     // Only restore last folder if remembering is enabled
     if (rememberLastFolder) {
@@ -2541,7 +6847,8 @@ window.addEventListener('DOMContentLoaded', async () => {
             // navigateToFolder will handle errors gracefully
             try {
                 // Validate path exists first before navigating
-                const items = await window.electronAPI.scanFolder(lastFolderPath);
+                const skipStats = sortType === 'name';
+                const items = await window.electronAPI.scanFolder(lastFolderPath, { skipStats });
                 // If scan succeeds, navigate to the folder
                 await navigateToFolder(lastFolderPath);
             } catch (error) {
@@ -2570,4 +6877,38 @@ window.addEventListener('DOMContentLoaded', async () => {
             resumeWhenRestored();
         }
     });
+    
+    // Initialize new features
+    initKeyboardShortcuts();
+    initTheme();
+    initThumbnailQuality();
+    initZoom();
+    loadFavorites();
+    loadRecentFiles();
+    loadRatings();
+    loadTabs(); // This will handle tab restoration and navigation
+    initVideoScrubber();
+    initNewFeatures();
+    
+    // If no tab has a path and we have a last folder, navigate to it
+    const activeTab = tabs.find(t => t.id === activeTabId);
+    if ((!activeTab || !activeTab.path) && rememberLastFolder) {
+        const lastFolderPath = localStorage.getItem('lastFolderPath');
+        if (lastFolderPath) {
+            try {
+                const skipStats = sortType === 'name';
+                const items = await window.electronAPI.scanFolder(lastFolderPath, { skipStats });
+                if (activeTab) {
+                    activeTab.path = lastFolderPath;
+                    activeTab.name = lastFolderPath.split(/[/\\]/).pop();
+                    saveTabs();
+                    renderTabs();
+                }
+                await navigateToFolder(lastFolderPath);
+            } catch (error) {
+                console.log('Last folder no longer exists:', lastFolderPath);
+                localStorage.removeItem('lastFolderPath');
+            }
+        }
+    }
 });

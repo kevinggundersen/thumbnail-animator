@@ -11,6 +11,7 @@ const PRELOAD_BUFFER_PX = 1000; // Preload content N pixels before it enters vie
 
 // Cleanup & Performance Configuration
 const CLEANUP_COOLDOWN_MS = 5; // Cooldown between cleanup operations (ms)
+const CLEANUP_IDLE_INTERVAL_MS = 200; // Low-frequency safety cleanup while idle (ms)
 const VIEWPORT_CACHE_TTL = 100; // Cache viewport bounds for N ms
 const MEDIA_COUNT_CACHE_TTL = 50; // Cache media counts for N ms
 
@@ -20,7 +21,6 @@ const PROGRESSIVE_RENDER_CHUNK_SIZE = 50; // Render N items per frame
 const PROGRESSIVE_RENDER_INITIAL_CHUNK = 100; // Render first N items immediately
 
 // Scroll & Observer Configuration
-const SCROLL_THROTTLE_MS = 16; // Throttle scroll events to ~60fps (ms)
 const SCROLL_DEBOUNCE_MS = 150; // Debounce cleanup after scroll stops (ms)
 const OBSERVER_CLEANUP_THROTTLE_MS = 16; // Throttle IntersectionObserver cleanup to ~60fps (ms)
 
@@ -450,7 +450,47 @@ const videoCards = new WeakSet();
 
 // --- Periodic cleanup check to catch videos that IntersectionObserver might miss ---
 let cleanupCheckInterval;
-let cleanupCheckTimeout;
+let cleanupScrollTimeout = null;
+let cleanupAnimationFrame = null;
+let cleanupScrollListenerAttached = false;
+
+function runCleanupCycle() {
+    if (isWindowMinimized) return;
+    performCleanupCheck();
+    retryPendingVideos();
+    proactiveLoadMedia();
+}
+
+function scheduleCleanupCycle() {
+    if (cleanupAnimationFrame !== null) return;
+    
+    cleanupAnimationFrame = requestAnimationFrame(() => {
+        cleanupAnimationFrame = null;
+        runCleanupCycle();
+    });
+}
+
+function handleGridScroll() {
+    if (isWindowMinimized) return;
+    
+    cachedViewportBounds = null;
+    viewportBoundsCacheTime = 0;
+    scheduleCleanupCycle();
+    
+    clearTimeout(cleanupScrollTimeout);
+    cleanupScrollTimeout = setTimeout(() => {
+        cachedViewportBounds = null;
+        viewportBoundsCacheTime = 0;
+        runCleanupCycle();
+    }, SCROLL_DEBOUNCE_MS);
+}
+
+function ensureCleanupScrollListener() {
+    if (cleanupScrollListenerAttached) return;
+    gridContainer.addEventListener('scroll', handleGridScroll, { passive: true });
+    cleanupScrollListenerAttached = true;
+}
+
 function performCleanupCheck() {
     // Check all media cards and clean up media that aren't intersecting
     const allCards = gridContainer.querySelectorAll('.video-card');
@@ -615,52 +655,15 @@ function performCleanupCheck() {
 }
 
 function startPeriodicCleanup() {
-    if (cleanupCheckInterval) return;
+    ensureCleanupScrollListener();
     
-    // Very frequent periodic check - every 16ms (~60fps) to catch leaks immediately
-    cleanupCheckInterval = setInterval(() => {
-        performCleanupCheck();
-        retryPendingVideos(); // Also retry pending videos
-        proactiveLoadMedia(); // Proactively load media for cards in preload zone
-    }, 16);
+    if (!cleanupCheckInterval) {
+        cleanupCheckInterval = setInterval(() => {
+            runCleanupCycle();
+        }, CLEANUP_IDLE_INTERVAL_MS);
+    }
     
-    // Also trigger cleanup immediately on scroll start and after scroll stops
-    // Optimized scroll handler with debouncing and throttling
-    let scrollTimeout = null;
-    let scrollThrottleTimeout = null;
-    let lastScrollTime = 0;
-    let isScrolling = false;
-    // Using configuration constants from top of file
-    
-    gridContainer.addEventListener('scroll', () => {
-        const now = Date.now();
-        isScrolling = true;
-        
-        // Throttle scroll cleanup during active scrolling (max once per 16ms)
-        if (!scrollThrottleTimeout) {
-            scrollThrottleTimeout = requestAnimationFrame(() => {
-                if (now - lastScrollTime >= SCROLL_THROTTLE_MS) {
-                    performCleanupCheck();
-                    retryPendingVideos();
-                    lastScrollTime = now;
-                }
-                scrollThrottleTimeout = null;
-            });
-        }
-        
-        // Debounce cleanup after scroll stops
-        clearTimeout(scrollTimeout);
-        scrollTimeout = setTimeout(() => {
-            isScrolling = false;
-            // Final cleanup after scroll stops
-            performCleanupCheck();
-            retryPendingVideos();
-            proactiveLoadMedia(); // Also proactively load media after scroll stops
-            // Invalidate viewport cache after scroll stops
-            cachedViewportBounds = null;
-            viewportBoundsCacheTime = 0;
-        }, SCROLL_DEBOUNCE_MS);
-    }, { passive: true });
+    scheduleCleanupCycle();
 }
 
 function stopPeriodicCleanup() {
@@ -668,9 +671,13 @@ function stopPeriodicCleanup() {
         clearInterval(cleanupCheckInterval);
         cleanupCheckInterval = null;
     }
-    if (cleanupCheckTimeout) {
-        clearTimeout(cleanupCheckTimeout);
-        cleanupCheckTimeout = null;
+    if (cleanupScrollTimeout) {
+        clearTimeout(cleanupScrollTimeout);
+        cleanupScrollTimeout = null;
+    }
+    if (cleanupAnimationFrame !== null) {
+        cancelAnimationFrame(cleanupAnimationFrame);
+        cleanupAnimationFrame = null;
     }
 }
 
@@ -722,7 +729,7 @@ function pauseWhenMinimized() {
         }
     }
     
-    // Stop periodic cleanup interval (runs every 16ms)
+    // Stop the background cleanup timer while the window is minimized
     stopPeriodicCleanup();
     
     // Disconnect IntersectionObserver to stop watching for visibility changes
@@ -1038,9 +1045,7 @@ function applyAspectRatioToCard(card, aspectRatioName) {
     
     // Recalculate masonry layout when aspect ratio changes
     if (gridContainer.classList.contains('masonry')) {
-        requestAnimationFrame(() => {
-            layoutMasonry();
-        });
+        scheduleMasonryLayout();
     }
 }
 
@@ -1051,6 +1056,33 @@ let resizeTimeout;
 let masonryResizeObserver = null;
 let masonryMutationObserver = null;
 let masonryResizeHandler = null;
+let masonryLayoutAnimationFrame = null;
+let isApplyingMasonryLayout = false;
+
+function scheduleMasonryLayout() {
+    if (masonryLayoutAnimationFrame !== null) return;
+    
+    masonryLayoutAnimationFrame = requestAnimationFrame(() => {
+        masonryLayoutAnimationFrame = null;
+        if (layoutMode === 'masonry' && gridContainer.classList.contains('masonry') && !isApplyingMasonryLayout) {
+            layoutMasonry();
+        }
+    });
+}
+
+function getShortestColumnIndex(heights) {
+    let shortestIndex = 0;
+    let shortestHeight = heights[0] ?? 0;
+    
+    for (let i = 1; i < heights.length; i++) {
+        if (heights[i] < shortestHeight) {
+            shortestHeight = heights[i];
+            shortestIndex = i;
+        }
+    }
+    
+    return shortestIndex;
+}
 
 function calculateMasonryColumns() {
     const containerWidth = gridContainer.clientWidth - (parseInt(getComputedStyle(gridContainer).paddingLeft) * 2);
@@ -1062,180 +1094,128 @@ function calculateMasonryColumns() {
 }
 
 function layoutMasonry() {
-    if (!gridContainer.classList.contains('masonry') || layoutMode !== 'masonry') return;
+    if (!gridContainer.classList.contains('masonry') || layoutMode !== 'masonry' || isApplyingMasonryLayout) return;
     
-    const cards = Array.from(gridContainer.querySelectorAll('.video-card, .folder-card'));
+    isApplyingMasonryLayout = true;
     
-    // Remove any existing spacer
-    const existingSpacer = gridContainer.querySelector('.masonry-spacer');
-    if (existingSpacer) {
-        existingSpacer.remove();
-    }
-    
-    if (cards.length === 0) {
-        gridContainer.style.height = 'auto';
-        gridContainer.style.minHeight = '0px';
-        return;
-    }
-    
-    const gap = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--gap')) || 16;
-    const containerWidth = gridContainer.clientWidth - (parseInt(getComputedStyle(gridContainer).paddingLeft) * 2);
-    const columns = calculateMasonryColumns();
-    
-    if (columns === 0) return;
-    
-    // Update CSS variable for column count
-    gridContainer.style.setProperty('--columns', columns);
-    
-    // Reset column heights
-    columnHeights = new Array(columns).fill(0);
-    
-    // Calculate column width
-    const columnWidth = (containerWidth - gap * (columns - 1)) / columns;
-    
-    // Layout cards in masonry pattern
-    cards.forEach((card) => {
-        // Skip hidden cards (filtered by search)
-        if (card.style.display === 'none') {
+    try {
+        const cards = Array.from(gridContainer.querySelectorAll('.video-card, .folder-card'));
+        
+        const existingSpacer = gridContainer.querySelector('.masonry-spacer');
+        if (existingSpacer) {
+            existingSpacer.remove();
+        }
+        
+        if (cards.length === 0) {
+            gridContainer.style.height = 'auto';
+            gridContainer.style.minHeight = '0px';
             return;
         }
         
-        // Ensure card is absolutely positioned for masonry
-        card.style.position = 'absolute';
+        const rootStyles = getComputedStyle(document.documentElement);
+        const gridStyles = getComputedStyle(gridContainer);
+        const gap = parseInt(rootStyles.getPropertyValue('--gap')) || 16;
+        const containerPaddingLeft = parseInt(gridStyles.paddingLeft) || 0;
+        const containerPaddingTop = parseInt(gridStyles.paddingTop) || 0;
+        const containerPaddingBottom = parseInt(gridStyles.paddingBottom) || 0;
+        const containerWidth = gridContainer.clientWidth - (containerPaddingLeft * 2);
+        const columns = calculateMasonryColumns();
         
-        // Set width first - this determines the card's width
-        card.style.width = `${columnWidth}px`;
+        if (columns === 0) return;
         
-        // Handle folder cards differently (square aspect ratio)
-        let cardHeight;
-        if (card.classList.contains('folder-card')) {
-            // Folder cards are square
-            cardHeight = columnWidth;
-        } else {
-            // Calculate height based on aspect ratio for media cards
-            // First try to get aspect ratio from dataset (set when video metadata loads)
-            let aspectRatioName = card.dataset.aspectRatio;
+        gridContainer.style.setProperty('--columns', columns);
+        columnHeights = new Array(columns).fill(0);
+        
+        const columnWidth = (containerWidth - gap * (columns - 1)) / columns;
+        
+        cards.forEach((card) => {
+            if (card.style.display === 'none') {
+                return;
+            }
             
-            // If not in dataset, try to determine from CSS class
-            if (!aspectRatioName) {
-                for (const ar of ASPECT_RATIOS) {
-                    if (card.classList.contains(`aspect-${ar.name.replace(':', '-')}`)) {
-                        aspectRatioName = ar.name;
-                        break;
+            card.style.position = 'absolute';
+            card.style.width = `${columnWidth}px`;
+            
+            let cardHeight;
+            if (card.classList.contains('folder-card')) {
+                cardHeight = columnWidth;
+            } else {
+                let aspectRatioName = card.dataset.aspectRatio;
+                
+                if (!aspectRatioName) {
+                    for (const ar of ASPECT_RATIOS) {
+                        if (card.classList.contains(`aspect-${ar.name.replace(':', '-')}`)) {
+                            aspectRatioName = ar.name;
+                            break;
+                        }
                     }
+                }
+                
+                if (!aspectRatioName) {
+                    aspectRatioName = '16:9';
+                }
+                
+                const aspectRatio = ASPECT_RATIOS.find(ar => ar.name === aspectRatioName);
+                if (!aspectRatio) {
+                    console.warn('Aspect ratio not found for:', aspectRatioName, 'defaulting to 16:9');
+                    aspectRatioName = '16:9';
+                }
+                const aspectRatioValue = aspectRatio ? aspectRatio.ratio : (16 / 9);
+                
+                cardHeight = columnWidth / aspectRatioValue;
+                
+                if (!cardHeight || cardHeight <= 0 || !isFinite(cardHeight)) {
+                    console.warn('Invalid card height calculated:', cardHeight, 'for aspect ratio:', aspectRatioName, 'using default');
+                    cardHeight = columnWidth / (16 / 9);
                 }
             }
             
-            // Default to 16:9 if no aspect ratio found
-            if (!aspectRatioName) {
-                aspectRatioName = '16:9';
+            if (cardHeight < 50) {
+                cardHeight = 50;
             }
             
-            // Get the aspect ratio object
-            const aspectRatio = ASPECT_RATIOS.find(ar => ar.name === aspectRatioName);
-            if (!aspectRatio) {
-                console.warn('Aspect ratio not found for:', aspectRatioName, 'defaulting to 16:9');
-                aspectRatioName = '16:9';
-            }
-            const aspectRatioValue = aspectRatio ? aspectRatio.ratio : (16/9);
+            card.style.height = `${cardHeight}px`;
+            card.style.paddingBottom = '0';
+            card.style.opacity = '1';
+            card.style.visibility = 'visible';
             
-            // Calculate height: height = width / aspectRatio
-            // aspectRatio is width/height, so height = width / aspectRatio
-            cardHeight = columnWidth / aspectRatioValue;
+            const shortestColumnIndex = getShortestColumnIndex(columnHeights);
+            const left = shortestColumnIndex * (columnWidth + gap);
+            const top = columnHeights[shortestColumnIndex];
             
-            // Ensure height is valid
-            if (!cardHeight || cardHeight <= 0 || !isFinite(cardHeight)) {
-                console.warn('Invalid card height calculated:', cardHeight, 'for aspect ratio:', aspectRatioName, 'using default');
-                cardHeight = columnWidth / (16/9);
-            }
+            card.style.left = `${left}px`;
+            card.style.top = `${top}px`;
+            columnHeights[shortestColumnIndex] += cardHeight + gap;
+        });
+        
+        const maxHeight = Math.max(...columnHeights, 0);
+        if (maxHeight > 0) {
+            const contentHeight = maxHeight + containerPaddingTop + containerPaddingBottom;
+            
+            const spacer = document.createElement('div');
+            spacer.className = 'masonry-spacer';
+            spacer.style.width = '1px';
+            spacer.style.height = `${contentHeight}px`;
+            spacer.style.position = 'static';
+            spacer.style.pointerEvents = 'none';
+            spacer.style.visibility = 'hidden';
+            spacer.style.margin = '0';
+            spacer.style.padding = '0';
+            gridContainer.appendChild(spacer);
+        } else {
+            gridContainer.style.minHeight = '0px';
         }
-        
-        // Ensure minimum height for visibility
-        if (cardHeight < 50) {
-            cardHeight = 50; // Minimum height to ensure cards are visible
-        }
-        
-        // Set explicit height and remove padding-bottom to avoid conflicts
-        card.style.height = `${cardHeight}px`;
-        card.style.paddingBottom = '0';
-        
-        // Ensure card is visible (opacity and display)
-        card.style.opacity = '1';
-        card.style.visibility = 'visible';
-        
-        // Ensure card maintains position: relative for internal content (video, info)
-        // Even though it's absolutely positioned for masonry, internal absolute elements
-        // will still position relative to this card
-        // Actually, we need position: absolute for masonry, but internal content should still work
-        
-        // Find the shortest column
-        const shortestColumnIndex = columnHeights.indexOf(Math.min(...columnHeights));
-        
-        // Calculate position
-        const left = shortestColumnIndex * (columnWidth + gap);
-        const top = columnHeights[shortestColumnIndex];
-        
-        // Set position
-        card.style.left = `${left}px`;
-        card.style.top = `${top}px`;
-        
-        // Ensure card has proper positioning context for internal absolute elements
-        // Internal elements (video, info) use position: absolute and need the card
-        // to establish a positioning context - even though card is absolutely positioned,
-        // its children will still position relative to it
-        // But to be safe, let's ensure the card maintains relative positioning for children
-        // Actually, we can't do both - card needs to be absolute for masonry
-        
-        // Force a reflow to ensure dimensions are applied
-        void card.offsetHeight;
-        
-        // Update column height (card height + gap)
-        columnHeights[shortestColumnIndex] += cardHeight + gap;
-    });
-    
-    // Set container height to accommodate all cards
-    // For absolutely positioned children, we need to ensure the container's
-    // scrollHeight is greater than clientHeight to enable scrolling.
-    const maxHeight = Math.max(...columnHeights, 0);
-    if (maxHeight > 0) {
-        // The maxHeight already includes gaps between cards
-        // Add container padding to get total content height
-        const containerPaddingTop = parseInt(getComputedStyle(gridContainer).paddingTop) || 0;
-        const containerPaddingBottom = parseInt(getComputedStyle(gridContainer).paddingBottom) || 0;
-        const contentHeight = maxHeight + containerPaddingTop + containerPaddingBottom;
-        
-        // Get the viewport height available to the container
-        const header = document.querySelector('header');
-        const headerHeight = header ? header.offsetHeight : 0;
-        const viewportHeight = window.innerHeight;
-        const availableHeight = viewportHeight - headerHeight;
-        
-        // Create a spacer element to ensure scrollHeight is calculated correctly
-        // Absolutely positioned children don't contribute to scrollHeight, so we need
-        // a non-positioned element that establishes the scrollable area
-        const spacer = document.createElement('div');
-        spacer.className = 'masonry-spacer';
-        spacer.style.width = '1px';
-        spacer.style.height = `${contentHeight}px`;
-        spacer.style.position = 'static'; // Not absolutely positioned!
-        spacer.style.pointerEvents = 'none';
-        spacer.style.visibility = 'hidden';
-        spacer.style.margin = '0';
-        spacer.style.padding = '0';
-        gridContainer.appendChild(spacer);
-        
-        // The spacer (non-positioned) ensures the container's scrollHeight equals contentHeight
-        // The container with flex: 1 will have clientHeight = availableHeight
-        // So scrolling works when contentHeight > availableHeight
-        
-        // Force a reflow to ensure scrollHeight is calculated
-        void gridContainer.offsetHeight;
-    } else {
-        gridContainer.style.minHeight = '0px';
+    } finally {
+        isApplyingMasonryLayout = false;
     }
 }
 
 function cleanupMasonry() {
+    if (masonryLayoutAnimationFrame !== null) {
+        cancelAnimationFrame(masonryLayoutAnimationFrame);
+        masonryLayoutAnimationFrame = null;
+    }
+    
     // Clean up resize observer
     if (masonryResizeObserver) {
         masonryResizeObserver.disconnect();
@@ -1278,10 +1258,8 @@ function initMasonry() {
         card.style.visibility = '';
     });
     
-    // Initial layout after a short delay to ensure cards are rendered
-    setTimeout(() => {
-        layoutMasonry();
-    }, 100);
+    // Initial layout after cards are rendered
+    scheduleMasonryLayout();
     
     // Recalculate on window resize (debounced)
     masonryResizeHandler = () => {
@@ -1293,7 +1271,7 @@ function initMasonry() {
         clearTimeout(resizeTimeout);
         resizeTimeout = setTimeout(() => {
             if (layoutMode === 'masonry') {
-                layoutMasonry();
+                scheduleMasonryLayout();
             }
         }, 150);
     };
@@ -1302,23 +1280,13 @@ function initMasonry() {
     
     // Use ResizeObserver to detect when card sizes change (e.g., aspect ratio updates)
     masonryResizeObserver = new ResizeObserver(() => {
-        requestAnimationFrame(() => {
-            if (layoutMode === 'masonry') {
-                layoutMasonry();
-            }
-        });
+        if (!isApplyingMasonryLayout) {
+            scheduleMasonryLayout();
+        }
     });
     
     // Observe container for size changes
     masonryResizeObserver.observe(gridContainer);
-    
-    // Observe all cards for size changes
-    const observeCards = () => {
-        const cards = gridContainer.querySelectorAll('.video-card, .folder-card');
-        cards.forEach(card => {
-            masonryResizeObserver.observe(card);
-        });
-    };
     
     // Recalculate when cards are added
     masonryMutationObserver = new MutationObserver((mutations) => {
@@ -1327,9 +1295,6 @@ function initMasonry() {
             if (mutation.type === 'childList') {
                 mutation.addedNodes.forEach(node => {
                     if (node.nodeType === 1 && (node.classList.contains('video-card') || node.classList.contains('folder-card'))) {
-                        if (masonryResizeObserver) {
-                            masonryResizeObserver.observe(node);
-                        }
                         shouldRelayout = true;
                     }
                 });
@@ -1340,9 +1305,7 @@ function initMasonry() {
         });
         
         if (shouldRelayout && layoutMode === 'masonry') {
-            requestAnimationFrame(() => {
-                layoutMasonry();
-            });
+            scheduleMasonryLayout();
         }
     });
     
@@ -1352,9 +1315,6 @@ function initMasonry() {
         attributes: true,
         attributeFilter: ['class']
     });
-    
-    // Initial card observation
-    observeCards();
 }
 
 function initGrid() {
@@ -1413,15 +1373,10 @@ function switchLayoutMode() {
     
     // Apply zoom after layout change
     applyZoom();
-    
-    // Force a reflow to ensure layout is applied
-    void gridContainer.offsetHeight;
-    
+
     // Re-apply filters to trigger layout update and ensure cards are visible
     requestAnimationFrame(() => {
         applyFilters();
-        // Force another reflow after filters
-        void gridContainer.offsetHeight;
     });
 }
 
@@ -1708,7 +1663,7 @@ function renderItemsProgressive(items) {
             
             // Trigger initial layout calculation only for visible cards
             if (layoutMode === 'masonry') {
-                layoutMasonry();
+                scheduleMasonryLayout();
             }
             
             // Start proactive loading for initial chunk
@@ -1722,7 +1677,7 @@ function renderItemsProgressive(items) {
             // All items rendered, trigger final layout update
             requestAnimationFrame(() => {
                 if (layoutMode === 'masonry') {
-                    layoutMasonry();
+                    scheduleMasonryLayout();
                 }
                 // Final proactive load after all rendered
                 scheduleProactiveLoadForChunk();
@@ -1756,7 +1711,7 @@ function renderItemsProgressive(items) {
             
             // Update layout incrementally (only for new cards)
             if (layoutMode === 'masonry') {
-                layoutMasonry();
+                scheduleMasonryLayout();
             }
             
             // Trigger proactive loading for this chunk
@@ -2936,9 +2891,7 @@ function applyFilters() {
     
     // Recalculate layout after filtering
     if (layoutMode === 'masonry' && gridContainer.classList.contains('masonry')) {
-        requestAnimationFrame(() => {
-            layoutMasonry();
-        });
+        scheduleMasonryLayout();
     }
 }
 
@@ -5295,9 +5248,7 @@ function applyZoom() {
     
     // Recalculate masonry layout if needed
     if (layoutMode === 'masonry') {
-        requestAnimationFrame(() => {
-            layoutMasonry();
-        });
+        scheduleMasonryLayout();
     }
 }
 
@@ -6430,9 +6381,7 @@ applyFilters = function() {
     
     // Recalculate layout
     if (layoutMode === 'masonry' && gridContainer.classList.contains('masonry')) {
-        requestAnimationFrame(() => {
-            layoutMasonry();
-        });
+        scheduleMasonryLayout();
     }
 };
 

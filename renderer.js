@@ -76,6 +76,10 @@ const sortTypeSelect = document.getElementById('sort-type-select');
 const sortOrderSelect = document.getElementById('sort-order-select');
 const themeSelect = document.getElementById('theme-select');
 const thumbnailQualitySelect = document.getElementById('thumbnail-quality-select');
+const pauseOnLightboxToggle = document.getElementById('pause-on-lightbox-toggle');
+const pauseOnLightboxLabel = document.getElementById('pause-on-lightbox-label');
+const pauseOnBlurToggle = document.getElementById('pause-on-blur-toggle');
+const pauseOnBlurLabel = document.getElementById('pause-on-blur-label');
 const zoomSlider = document.getElementById('zoom-slider');
 const zoomValue = document.getElementById('zoom-value');
 const favoritesBtn = document.getElementById('favorites-btn');
@@ -109,6 +113,10 @@ let rememberLastFolder = true; // Default to true
 
 // Track whether to include moving images (gif, webp) in image filter
 let includeMovingImages = true; // Default to true
+
+// Track whether to pause thumbnails on lightbox open and window blur
+let pauseOnLightbox = true;
+let pauseOnBlur = true;
 
 // Track sorting preferences
 let sortType = 'name'; // 'name' or 'date'
@@ -791,6 +799,7 @@ function resumeWhenRestored() {
 // Pause all grid thumbnail videos and freeze GIFs when lightbox is open
 function pauseThumbnailVideos() {
     isLightboxOpen = true;
+    if (!pauseOnLightbox) return;
     const allVideos = gridContainer.querySelectorAll('video');
     allVideos.forEach(video => {
         video.pause();
@@ -2106,8 +2115,8 @@ function createImageForCard(card, imageUrl) {
                 const ctx = canvas.getContext('2d');
                 ctx.drawImage(img, 0, 0);
                 img.dataset.staticFrame = canvas.toDataURL('image/png');
-                // If lightbox is already open, freeze immediately
-                if (isLightboxOpen) {
+                // If lightbox or blur pausing is active, freeze immediately
+                if ((isLightboxOpen && pauseOnLightbox) || (isWindowBlurred && pauseOnBlur)) {
                     img.src = img.dataset.staticFrame;
                 }
             } catch (e) {
@@ -2320,8 +2329,8 @@ function createVideoForCard(card, videoUrl) {
     const info = card.querySelector('.video-info');
     card.insertBefore(video, info);
 
-    // Don't auto-play if lightbox is open (thumbnails are paused)
-    if (!isLightboxOpen) {
+    // Don't auto-play if lightbox/blur pausing is active
+    if (!(isLightboxOpen && pauseOnLightbox) && !(isWindowBlurred && pauseOnBlur)) {
         const playPromise = video.play();
         if (playPromise !== undefined) {
             playPromise.catch(() => {
@@ -3484,6 +3493,20 @@ rememberFolderToggle.addEventListener('change', () => {
 // Include moving images toggle event listener
 includeMovingImagesToggle.addEventListener('change', () => {
     toggleIncludeMovingImages();
+});
+
+// Pause on lightbox toggle
+pauseOnLightboxToggle.addEventListener('change', () => {
+    pauseOnLightbox = pauseOnLightboxToggle.checked;
+    pauseOnLightboxLabel.textContent = pauseOnLightbox ? 'On' : 'Off';
+    localStorage.setItem('pauseOnLightbox', pauseOnLightbox.toString());
+});
+
+// Pause on blur toggle
+pauseOnBlurToggle.addEventListener('change', () => {
+    pauseOnBlur = pauseOnBlurToggle.checked;
+    pauseOnBlurLabel.textContent = pauseOnBlur ? 'On' : 'Off';
+    localStorage.setItem('pauseOnBlur', pauseOnBlur.toString());
 });
 
 // Sorting dropdown event listeners
@@ -6851,6 +6874,22 @@ window.addEventListener('DOMContentLoaded', async () => {
         includeMovingImagesLabel.textContent = includeMovingImages ? 'On' : 'Off';
     }
     
+    // Restore pause on lightbox preference
+    const savedPauseOnLightbox = localStorage.getItem('pauseOnLightbox');
+    if (savedPauseOnLightbox !== null) {
+        pauseOnLightbox = savedPauseOnLightbox === 'true';
+        pauseOnLightboxToggle.checked = pauseOnLightbox;
+        pauseOnLightboxLabel.textContent = pauseOnLightbox ? 'On' : 'Off';
+    }
+
+    // Restore pause on blur preference
+    const savedPauseOnBlur = localStorage.getItem('pauseOnBlur');
+    if (savedPauseOnBlur !== null) {
+        pauseOnBlur = savedPauseOnBlur === 'true';
+        pauseOnBlurToggle.checked = pauseOnBlur;
+        pauseOnBlurLabel.textContent = pauseOnBlur ? 'On' : 'Off';
+    }
+
     // Restore layout mode preference
     const savedLayoutMode = localStorage.getItem('layoutMode');
     if (savedLayoutMode === 'grid' || savedLayoutMode === 'masonry') {
@@ -6920,6 +6959,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     window.addEventListener('blur', () => {
         if (isWindowBlurred || isWindowMinimized) return;
         isWindowBlurred = true;
+        if (!pauseOnBlur) return;
         // Pause all grid videos
         const allVideos = gridContainer.querySelectorAll('video');
         allVideos.forEach(video => {
@@ -6938,8 +6978,9 @@ window.addEventListener('DOMContentLoaded', async () => {
     window.addEventListener('focus', () => {
         if (!isWindowBlurred || isWindowMinimized) return;
         isWindowBlurred = false;
-        // Don't resume grid media if lightbox is open (they should stay paused)
-        if (isLightboxOpen) return;
+        if (!pauseOnBlur) return;
+        // Don't resume grid media if lightbox is open and that pause is active
+        if (isLightboxOpen && pauseOnLightbox) return;
         // Resume all grid videos
         const allVideos = gridContainer.querySelectorAll('video');
         allVideos.forEach(video => {

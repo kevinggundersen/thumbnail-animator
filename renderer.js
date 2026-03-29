@@ -1352,6 +1352,7 @@ function stopPeriodicCleanup() {
 let isWindowMinimized = false;
 let isLightboxOpen = false;
 let isWindowBlurred = false;
+let isNativeDialogOpen = false;
 
 // Pause all resource-intensive operations when window is minimized
 function pauseWhenMinimized() {
@@ -1500,24 +1501,25 @@ function resumeThumbnailVideos() {
 }
 
 // Restore media playback state after a native dialog (confirm/alert) steals focus.
-// Native dialogs trigger a window blur event which sets isWindowBlurred=true and pauses
-// all media playback. When the dialog closes, the focus event is not reliably fired in
-// Electron, leaving playback permanently paused until a manual unfocus/refocus cycle.
+// Native dialogs block the JS thread, so blur/focus events are queued and fire AFTER
+// confirm() returns. We must delay our cleanup until those queued events have settled.
 function restorePlaybackAfterDialog() {
-    if (!document.hasFocus()) return;
-    if (!isWindowBlurred) return;
-    isWindowBlurred = false;
-    if (!pauseOnBlur) return;
-    if (isLightboxOpen && pauseOnLightbox) return;
-    const allVideos = gridContainer.querySelectorAll('video');
-    allVideos.forEach(video => {
-        const playPromise = video.play();
-        if (playPromise !== undefined) {
-            playPromise.catch(() => {});
-        }
-    });
-    const allOverlays = gridContainer.querySelectorAll('.gif-static-overlay');
-    allOverlays.forEach(overlay => overlay.classList.remove('visible'));
+    setTimeout(() => {
+        isNativeDialogOpen = false;
+        if (!isWindowBlurred) return;
+        isWindowBlurred = false;
+        if (!pauseOnBlur) return;
+        if (isLightboxOpen && pauseOnLightbox) return;
+        const allVideos = gridContainer.querySelectorAll('video');
+        allVideos.forEach(video => {
+            const playPromise = video.play();
+            if (playPromise !== undefined) {
+                playPromise.catch(() => {});
+            }
+        });
+        const allOverlays = gridContainer.querySelectorAll('.gif-static-overlay');
+        allOverlays.forEach(overlay => overlay.classList.remove('visible'));
+    }, 100);
 }
 
 // Track active media elements and pending creations
@@ -5465,6 +5467,7 @@ contextMenu.addEventListener('click', async (e) => {
             
         case 'delete':
             try {
+                isNativeDialogOpen = true;
                 const confirmed = confirm(`Are you sure you want to delete "${fileName}"?`);
                 restorePlaybackAfterDialog();
                 if (confirmed) {
@@ -5884,6 +5887,7 @@ function initKeyboardShortcuts() {
             if (card && !card.classList.contains('folder-card')) {
                 const path = card.dataset.filePath;
                 const name = card.querySelector('.video-info')?.textContent || '';
+                isNativeDialogOpen = true;
                 const confirmed = path && confirm(`Are you sure you want to delete "${name}"?`);
                 restorePlaybackAfterDialog();
                 if (confirmed) {
@@ -8373,6 +8377,7 @@ window.addEventListener('DOMContentLoaded', async () => {
         if (isWindowBlurred || isWindowMinimized) return;
         isWindowBlurred = true;
         if (!pauseOnBlur) return;
+        if (isNativeDialogOpen) return;
         // Pause all grid videos
         const allVideos = gridContainer.querySelectorAll('video');
         allVideos.forEach(video => {

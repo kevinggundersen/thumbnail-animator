@@ -259,6 +259,8 @@ const pauseOnLightboxToggle = document.getElementById('pause-on-lightbox-toggle'
 const pauseOnLightboxLabel = document.getElementById('pause-on-lightbox-label');
 const pauseOnBlurToggle = document.getElementById('pause-on-blur-toggle');
 const pauseOnBlurLabel = document.getElementById('pause-on-blur-label');
+const autoRepeatToggle = document.getElementById('auto-repeat-toggle');
+const autoRepeatLabel = document.getElementById('auto-repeat-label');
 const zoomSlider = document.getElementById('zoom-slider');
 const zoomValue = document.getElementById('zoom-value');
 const favoritesBtn = document.getElementById('favorites-btn');
@@ -344,6 +346,7 @@ let advancedSearchFilters = {
 let videoPlaybackSpeed = 1.0;
 let videoLoop = false;
 let videoRepeat = false;
+let autoRepeatVideos = false;
 
 // Track progress
 let currentProgress = null; // { current: number, total: number, cancelled: boolean }
@@ -3678,6 +3681,30 @@ pauseOnBlurToggle.addEventListener('change', () => {
     pauseOnBlur = pauseOnBlurToggle.checked;
     pauseOnBlurLabel.textContent = pauseOnBlur ? 'On' : 'Off';
     localStorage.setItem('pauseOnBlur', pauseOnBlur.toString());
+});
+
+// Auto-repeat videos toggle
+autoRepeatToggle.addEventListener('change', () => {
+    autoRepeatVideos = autoRepeatToggle.checked;
+    autoRepeatLabel.textContent = autoRepeatVideos ? 'On' : 'Off';
+    localStorage.setItem('autoRepeatVideos', autoRepeatVideos.toString());
+    // Sync to current video - use native loop for seamless playback
+    if (autoRepeatVideos) {
+        videoLoop = true;
+        if (lightboxVideo) {
+            lightboxVideo.loop = true;
+        }
+    } else {
+        videoLoop = false;
+        if (lightboxVideo) {
+            lightboxVideo.loop = false;
+        }
+    }
+    const loopBtn = document.getElementById('lightbox-loop-btn');
+    if (loopBtn) {
+        loopBtn.textContent = videoLoop ? 'On' : 'Off';
+        loopBtn.classList.toggle('active', videoLoop);
+    }
 });
 
 // Sorting dropdown event listeners
@@ -7052,6 +7079,17 @@ window.addEventListener('DOMContentLoaded', async () => {
         pauseOnLightbox = savedPauseOnLightbox === 'true';
         pauseOnLightboxToggle.checked = pauseOnLightbox;
         pauseOnLightboxLabel.textContent = pauseOnLightbox ? 'On' : 'Off';
+    }
+
+    // Restore auto-repeat videos preference
+    const savedAutoRepeat = localStorage.getItem('autoRepeatVideos');
+    if (savedAutoRepeat !== null) {
+        autoRepeatVideos = savedAutoRepeat === 'true';
+        autoRepeatToggle.checked = autoRepeatVideos;
+        autoRepeatLabel.textContent = autoRepeatVideos ? 'On' : 'Off';
+        if (autoRepeatVideos) {
+            videoLoop = true;
+        }
     }
 
     // Restore pause on blur preference

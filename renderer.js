@@ -1499,6 +1499,27 @@ function resumeThumbnailVideos() {
     allOverlays.forEach(overlay => overlay.classList.remove('visible'));
 }
 
+// Restore media playback state after a native dialog (confirm/alert) steals focus.
+// Native dialogs trigger a window blur event which sets isWindowBlurred=true and pauses
+// all media playback. When the dialog closes, the focus event is not reliably fired in
+// Electron, leaving playback permanently paused until a manual unfocus/refocus cycle.
+function restorePlaybackAfterDialog() {
+    if (!document.hasFocus()) return;
+    if (!isWindowBlurred) return;
+    isWindowBlurred = false;
+    if (!pauseOnBlur) return;
+    if (isLightboxOpen && pauseOnLightbox) return;
+    const allVideos = gridContainer.querySelectorAll('video');
+    allVideos.forEach(video => {
+        const playPromise = video.play();
+        if (playPromise !== undefined) {
+            playPromise.catch(() => {});
+        }
+    });
+    const allOverlays = gridContainer.querySelectorAll('.gif-static-overlay');
+    allOverlays.forEach(overlay => overlay.classList.remove('visible'));
+}
+
 // Track active media elements and pending creations
 let activeVideoCount = 0;
 let activeImageCount = 0;
@@ -5444,7 +5465,9 @@ contextMenu.addEventListener('click', async (e) => {
             
         case 'delete':
             try {
-                if (confirm(`Are you sure you want to delete "${fileName}"?`)) {
+                const confirmed = confirm(`Are you sure you want to delete "${fileName}"?`);
+                restorePlaybackAfterDialog();
+                if (confirmed) {
                     setStatusActivity(`Deleting ${fileName}...`);
                     const result = await window.electronAPI.deleteFile(filePath);
                     setStatusActivity('');
@@ -5456,10 +5479,12 @@ contextMenu.addEventListener('click', async (e) => {
                         }
                     } else {
                         alert(`Error deleting file: ${result.error}`);
+                        restorePlaybackAfterDialog();
                     }
                 }
             } catch (error) {
                 alert(`Error: ${error.message}`);
+                restorePlaybackAfterDialog();
             }
             break;
             
@@ -5859,12 +5884,15 @@ function initKeyboardShortcuts() {
             if (card && !card.classList.contains('folder-card')) {
                 const path = card.dataset.filePath;
                 const name = card.querySelector('.video-info')?.textContent || '';
-                if (path && confirm(`Are you sure you want to delete "${name}"?`)) {
+                const confirmed = path && confirm(`Are you sure you want to delete "${name}"?`);
+                restorePlaybackAfterDialog();
+                if (confirmed) {
                     setStatusActivity(`Deleting ${name}...`);
                     window.electronAPI.deleteFile(path).then(result => {
                         setStatusActivity('');
                         if (result.success && currentFolderPath) {
-                            loadVideos(currentFolderPath);
+                            invalidateFolderCache(currentFolderPath);
+                            loadVideos(currentFolderPath, false);
                         }
                     }).catch(err => {
                         setStatusActivity('');

@@ -1579,9 +1579,18 @@ function applyAspectRatioToCard(card, aspectRatioName) {
     // Store the aspect ratio on the card for persistence
     card.dataset.aspectRatio = aspectRatioName;
     
-    // Recalculate masonry layout when aspect ratio changes
-    if (gridContainer.classList.contains('masonry')) {
-        scheduleMasonryLayout();
+    // In masonry mode, if this card already has a position (was laid out), update
+    // just this card's height in-place. This handles the fallback case where ffprobe
+    // wasn't available and media discovers a different aspect ratio after loading.
+    // No full relayout needed — cards are absolutely positioned so others aren't affected.
+    if (gridContainer.classList.contains('masonry') && card.style.width) {
+        const cardWidth = parseFloat(card.style.width);
+        if (cardWidth > 0) {
+            const aspectRatio = ASPECT_RATIOS.find(ar => ar.name === aspectRatioName);
+            const aspectRatioValue = aspectRatio ? aspectRatio.ratio : (16 / 9);
+            const newHeight = Math.max(50, cardWidth / aspectRatioValue);
+            card.style.height = `${newHeight}px`;
+        }
     }
 }
 
@@ -1765,9 +1774,7 @@ function layoutMasonry() {
         if (masonryMutationObserver) {
             masonryMutationObserver.observe(gridContainer, {
                 childList: true,
-                subtree: true,
-                attributes: true,
-                attributeFilter: ['class']
+                subtree: false
             });
         }
     }
@@ -1851,32 +1858,38 @@ function initMasonry() {
     // Observe container for size changes
     masonryResizeObserver.observe(gridContainer);
     
-    // Recalculate when cards are added
+    // Recalculate when cards are added/removed (e.g. by filters)
+    // Only watch childList — aspect ratio class changes no longer trigger relayout
+    // since card dimensions are set upfront and media uses object-fit: cover
     masonryMutationObserver = new MutationObserver((mutations) => {
         let shouldRelayout = false;
-        mutations.forEach(mutation => {
+        for (const mutation of mutations) {
             if (mutation.type === 'childList') {
-                mutation.addedNodes.forEach(node => {
+                for (const node of mutation.addedNodes) {
                     if (node.nodeType === 1 && (node.classList.contains('video-card') || node.classList.contains('folder-card'))) {
                         shouldRelayout = true;
+                        break;
                     }
-                });
-            } else if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
-                // Aspect ratio class changed
-                shouldRelayout = true;
+                }
+                if (shouldRelayout) break;
+                for (const node of mutation.removedNodes) {
+                    if (node.nodeType === 1 && (node.classList.contains('video-card') || node.classList.contains('folder-card'))) {
+                        shouldRelayout = true;
+                        break;
+                    }
+                }
+                if (shouldRelayout) break;
             }
-        });
-        
+        }
+
         if (shouldRelayout && layoutMode === 'masonry') {
             scheduleMasonryLayout();
         }
     });
-    
+
     masonryMutationObserver.observe(gridContainer, {
         childList: true,
-        subtree: true,
-        attributes: true,
-        attributeFilter: ['class']
+        subtree: false
     });
 }
 
@@ -2135,6 +2148,23 @@ function createCardFromItem(item) {
             createResolutionLabel(card, item.width, item.height);
         }
 
+        // Apply pre-scanned dimensions for videos (from ffprobe during folder scan)
+        if (item.width && item.height && item.type === 'video') {
+            const aspectRatioName = getClosestAspectRatio(item.width, item.height);
+            applyAspectRatioToCard(card, aspectRatioName);
+            card.dataset.width = item.width;
+            card.dataset.height = item.height;
+            card.dataset.mediaWidth = item.width;
+            card.dataset.mediaHeight = item.height;
+            createResolutionLabel(card, item.width, item.height);
+        }
+
+        // Fallback: if no pre-scanned dimensions available, default to 16:9
+        // so masonry layout can be calculated upfront without waiting for metadata
+        if (!card.dataset.aspectRatio) {
+            applyAspectRatioToCard(card, '16:9');
+        }
+
         const info = document.createElement('div');
         info.className = 'video-info';
         info.textContent = item.name;
@@ -2195,18 +2225,18 @@ function renderItemsProgressive(items) {
     }
     
     // Batch observer registration for initial chunk AFTER layout is ready
+    // In masonry mode, defer layout until ALL cards are in the DOM (single pass)
     requestAnimationFrame(() => {
-        // Wait for layout to calculate before observing
         requestAnimationFrame(() => {
             cardsToObserve.forEach(card => {
                 observer.observe(card);
             });
-            
-            // Trigger initial layout calculation only for visible cards
-            if (layoutMode === 'masonry') {
+
+            // Only trigger masonry layout here for small lists that won't have more chunks
+            if (layoutMode === 'masonry' && currentIndex >= items.length) {
                 scheduleMasonryLayout();
             }
-            
+
             // Start proactive loading for initial chunk
             scheduleProactiveLoadForChunk();
         });
@@ -2249,12 +2279,8 @@ function renderItemsProgressive(items) {
                 observer.observe(card);
                 cardsToObserve.push(card);
             });
-            
-            // Update layout incrementally (only for new cards)
-            if (layoutMode === 'masonry') {
-                scheduleMasonryLayout();
-            }
-            
+
+            // No per-chunk masonry relayout — single pass after all cards are in DOM
             // Trigger proactive loading for this chunk
             scheduleProactiveLoadForChunk();
         });
@@ -5140,32 +5166,51 @@ async function loadVideos(folderPath, useCache = true) {
         
         if (useCache) {
             const normalizedPath = normalizePath(folderPath);
-            
+
+            // In masonry mode, we need items with dimensions. If cached items
+            // lack dimensions (from a previous non-masonry scan), skip the cache
+            // so a fresh scan with dimension scanning is performed.
+            const needsDimensions = layoutMode === 'masonry';
+            const cacheHasDimensions = (cachedItems) => {
+                if (!needsDimensions || !cachedItems || cachedItems.length === 0) return true;
+                // Check both an image and a video sample — both must have dimensions
+                const imageSample = cachedItems.find(item => item.type === 'image');
+                const videoSample = cachedItems.find(item => item.type === 'video');
+                if (imageSample && (imageSample.width === undefined || imageSample.height === undefined)) return false;
+                if (videoSample && (videoSample.width === undefined || videoSample.height === undefined)) return false;
+                return true;
+            };
+
             // Check tab cache first (fastest)
             if (activeTabId) {
                 const tabCache = tabContentCache.get(activeTabId);
                 if (tabCache) {
                     const cachePathNormalized = normalizePath(tabCache.path);
-                    if ((cachePathNormalized === normalizedPath || tabCache.path === folderPath) && 
-                        (now - tabCache.timestamp) < FOLDER_CACHE_TTL) {
+                    if ((cachePathNormalized === normalizedPath || tabCache.path === folderPath) &&
+                        (now - tabCache.timestamp) < FOLDER_CACHE_TTL &&
+                        cacheHasDimensions(tabCache.items)) {
                         items = tabCache.items;
                     }
                 }
             }
-            
+
             // Check global folder cache (try both normalized and original path)
             if (!items) {
                 const globalCache = folderCache.get(normalizedPath) || folderCache.get(folderPath);
-                if (globalCache && (now - globalCache.timestamp) < GLOBAL_CACHE_TTL) {
+                if (globalCache && (now - globalCache.timestamp) < GLOBAL_CACHE_TTL &&
+                    cacheHasDimensions(globalCache.items)) {
                     items = globalCache.items;
                 }
             }
-            
+
             // Check IndexedDB persistent cache (slower but persistent)
             if (!items) {
                 // Yield control periodically during IndexedDB lookup
                 await yieldToEventLoop();
-                items = await getFolderFromIndexedDB(folderPath);
+                const dbItems = await getFolderFromIndexedDB(folderPath);
+                if (dbItems && cacheHasDimensions(dbItems)) {
+                    items = dbItems;
+                }
             }
         }
         
@@ -5176,10 +5221,11 @@ async function loadVideos(folderPath, useCache = true) {
             
             // Skip stats if sorting by name (faster loading)
             const skipStats = sortType === 'name';
-            // Scan image dimensions when in masonry mode to prevent card shifting
+            // Scan media dimensions when in masonry mode to build layout upfront
             const scanImageDimensions = layoutMode === 'masonry';
+            const scanVideoDimensions = layoutMode === 'masonry';
             const scanPerfStart = perfTest.start();
-            items = await window.electronAPI.scanFolder(folderPath, { skipStats, scanImageDimensions });
+            items = await window.electronAPI.scanFolder(folderPath, { skipStats, scanImageDimensions, scanVideoDimensions });
             perfTest.end('scanFolder (IPC)', scanPerfStart, { itemCount: items ? items.length : 0 });
 
             // Yield control after scan completes

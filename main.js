@@ -19,6 +19,52 @@ try {
     sizeOf = null;
 }
 // const mime = require('mime-types'); // Removed unused dependency
+const { execFile } = require('child_process');
+
+// Detect ffprobe availability for reading video dimensions from file headers
+let ffprobePath = null;
+(function detectFfprobe() {
+    const { execFileSync } = require('child_process');
+    // Check common locations on Windows, then fall back to PATH
+    const candidates = process.platform === 'win32'
+        ? ['ffprobe', 'ffprobe.exe']
+        : ['ffprobe'];
+    for (const candidate of candidates) {
+        try {
+            execFileSync(candidate, ['-version'], { stdio: 'ignore', timeout: 3000 });
+            ffprobePath = candidate;
+            console.log('ffprobe found:', candidate);
+            return;
+        } catch { /* not found, try next */ }
+    }
+    console.log('ffprobe not found — video dimensions will be detected on load');
+})();
+
+/**
+ * Read video dimensions using ffprobe (reads only file headers, very fast).
+ * Returns { width, height } or null if ffprobe fails or isn't available.
+ */
+function getVideoDimensions(filePath) {
+    if (!ffprobePath) return Promise.resolve(null);
+    return new Promise((resolve) => {
+        execFile(ffprobePath, [
+            '-v', 'error',
+            '-select_streams', 'v:0',
+            '-show_entries', 'stream=width,height',
+            '-of', 'csv=p=0:s=x',
+            filePath
+        ], { timeout: 5000 }, (err, stdout) => {
+            if (err || !stdout) return resolve(null);
+            const parts = stdout.trim().split('x');
+            if (parts.length >= 2) {
+                const width = parseInt(parts[0], 10);
+                const height = parseInt(parts[1], 10);
+                if (width > 0 && height > 0) return resolve({ width, height });
+            }
+            resolve(null);
+        });
+    });
+}
 
 // Fix cache access denied errors by setting a custom cache directory
 // This ensures Electron uses a location with proper write permissions
@@ -284,7 +330,7 @@ const IO_CONCURRENCY_LIMIT = 20;
 ipcMain.handle('scan-folder', async (event, folderPath, options = {}) => {
     try {
         const scanStart = performance.now();
-        const { skipStats = false, scanImageDimensions = false } = options; // Skip stats if sorting by name, optionally scan image dimensions
+        const { skipStats = false, scanImageDimensions = false, scanVideoDimensions = false } = options;
         const items = await fs.promises.readdir(folderPath, { withFileTypes: true });
         
         // Use Sets for O(1) lookup instead of O(n) array.includes()
@@ -380,19 +426,36 @@ ipcMain.handle('scan-folder', async (event, folderPath, options = {}) => {
             // This is done in batches to avoid overwhelming the system
             if (scanImageDimensions && isImage && sizeOf) {
                 try {
-                    let dimensions;
-                    if (typeof sizeOf === 'function') {
-                        dimensions = sizeOf(itemPath);
-                    } else if (sizeOf.imageSize && typeof sizeOf.imageSize === 'function') {
-                        dimensions = sizeOf.imageSize(itemPath);
-                    }
-                    if (dimensions && dimensions.width && dimensions.height) {
-                        fileObj.width = dimensions.width;
-                        fileObj.height = dimensions.height;
+                    // image-size v2 requires a Buffer, not a file path
+                    // Read only the first 512KB — enough for any image header
+                    const fd = await fs.promises.open(itemPath, 'r');
+                    try {
+                        const headerBuf = Buffer.alloc(512 * 1024);
+                        const { bytesRead } = await fd.read(headerBuf, 0, headerBuf.length, 0);
+                        const dimensions = sizeOf(headerBuf.subarray(0, bytesRead));
+                        if (dimensions && dimensions.width && dimensions.height) {
+                            fileObj.width = dimensions.width;
+                            fileObj.height = dimensions.height;
+                        }
+                    } finally {
+                        await fd.close();
                     }
                 } catch (error) {
                     // If dimension scan fails, continue without dimensions
                     // This can happen with corrupted images or unsupported formats
+                }
+            }
+
+            // Get video dimensions via ffprobe (reads only file headers)
+            if (scanVideoDimensions && !isImage && ffprobePath) {
+                try {
+                    const dimensions = await getVideoDimensions(itemPath);
+                    if (dimensions) {
+                        fileObj.width = dimensions.width;
+                        fileObj.height = dimensions.height;
+                    }
+                } catch (error) {
+                    // If ffprobe fails, continue without dimensions
                 }
             }
             
@@ -412,54 +475,56 @@ ipcMain.handle('scan-folder', async (event, folderPath, options = {}) => {
         };
         
         // Process files with batched dimension scanning for better performance
+        const needsDimensionScan = (scanImageDimensions && sizeOf) || (scanVideoDimensions && ffprobePath);
         let fileResults = [];
-        if (scanImageDimensions && fileItems.length > DIMENSION_SCAN_BATCH_SIZE) {
+        if (needsDimensionScan && fileItems.length > DIMENSION_SCAN_BATCH_SIZE) {
             // For large folders with dimension scanning, process in batches
-            const imageItems = [];
-            const nonImageItems = [];
-            
-            // Separate images from other files
+            // Separate files that need dimension scanning from those that don't
+            const dimensionItems = [];
+            const plainItems = [];
+
             for (const item of fileItems) {
                 const name = item.name;
                 const lastDot = name.lastIndexOf('.');
                 const ext = lastDot !== -1 ? name.substring(lastDot).toLowerCase() : '';
-                if (imageExtensions.has(ext)) {
-                    imageItems.push(item);
+                const isImage = imageExtensions.has(ext);
+                const isVideo = videoExtensions.has(ext);
+                if ((isImage && scanImageDimensions && sizeOf) || (isVideo && scanVideoDimensions && ffprobePath)) {
+                    dimensionItems.push({ item, isImage });
                 } else {
-                    nonImageItems.push(item);
+                    plainItems.push({ item, isImage: false });
                 }
             }
-            
-            // Process non-image files immediately (no dimension scanning needed)
-            const nonImagePromises = nonImageItems.map(processFile);
-            
-            // Process images in batches to avoid overwhelming the system
-            const imageResults = [];
-            for (let i = 0; i < imageItems.length; i += DIMENSION_SCAN_BATCH_SIZE) {
-                const batch = imageItems.slice(i, i + DIMENSION_SCAN_BATCH_SIZE);
-                const batchPromises = batch.map(processFile);
+
+            // Process plain files immediately (no dimension scanning needed)
+            const plainPromises = plainItems.map(({ item }) => processFile(item));
+
+            // Process dimension-scanned files in batches
+            const dimensionResults = [];
+            for (let i = 0; i < dimensionItems.length; i += DIMENSION_SCAN_BATCH_SIZE) {
+                const batch = dimensionItems.slice(i, i + DIMENSION_SCAN_BATCH_SIZE);
+                const batchPromises = batch.map(({ item }) => processFile(item));
                 const batchResults = await Promise.all(batchPromises);
-                imageResults.push(...batchResults);
-                
+                dimensionResults.push(...batchResults);
+
                 // Small delay between batches to keep UI responsive
-                if (i + DIMENSION_SCAN_BATCH_SIZE < imageItems.length) {
+                if (i + DIMENSION_SCAN_BATCH_SIZE < dimensionItems.length) {
                     await new Promise(resolve => setImmediate(resolve));
                 }
             }
-            
+
             // Combine results maintaining original order
-            let imageIndex = 0;
-            let nonImageIndex = 0;
-            const nonImageResults = await Promise.all(nonImagePromises);
-            
+            let dimIndex = 0;
+            let plainIndex = 0;
+            const plainResults = await Promise.all(plainPromises);
+
+            // Rebuild the set of items that needed dimension scanning for order lookup
+            const dimensionItemSet = new Set(dimensionItems.map(d => d.item));
             for (const item of fileItems) {
-                const name = item.name;
-                const lastDot = name.lastIndexOf('.');
-                const ext = lastDot !== -1 ? name.substring(lastDot).toLowerCase() : '';
-                if (imageExtensions.has(ext)) {
-                    fileResults.push(imageResults[imageIndex++]);
+                if (dimensionItemSet.has(item)) {
+                    fileResults.push(dimensionResults[dimIndex++]);
                 } else {
-                    fileResults.push(nonImageResults[nonImageIndex++]);
+                    fileResults.push(plainResults[plainIndex++]);
                 }
             }
         } else {
@@ -952,67 +1017,19 @@ ipcMain.handle('get-file-info', async (event, filePath) => {
             comfyUIWorkflow: undefined
         };
         
-        // Get dimensions for images
+        // Get dimensions for images (image-size v2 requires a Buffer)
         if (isImage && sizeOf) {
             try {
-                // Check if file exists and is readable
-                if (!fs.existsSync(filePath)) {
-                    console.warn('File does not exist:', filePath);
-                } else {
-                    let dimensions = null;
-                    
-                    // For image-size v2.x, try file path first (simpler and more reliable)
-                    if (typeof sizeOf === 'function') {
-                        try {
-                            // Try file path first (most reliable for v2.x)
-                            dimensions = sizeOf(filePath);
-                        } catch (pathError) {
-                            // If path fails, try with buffer
-                            try {
-                                const fileBuffer = fs.readFileSync(filePath);
-                                if (Buffer.isBuffer(fileBuffer)) {
-                                    dimensions = sizeOf(fileBuffer);
-                                }
-                            } catch (bufferError) {
-                                console.warn('Both path and buffer methods failed for image-size:', pathError.message);
-                            }
-                        }
-                    } else if (sizeOf && typeof sizeOf.imageSize === 'function') {
-                        try {
-                            dimensions = sizeOf.imageSize(filePath);
-                        } catch (pathError) {
-                            try {
-                                const fileBuffer = fs.readFileSync(filePath);
-                                if (Buffer.isBuffer(fileBuffer)) {
-                                    dimensions = sizeOf.imageSize(fileBuffer);
-                                }
-                            } catch (bufferError) {
-                                console.warn('imageSize method failed');
-                            }
-                        }
-                    } else if (sizeOf && typeof sizeOf.default === 'function') {
-                        try {
-                            dimensions = sizeOf.default(filePath);
-                        } catch (pathError) {
-                            try {
-                                const fileBuffer = fs.readFileSync(filePath);
-                                if (Buffer.isBuffer(fileBuffer)) {
-                                    dimensions = sizeOf.default(fileBuffer);
-                                }
-                            } catch (bufferError) {
-                                console.warn('default method failed');
-                            }
-                        }
-                    }
-                    
+                if (fs.existsSync(filePath)) {
+                    const fileBuffer = fs.readFileSync(filePath);
+                    const dimensions = sizeOf(fileBuffer);
                     if (dimensions && dimensions.width && dimensions.height) {
                         info.width = dimensions.width;
                         info.height = dimensions.height;
                     }
                 }
             } catch (error) {
-                // Silently fail - dimensions are optional, don't break the entire request
-                console.warn('Could not get image dimensions:', error.message);
+                // Silently fail - dimensions are optional
             }
         }
         

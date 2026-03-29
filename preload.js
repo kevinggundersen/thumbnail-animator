@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getFileInfo: (filePath) => ipcRenderer.invoke('get-file-info', filePath),
     createFolder: (folderPath, folderName) => ipcRenderer.invoke('create-folder', folderPath, folderName),
     moveFile: (sourcePath, destPath) => ipcRenderer.invoke('move-file', sourcePath, destPath),
+    copyFile: (sourcePath, destPath) => ipcRenderer.invoke('copy-file', sourcePath, destPath),
     watchFolder: (folderPath) => ipcRenderer.invoke('watch-folder', folderPath),
     unwatchFolder: (folderPath) => ipcRenderer.invoke('unwatch-folder', folderPath),
     onFolderChanged: (callback) => ipcRenderer.on('folder-changed', callback),

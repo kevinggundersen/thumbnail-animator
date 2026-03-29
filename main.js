@@ -1166,6 +1166,24 @@ ipcMain.handle('create-folder', async (event, folderPath, folderName) => {
     }
 });
 
+// Copy file (used when dropping external files into the app)
+ipcMain.handle('copy-file', async (event, sourcePath, destPath) => {
+    try {
+        const destDir = path.dirname(destPath);
+        if (!fs.existsSync(destDir)) {
+            await fs.promises.mkdir(destDir, { recursive: true });
+        }
+        if (fs.existsSync(destPath)) {
+            return { success: false, error: 'Destination file already exists' };
+        }
+        await fs.promises.copyFile(sourcePath, destPath);
+        return { success: true };
+    } catch (error) {
+        console.error('Error copying file:', error);
+        return { success: false, error: error.message };
+    }
+});
+
 // Move file
 ipcMain.handle('move-file', async (event, sourcePath, destPath) => {
     try {

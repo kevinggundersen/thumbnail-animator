@@ -284,6 +284,13 @@ button:active:not(:disabled) {
     color: var(--accent);
 }
 
+.tree-node-row.drag-over {
+    background-color: var(--accent-muted);
+    color: var(--accent);
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+
 .tree-node-row.active .tree-node-icon {
     color: var(--accent);
 }
@@ -1154,6 +1161,13 @@ button:hover {
     z-index: 10;
     box-shadow: var(--shadow-lg);
     border-color: var(--accent);
+}
+
+.folder-card.drag-over {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent), var(--shadow-lg);
+    background-color: var(--accent-muted);
+    transform: scale(1.03);
 }
 
 .folder-icon {

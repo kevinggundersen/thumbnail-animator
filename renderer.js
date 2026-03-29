@@ -2630,6 +2630,18 @@ function createImageForCard(card, imageUrl) {
     // The IntersectionObserver rootMargin handles preloading, so we can be eager here
     img.loading = 'eager';
     img.decoding = 'async'; // Decode asynchronously for better performance
+    img.draggable = true;
+
+    // Enable dragging images out of the app
+    img.addEventListener('dragstart', (e) => {
+        const filePath = card.dataset.filePath;
+        if (filePath) {
+            e.dataTransfer.effectAllowed = 'copyMove';
+            e.dataTransfer.setData('text/plain', filePath);
+            e.dataTransfer.setData('text/uri-list', imageUrl);
+            e.dataTransfer.setData('application/x-thumbnail-animator-path', filePath);
+        }
+    });
     
     // Limit image decode resolution
     img.width = decodeWidth;
@@ -2793,11 +2805,10 @@ function createVideoForCard(card, videoUrl) {
     video.addEventListener('dragstart', (e) => {
         const filePath = card.dataset.filePath;
         if (filePath) {
-            // Set the file path and URL in the drag data
-            // This allows dragging to copy the file path or open the video URL
-            e.dataTransfer.effectAllowed = 'copy';
+            e.dataTransfer.effectAllowed = 'copyMove';
             e.dataTransfer.setData('text/plain', filePath);
             e.dataTransfer.setData('text/uri-list', videoUrl);
+            e.dataTransfer.setData('application/x-thumbnail-animator-path', filePath);
         }
     });
     
@@ -3647,6 +3658,177 @@ gridContainer.addEventListener('mouseout', (e) => {
         hideScrubber(currentHoveredCard);
         currentHoveredCard = null;
     }
+});
+
+// --- Drag & Drop Support ---
+
+// Supported media extensions for filtering dropped files
+const SUPPORTED_DROP_EXTENSIONS = new Set([
+    '.mp4', '.webm', '.ogg', '.mov',
+    '.gif', '.jpg', '.jpeg', '.png', '.webp', '.bmp', '.svg'
+]);
+
+function isDroppedFileSupported(fileName) {
+    const lastDot = fileName.lastIndexOf('.');
+    if (lastDot === -1) return false;
+    return SUPPORTED_DROP_EXTENSIONS.has(fileName.substring(lastDot).toLowerCase());
+}
+
+// Helper to get file paths from internal drag or external file drop
+function getDroppedFilePaths(dataTransfer) {
+    // Check for internal app drag (media card)
+    const internalPath = dataTransfer.getData('application/x-thumbnail-animator-path');
+    if (internalPath) {
+        return { paths: [internalPath], isInternal: true };
+    }
+    // Check for external files dropped from Explorer
+    if (dataTransfer.files && dataTransfer.files.length > 0) {
+        const paths = [];
+        for (const file of dataTransfer.files) {
+            if (file.path && isDroppedFileSupported(file.name)) {
+                paths.push(file.path);
+            }
+        }
+        return { paths, isInternal: false };
+    }
+    return { paths: [], isInternal: false };
+}
+
+// Copy external files into a destination folder
+async function copyFilesToFolder(filePaths, destFolder) {
+    if (!filePaths || filePaths.length === 0) return;
+
+    showProgress(0, filePaths.length, 'Copying files...');
+    let success = 0;
+    let failed = 0;
+
+    for (let i = 0; i < filePaths.length; i++) {
+        if (currentProgress && currentProgress.cancelled) break;
+
+        const filePath = filePaths[i];
+        const fileName = filePath.substring(Math.max(filePath.lastIndexOf('\\'), filePath.lastIndexOf('/')) + 1);
+        const separator = destFolder.includes('\\') ? '\\' : '/';
+        const destPath = destFolder + (destFolder.endsWith('\\') || destFolder.endsWith('/') ? '' : separator) + fileName;
+
+        try {
+            const result = await window.electronAPI.copyFile(filePath, destPath);
+            if (result.success) {
+                success++;
+            } else {
+                failed++;
+            }
+        } catch {
+            failed++;
+        }
+
+        updateProgress(i + 1, filePaths.length);
+    }
+
+    hideProgress();
+    if (success > 0) {
+        await navigateToFolder(currentFolderPath); // Refresh
+    }
+    if (failed > 0) {
+        alert(`Failed to copy ${failed} file(s)`);
+    }
+}
+
+// Drop on grid — copy external files into current folder
+gridContainer.addEventListener('dragover', (e) => {
+    // Only show drop effect for external files or when hovering a folder card
+    const folderCard = e.target.closest('.folder-card');
+    if (folderCard || (e.dataTransfer.types.includes('Files') && currentFolderPath)) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = folderCard ? 'move' : 'copy';
+        if (folderCard) {
+            folderCard.classList.add('drag-over');
+        }
+    }
+});
+
+gridContainer.addEventListener('dragleave', (e) => {
+    const folderCard = e.target.closest('.folder-card');
+    if (folderCard) {
+        folderCard.classList.remove('drag-over');
+    }
+});
+
+gridContainer.addEventListener('drop', async (e) => {
+    e.preventDefault();
+
+    // Remove drag-over styling
+    gridContainer.querySelectorAll('.folder-card.drag-over').forEach(c => c.classList.remove('drag-over'));
+
+    const { paths, isInternal } = getDroppedFilePaths(e.dataTransfer);
+    if (paths.length === 0) return;
+
+    // Check if dropped on a folder card
+    const folderCard = e.target.closest('.folder-card');
+    if (folderCard) {
+        const destFolder = folderCard.dataset.folderPath;
+        if (destFolder) {
+            if (isInternal) {
+                await moveFilesToFolder(paths, destFolder);
+            } else {
+                await copyFilesToFolder(paths, destFolder);
+            }
+        }
+        return;
+    }
+
+    // Dropped on grid background — copy external files into current folder
+    if (!isInternal && currentFolderPath) {
+        await copyFilesToFolder(paths, currentFolderPath);
+    }
+});
+
+// Drop on sidebar folder — move internal files or copy external files
+sidebarTree.addEventListener('dragover', (e) => {
+    const row = e.target.closest('.tree-node-row');
+    if (row) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = e.dataTransfer.types.includes('application/x-thumbnail-animator-path') ? 'move' : 'copy';
+        row.classList.add('drag-over');
+    }
+});
+
+sidebarTree.addEventListener('dragleave', (e) => {
+    const row = e.target.closest('.tree-node-row');
+    if (row) {
+        row.classList.remove('drag-over');
+    }
+});
+
+sidebarTree.addEventListener('drop', async (e) => {
+    e.preventDefault();
+
+    // Remove drag-over styling
+    sidebarTree.querySelectorAll('.tree-node-row.drag-over').forEach(r => r.classList.remove('drag-over'));
+
+    const row = e.target.closest('.tree-node-row');
+    if (!row) return;
+
+    const node = row.closest('.tree-node');
+    const destFolder = node ? node.dataset.path : null;
+    if (!destFolder) return;
+
+    const { paths, isInternal } = getDroppedFilePaths(e.dataTransfer);
+    if (paths.length === 0) return;
+
+    if (isInternal) {
+        await moveFilesToFolder(paths, destFolder);
+    } else {
+        await copyFilesToFolder(paths, destFolder);
+    }
+});
+
+// Prevent default browser behavior for drag events on the whole window
+// This prevents the browser from opening dropped files
+document.addEventListener('dragover', (e) => {
+    e.preventDefault();
+});
+document.addEventListener('drop', (e) => {
+    e.preventDefault();
 });
 
 // --- Event Listeners ---

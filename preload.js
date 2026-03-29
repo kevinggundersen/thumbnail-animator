@@ -1,6 +1,7 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
+    getPathForFile: (file) => webUtils.getPathForFile(file),
     selectFolder: (defaultPath) => ipcRenderer.invoke('select-folder', defaultPath),
     scanFolder: (path, options) => ipcRenderer.invoke('scan-folder', path, options),
     triggerGC: () => ipcRenderer.invoke('trigger-gc'),
@@ -18,8 +19,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // New IPC handlers
     getFileInfo: (filePath) => ipcRenderer.invoke('get-file-info', filePath),
     createFolder: (folderPath, folderName) => ipcRenderer.invoke('create-folder', folderPath, folderName),
-    moveFile: (sourcePath, destPath) => ipcRenderer.invoke('move-file', sourcePath, destPath),
-    copyFile: (sourcePath, destPath) => ipcRenderer.invoke('copy-file', sourcePath, destPath),
+    moveFile: (sourcePath, destFolder, fileName) => ipcRenderer.invoke('move-file', sourcePath, destFolder, fileName),
+    copyFile: (sourcePath, destFolder, fileName) => ipcRenderer.invoke('copy-file', sourcePath, destFolder, fileName),
     watchFolder: (folderPath) => ipcRenderer.invoke('watch-folder', folderPath),
     unwatchFolder: (folderPath) => ipcRenderer.invoke('unwatch-folder', folderPath),
     onFolderChanged: (callback) => ipcRenderer.on('folder-changed', callback),

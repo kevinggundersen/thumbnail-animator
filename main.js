@@ -1167,16 +1167,46 @@ ipcMain.handle('create-folder', async (event, folderPath, folderName) => {
 });
 
 // Copy file (used when dropping external files into the app)
-ipcMain.handle('copy-file', async (event, sourcePath, destPath) => {
+// Accepts either (sourcePath, destPath) or (sourcePath, destFolder, fileName)
+ipcMain.handle('copy-file', async (event, sourcePath, destFolderOrPath, fileName) => {
     try {
+        const destPath = fileName
+            ? path.join(destFolderOrPath, fileName)
+            : destFolderOrPath;
         const destDir = path.dirname(destPath);
         if (!fs.existsSync(destDir)) {
             await fs.promises.mkdir(destDir, { recursive: true });
         }
-        if (fs.existsSync(destPath)) {
-            return { success: false, error: 'Destination file already exists' };
+        let finalPath = destPath;
+        if (fs.existsSync(finalPath)) {
+            const baseName = path.basename(destPath);
+            const win = BrowserWindow.fromWebContents(event.sender);
+            const { response } = await dialog.showMessageBox(win, {
+                type: 'question',
+                buttons: ['Replace', 'Keep Both', 'Skip'],
+                defaultId: 2,
+                cancelId: 2,
+                title: 'File Already Exists',
+                message: `"${baseName}" already exists in this location.`,
+                detail: 'Would you like to replace the existing file, keep both files, or skip this file?'
+            });
+            if (response === 2) {
+                // Skip
+                return { success: true, skipped: true };
+            } else if (response === 1) {
+                // Keep Both — auto-rename
+                const ext = path.extname(destPath);
+                const base = path.basename(destPath, ext);
+                const dir = path.dirname(destPath);
+                let counter = 2;
+                while (fs.existsSync(finalPath)) {
+                    finalPath = path.join(dir, `${base} (${counter})${ext}`);
+                    counter++;
+                }
+            }
+            // response === 0: Replace — use original finalPath
         }
-        await fs.promises.copyFile(sourcePath, destPath);
+        await fs.promises.copyFile(sourcePath, finalPath);
         return { success: true };
     } catch (error) {
         console.error('Error copying file:', error);
@@ -1185,19 +1215,23 @@ ipcMain.handle('copy-file', async (event, sourcePath, destPath) => {
 });
 
 // Move file
-ipcMain.handle('move-file', async (event, sourcePath, destPath) => {
+// Accepts either (sourcePath, destPath) or (sourcePath, destFolder, fileName)
+ipcMain.handle('move-file', async (event, sourcePath, destFolderOrPath, fileName) => {
     try {
+        const destPath = fileName
+            ? path.join(destFolderOrPath, fileName)
+            : destFolderOrPath;
         // Ensure destination directory exists
         const destDir = path.dirname(destPath);
         if (!fs.existsSync(destDir)) {
             await fs.promises.mkdir(destDir, { recursive: true });
         }
-        
+
         // Check if destination already exists
         if (fs.existsSync(destPath)) {
             return { success: false, error: 'Destination file already exists' };
         }
-        
+
         await fs.promises.rename(sourcePath, destPath);
         return { success: true };
     } catch (error) {

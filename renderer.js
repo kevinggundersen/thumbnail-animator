@@ -3910,8 +3910,9 @@ function getDroppedFilePaths(dataTransfer) {
     if (dataTransfer.files && dataTransfer.files.length > 0) {
         const paths = [];
         for (const file of dataTransfer.files) {
-            if (file.path && isDroppedFileSupported(file.name)) {
-                paths.push(file.path);
+            const filePath = window.electronAPI.getPathForFile(file);
+            if (filePath && isDroppedFileSupported(file.name)) {
+                paths.push(filePath);
             }
         }
         return { paths, isInternal: false };
@@ -3931,12 +3932,10 @@ async function copyFilesToFolder(filePaths, destFolder) {
         if (currentProgress && currentProgress.cancelled) break;
 
         const filePath = filePaths[i];
-        const fileName = filePath.substring(Math.max(filePath.lastIndexOf('\\'), filePath.lastIndexOf('/')) + 1);
-        const separator = destFolder.includes('\\') ? '\\' : '/';
-        const destPath = destFolder + (destFolder.endsWith('\\') || destFolder.endsWith('/') ? '' : separator) + fileName;
+        const fileName = filePath.replace(/^.*[\\/]/, '');
 
         try {
-            const result = await window.electronAPI.copyFile(filePath, destPath);
+            const result = await window.electronAPI.copyFile(filePath, destFolder, fileName);
             if (result.success) {
                 success++;
             } else {
@@ -3958,13 +3957,26 @@ async function copyFilesToFolder(filePaths, destFolder) {
     }
 }
 
+// Helper to check if a drag event carries external files
+function isDragWithFiles(e) {
+    return e.dataTransfer.types.includes('Files');
+}
+
 // Drop on grid — copy external files into current folder
-gridContainer.addEventListener('dragover', (e) => {
-    // Only show drop effect for external files or when hovering a folder card
+gridContainer.addEventListener('dragenter', (e) => {
     const folderCard = e.target.closest('.folder-card');
-    if (folderCard || (e.dataTransfer.types.includes('Files') && currentFolderPath)) {
+    const isInternal = e.dataTransfer.types.includes('application/x-thumbnail-animator-path');
+    if (folderCard || isInternal || (isDragWithFiles(e) && currentFolderPath)) {
         e.preventDefault();
-        e.dataTransfer.dropEffect = folderCard ? 'move' : 'copy';
+    }
+});
+
+gridContainer.addEventListener('dragover', (e) => {
+    const folderCard = e.target.closest('.folder-card');
+    const isInternal = e.dataTransfer.types.includes('application/x-thumbnail-animator-path');
+    if (folderCard || isInternal || (isDragWithFiles(e) && currentFolderPath)) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = (folderCard && isInternal) ? 'move' : 'copy';
         if (folderCard) {
             folderCard.classList.add('drag-over');
         }
@@ -4008,6 +4020,13 @@ gridContainer.addEventListener('drop', async (e) => {
 });
 
 // Drop on sidebar folder — move internal files or copy external files
+sidebarTree.addEventListener('dragenter', (e) => {
+    const row = e.target.closest('.tree-node-row');
+    if (row) {
+        e.preventDefault();
+    }
+});
+
 sidebarTree.addEventListener('dragover', (e) => {
     const row = e.target.closest('.tree-node-row');
     if (row) {
@@ -4049,8 +4068,15 @@ sidebarTree.addEventListener('drop', async (e) => {
 
 // Prevent default browser behavior for drag events on the whole window
 // This prevents the browser from opening dropped files
+document.addEventListener('dragenter', (e) => {
+    e.preventDefault();
+});
 document.addEventListener('dragover', (e) => {
     e.preventDefault();
+    // Set copy effect for external file drags so the OS shows the correct cursor
+    if (e.dataTransfer.types.includes('Files')) {
+        e.dataTransfer.dropEffect = 'copy';
+    }
 });
 document.addEventListener('drop', (e) => {
     e.preventDefault();
@@ -7585,12 +7611,10 @@ async function moveFilesToFolder(filePaths, destFolder) {
         if (currentProgress && currentProgress.cancelled) break;
         
         const filePath = filePaths[i];
-        const fileName = filePath.substring(Math.max(filePath.lastIndexOf('\\'), filePath.lastIndexOf('/')) + 1);
-        const separator = destFolder.includes('\\') ? '\\' : '/';
-        const destPath = destFolder + (destFolder.endsWith('\\') || destFolder.endsWith('/') ? '' : separator) + fileName;
-        
+        const fileName = filePath.replace(/^.*[\\/]/, '');
+
         try {
-            const result = await window.electronAPI.moveFile(filePath, destPath);
+            const result = await window.electronAPI.moveFile(filePath, destFolder, fileName);
             if (result.success) {
                 success++;
             } else {

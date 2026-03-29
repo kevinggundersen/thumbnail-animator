@@ -22,5 +22,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     watchFolder: (folderPath) => ipcRenderer.invoke('watch-folder', folderPath),
     unwatchFolder: (folderPath) => ipcRenderer.invoke('unwatch-folder', folderPath),
     onFolderChanged: (callback) => ipcRenderer.on('folder-changed', callback),
-    removeFolderChangedListener: () => ipcRenderer.removeAllListeners('folder-changed')
+    removeFolderChangedListener: () => ipcRenderer.removeAllListeners('folder-changed'),
+    generateVideoThumbnail: (filePath) => ipcRenderer.invoke('generate-video-thumbnail', filePath),
+    hasFfmpeg: () => ipcRenderer.invoke('has-ffmpeg')
 });

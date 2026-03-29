@@ -344,6 +344,9 @@ let currentTheme = 'dark'; // 'dark' or 'light'
 // Track thumbnail quality
 let thumbnailQuality = 'medium'; // 'low', 'medium', 'high'
 
+// Track ffmpeg availability for video thumbnail generation
+let hasFfmpegAvailable = false;
+
 // Track zoom level
 let zoomLevel = 100; // Percentage
 
@@ -2776,6 +2779,15 @@ function createVideoForCard(card, videoUrl) {
     video.setAttribute('playsinline', 'true');
     // Make video draggable like images
     video.draggable = true;
+
+    // Request a thumbnail poster from ffmpeg (non-blocking)
+    if (hasFfmpegAvailable && card.dataset.filePath) {
+        window.electronAPI.generateVideoThumbnail(card.dataset.filePath).then(result => {
+            if (result && result.success && result.url && video.isConnected) {
+                video.poster = result.url;
+            }
+        }).catch(() => { /* ignore thumbnail errors */ });
+    }
     
     // Add dragstart handler to enable dragging videos
     video.addEventListener('dragstart', (e) => {
@@ -7714,6 +7726,12 @@ function initNewFeatures() {
 
 // Restore last folder and layout mode on app startup
 window.addEventListener('DOMContentLoaded', async () => {
+    // Check ffmpeg availability for video thumbnail generation
+    try {
+        const ffStatus = await window.electronAPI.hasFfmpeg();
+        hasFfmpegAvailable = ffStatus && ffStatus.ffmpeg;
+    } catch { /* ffmpeg not available */ }
+
     // Restore remember folder preference
     const savedRememberFolder = localStorage.getItem('rememberLastFolder');
     if (savedRememberFolder !== null) {

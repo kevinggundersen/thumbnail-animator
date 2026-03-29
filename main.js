@@ -23,22 +23,117 @@ const { execFile } = require('child_process');
 
 // Detect ffprobe availability for reading video dimensions from file headers
 let ffprobePath = null;
-(function detectFfprobe() {
+// Detect ffmpeg availability for video thumbnail generation
+let ffmpegPath = null;
+(function detectFfTools() {
     const { execFileSync } = require('child_process');
     // Check common locations on Windows, then fall back to PATH
-    const candidates = process.platform === 'win32'
+    const probeCandidates = process.platform === 'win32'
         ? ['ffprobe', 'ffprobe.exe']
         : ['ffprobe'];
-    for (const candidate of candidates) {
+    for (const candidate of probeCandidates) {
         try {
             execFileSync(candidate, ['-version'], { stdio: 'ignore', timeout: 3000 });
             ffprobePath = candidate;
             console.log('ffprobe found:', candidate);
-            return;
+            break;
         } catch { /* not found, try next */ }
     }
-    console.log('ffprobe not found — video dimensions will be detected on load');
+    if (!ffprobePath) console.log('ffprobe not found — video dimensions will be detected on load');
+
+    const mpegCandidates = process.platform === 'win32'
+        ? ['ffmpeg', 'ffmpeg.exe']
+        : ['ffmpeg'];
+    for (const candidate of mpegCandidates) {
+        try {
+            execFileSync(candidate, ['-version'], { stdio: 'ignore', timeout: 3000 });
+            ffmpegPath = candidate;
+            console.log('ffmpeg found:', candidate);
+            break;
+        } catch { /* not found, try next */ }
+    }
+    if (!ffmpegPath) console.log('ffmpeg not found — video thumbnails will not be generated');
 })();
+
+// Video thumbnail cache directory (initialized after userDataPath is set)
+const crypto = require('crypto');
+let videoThumbDir = null;
+
+/**
+ * Get the cached thumbnail path for a video file.
+ * Uses a hash of the file path + mtime for cache invalidation.
+ */
+function getThumbCachePath(filePath, mtimeMs) {
+    const hash = crypto.createHash('md5').update(`${filePath}|${mtimeMs || 0}`).digest('hex');
+    return path.join(videoThumbDir, `${hash}.jpg`);
+}
+
+/**
+ * Get video duration using ffprobe. Returns duration in seconds or null.
+ */
+function getVideoDuration(filePath) {
+    if (!ffprobePath) return Promise.resolve(null);
+    return new Promise((resolve) => {
+        execFile(ffprobePath, [
+            '-v', 'error',
+            '-show_entries', 'format=duration',
+            '-of', 'csv=p=0',
+            filePath
+        ], { timeout: 5000 }, (err, stdout) => {
+            if (err || !stdout) return resolve(null);
+            const dur = parseFloat(stdout.trim());
+            resolve(isFinite(dur) && dur > 0 ? dur : null);
+        });
+    });
+}
+
+/**
+ * Generate a thumbnail for a video file using ffmpeg.
+ * Extracts a frame at ~25% of the video duration.
+ * Returns the path to the cached thumbnail or null on failure.
+ */
+async function generateVideoThumbnail(filePath) {
+    if (!ffmpegPath) return null;
+
+    try {
+        const stats = await fs.promises.stat(filePath);
+        const thumbPath = getThumbCachePath(filePath, stats.mtimeMs);
+
+        // Return cached thumbnail if it exists
+        try {
+            await fs.promises.access(thumbPath);
+            return thumbPath;
+        } catch { /* not cached yet */ }
+
+        // Ensure cache directory exists
+        await fs.promises.mkdir(videoThumbDir, { recursive: true });
+
+        // Get video duration to pick a good frame
+        const duration = await getVideoDuration(filePath);
+        const seekTime = duration ? Math.min(duration * 0.25, 10) : 1;
+
+        return new Promise((resolve) => {
+            execFile(ffmpegPath, [
+                '-ss', String(seekTime),
+                '-i', filePath,
+                '-vframes', '1',
+                '-q:v', '6',
+                '-vf', 'scale=320:-2',
+                '-y',
+                thumbPath
+            ], { timeout: 10000 }, (err) => {
+                if (err) {
+                    // Clean up partial file
+                    fs.promises.unlink(thumbPath).catch(() => {});
+                    return resolve(null);
+                }
+                resolve(thumbPath);
+            });
+        });
+    } catch {
+        return null;
+    }
+}
 
 /**
  * Read video dimensions using ffprobe (reads only file headers, very fast).
@@ -81,6 +176,9 @@ if (!fs.existsSync(userDataPath)) {
     fs.mkdirSync(userDataPath, { recursive: true });
 }
 app.setPath('userData', userDataPath);
+
+// Initialize video thumbnail cache directory now that userDataPath is set
+videoThumbDir = path.join(userDataPath, 'video-thumbnails');
 
 // Fix for VRAM leak: Disable Hardware Acceleration
 // This forces software decoding which is often more stable for many simultaneous videos
@@ -1174,6 +1272,28 @@ ipcMain.handle('unwatch-folder', async (event, folderPath) => {
         console.error('Error unwatching folder:', error);
         return { success: false, error: error.message };
     }
+});
+
+// Generate a video thumbnail (returns file:// URL to cached JPEG or null)
+ipcMain.handle('generate-video-thumbnail', async (event, filePath) => {
+    try {
+        const thumbPath = await generateVideoThumbnail(filePath);
+        if (thumbPath) {
+            const isWindows = process.platform === 'win32';
+            const url = isWindows
+                ? `file:///${thumbPath.replace(/\\/g, '/')}`
+                : `file://${thumbPath}`;
+            return { success: true, url };
+        }
+        return { success: false };
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
+});
+
+// Check if ffmpeg is available (renderer can adapt UI accordingly)
+ipcMain.handle('has-ffmpeg', async () => {
+    return { ffmpeg: !!ffmpegPath, ffprobe: !!ffprobePath };
 });
 
 // Cleanup watchers on app quit

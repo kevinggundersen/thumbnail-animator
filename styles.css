@@ -2231,6 +2231,13 @@ button:hover {
     border-radius: 4px;
     backdrop-filter: blur(4px);
     pointer-events: auto;
+    opacity: 0;
+    transition: opacity 0.2s;
+}
+
+.star-rating.has-rating,
+.video-card:hover .star-rating {
+    opacity: 1;
 }
 
 .star {

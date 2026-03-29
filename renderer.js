@@ -1756,7 +1756,7 @@ function createCardFromItem(item) {
         // Always add star rating (even if 0, so user can rate)
         const rating = getFileRating(item.path);
         const starContainer = document.createElement('div');
-        starContainer.className = 'star-rating';
+        starContainer.className = rating > 0 ? 'star-rating has-rating' : 'star-rating';
         starContainer.style.pointerEvents = 'auto'; // Ensure stars are clickable
         for (let i = 1; i <= 5; i++) {
             const star = document.createElement('span');
@@ -6254,6 +6254,9 @@ function updateCardStars(card, rating, filePath) {
         }
     }
     
+    // Update visibility class based on rating
+    starContainer.classList.toggle('has-rating', rating > 0);
+
     // Clear and rebuild stars
     starContainer.innerHTML = '';
     for (let i = 1; i <= 5; i++) {

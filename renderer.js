@@ -889,44 +889,53 @@ let visibleCards = [];
 // Video scrubber state
 let scrubberCard = null;
 
-// Navigation history for back/forward functionality
+// Navigation history for back/forward functionality (per-tab)
 const navigationHistory = {
-    paths: [],
-    currentIndex: -1,
-    
+    _getTab() {
+        return tabs.find(t => t.id === activeTabId);
+    },
+
     add(path) {
+        const tab = this._getTab();
+        if (!tab) return;
         // Remove any paths after current index (when navigating forward then going back)
-        this.paths = this.paths.slice(0, this.currentIndex + 1);
+        tab.historyPaths = tab.historyPaths.slice(0, tab.historyIndex + 1);
         // Add new path
-        this.paths.push(path);
-        this.currentIndex = this.paths.length - 1;
+        tab.historyPaths.push(path);
+        tab.historyIndex = tab.historyPaths.length - 1;
         this.updateButtons();
     },
-    
+
     canGoBack() {
-        return this.currentIndex > 0;
+        const tab = this._getTab();
+        return tab ? tab.historyIndex > 0 : false;
     },
-    
+
     canGoForward() {
-        return this.currentIndex < this.paths.length - 1;
+        const tab = this._getTab();
+        return tab ? tab.historyIndex < tab.historyPaths.length - 1 : false;
     },
-    
+
     goBack() {
-        if (this.canGoBack()) {
-            this.currentIndex--;
-            return this.paths[this.currentIndex];
+        const tab = this._getTab();
+        if (tab && tab.historyIndex > 0) {
+            tab.historyIndex--;
+            this.updateButtons();
+            return tab.historyPaths[tab.historyIndex];
         }
         return null;
     },
-    
+
     goForward() {
-        if (this.canGoForward()) {
-            this.currentIndex++;
-            return this.paths[this.currentIndex];
+        const tab = this._getTab();
+        if (tab && tab.historyIndex < tab.historyPaths.length - 1) {
+            tab.historyIndex++;
+            this.updateButtons();
+            return tab.historyPaths[tab.historyIndex];
         }
         return null;
     },
-    
+
     updateButtons() {
         backBtn.disabled = !this.canGoBack();
         forwardBtn.disabled = !this.canGoForward();
@@ -5668,6 +5677,13 @@ function loadTabs() {
         try {
             tabs = JSON.parse(saved);
             tabIdCounter = Math.max(...tabs.map(t => t.id), 0) + 1;
+            // Initialize per-tab history fields for tabs saved before this feature
+            for (const tab of tabs) {
+                if (!tab.historyPaths) {
+                    tab.historyPaths = tab.path ? [tab.path] : [];
+                    tab.historyIndex = tab.historyPaths.length - 1;
+                }
+            }
         } catch (e) {
             tabs = [];
         }
@@ -5745,7 +5761,9 @@ function createTab(path, name) {
         path: path || null,
         name: name || (path ? path.split(/[/\\]/).pop() : 'Home'),
         sortType: sortType || 'name', // Use current sorting or default
-        sortOrder: sortOrder || 'ascending' // Use current order or default
+        sortOrder: sortOrder || 'ascending', // Use current order or default
+        historyPaths: [],
+        historyIndex: -1
     };
     tabs.push(tab);
     saveTabs();
@@ -5790,6 +5808,8 @@ function switchToTab(tabId) {
     }
 
     activeTabId = tabId;
+    // Update back/forward buttons for this tab's history
+    navigationHistory.updateButtons();
     const tab = tabs.find(t => t.id === tabId);
     if (tab) {
         // Restore tab's sorting preferences

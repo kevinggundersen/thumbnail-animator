@@ -164,6 +164,103 @@ button:active:not(:disabled) {
     height: 100%;
 }
 
+/* ===== Status Bar ===== */
+.status-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 24px;
+    padding: 0 12px;
+    background: var(--bg-secondary);
+    border-top: 1px solid var(--border-subtle);
+    font-size: 11px;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+    user-select: none;
+    gap: 16px;
+}
+
+.status-bar-left,
+.status-bar-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.status-bar-left {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.status-bar-right {
+    flex-shrink: 0;
+}
+
+.status-muted {
+    color: var(--text-tertiary);
+}
+
+.status-separator {
+    color: var(--border);
+    font-size: 10px;
+}
+
+.status-bar kbd {
+    display: inline-block;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 0 4px;
+    font-family: inherit;
+    font-size: 10px;
+    line-height: 16px;
+    color: var(--text-primary);
+}
+
+.status-keyboard-hint {
+    cursor: pointer;
+}
+
+.status-activity {
+    color: var(--accent);
+    font-size: 11px;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    white-space: nowrap;
+}
+
+.status-activity:empty {
+    display: none;
+}
+
+.status-activity + #status-item-counts:not(:empty)::before {
+    content: '|';
+    color: var(--border);
+    margin-right: 8px;
+    font-size: 10px;
+}
+
+.status-activity::before {
+    content: '●';
+    font-size: 7px;
+    animation: status-pulse 1.2s ease-in-out infinite;
+    display: inline-block;
+    vertical-align: middle;
+}
+
+@keyframes status-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.25; }
+}
+
+#status-selection-info:empty,
+#status-selection-info:empty + .status-separator {
+    display: none;
+}
+
 /* ===== Content Wrapper & Sidebar ===== */
 .content-wrapper {
     display: flex;

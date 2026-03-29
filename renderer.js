@@ -270,6 +270,34 @@ if (!gridContainer) {
 }
 const searchBox = document.getElementById('search-box');
 const itemCountEl = document.getElementById('item-count');
+
+// Status bar elements
+const statusActivity = document.getElementById('status-activity');
+const statusItemCounts = document.getElementById('status-item-counts');
+const statusFilterInfo = document.getElementById('status-filter-info');
+const statusSelectionInfo = document.getElementById('status-selection-info');
+const statusLayoutMode = document.getElementById('status-layout-mode');
+const statusZoomLevel = document.getElementById('status-zoom-level');
+
+function setStatusActivity(msg) {
+    if (statusActivity) statusActivity.textContent = msg || '';
+}
+
+// Debounced clear for "Loading media..." — fires after media load burst settles
+let _mediaSettleTimer = null;
+function scheduleMediaLoadSettle() {
+    clearTimeout(_mediaSettleTimer);
+    _mediaSettleTimer = setTimeout(() => {
+        if (statusActivity && statusActivity.textContent === 'Loading media...') {
+            setStatusActivity('');
+        }
+    }, 1500);
+}
+
+// Make keyboard hint in status bar clickable
+document.querySelectorAll('.status-keyboard-hint').forEach(el => {
+    el.addEventListener('click', () => toggleShortcutsOverlay());
+});
 const filterAllBtn = document.getElementById('filter-all');
 const filterVideosBtn = document.getElementById('filter-videos');
 const filterImagesBtn = document.getElementById('filter-images');
@@ -2049,6 +2077,8 @@ function switchLayoutMode() {
     requestAnimationFrame(() => {
         applyFilters();
     });
+
+    updateStatusBar();
 }
 
 function toggleRememberFolder() {
@@ -2290,6 +2320,7 @@ function createCardFromItem(item) {
 // Progressive rendering function for large lists
 function renderItemsProgressive(items) {
     cardAnimIndex = 0; // Reset card animation stagger
+    setStatusActivity(`Rendering ${items.length} items...`);
     const cardsToObserve = [];
     let currentIndex = 0;
     
@@ -2463,6 +2494,7 @@ function renderItemsProgressive(items) {
 function renderItems(items) {
     cardAnimIndex = 0; // Reset card animation stagger
     const perfStart = perfTest.start();
+    if (items.length > 50) setStatusActivity(`Rendering ${items.length} items...`);
     // Clean up all existing media before rendering
     // Use a single querySelectorAll and batch operations
     const existingCards = gridContainer.querySelectorAll('.video-card, .folder-card');
@@ -2795,10 +2827,12 @@ function createImageForCard(card, imageUrl) {
                 // Ignore cross-origin or other canvas errors
             }
         }
+        scheduleMediaLoadSettle();
     }, { once: true });
-    
+
     // Add error handler - retry on error with exponential backoff
     img.addEventListener('error', () => {
+        scheduleMediaLoadSettle();
         destroyImageElement(img);
         activeImageCount = Math.max(0, activeImageCount - 1);
         pendingMediaCreations.delete(card);
@@ -2988,10 +3022,12 @@ function createVideoForCard(card, videoUrl) {
         
         // Also check when video can play (more reliable for some browsers)
         video.addEventListener('canplay', checkAudio, { once: true });
+        scheduleMediaLoadSettle();
     });
-    
+
     // Add error handler - retry on error with exponential backoff
     video.addEventListener('error', () => {
+        scheduleMediaLoadSettle();
         destroyVideoElement(video);
         activeVideoCount = Math.max(0, activeVideoCount - 1);
         pendingMediaCreations.delete(card);
@@ -3541,6 +3577,52 @@ function updateItemCount() {
     } else {
         itemCountEl.textContent = `${total} items`;
     }
+
+    updateStatusBar();
+}
+
+function updateStatusBar() {
+    // Item counts by type
+    const folders = currentItems.filter(i => i.type === 'folder').length;
+    const videos = currentItems.filter(i => i.type === 'video').length;
+    const images = currentItems.filter(i => i.type === 'image').length;
+    const total = currentItems.length;
+
+    if (total === 0) {
+        statusItemCounts.textContent = 'No items';
+    } else {
+        const parts = [];
+        if (folders > 0) parts.push(`${folders} folder${folders !== 1 ? 's' : ''}`);
+        if (images > 0) parts.push(`${images} image${images !== 1 ? 's' : ''}`);
+        if (videos > 0) parts.push(`${videos} video${videos !== 1 ? 's' : ''}`);
+        statusItemCounts.textContent = parts.join(', ');
+    }
+
+    // Filter info
+    const query = searchBox.value.trim();
+    const filterNames = { all: '', video: 'Videos', image: 'Images', audio: 'Audio', stars: 'Starred' };
+    const filterParts = [];
+    if (currentFilter !== 'all') filterParts.push(filterNames[currentFilter] || currentFilter);
+    if (query) filterParts.push(`"${query}"`);
+    statusFilterInfo.textContent = filterParts.length > 0 ? `[${filterParts.join(' + ')}]` : '';
+
+    // Layout & zoom
+    statusLayoutMode.textContent = layoutMode === 'masonry' ? 'Dynamic' : 'Grid';
+    statusZoomLevel.textContent = `${zoomLevel}%`;
+}
+
+function updateStatusBarSelection(card) {
+    if (!card || !statusSelectionInfo) {
+        statusSelectionInfo.textContent = '';
+        return;
+    }
+
+    const name = card.dataset.name || '';
+    const w = card.dataset.width || card.dataset.mediaWidth;
+    const h = card.dataset.height || card.dataset.mediaHeight;
+    const parts = [name];
+    if (w && h) parts.push(`${w}x${h}`);
+    statusSelectionInfo.textContent = parts.join(' \u2014 ');
 }
 
 function applyFilters() {
@@ -4282,6 +4364,8 @@ function yieldToEventLoop() {
 // Function to navigate to a folder
 async function navigateToFolder(folderPath, addToHistory = true, forceReload = false) {
     const perfStart = perfTest.start();
+    const folderName = folderPath.split(/[/\\]/).filter(Boolean).pop() || folderPath;
+    setStatusActivity(`Navigating to ${folderName}...`);
     try {
         // If forcing reload, invalidate cache first
         if (forceReload) {
@@ -4570,6 +4654,7 @@ zoomSlider.addEventListener('input', (e) => {
             zoomLayoutTimer = null;
             applyZoom();
             deferLocalStorageWrite('zoomLevel', zoomLevel.toString());
+            updateStatusBar();
         });
     }
 });
@@ -5360,7 +5445,9 @@ contextMenu.addEventListener('click', async (e) => {
         case 'delete':
             try {
                 if (confirm(`Are you sure you want to delete "${fileName}"?`)) {
+                    setStatusActivity(`Deleting ${fileName}...`);
                     const result = await window.electronAPI.deleteFile(filePath);
+                    setStatusActivity('');
                     if (result.success) {
                         // Invalidate cache and reload the current folder to reflect the change
                         if (currentFolderPath) {
@@ -5414,7 +5501,9 @@ async function handleRenameConfirm() {
     }
     
     try {
+        setStatusActivity(`Renaming to ${newName}...`);
         const result = await window.electronAPI.renameFile(renamePendingFile.filePath, newName);
+        setStatusActivity('');
         if (result.success) {
             renameDialog.classList.add('hidden');
             renamePendingFile = null;
@@ -5492,8 +5581,9 @@ async function loadVideos(folderPath, useCache = true) {
     
     if (needsScan) {
         showLoadingIndicator();
+        setStatusActivity('Scanning folder...');
     }
-    
+
     try {
         // Yield control to allow UI to update and show loading indicator
         await yieldToEventLoop();
@@ -5651,12 +5741,26 @@ async function loadVideos(folderPath, useCache = true) {
         
         // Render the filtered and sorted items
         renderItems(sortedItems);
-        
+
+        // Show "Loading media..." while IntersectionObserver lazy-loads images/videos into cards
+        const mediaItemCount = sortedItems.filter(i => i.type !== 'folder').length;
+        if (mediaItemCount > 0) {
+            setStatusActivity('Loading media...');
+            scheduleMediaLoadSettle();
+        } else {
+            setStatusActivity('');
+        }
+
         // Start watching folder for changes
         await startWatchingFolder(folderPath);
     } finally {
         // Hide loading indicator
         hideLoadingIndicator();
+        // Clear any stuck non-self-settling activity messages
+        const act = statusActivity ? statusActivity.textContent : '';
+        if (act === 'Scanning folder...' || act.startsWith('Navigating to')) {
+            setStatusActivity('');
+        }
     }
 }
 
@@ -5756,11 +5860,14 @@ function initKeyboardShortcuts() {
                 const path = card.dataset.filePath;
                 const name = card.querySelector('.video-info')?.textContent || '';
                 if (path && confirm(`Are you sure you want to delete "${name}"?`)) {
+                    setStatusActivity(`Deleting ${name}...`);
                     window.electronAPI.deleteFile(path).then(result => {
+                        setStatusActivity('');
                         if (result.success && currentFolderPath) {
                             loadVideos(currentFolderPath);
                         }
                     }).catch(err => {
+                        setStatusActivity('');
                         console.error('Error deleting file:', err);
                     });
                 }
@@ -5867,6 +5974,7 @@ function initKeyboardShortcuts() {
             zoomLevel = newZoom;
             applyZoom();
             deferLocalStorageWrite('zoomLevel', zoomLevel.toString());
+            updateStatusBar();
             return;
         }
 
@@ -5878,6 +5986,7 @@ function initKeyboardShortcuts() {
             zoomLevel = newZoom;
             applyZoom();
             deferLocalStorageWrite('zoomLevel', zoomLevel.toString());
+            updateStatusBar();
             return;
         }
 
@@ -5888,6 +5997,7 @@ function initKeyboardShortcuts() {
             zoomLevel = 100;
             applyZoom();
             deferLocalStorageWrite('zoomLevel', '100');
+            updateStatusBar();
             return;
         }
     });
@@ -5952,6 +6062,9 @@ function navigateCards(direction) {
             card.style.outlineOffset = '';
         }
     });
+
+    // Update status bar with focused card info
+    updateStatusBarSelection(cards[focusedCardIndex] || null);
 }
 
 function switchFilter(filter) {
@@ -7551,9 +7664,10 @@ function showProgress(current, total, text) {
     const indicator = document.getElementById('progress-indicator');
     const progressText = document.getElementById('progress-text');
     const progressFill = document.getElementById('progress-bar-fill');
-    
+
     if (indicator) indicator.classList.remove('hidden');
     if (progressText) progressText.textContent = text || 'Processing...';
+    setStatusActivity(text || 'Processing...');
     updateProgress(current, total);
 }
 
@@ -7578,6 +7692,7 @@ function hideProgress() {
     currentProgress = null;
     const indicator = document.getElementById('progress-indicator');
     if (indicator) indicator.classList.add('hidden');
+    setStatusActivity('');
 }
 
 function cancelProgress() {
@@ -8302,4 +8417,7 @@ window.addEventListener('DOMContentLoaded', async () => {
             }
         }
     }
+
+    // Initialize status bar with current state
+    updateStatusBar();
 });

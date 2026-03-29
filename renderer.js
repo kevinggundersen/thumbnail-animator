@@ -976,8 +976,14 @@ const renameCancelBtn = document.getElementById('rename-cancel-btn');
 const renameConfirmBtn = document.getElementById('rename-confirm-btn');
 let renamePendingFile = null;
 
-// Tiny 1x1 WebM to flush the decoder
-const BLANK_VIDEO = 'data:video/webm;base64,GkXfo0AgQoaBAUL3gQFC8oEEQvOBCEKCQAR3ZWJtQoeBAkKFgQIYU4BnQI0VSalmQCgq17FAAw9CQE2AQAZ3aGFtbXlXQUAGd2hhbW15RIlACECPQAAAAAAAFlSua0AxrkAu14EBY8WBAZyBACK1nEADdW5khkAFVl9WUDglhohAA1ZQOIOBAeWBAOGHgQfBQAAAAAAAAEe4gQKGhkACLMhkAGw=';
+// Tiny 1x1 WebM to flush the decoder - converted to Blob URL once to avoid repeated base64 decoding
+const BLANK_VIDEO = (() => {
+    const b64 = 'GkXfo0AgQoaBAUL3gQFC8oEEQvOBCEKCQAR3ZWJtQoeBAkKFgQIYU4BnQI0VSalmQCgq17FAAw9CQE2AQAZ3aGFtbXlXQUAGd2hhbW15RIlACECPQAAAAAAAFlSua0AxrkAu14EBY8WBAZyBACK1nEADdW5khkAFVl9WUDglhohAA1ZQOIOBAeWBAOGHgQfBQAAAAAAAAEe4gQKGhkACLMhkAGw=';
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return URL.createObjectURL(new Blob([bytes], { type: 'video/webm' }));
+})();
 
 // --- Manual GC Helper ---
 let gcTimeout;
@@ -1050,149 +1056,154 @@ function performCleanupCheck() {
     const viewportLeft = -PRELOAD_BUFFER_PX;
     const viewportRight = window.innerWidth + PRELOAD_BUFFER_PX
     
-    // Batch DOM reads: collect cards with media first, then batch getBoundingClientRect calls
-    const cardsWithMedia = Array.from(allCards).filter(card => {
-        const videos = card.querySelectorAll('video');
-        const images = card.querySelectorAll('img.media-thumbnail');
-        return videos.length > 0 || images.length > 0;
-    });
-    
+    // Query all media elements once - maintain local arrays to avoid redundant DOM queries
+    let allVideos = Array.from(gridContainer.querySelectorAll('video'));
+    let allImages = Array.from(gridContainer.querySelectorAll('img.media-thumbnail'));
+
+    if (allVideos.length === 0 && allImages.length === 0) return;
+
+    // Build a map of card -> { videos, images } for fast lookup
+    const cardMediaMap = new Map();
+    for (const video of allVideos) {
+        const card = video.closest('.video-card');
+        if (!card) continue;
+        if (!cardMediaMap.has(card)) cardMediaMap.set(card, { videos: [], images: [] });
+        cardMediaMap.get(card).videos.push(video);
+    }
+    for (const img of allImages) {
+        const card = img.closest('.video-card');
+        if (!card) continue;
+        if (!cardMediaMap.has(card)) cardMediaMap.set(card, { videos: [], images: [] });
+        cardMediaMap.get(card).images.push(img);
+    }
+
+    const cardsWithMedia = Array.from(cardMediaMap.keys());
     if (cardsWithMedia.length === 0) return;
-    
+
     // Batch all getBoundingClientRect calls together to minimize layout thrashing
     const rects = cardsWithMedia.map(card => card.getBoundingClientRect());
-    
+
+    // Track destroyed elements to remove from local arrays
+    const destroyedVideos = new Set();
+    const destroyedImages = new Set();
+
     // First pass: Remove media from cards outside the buffer zone
     cardsWithMedia.forEach((card, index) => {
         const rect = rects[index];
-        const videos = card.querySelectorAll('video');
-        const images = card.querySelectorAll('img.media-thumbnail');
-        
-        // Check if card is within buffer zone
+        const { videos, images } = cardMediaMap.get(card);
+
         const isInBufferZone = (
             rect.top < viewportBottom &&
             rect.bottom > viewportTop &&
             rect.left < viewportRight &&
             rect.right > viewportLeft
         );
-        
+
         if (!isInBufferZone) {
-            // Remove ALL media from this card (outside buffer zone)
             videos.forEach(video => {
                 destroyVideoElement(video);
-                activeVideoCount = Math.max(0, activeVideoCount - 1);
+                destroyedVideos.add(video);
                 cleaned = true;
             });
             images.forEach(img => {
                 destroyImageElement(img);
-                activeImageCount = Math.max(0, activeImageCount - 1);
+                destroyedImages.add(img);
                 cleaned = true;
             });
         } else {
-            // If visible but has multiple videos, keep only the first one
             if (videos.length > 1) {
                 for (let i = 1; i < videos.length; i++) {
                     destroyVideoElement(videos[i]);
-                    activeVideoCount = Math.max(0, activeVideoCount - 1);
+                    destroyedVideos.add(videos[i]);
                     cleaned = true;
                 }
             }
-            // If visible but has multiple images, keep only the first one
             if (images.length > 1) {
                 for (let i = 1; i < images.length; i++) {
                     destroyImageElement(images[i]);
-                    activeImageCount = Math.max(0, activeImageCount - 1);
+                    destroyedImages.add(images[i]);
                     cleaned = true;
                 }
             }
         }
     });
-    
-    // Update counts
-    activeVideoCount = gridContainer.querySelectorAll('video').length;
-    activeImageCount = gridContainer.querySelectorAll('img.media-thumbnail').length;
-    
+
+    // Update local arrays by removing destroyed elements
+    allVideos = allVideos.filter(v => !destroyedVideos.has(v));
+    allImages = allImages.filter(i => !destroyedImages.has(i));
+    activeVideoCount = allVideos.length;
+    activeImageCount = allImages.length;
+
     // Second pass: If we still have too many videos, aggressively remove furthest ones
-    const remainingVideos = Array.from(gridContainer.querySelectorAll('video'));
-    if (remainingVideos.length > MAX_VIDEOS) {
-        // Batch getBoundingClientRect calls for all video cards
-        const videoCards = remainingVideos.map(video => video.closest('.video-card')).filter(Boolean);
+    if (allVideos.length > MAX_VIDEOS) {
+        const videoCards = allVideos.map(video => video.closest('.video-card')).filter(Boolean);
         const videoRects = videoCards.map(card => card.getBoundingClientRect());
-        
-        // Calculate distance from viewport center for each video
+
         const viewportCenterY = window.innerHeight / 2;
         const viewportCenterX = window.innerWidth / 2;
-        const videoDistances = remainingVideos.map((video, index) => {
+        const videoDistances = allVideos.map((video, index) => {
             const card = videoCards[index];
             if (!card) return { video, distance: Infinity };
             const rect = videoRects[index];
             const cardCenterY = rect.top + rect.height / 2;
             const cardCenterX = rect.left + rect.width / 2;
-            
-            // Calculate distance, but prioritize vertical distance (scrolling direction)
             const verticalDistance = Math.abs(cardCenterY - viewportCenterY);
             const horizontalDistance = Math.abs(cardCenterX - viewportCenterX);
-            // Weight vertical distance more heavily since we scroll vertically
             const distance = verticalDistance * 2 + horizontalDistance;
-            
             return { video, distance, cardCenterY };
         });
-        
-        // Sort by distance and remove the furthest ones
+
         videoDistances.sort((a, b) => b.distance - a.distance);
         const toRemove = videoDistances.slice(MAX_VIDEOS);
         toRemove.forEach(({ video }) => {
             destroyVideoElement(video);
-            activeVideoCount = Math.max(0, activeVideoCount - 1);
+            destroyedVideos.add(video);
             cleaned = true;
         });
+        allVideos = allVideos.filter(v => !destroyedVideos.has(v));
     }
-    
+
     // Third pass: If we're still over a safety threshold (90% of max), be even more aggressive
-    const currentVideoCount = gridContainer.querySelectorAll('video').length;
-    const currentImageCount = gridContainer.querySelectorAll('img.media-thumbnail').length;
-    const totalMediaCount = currentVideoCount + currentImageCount;
-    const safetyThreshold = Math.floor(MAX_TOTAL_MEDIA * 0.9); // 90% of max total media
+    const totalMediaCount = allVideos.length + allImages.length;
+    const safetyThreshold = Math.floor(MAX_TOTAL_MEDIA * 0.9);
     if (totalMediaCount > safetyThreshold) {
-        // Combine all media and sort by distance
         const allMedia = [
-            ...Array.from(gridContainer.querySelectorAll('video')).map(v => ({ element: v, type: 'video' })),
-            ...Array.from(gridContainer.querySelectorAll('img.media-thumbnail')).map(i => ({ element: i, type: 'image' }))
+            ...allVideos.map(v => ({ element: v, type: 'video' })),
+            ...allImages.map(i => ({ element: i, type: 'image' }))
         ];
-        
-        // Batch getBoundingClientRect calls for all media cards
+
         const mediaCards = allMedia.map(({ element }) => element.closest('.video-card')).filter(Boolean);
         const mediaRects = mediaCards.map(card => card.getBoundingClientRect());
-        
+
         const viewportCenterY = window.innerHeight / 2;
         const mediaDistances = allMedia.map(({ element, type }, index) => {
             const card = mediaCards[index];
             if (!card) return { element, distance: Infinity, type };
             const rect = mediaRects[index];
             const cardCenterY = rect.top + rect.height / 2;
-            // Only consider vertical distance for safety cleanup
             const distance = Math.abs(cardCenterY - viewportCenterY);
             return { element, distance, type };
         });
-        
+
         mediaDistances.sort((a, b) => b.distance - a.distance);
         const toRemove = mediaDistances.slice(safetyThreshold);
         toRemove.forEach(({ element, type }) => {
             if (type === 'video') {
                 destroyVideoElement(element);
-                activeVideoCount = Math.max(0, activeVideoCount - 1);
             } else {
                 destroyImageElement(element);
-                activeImageCount = Math.max(0, activeImageCount - 1);
             }
             cleaned = true;
         });
+
+        // Final count from DOM only once at the very end
+        activeVideoCount = gridContainer.querySelectorAll('video').length;
+        activeImageCount = gridContainer.querySelectorAll('img.media-thumbnail').length;
+    } else {
+        activeVideoCount = allVideos.length;
+        activeImageCount = allImages.length;
     }
-    
-    // Update counts again
-    activeVideoCount = gridContainer.querySelectorAll('video').length;
-    activeImageCount = gridContainer.querySelectorAll('img.media-thumbnail').length;
-    
+
     if (cleaned) {
         scheduleGC();
     }
@@ -1202,9 +1213,15 @@ function startPeriodicCleanup() {
     ensureCleanupScrollListener();
     
     if (!cleanupCheckInterval) {
-        cleanupCheckInterval = setInterval(() => {
-            runCleanupCycle();
-        }, CLEANUP_IDLE_INTERVAL_MS);
+        const scheduleIdleCleanup = () => {
+            cleanupCheckInterval = requestIdleCallback(() => {
+                runCleanupCycle();
+                if (cleanupCheckInterval) {
+                    scheduleIdleCleanup();
+                }
+            }, { timeout: CLEANUP_IDLE_INTERVAL_MS });
+        };
+        scheduleIdleCleanup();
     }
     
     scheduleCleanupCycle();
@@ -1212,7 +1229,7 @@ function startPeriodicCleanup() {
 
 function stopPeriodicCleanup() {
     if (cleanupCheckInterval) {
-        clearInterval(cleanupCheckInterval);
+        cancelIdleCallback(cleanupCheckInterval);
         cleanupCheckInterval = null;
     }
     if (cleanupScrollTimeout) {
@@ -2326,14 +2343,12 @@ function renderItemsProgressive(items) {
     function loadVisibleMedia() {
         const allCards = gridContainer.querySelectorAll('.video-card');
         if (allCards.length === 0) return;
-        
+
         const cardsToCheck = Array.from(allCards).filter(card => {
             if (card.classList.contains('folder-card')) return false;
-            const videos = card.querySelectorAll('video');
-            const images = card.querySelectorAll('img.media-thumbnail');
-            return videos.length === 0 && images.length === 0 && !pendingMediaCreations.has(card);
+            return !card.dataset.hasMedia && !pendingMediaCreations.has(card);
         });
-        
+
         if (cardsToCheck.length === 0) return;
         
         // Use viewport bounds (consistent with IntersectionObserver root: null)
@@ -2478,12 +2493,10 @@ function renderItems(items) {
     function loadVisibleMediaRegular() {
         const allCards = gridContainer.querySelectorAll('.video-card');
         if (allCards.length === 0) return;
-        
+
         const cardsToCheck = Array.from(allCards).filter(card => {
             if (card.classList.contains('folder-card')) return false;
-            const videos = card.querySelectorAll('video');
-            const images = card.querySelectorAll('img.media-thumbnail');
-            return videos.length === 0 && images.length === 0 && !pendingMediaCreations.has(card);
+            return !card.dataset.hasMedia && !pendingMediaCreations.has(card);
         });
         
         if (cardsToCheck.length === 0) return;
@@ -2639,12 +2652,15 @@ function createImageForCard(card, imageUrl) {
         if (isGif && !card.querySelector('.gif-static-overlay')) {
             try {
                 const canvas = document.createElement('canvas');
-                canvas.width = img.naturalWidth;
-                canvas.height = img.naturalHeight;
+                // Cap overlay to thumbnail size - no need for full resolution
+                const MAX_OVERLAY_DIM = 400;
+                const scale = Math.min(1, MAX_OVERLAY_DIM / Math.max(img.naturalWidth, img.naturalHeight));
+                canvas.width = Math.round(img.naturalWidth * scale);
+                canvas.height = Math.round(img.naturalHeight * scale);
                 const ctx = canvas.getContext('2d');
-                ctx.drawImage(img, 0, 0);
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
                 const overlay = document.createElement('img');
-                overlay.src = canvas.toDataURL('image/png');
+                overlay.src = canvas.toDataURL('image/jpeg', 0.7);
                 overlay.className = 'gif-static-overlay';
                 overlay.draggable = false;
                 // Mark the card as having an animated image with overlay
@@ -2693,7 +2709,8 @@ function createImageForCard(card, imageUrl) {
     
     const info = card.querySelector('.video-info');
     card.insertBefore(img, info);
-    
+    card.dataset.hasMedia = '1';
+
     pendingMediaCreations.delete(card);
     return true;
 }
@@ -2864,6 +2881,7 @@ function createVideoForCard(card, videoUrl) {
 
     const info = card.querySelector('.video-info');
     card.insertBefore(video, info);
+    card.dataset.hasMedia = '1';
 
     // Don't auto-play if lightbox/blur pausing is active
     if (!(isLightboxOpen && pauseOnLightbox) && !(isWindowBlurred && pauseOnBlur)) {
@@ -3024,13 +3042,10 @@ function proactiveLoadMedia() {
     const allCards = gridContainer.querySelectorAll('.video-card');
         const cardsNeedingMedia = Array.from(allCards).filter(card => {
             if (card.classList.contains('folder-card')) return false;
-            const videos = card.querySelectorAll('video');
-            const images = card.querySelectorAll('img.media-thumbnail');
             // Check if card is in retry queue but ready to retry
             const retryInfo = mediaToRetry.get(card);
             const isReadyToRetry = retryInfo && Date.now() >= retryInfo.nextRetryTime;
-            return videos.length === 0 && 
-                   images.length === 0 && 
+            return !card.dataset.hasMedia &&
                    !pendingMediaCreations.has(card) &&
                    (!mediaToRetry.has(card) || isReadyToRetry) &&
                    card.dataset.src; // Must have a source
@@ -3147,10 +3162,8 @@ function retryPendingVideos() {
         const allCards = gridContainer.querySelectorAll('.video-card');
         const cardsToLoad = Array.from(allCards).filter(card => {
             if (card.classList.contains('folder-card')) return false;
-            const videos = card.querySelectorAll('video');
-            const images = card.querySelectorAll('img.media-thumbnail');
-            return videos.length === 0 && images.length === 0 && 
-                   !pendingMediaCreations.has(card) && 
+            return !card.dataset.hasMedia &&
+                   !pendingMediaCreations.has(card) &&
                    !mediaToRetry.has(card) &&
                    isCardInPreloadZone(card);
         });
@@ -3183,10 +3196,15 @@ const observerOptions = {
 // Helper function to aggressively clean up video elements
 function destroyVideoElement(video) {
     if (!video) return;
-    
+
     // Store parent reference before we start cleanup
     const parent = video.parentNode;
-    
+    // Clear hasMedia flag if no other media remains in the card
+    const card = parent && parent.closest ? parent.closest('.video-card') : (parent && parent.classList && parent.classList.contains('video-card') ? parent : null);
+    if (card && !card.querySelector('video:nth-of-type(2)') && !card.querySelector('img.media-thumbnail')) {
+        delete card.dataset.hasMedia;
+    }
+
     try {
         // 1. Stop playback FIRST before removing from DOM
         try {
@@ -3276,6 +3294,11 @@ function destroyImageElement(img) {
     if (!img) return;
 
     const parent = img.parentNode;
+    // Clear hasMedia flag if no other media remains in the card
+    const card = parent && parent.closest ? parent.closest('.video-card') : (parent && parent.classList && parent.classList.contains('video-card') ? parent : null);
+    if (card && !card.querySelector('video') && !card.querySelector('img.media-thumbnail:nth-of-type(2)')) {
+        delete card.dataset.hasMedia;
+    }
 
     // Also remove the static overlay if this is an animated image
     if (parent && img.dataset.hasOverlay) {
@@ -3581,17 +3604,18 @@ gridContainer.addEventListener('mouseover', (e) => {
         }
     }
     // Check if filename overlaps with resolution label and shift it up if needed
-    if (card) {
+    // Cache the result per card to avoid layout thrashing on every hover
+    if (card && !card.dataset.overlapChecked) {
         const info = card.querySelector('.video-info');
         const resLabel = card.querySelector('.resolution-label');
         if (info && resLabel) {
-            // Create a temporary range to measure actual text width
             const range = document.createRange();
             range.selectNodeContents(info);
             const textWidth = range.getBoundingClientRect().width;
             const cardWidth = card.offsetWidth;
-            const labelLeft = cardWidth - resLabel.offsetWidth - 16; // 8px right margin + buffer
-            resLabel.classList.toggle('shifted-up', textWidth + 10 > labelLeft); // 10px = left padding
+            const labelLeft = cardWidth - resLabel.offsetWidth - 16;
+            resLabel.classList.toggle('shifted-up', textWidth + 10 > labelLeft);
+            card.dataset.overlapChecked = '1';
         }
     }
 });
@@ -4226,6 +4250,8 @@ let zoomLayoutTimer = null;
 zoomSlider.addEventListener('input', (e) => {
     zoomLevel = parseInt(e.target.value, 10);
     zoomValue.textContent = `${zoomLevel}%`;
+    // Clear cached overlap checks since card sizes changed
+    gridContainer.querySelectorAll('.video-card[data-overlap-checked]').forEach(c => delete c.dataset.overlapChecked);
     // Instant CSS variable update for visual feedback
     document.documentElement.style.setProperty('--zoom-level', zoomLevel);
     // Throttle the expensive layout recalculation + localStorage write

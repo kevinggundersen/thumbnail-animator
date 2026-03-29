@@ -691,6 +691,12 @@ ipcMain.handle('rename-file', async (event, filePath, newName) => {
     }
 });
 
+ipcMain.handle('focus-window', async () => {
+    if (win && !win.isDestroyed()) {
+        win.focus();
+    }
+});
+
 ipcMain.handle('delete-file', async (event, filePath) => {
     try {
         await fs.promises.unlink(filePath);

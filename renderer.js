@@ -1504,22 +1504,31 @@ function resumeThumbnailVideos() {
 // Native dialogs block the JS thread, so blur/focus events are queued and fire AFTER
 // confirm() returns. We must delay our cleanup until those queued events have settled.
 function restorePlaybackAfterDialog() {
-    setTimeout(() => {
+    console.log('[DEBUG-RESTORE] restorePlaybackAfterDialog called. isNativeDialogOpen:', isNativeDialogOpen, 'isWindowBlurred:', isWindowBlurred, 'pauseOnBlur:', pauseOnBlur);
+    // Request the main process to re-focus the window, then restore playback.
+    // Native dialogs can cause the OS window to lose focus permanently.
+    window.electronAPI.focusWindow().then(() => {
+        setTimeout(() => {
+            console.log('[DEBUG-RESTORE-TIMEOUT] setTimeout fired. isNativeDialogOpen:', isNativeDialogOpen, 'isWindowBlurred:', isWindowBlurred, 'document.hasFocus():', document.hasFocus());
+            isNativeDialogOpen = false;
+            if (!isWindowBlurred) return;
+            isWindowBlurred = false;
+            if (!pauseOnBlur) return;
+            if (isLightboxOpen && pauseOnLightbox) return;
+            console.log('[DEBUG-RESTORE-TIMEOUT] RESUMING all videos');
+            const allVideos = gridContainer.querySelectorAll('video');
+            allVideos.forEach(video => {
+                const playPromise = video.play();
+                if (playPromise !== undefined) {
+                    playPromise.catch(() => {});
+                }
+            });
+            const allOverlays = gridContainer.querySelectorAll('.gif-static-overlay');
+            allOverlays.forEach(overlay => overlay.classList.remove('visible'));
+        }, 100);
+    }).catch(() => {
         isNativeDialogOpen = false;
-        if (!isWindowBlurred) return;
-        isWindowBlurred = false;
-        if (!pauseOnBlur) return;
-        if (isLightboxOpen && pauseOnLightbox) return;
-        const allVideos = gridContainer.querySelectorAll('video');
-        allVideos.forEach(video => {
-            const playPromise = video.play();
-            if (playPromise !== undefined) {
-                playPromise.catch(() => {});
-            }
-        });
-        const allOverlays = gridContainer.querySelectorAll('.gif-static-overlay');
-        allOverlays.forEach(overlay => overlay.classList.remove('visible'));
-    }, 100);
+    });
 }
 
 // Track active media elements and pending creations
@@ -5467,8 +5476,10 @@ contextMenu.addEventListener('click', async (e) => {
             
         case 'delete':
             try {
+                console.log('[DEBUG-DELETE] About to show confirm. Setting isNativeDialogOpen=true');
                 isNativeDialogOpen = true;
                 const confirmed = confirm(`Are you sure you want to delete "${fileName}"?`);
+                console.log('[DEBUG-DELETE] confirm() returned:', confirmed, 'isWindowBlurred:', isWindowBlurred, 'isNativeDialogOpen:', isNativeDialogOpen);
                 restorePlaybackAfterDialog();
                 if (confirmed) {
                     setStatusActivity(`Deleting ${fileName}...`);
@@ -8374,10 +8385,12 @@ window.addEventListener('DOMContentLoaded', async () => {
     
     // Pause thumbnails and freeze GIFs when window loses focus
     window.addEventListener('blur', () => {
+        console.log('[DEBUG-BLUR] blur event fired. isWindowBlurred:', isWindowBlurred, 'isWindowMinimized:', isWindowMinimized, 'isNativeDialogOpen:', isNativeDialogOpen, 'pauseOnBlur:', pauseOnBlur);
         if (isWindowBlurred || isWindowMinimized) return;
         isWindowBlurred = true;
         if (!pauseOnBlur) return;
         if (isNativeDialogOpen) return;
+        console.log('[DEBUG-BLUR] PAUSING all videos');
         // Pause all grid videos
         const allVideos = gridContainer.querySelectorAll('video');
         allVideos.forEach(video => {
@@ -8390,11 +8403,13 @@ window.addEventListener('DOMContentLoaded', async () => {
 
     // Resume thumbnails and unfreeze GIFs when window regains focus
     window.addEventListener('focus', () => {
+        console.log('[DEBUG-FOCUS] focus event fired. isWindowBlurred:', isWindowBlurred, 'isWindowMinimized:', isWindowMinimized, 'pauseOnBlur:', pauseOnBlur);
         if (!isWindowBlurred || isWindowMinimized) return;
         isWindowBlurred = false;
         if (!pauseOnBlur) return;
         // Don't resume grid media if lightbox is open and that pause is active
         if (isLightboxOpen && pauseOnLightbox) return;
+        console.log('[DEBUG-FOCUS] RESUMING all videos');
         // Resume all grid videos
         const allVideos = gridContainer.querySelectorAll('video');
         allVideos.forEach(video => {

@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     revealInExplorer: (filePath) => ipcRenderer.invoke('reveal-in-explorer', filePath),
     renameFile: (filePath, newName) => ipcRenderer.invoke('rename-file', filePath, newName),
     deleteFile: (filePath) => ipcRenderer.invoke('delete-file', filePath),
+    focusWindow: () => ipcRenderer.invoke('focus-window'),
     openWithDefault: (filePath) => ipcRenderer.invoke('open-with-default', filePath),
     openWith: (filePath) => ipcRenderer.invoke('open-with', filePath),
     getDrives: () => ipcRenderer.invoke('get-drives'),

@@ -8,26 +8,54 @@ A desktop application built with Electron for browsing and viewing media files (
 
 ## Features
 
+### Browsing & Navigation
 - **Media Browser**: Browse folders and view thumbnails of videos and images
-- **File Filtering**: Filter by file type (All, Videos, Images, Audio)
-- **Search**: Quickly find files by name
-- **Navigation**: Back and forward buttons for easy folder navigation
-- **Breadcrumb Navigation**: See your current location in the folder structure
+- **Folder Sidebar**: Tree-based folder navigation panel
+- **Tab System**: Open multiple folders in separate tabs
+- **Favorites**: Save and manage favorite folders for quick access
+- **Recent Files**: Dropdown for recently accessed files
+- **Back/Forward Navigation**: Easy folder history navigation
+- **Breadcrumb Navigation**: See and click through your current folder path
+
+### Filtering & Search
+- **File Filtering**: Filter by type (All, Videos, Images, Audio)
+- **Quick Search**: Filter files by name in real time
+- **Advanced Search**: Filter by file size, date range, dimensions, aspect ratio, and star ratings
+
+### Viewing & Playback
 - **Lightbox Viewer**: Click any media file to view it in fullscreen
+- **Video Controls**: Playback speed (1x, 1.5x, 2x, etc.), loop and repeat modes
+- **Scrubber Preview**: Hover over the video timeline to preview frames
+- **Auto-Repeat**: Optionally loop videos automatically
+- **Pause Behaviors**: Pause on lightbox open or window blur
+
+### File Management
 - **Context Menu**: Right-click files for options:
   - Open with default application
   - Open with (choose application)
   - Rename files
   - Reveal in Explorer
   - Delete files
-- **Settings**:
-  - Layout mode (Dynamic/Masonry or Grid)
-  - Remember last opened folder
-  - Sort by name or date (ascending/descending)
+- **Organize Files**: Create folders, move files, organize by date or file type
+- **Copy Path/Name**: Quickly copy file paths or names from the lightbox
+
+### Customization
+- **Layout Modes**: Dynamic (Masonry) or Grid layout
+- **Themes**: Light and Dark theme support
+- **Zoom Control**: Adjust thumbnail zoom from 50% to 200%
+- **Thumbnail Quality**: Low, Medium, or High quality settings
+- **Settings Panel**: Remember last folder, include animated images in filters, sort options, and more
+
+### Performance
+- **Performance Dashboard**: Real-time monitoring (Ctrl+Shift+P)
+- **3-Tier Caching**: Memory, IndexedDB, and disk caching for fast loading
+- **Progressive Rendering**: Efficiently handles large folders (1000+ items)
+- **File System Watching**: Real-time folder updates via chokidar
 - **Window State Persistence**: Remembers window position and size
-- **Supported Formats**:
-  - Videos: `.mp4`, `.webm`, `.ogg`, `.mov`
-  - Images: `.gif`, `.jpg`, `.jpeg`, `.png`, `.webp`, `.bmp`, `.svg`
+
+### Supported Formats
+- **Videos**: `.mp4`, `.webm`, `.ogg`, `.mov`
+- **Images**: `.gif`, `.jpg`, `.jpeg`, `.png`, `.webp`, `.bmp`, `.svg`
 
 ## Requirements
 
@@ -95,10 +123,11 @@ npm run dist
 ```
 thumnail-animator/
 ├── main.js          # Main Electron process (window management, IPC handlers)
-├── renderer.js      # Renderer process (UI logic, file browsing)
+├── renderer.js      # Renderer process (UI logic, media grid, lightbox, settings)
 ├── preload.js       # Preload script (secure IPC bridge)
-├── index.html       # Main HTML file
-├── styles.css       # Application styles
+├── index.html       # Main HTML file (layout, panels, dialogs)
+├── styles.css       # Application styles (themes, components, animations)
+├── icons.js         # SVG icon system (Lucide-style icons)
 ├── package.json     # Project configuration and dependencies
 └── build/           # Build resources (icons, etc.)
 ```
@@ -117,6 +146,10 @@ thumnail-animator/
 - **Build Tool**: electron-builder 25.1.8
 - **Architecture**: x64 Windows (NSIS installer)
 - **Security**: Context isolation enabled, node integration disabled
+- **Caching**: 3-tier caching strategy (memory → IndexedDB → disk)
+- **File Watching**: Real-time folder updates via chokidar
+- **Video Dimensions**: Optional ffprobe integration for fast header-based detection
+- **Rendering**: Progressive rendering for large folders with batched updates
 
 ## License
 

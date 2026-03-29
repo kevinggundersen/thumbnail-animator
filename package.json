@@ -1,6 +1,6 @@
 {
-  "name": "thumnail-animator",
-  "version": "1.0.0",
+  "name": "thumbnail-animator",
+  "version": "1.1.0",
   "main": "main.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
@@ -10,8 +10,8 @@
     "dist": "electron-builder --publish=never",
     "release": "electron-builder --publish=always"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": ["electron", "thumbnail", "media-browser", "image-viewer", "video-player", "desktop-app"],
+  "author": "Kevin Gundersen",
   "license": "ISC",
   "description": "Thumbnail Animator - An Electron app for creating animated thumbnails",
   "dependencies": {
@@ -24,7 +24,7 @@
     "electron-builder": "^25.1.8"
   },
   "build": {
-    "appId": "com.thumnailanimator.app",
+    "appId": "com.thumbnailanimator.app",
     "productName": "Thumbnail Animator",
     "directories": {
       "output": "dist"

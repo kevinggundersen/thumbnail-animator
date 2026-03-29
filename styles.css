@@ -1,18 +1,100 @@
 :root {
-    --bg-color: #121212;
-    --card-bg: #1e1e1e;
-    --text-color: #e0e0e0;
-    --accent-color: #bb86fc;
-    --gap: 16px;
+    /* Legacy aliases (keeping for compatibility) */
+    --bg-color: #0d0d0f;
+    --card-bg: #161618;
+    --text-color: #ececf0;
+    --accent-color: #e8a44a;
+    --gap: 12px;
     --zoom-level: 100;
+
+    /* New design tokens — Neutrals */
+    --bg-primary: #0d0d0f;
+    --bg-secondary: #161618;
+    --bg-tertiary: #1c1c20;
+    --bg-hover: #222228;
+
+    /* Borders */
+    --border-subtle: rgba(255, 255, 255, 0.06);
+    --border-default: rgba(255, 255, 255, 0.10);
+    --border-strong: rgba(255, 255, 255, 0.16);
+
+    /* Text */
+    --text-primary: #ececf0;
+    --text-secondary: #9d9da6;
+    --text-tertiary: #5c5c66;
+
+    /* Accent — warm amber */
+    --accent: #e8a44a;
+    --accent-hover: #f0b560;
+    --accent-muted: rgba(232, 164, 74, 0.15);
+    --accent-strong: rgba(232, 164, 74, 0.25);
+
+    /* Semantic */
+    --success: #4ade80;
+    --warning: #fbbf24;
+    --danger: #f87171;
+    --info: #60a5fa;
+
+    /* Shadows */
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+    --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.5);
+    --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.6);
+
+    /* Spacing */
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 20px;
+    --space-6: 24px;
+    --space-8: 32px;
+
+    /* Border Radius */
+    --radius-sm: 6px;
+    --radius-md: 8px;
+    --radius-lg: 10px;
+    --radius-xl: 14px;
+    --radius-full: 9999px;
+
+    /* Timing */
+    --ease-out: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+    --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+    --ease-in-out: cubic-bezier(0.45, 0, 0.55, 1);
+    --duration-fast: 0.1s;
+    --duration-normal: 0.15s;
+    --duration-slow: 0.25s;
 }
 
 /* Light theme variables */
 :root.light-theme {
-    --bg-color: #f5f5f5;
+    --bg-color: #f5f5f7;
     --card-bg: #ffffff;
-    --text-color: #1e1e1e;
-    --accent-color: #6200ea;
+    --text-color: #1a1a1e;
+    --accent-color: #c47a1a;
+
+    --bg-primary: #f5f5f7;
+    --bg-secondary: #ffffff;
+    --bg-tertiary: #f0f0f2;
+    --bg-hover: #e8e8ec;
+
+    --border-subtle: rgba(0, 0, 0, 0.04);
+    --border-default: rgba(0, 0, 0, 0.08);
+    --border-strong: rgba(0, 0, 0, 0.14);
+
+    --text-primary: #1a1a1e;
+    --text-secondary: #6b6b76;
+    --text-tertiary: #9d9da6;
+
+    --accent: #c47a1a;
+    --accent-hover: #d4892a;
+    --accent-muted: rgba(196, 122, 26, 0.10);
+    --accent-strong: rgba(196, 122, 26, 0.18);
+
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+    --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.12);
+    --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.16);
 }
 
 body {
@@ -2128,4 +2210,171 @@ button:hover {
 
 .recent-file-preview video {
     pointer-events: none;
+}
+
+/* ============================================================================
+   Performance Dashboard (toggle with Ctrl+Shift+P)
+   ============================================================================ */
+
+.perf-dashboard {
+    position: fixed;
+    bottom: 12px;
+    right: 12px;
+    width: 320px;
+    max-height: 400px;
+    background: rgba(18, 18, 18, 0.92);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 10px;
+    z-index: 9999;
+    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+    font-size: 11px;
+    color: #e0e0e0;
+    overflow: hidden;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+    user-select: none;
+    transition: opacity 0.15s ease;
+}
+
+:root.light-theme .perf-dashboard {
+    background: rgba(255, 255, 255, 0.92);
+    border-color: rgba(0, 0, 0, 0.12);
+    color: #1e1e1e;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+}
+
+.perf-dashboard.hidden {
+    display: none;
+}
+
+.perf-dashboard-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    cursor: move;
+}
+
+:root.light-theme .perf-dashboard-header {
+    border-bottom-color: rgba(0, 0, 0, 0.08);
+}
+
+.perf-dashboard-title {
+    font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    opacity: 0.7;
+}
+
+.perf-dashboard-controls {
+    display: flex;
+    gap: 4px;
+}
+
+.perf-btn {
+    background: rgba(255, 255, 255, 0.08);
+    border: none;
+    color: inherit;
+    font-family: inherit;
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    opacity: 0.7;
+    transition: opacity 0.1s, background 0.1s;
+}
+
+.perf-btn:hover {
+    opacity: 1;
+    background: rgba(255, 255, 255, 0.15);
+}
+
+:root.light-theme .perf-btn {
+    background: rgba(0, 0, 0, 0.06);
+}
+
+:root.light-theme .perf-btn:hover {
+    background: rgba(0, 0, 0, 0.12);
+}
+
+.perf-dashboard-body {
+    padding: 8px 12px;
+    overflow-y: auto;
+    max-height: 340px;
+}
+
+.perf-metric {
+    margin-bottom: 10px;
+}
+
+.perf-metric:last-child {
+    margin-bottom: 2px;
+}
+
+.perf-metric-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 4px;
+}
+
+.perf-metric-name {
+    font-weight: 600;
+    font-size: 11px;
+}
+
+.perf-metric-last {
+    font-size: 13px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+}
+
+.perf-metric-last.fast { color: #4caf50; }
+.perf-metric-last.medium { color: #ff9800; }
+.perf-metric-last.slow { color: #f44336; }
+
+.perf-metric-bar-track {
+    height: 4px;
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-bottom: 3px;
+}
+
+:root.light-theme .perf-metric-bar-track {
+    background: rgba(0, 0, 0, 0.06);
+}
+
+.perf-metric-bar {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.3s ease;
+    min-width: 2px;
+}
+
+.perf-metric-bar.fast { background: #4caf50; }
+.perf-metric-bar.medium { background: #ff9800; }
+.perf-metric-bar.slow { background: #f44336; }
+
+.perf-metric-stats {
+    display: flex;
+    justify-content: space-between;
+    font-size: 9.5px;
+    opacity: 0.5;
+    font-variant-numeric: tabular-nums;
+}
+
+.perf-metric-detail {
+    font-size: 9.5px;
+    opacity: 0.45;
+    margin-top: 1px;
+}
+
+.perf-empty {
+    text-align: center;
+    opacity: 0.4;
+    padding: 20px 0;
+    font-size: 11px;
 }

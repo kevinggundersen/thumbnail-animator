@@ -283,6 +283,7 @@ const IO_CONCURRENCY_LIMIT = 20;
 
 ipcMain.handle('scan-folder', async (event, folderPath, options = {}) => {
     try {
+        const scanStart = performance.now();
         const { skipStats = false, scanImageDimensions = false } = options; // Skip stats if sorting by name, optionally scan image dimensions
         const items = await fs.promises.readdir(folderPath, { withFileTypes: true });
         
@@ -482,7 +483,11 @@ ipcMain.handle('scan-folder', async (event, folderPath, options = {}) => {
         }
 
         // Return folders first, then media files
-        return folders.length + mediaFiles.length > 0 ? [...folders, ...mediaFiles] : [];
+        const result = folders.length + mediaFiles.length > 0 ? [...folders, ...mediaFiles] : [];
+        if (process.env.PERF_TEST === '1') {
+            console.log(`[Perf] scan-folder: ${(performance.now() - scanStart).toFixed(2)}ms (${folders.length} folders, ${mediaFiles.length} files)`);
+        }
+        return result;
     } catch (error) {
         console.error('Error scanning folder:', error);
         return [];

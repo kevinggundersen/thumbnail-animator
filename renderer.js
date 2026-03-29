@@ -3815,6 +3815,41 @@ gridContainer.addEventListener('click', (e) => {
     }
 });
 
+// Prevent middle-click auto-scroll on cards
+gridContainer.addEventListener('mousedown', (e) => {
+    if (e.button === 1 && e.target.closest('.video-card, .folder-card')) {
+        e.preventDefault();
+    }
+});
+
+// Middle-click to select a card for keyboard shortcuts
+gridContainer.addEventListener('auxclick', (e) => {
+    if (e.button !== 1) return; // Only middle mouse button
+    e.preventDefault();
+
+    const card = e.target.closest('.video-card, .folder-card');
+    if (!card) return;
+
+    const cards = Array.from(gridContainer.querySelectorAll('.video-card, .folder-card'))
+        .filter(c => c.style.display !== 'none');
+    const index = cards.indexOf(card);
+    if (index < 0) return;
+
+    // Clear previous focus
+    cards.forEach(c => {
+        c.style.outline = '';
+        c.style.outlineOffset = '';
+    });
+
+    // Set new focus
+    focusedCardIndex = index;
+    visibleCards = cards;
+    card.style.outline = '2px solid var(--accent-color)';
+    card.style.outlineOffset = '2px';
+
+    updateStatusBarSelection(card);
+});
+
 gridContainer.addEventListener('mouseover', (e) => {
     const card = e.target.closest('.video-card');
     if (card && card !== currentHoveredCard && card.dataset.mediaType === 'video') {

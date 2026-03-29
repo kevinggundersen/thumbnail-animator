@@ -188,6 +188,12 @@ const MAX_TOTAL_MEDIA = MAX_VIDEOS + MAX_IMAGES; // Total media limit
 const PARALLEL_LOAD_LIMIT = 10; // Load up to N items in parallel for faster initial load
 const PRELOAD_BUFFER_PX = 1000; // Preload content N pixels before it enters viewport
 
+// Scale parallel load limit based on zoom level - at lower zoom, more cards are visible
+function getEffectiveLoadLimit() {
+    const scaleFactor = Math.max(1, Math.pow(100 / zoomLevel, 1.5));
+    return Math.min(Math.round(PARALLEL_LOAD_LIMIT * scaleFactor), 60);
+}
+
 // Cleanup & Performance Configuration
 const CLEANUP_COOLDOWN_MS = 5; // Cooldown between cleanup operations (ms)
 const CLEANUP_IDLE_INTERVAL_MS = 200; // Low-frequency safety cleanup while idle (ms)
@@ -2526,23 +2532,23 @@ function createMediaForCard(card, mediaUrl) {
     
     // Check limits based on file type
     if (fileType === 'video' && currentVideoCount >= MAX_VIDEOS) {
-        // Add to retry queue with initial retry info
+        // Add to retry queue - capacity limited, not an error
         if (!mediaToRetry.has(card)) {
-            mediaToRetry.set(card, { url: mediaUrl, attempts: 0, nextRetryTime: Date.now() });
+            mediaToRetry.set(card, { url: mediaUrl, attempts: 0, nextRetryTime: Date.now(), reason: 'capacity' });
         }
         return false;
     }
     if (fileType === 'image' && currentImageCount >= MAX_IMAGES) {
-        // Add to retry queue with initial retry info
+        // Add to retry queue - capacity limited, not an error
         if (!mediaToRetry.has(card)) {
-            mediaToRetry.set(card, { url: mediaUrl, attempts: 0, nextRetryTime: Date.now() });
+            mediaToRetry.set(card, { url: mediaUrl, attempts: 0, nextRetryTime: Date.now(), reason: 'capacity' });
         }
         return false;
     }
     if (totalMediaCount >= MAX_TOTAL_MEDIA) {
-        // Add to retry queue with initial retry info
+        // Add to retry queue - capacity limited, not an error
         if (!mediaToRetry.has(card)) {
-            mediaToRetry.set(card, { url: mediaUrl, attempts: 0, nextRetryTime: Date.now() });
+            mediaToRetry.set(card, { url: mediaUrl, attempts: 0, nextRetryTime: Date.now(), reason: 'capacity' });
         }
         return false;
     }
@@ -2946,9 +2952,9 @@ function processEntries(entries) {
             // If at limit, only load if this card is in the preload zone
             // Only load if in preload zone when at limit
             if (!isCardInPreloadZone(card)) {
-                // Add to retry queue with initial retry info
+                // Add to retry queue - capacity limited, not an error
                 if (!mediaToRetry.has(card)) {
-                    mediaToRetry.set(card, { url: mediaUrl, attempts: 0, nextRetryTime: Date.now() });
+                    mediaToRetry.set(card, { url: mediaUrl, attempts: 0, nextRetryTime: Date.now(), reason: 'capacity' });
                 }
                 return;
             }
@@ -2957,7 +2963,7 @@ function processEntries(entries) {
         // Load multiple items in parallel for faster initial loading
         // Trust IntersectionObserver - if entry.isIntersecting is true, load immediately
         // No cooldown check for parallel loading to maximize speed
-        if (loadedInBatch < PARALLEL_LOAD_LIMIT) {
+        if (loadedInBatch < getEffectiveLoadLimit()) {
             // Create immediately for parallel batch (no cooldown restriction)
             createMediaForCard(card, mediaUrl);
             loadedInBatch++;
@@ -3026,7 +3032,7 @@ function proactiveLoadMedia() {
     
     // Calculate how many we can load
     const remainingCapacity = MAX_TOTAL_MEDIA - totalMediaCount;
-    const maxToLoad = Math.min(remainingCapacity, PARALLEL_LOAD_LIMIT * 2, cardsToLoad.length);
+    const maxToLoad = Math.min(remainingCapacity, getEffectiveLoadLimit() * 2, cardsToLoad.length);
     
     // Load the closest cards
     for (let i = 0; i < maxToLoad; i++) {
@@ -3052,7 +3058,7 @@ function retryPendingVideos() {
     
     // Try to create multiple media from retry queue in parallel
     for (const [card, retryInfo] of mediaToRetry.entries()) {
-        if (retriedCount >= PARALLEL_LOAD_LIMIT * 2) break;
+        if (retriedCount >= getEffectiveLoadLimit() * 2) break;
         
         // Check if it's time to retry (respect exponential backoff)
         if (now < retryInfo.nextRetryTime) continue;
@@ -3084,12 +3090,19 @@ function retryPendingVideos() {
                 cardsToRemove.push(card);
                 retriedCount++;
             } else {
-                // Failed to create (likely at limit) - update retry time for next attempt
-                const delay = Math.min(
-                    RETRY_INITIAL_DELAY_MS * Math.pow(RETRY_BACKOFF_MULTIPLIER, retryInfo.attempts),
-                    RETRY_MAX_DELAY_MS
-                );
-                retryInfo.nextRetryTime = now + delay;
+                // Failed to create - update retry time for next attempt
+                retryInfo.attempts++;
+                if (retryInfo.reason === 'capacity') {
+                    // Capacity-limited: retry quickly, no exponential backoff
+                    retryInfo.nextRetryTime = now + 50;
+                } else {
+                    // Actual load error: use exponential backoff
+                    const delay = Math.min(
+                        RETRY_INITIAL_DELAY_MS * Math.pow(RETRY_BACKOFF_MULTIPLIER, retryInfo.attempts),
+                        RETRY_MAX_DELAY_MS
+                    );
+                    retryInfo.nextRetryTime = now + delay;
+                }
             }
         } else if (retryInfo.attempts >= MAX_RETRY_ATTEMPTS) {
             // Max attempts exceeded, remove from queue
@@ -3104,7 +3117,7 @@ function retryPendingVideos() {
     
     // Also proactively load media for cards in preload zone that aren't in retry queue
     // This catches cards that IntersectionObserver might have missed
-    if (retriedCount < PARALLEL_LOAD_LIMIT * 2) {
+    if (retriedCount < getEffectiveLoadLimit() * 2) {
         const allCards = gridContainer.querySelectorAll('.video-card');
         const cardsToLoad = Array.from(allCards).filter(card => {
             if (card.classList.contains('folder-card')) return false;
@@ -3117,7 +3130,7 @@ function retryPendingVideos() {
         });
         
         // Load up to remaining capacity
-        const remainingCapacity = PARALLEL_LOAD_LIMIT * 2 - retriedCount;
+        const remainingCapacity = getEffectiveLoadLimit() * 2 - retriedCount;
         cardsToLoad.slice(0, remainingCapacity).forEach(card => {
             const mediaUrl = card.dataset.src;
             if (mediaUrl && createMediaForCard(card, mediaUrl)) {

@@ -298,7 +298,7 @@ ipcMain.handle('select-folder', async (event, defaultPath) => {
         properties: ['openDirectory'],
         defaultPath: defaultPath || undefined
     });
-    return result.filePaths[0];
+    return result.filePaths[0] || null;
 });
 
 ipcMain.handle('trigger-gc', () => {
@@ -573,6 +573,10 @@ ipcMain.handle('reveal-in-explorer', async (event, filePath) => {
 
 ipcMain.handle('rename-file', async (event, filePath, newName) => {
     try {
+        // Validate newName doesn't contain path traversal
+        if (newName !== path.basename(newName)) {
+            return { success: false, error: 'Invalid file name' };
+        }
         const dir = path.dirname(filePath);
         const newPath = path.join(dir, newName);
         
@@ -613,50 +617,30 @@ ipcMain.handle('open-with-default', async (event, filePath) => {
 ipcMain.handle('open-with', async (event, filePath) => {
     try {
         if (process.platform === 'win32') {
-            // On Windows, use exec with cmd /c start to launch rundll32
-            const { exec } = require('child_process');
-            
+            const { execFile } = require('child_process');
+
             // Ensure we have an absolute path
             const absolutePath = path.resolve(filePath);
-            
+
             // Verify the file exists
             if (!fs.existsSync(absolutePath)) {
                 console.error('File does not exist:', absolutePath);
                 return { success: false, error: 'File does not exist' };
             }
-            
-            console.log('Opening "Open With" dialog for:', absolutePath);
-            
-            // Escape the path properly - double quotes for cmd.exe
-            const escapedPath = absolutePath.replace(/"/g, '""');
-            
-            // Build the rundll32 command
-            const command = `rundll32.exe shell32.dll,OpenAs_RunDLL "${escapedPath}"`;
-            
-            console.log('Executing command:', command);
-            console.log('File path:', absolutePath);
-            console.log('File exists:', fs.existsSync(absolutePath));
-            
-            // Execute the command directly
-            exec(command, {
-                windowsVerbatimArguments: false,
-                shell: true,
-                cwd: path.dirname(absolutePath) // Set working directory to file's directory
-            }, (error, stdout, stderr) => {
-                if (error) {
-                    console.error('Error executing open-with command:', error);
-                    console.error('Error code:', error.code);
-                    console.error('Error signal:', error.signal);
-                }
-                if (stdout) {
-                    console.log('stdout:', stdout);
-                }
-                if (stderr) {
-                    console.log('stderr:', stderr);
-                }
+
+            // Use execFile to avoid shell injection - passes args as array, not through shell
+            return new Promise((resolve) => {
+                execFile('rundll32.exe', ['shell32.dll,OpenAs_RunDLL', absolutePath], {
+                    cwd: path.dirname(absolutePath)
+                }, (error) => {
+                    if (error) {
+                        console.error('Error executing open-with command:', error);
+                        resolve({ success: false, error: error.message });
+                    } else {
+                        resolve({ success: true });
+                    }
+                });
             });
-            
-            return { success: true };
         } else {
             // For non-Windows, fall back to default app
             await shell.openPath(filePath);
@@ -1058,16 +1042,20 @@ ipcMain.handle('get-file-info', async (event, filePath) => {
 });
 
 function formatFileSize(bytes) {
-    if (bytes === 0) return '0 Bytes';
+    if (!bytes || bytes <= 0) return '0 Bytes';
     const k = 1024;
     const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    const i = Math.min(Math.floor(Math.log(bytes) / Math.log(k)), sizes.length - 1);
     return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
 }
 
 // Create folder
 ipcMain.handle('create-folder', async (event, folderPath, folderName) => {
     try {
+        // Validate folderName doesn't contain path traversal
+        if (folderName !== path.basename(folderName)) {
+            return { success: false, error: 'Invalid folder name' };
+        }
         const newFolderPath = path.join(folderPath, folderName);
         if (fs.existsSync(newFolderPath)) {
             return { success: false, error: 'Folder already exists' };
@@ -1109,14 +1097,14 @@ ipcMain.handle('watch-folder', async (event, folderPath) => {
             return { success: false, error: 'File watching not available' };
         }
         
-        // Stop existing watcher if any
-        if (watchedFolders.has(folderPath)) {
-            const watcher = watchedFolders.get(folderPath);
-            await watcher.close();
-        }
-        
         // Normalize path for consistent comparison
         const normalizedPath = path.normalize(folderPath);
+
+        // Stop existing watcher if any
+        if (watchedFolders.has(normalizedPath)) {
+            const watcher = watchedFolders.get(normalizedPath);
+            await watcher.close();
+        }
         
         const watcher = chokidar.watch(normalizedPath, {
             ignored: /(^|[\/\\])\../, // ignore dotfiles

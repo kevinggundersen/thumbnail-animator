@@ -550,7 +550,14 @@ function normalizePath(path) {
 
 let sidebarWidth = parseInt(localStorage.getItem('sidebarWidth')) || 260;
 let sidebarCollapsed = localStorage.getItem('sidebarCollapsed') === 'true';
-const sidebarExpandedNodes = new Set(JSON.parse(localStorage.getItem('sidebarExpandedNodes') || '[]'));
+let sidebarExpandedNodes;
+try {
+    sidebarExpandedNodes = new Set(JSON.parse(localStorage.getItem('sidebarExpandedNodes') || '[]'));
+} catch (e) {
+    console.warn('Failed to parse sidebarExpandedNodes from localStorage, resetting:', e);
+    localStorage.removeItem('sidebarExpandedNodes');
+    sidebarExpandedNodes = new Set();
+}
 
 function saveSidebarExpandedNodes() {
     deferLocalStorageWrite('sidebarExpandedNodes', JSON.stringify([...sidebarExpandedNodes]));
@@ -4647,6 +4654,9 @@ function resetZoom() {
 }
 
 function closeLightbox() {
+    // Clean up video event listeners
+    lightboxVideo.removeEventListener('ended', handleVideoRepeat);
+
     // Clean up video
     lightboxVideo.pause();
     lightboxVideo.src = "";
@@ -5414,6 +5424,8 @@ function initKeyboardShortcuts() {
                         if (result.success && currentFolderPath) {
                             loadVideos(currentFolderPath);
                         }
+                    }).catch(err => {
+                        console.error('Error deleting file:', err);
                     });
                 }
             }
@@ -7275,7 +7287,10 @@ function parseAspectRatio(ratioStr) {
 }
 
 // Initialize new features
+let newFeaturesInitialized = false;
 function initNewFeatures() {
+    if (newFeaturesInitialized) return;
+    newFeaturesInitialized = true;
     // Lightbox navigation buttons
     const prevBtn = document.getElementById('lightbox-prev');
     const nextBtn = document.getElementById('lightbox-next');

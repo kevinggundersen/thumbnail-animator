@@ -67,7 +67,7 @@ A desktop application built with Electron for browsing and viewing media files (
 
 ### Option 1: Download Pre-built Release (Recommended)
 
-1. Go to the [Releases](https://github.com/kevinggundersen/thumnail-animator/releases) page
+1. Go to the [Releases](https://github.com/kevinggundersen/thumbnail-animator/releases) page
 2. Download the latest `Thumbnail Animator Setup X.X.X.exe` file
 3. Run the installer and follow the setup wizard
 4. Launch the application from your desktop or Start menu
@@ -76,7 +76,7 @@ A desktop application built with Electron for browsing and viewing media files (
 
 1. **Clone the repository**:
    ```bash
-   git clone https://github.com/kevinggundersen/thumnail-animator.git
+   git clone https://github.com/kevinggundersen/thumbnail-animator.git
    cd thumnail-animator
    ```
 
@@ -165,5 +165,5 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## Issues
 
-If you encounter any bugs or have feature requests, please open an issue on the [GitHub Issues](https://github.com/kevinggundersen/thumnail-animator/issues) page.
+If you encounter any bugs or have feature requests, please open an issue on the [GitHub Issues](https://github.com/kevinggundersen/thumbnail-animator/issues) page.
 

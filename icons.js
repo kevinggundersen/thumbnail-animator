@@ -29,22 +29,31 @@ const ICONS = {
     'volume-2': '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>',
 };
 
+// Memoization caches — same (name, size, class/fill) combos are reused thousands of times
+const _iconCache = new Map();
+const _iconFilledCache = new Map();
+
 /**
- * Generate an SVG icon string
+ * Generate an SVG icon string (memoized)
  * @param {string} name - Icon name from ICONS map
  * @param {number} [size=18] - Icon width/height in pixels
  * @param {string} [className=''] - Optional CSS class
  * @returns {string} SVG markup string
  */
 function icon(name, size = 18, className = '') {
+    const key = `${name}|${size}|${className}`;
+    let cached = _iconCache.get(key);
+    if (cached !== undefined) return cached;
     const paths = ICONS[name];
-    if (!paths) return '';
+    if (!paths) { _iconCache.set(key, ''); return ''; }
     const cls = className ? ` class="${className}"` : '';
-    return `<svg${cls} width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
+    cached = `<svg${cls} width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
+    _iconCache.set(key, cached);
+    return cached;
 }
 
 /**
- * Generate a filled SVG icon (for active stars, etc.)
+ * Generate a filled SVG icon (memoized)
  * @param {string} name - Icon name from ICONS map
  * @param {number} [size=18] - Icon width/height in pixels
  * @param {string} [fillColor='currentColor'] - Fill color
@@ -52,8 +61,13 @@ function icon(name, size = 18, className = '') {
  * @returns {string} SVG markup string
  */
 function iconFilled(name, size = 18, fillColor = 'currentColor', className = '') {
+    const key = `${name}|${size}|${fillColor}|${className}`;
+    let cached = _iconFilledCache.get(key);
+    if (cached !== undefined) return cached;
     const paths = ICONS[name];
-    if (!paths) return '';
+    if (!paths) { _iconFilledCache.set(key, ''); return ''; }
     const cls = className ? ` class="${className}"` : '';
-    return `<svg${cls} width="${size}" height="${size}" viewBox="0 0 24 24" fill="${fillColor}" stroke="${fillColor}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
+    cached = `<svg${cls} width="${size}" height="${size}" viewBox="0 0 24 24" fill="${fillColor}" stroke="${fillColor}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
+    _iconFilledCache.set(key, cached);
+    return cached;
 }

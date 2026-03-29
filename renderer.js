@@ -223,6 +223,29 @@ const STORE_NAME = 'folderCache';
 // END CONFIGURATION CONSTANTS
 // ============================================================================
 
+// --- Batched localStorage writes ---
+// Collects pending writes and flushes them together in the next idle frame
+const _pendingStorageWrites = new Map();
+let _storageFlushScheduled = false;
+function deferLocalStorageWrite(key, value) {
+    _pendingStorageWrites.set(key, value);
+    if (!_storageFlushScheduled) {
+        _storageFlushScheduled = true;
+        if ('requestIdleCallback' in window) {
+            requestIdleCallback(_flushStorageWrites, { timeout: 200 });
+        } else {
+            setTimeout(_flushStorageWrites, 50);
+        }
+    }
+}
+function _flushStorageWrites() {
+    _storageFlushScheduled = false;
+    for (const [key, value] of _pendingStorageWrites) {
+        localStorage.setItem(key, value);
+    }
+    _pendingStorageWrites.clear();
+}
+
 // Get DOM elements - these are safe to get at script load time since script is at end of body
 const selectFolderBtn = document.getElementById('select-folder-btn');
 const backBtn = document.getElementById('back-btn');
@@ -353,6 +376,7 @@ let currentProgress = null; // { current: number, total: number, cancelled: bool
 
 // Cache folder contents per tab to avoid re-scanning
 const tabContentCache = new Map(); // Map<tabId, { items, timestamp }>
+const tabDomCache = new Map(); // Map<tabId, { fragment, scrollTop, layoutMode, timestamp }>
 
 // Cache folder contents globally (for recently accessed folders)
 const folderCache = new Map(); // Map<folderPath, { items, timestamp }>
@@ -1241,6 +1265,22 @@ let masonryResizeHandler = null;
 let masonryLayoutAnimationFrame = null;
 let isApplyingMasonryLayout = false;
 
+// Cached computed style values for masonry — invalidated on zoom/theme change
+let cachedMasonryStyles = null;
+function invalidateMasonryStyleCache() { cachedMasonryStyles = null; }
+function getMasonryStyles() {
+    if (cachedMasonryStyles) return cachedMasonryStyles;
+    const rootStyles = getComputedStyle(document.documentElement);
+    const gridStyles = getComputedStyle(gridContainer);
+    cachedMasonryStyles = {
+        gap: parseInt(rootStyles.getPropertyValue('--gap')) || 16,
+        paddingLeft: parseInt(gridStyles.paddingLeft) || 0,
+        paddingTop: parseInt(gridStyles.paddingTop) || 0,
+        paddingBottom: parseInt(gridStyles.paddingBottom) || 0,
+    };
+    return cachedMasonryStyles;
+}
+
 function scheduleMasonryLayout() {
     if (masonryLayoutAnimationFrame !== null) return;
     
@@ -1267,19 +1307,22 @@ function getShortestColumnIndex(heights) {
 }
 
 function calculateMasonryColumns() {
-    const containerWidth = gridContainer.clientWidth - (parseInt(getComputedStyle(gridContainer).paddingLeft) * 2);
-    const gap = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--gap')) || 16;
+    const styles = getMasonryStyles();
+    const containerWidth = gridContainer.clientWidth - (styles.paddingLeft * 2);
+    const gap = styles.gap;
     const baseMinColumnWidth = 250;
-    const minColumnWidth = baseMinColumnWidth * (zoomLevel / 100); // Scale with zoom
+    const minColumnWidth = baseMinColumnWidth * (zoomLevel / 100);
     const columns = Math.max(1, Math.floor((containerWidth + gap) / (minColumnWidth + gap)));
     return columns;
 }
 
 function layoutMasonry() {
     if (!gridContainer.classList.contains('masonry') || layoutMode !== 'masonry' || isApplyingMasonryLayout) return;
-    
+
     isApplyingMasonryLayout = true;
-    
+    // Disconnect MutationObserver to avoid redundant re-triggers from our own style/DOM changes
+    if (masonryMutationObserver) masonryMutationObserver.disconnect();
+
     try {
         const cards = Array.from(gridContainer.querySelectorAll('.video-card, .folder-card'));
         
@@ -1294,12 +1337,11 @@ function layoutMasonry() {
             return;
         }
         
-        const rootStyles = getComputedStyle(document.documentElement);
-        const gridStyles = getComputedStyle(gridContainer);
-        const gap = parseInt(rootStyles.getPropertyValue('--gap')) || 16;
-        const containerPaddingLeft = parseInt(gridStyles.paddingLeft) || 0;
-        const containerPaddingTop = parseInt(gridStyles.paddingTop) || 0;
-        const containerPaddingBottom = parseInt(gridStyles.paddingBottom) || 0;
+        const styles = getMasonryStyles();
+        const gap = styles.gap;
+        const containerPaddingLeft = styles.paddingLeft;
+        const containerPaddingTop = styles.paddingTop;
+        const containerPaddingBottom = styles.paddingBottom;
         const containerWidth = gridContainer.clientWidth - (containerPaddingLeft * 2);
         const columns = calculateMasonryColumns();
         
@@ -1389,6 +1431,15 @@ function layoutMasonry() {
         }
     } finally {
         isApplyingMasonryLayout = false;
+        // Reconnect MutationObserver after layout is done
+        if (masonryMutationObserver) {
+            masonryMutationObserver.observe(gridContainer, {
+                childList: true,
+                subtree: true,
+                attributes: true,
+                attributeFilter: ['class']
+            });
+        }
     }
 }
 
@@ -1544,7 +1595,7 @@ function switchLayoutMode() {
     layoutModeLabel.textContent = layoutMode === 'grid' ? 'Rigid' : 'Dynamic';
     
     // Save preference to localStorage
-    localStorage.setItem('layoutMode', layoutMode);
+    deferLocalStorageWrite('layoutMode', layoutMode);
     
     // Apply the new layout
     if (layoutMode === 'masonry') {
@@ -1569,8 +1620,8 @@ function toggleRememberFolder() {
     rememberFolderLabel.textContent = rememberLastFolder ? 'On' : 'Off';
     
     // Save preference to localStorage
-    localStorage.setItem('rememberLastFolder', rememberLastFolder.toString());
-    
+    deferLocalStorageWrite('rememberLastFolder', rememberLastFolder.toString());
+
     // If disabling, clear the stored folder path
     if (!rememberLastFolder) {
         localStorage.removeItem('lastFolderPath');
@@ -1579,12 +1630,12 @@ function toggleRememberFolder() {
 
 function toggleIncludeMovingImages() {
     includeMovingImages = includeMovingImagesToggle.checked;
-    
+
     // Update label
     includeMovingImagesLabel.textContent = includeMovingImages ? 'On' : 'Off';
-    
+
     // Save preference to localStorage
-    localStorage.setItem('includeMovingImages', includeMovingImages.toString());
+    deferLocalStorageWrite('includeMovingImages', includeMovingImages.toString());
     
     // Re-apply filters if image filter is active
     if (currentFilter === 'image') {
@@ -2124,8 +2175,8 @@ function updateSorting() {
     }
     
     // Also save to localStorage as fallback/default for new tabs
-    localStorage.setItem('sortType', sortType);
-    localStorage.setItem('sortOrder', sortOrder);
+    deferLocalStorageWrite('sortType', sortType);
+    deferLocalStorageWrite('sortOrder', sortOrder);
     
     // Apply sorting to current folder
     applySorting();
@@ -2921,6 +2972,15 @@ const observer = new IntersectionObserver((entries) => {
 // --- Filter and Search Functionality ---
 // Debounce timer for search input
 let filterDebounceTimer = null;
+// RAF coalescing for filter changes — batches rapid clicks into one pass
+let pendingFilterRaf = null;
+function scheduleApplyFilters() {
+    if (pendingFilterRaf !== null) return; // Already scheduled
+    pendingFilterRaf = requestAnimationFrame(() => {
+        pendingFilterRaf = null;
+        applyFilters();
+    });
+}
 
 function applyFilters() {
     const perfStart = perfTest.start();
@@ -3154,7 +3214,7 @@ selectFolderBtn.addEventListener('click', async () => {
     if (folderPath) {
         // Save the selected folder path to localStorage if remembering is enabled
         if (rememberLastFolder) {
-            localStorage.setItem('lastFolderPath', folderPath);
+            deferLocalStorageWrite('lastFolderPath', folderPath);
         }
         // Update current tab if it exists and has no path, otherwise create new tab
         if (activeTabId) {
@@ -3554,7 +3614,7 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
         currentFolderPath = folderPath;
         // Save the folder path to localStorage whenever we navigate to a folder (if remembering is enabled)
         if (rememberLastFolder) {
-            localStorage.setItem('lastFolderPath', folderPath);
+            deferLocalStorageWrite('lastFolderPath', folderPath);
         }
         if (addToHistory) {
             navigationHistory.add(folderPath);
@@ -3629,7 +3689,7 @@ filterAllBtn.addEventListener('click', () => {
     filterAudioBtn.classList.remove('active');
     const filterStarsBtn = document.getElementById('filter-stars');
     if (filterStarsBtn) filterStarsBtn.classList.remove('active');
-    applyFilters();
+    scheduleApplyFilters();
 });
 
 filterVideosBtn.addEventListener('click', () => {
@@ -3640,7 +3700,7 @@ filterVideosBtn.addEventListener('click', () => {
     filterAudioBtn.classList.remove('active');
     const filterStarsBtn = document.getElementById('filter-stars');
     if (filterStarsBtn) filterStarsBtn.classList.remove('active');
-    applyFilters();
+    scheduleApplyFilters();
 });
 
 filterImagesBtn.addEventListener('click', () => {
@@ -3651,7 +3711,7 @@ filterImagesBtn.addEventListener('click', () => {
     filterAudioBtn.classList.remove('active');
     const filterStarsBtn = document.getElementById('filter-stars');
     if (filterStarsBtn) filterStarsBtn.classList.remove('active');
-    applyFilters();
+    scheduleApplyFilters();
 });
 
 filterAudioBtn.addEventListener('click', () => {
@@ -3662,7 +3722,7 @@ filterAudioBtn.addEventListener('click', () => {
     filterAudioBtn.classList.add('active');
     const filterStarsBtn = document.getElementById('filter-stars');
     if (filterStarsBtn) filterStarsBtn.classList.remove('active');
-    applyFilters();
+    scheduleApplyFilters();
 });
 
 // Settings button event listener
@@ -3697,21 +3757,21 @@ includeMovingImagesToggle.addEventListener('change', () => {
 pauseOnLightboxToggle.addEventListener('change', () => {
     pauseOnLightbox = pauseOnLightboxToggle.checked;
     pauseOnLightboxLabel.textContent = pauseOnLightbox ? 'On' : 'Off';
-    localStorage.setItem('pauseOnLightbox', pauseOnLightbox.toString());
+    deferLocalStorageWrite('pauseOnLightbox', pauseOnLightbox.toString());
 });
 
 // Pause on blur toggle
 pauseOnBlurToggle.addEventListener('change', () => {
     pauseOnBlur = pauseOnBlurToggle.checked;
     pauseOnBlurLabel.textContent = pauseOnBlur ? 'On' : 'Off';
-    localStorage.setItem('pauseOnBlur', pauseOnBlur.toString());
+    deferLocalStorageWrite('pauseOnBlur', pauseOnBlur.toString());
 });
 
 // Auto-repeat videos toggle
 autoRepeatToggle.addEventListener('change', () => {
     autoRepeatVideos = autoRepeatToggle.checked;
     autoRepeatLabel.textContent = autoRepeatVideos ? 'On' : 'Off';
-    localStorage.setItem('autoRepeatVideos', autoRepeatVideos.toString());
+    deferLocalStorageWrite('autoRepeatVideos', autoRepeatVideos.toString());
     // Sync to current video - use native loop for seamless playback
     if (autoRepeatVideos) {
         videoLoop = true;
@@ -3749,19 +3809,28 @@ themeSelect.addEventListener('change', () => {
 // Thumbnail quality select event listener
 thumbnailQualitySelect.addEventListener('change', () => {
     thumbnailQuality = thumbnailQualitySelect.value;
-    localStorage.setItem('thumbnailQuality', thumbnailQuality);
+    deferLocalStorageWrite('thumbnailQuality', thumbnailQuality);
     // Reload current folder to apply new quality
     if (currentFolderPath) {
         loadVideos(currentFolderPath);
     }
 });
 
-// Zoom slider event listener
+// Zoom slider event listener (throttled layout, instant visual feedback)
+let zoomLayoutTimer = null;
 zoomSlider.addEventListener('input', (e) => {
     zoomLevel = parseInt(e.target.value, 10);
     zoomValue.textContent = `${zoomLevel}%`;
-    localStorage.setItem('zoomLevel', zoomLevel.toString());
-    applyZoom();
+    // Instant CSS variable update for visual feedback
+    document.documentElement.style.setProperty('--zoom-level', zoomLevel);
+    // Throttle the expensive layout recalculation + localStorage write
+    if (zoomLayoutTimer === null) {
+        zoomLayoutTimer = requestAnimationFrame(() => {
+            zoomLayoutTimer = null;
+            applyZoom();
+            deferLocalStorageWrite('zoomLevel', zoomLevel.toString());
+        });
+    }
 });
 
 // Favorites button event listener
@@ -5045,7 +5114,7 @@ function loadFavorites() {
 }
 
 function saveFavorites() {
-    localStorage.setItem('favorites', JSON.stringify(favorites));
+    deferLocalStorageWrite('favorites', JSON.stringify(favorites));
 }
 
 function renderFavorites() {
@@ -5109,7 +5178,7 @@ function loadRecentFiles() {
 }
 
 function saveRecentFiles() {
-    localStorage.setItem('recentFiles', JSON.stringify(recentFiles));
+    deferLocalStorageWrite('recentFiles', JSON.stringify(recentFiles));
 }
 
 function addRecentFile(path, name, url, type) {
@@ -5259,8 +5328,58 @@ function loadTabs() {
 }
 
 function saveTabs() {
-    localStorage.setItem('tabs', JSON.stringify(tabs));
-    localStorage.setItem('activeTabId', activeTabId);
+    deferLocalStorageWrite('tabs', JSON.stringify(tabs));
+    deferLocalStorageWrite('activeTabId', activeTabId);
+}
+
+// Snapshot the current tab's DOM into a DocumentFragment for instant restore
+function snapshotCurrentTabDom() {
+    if (!activeTabId || gridContainer.children.length === 0) return;
+    const fragment = document.createDocumentFragment();
+    // Move children to fragment (detaches from DOM without destroying)
+    while (gridContainer.firstChild) {
+        fragment.appendChild(gridContainer.firstChild);
+    }
+    tabDomCache.set(activeTabId, {
+        fragment,
+        scrollTop: gridContainer.scrollTop || window.scrollY || 0,
+        layoutMode: layoutMode,
+        timestamp: Date.now()
+    });
+}
+
+// Restore a tab's DOM snapshot if available. Returns true if restored.
+function restoreTabDomSnapshot(tabId) {
+    const snapshot = tabDomCache.get(tabId);
+    if (!snapshot) return false;
+    // Check if snapshot is still fresh (use same TTL as tab content cache)
+    if ((Date.now() - snapshot.timestamp) > FOLDER_CACHE_TTL) {
+        tabDomCache.delete(tabId);
+        return false;
+    }
+    // Clear current grid without destroying media (it belongs to old tab snapshot)
+    while (gridContainer.firstChild) {
+        gridContainer.removeChild(gridContainer.firstChild);
+    }
+    // Re-attach the cached fragment
+    gridContainer.appendChild(snapshot.fragment);
+    // Restore layout mode
+    if (snapshot.layoutMode === 'masonry') {
+        gridContainer.classList.add('masonry');
+        gridContainer.classList.remove('grid');
+    } else {
+        gridContainer.classList.add('grid');
+        gridContainer.classList.remove('masonry');
+    }
+    // Restore scroll position after DOM is attached
+    requestAnimationFrame(() => {
+        gridContainer.scrollTop = snapshot.scrollTop;
+        window.scrollTo(0, snapshot.scrollTop);
+        // Re-run cleanup cycle to manage media visibility
+        scheduleCleanupCycle();
+    });
+    tabDomCache.delete(tabId); // Consumed
+    return true;
 }
 
 function createTab(path, name) {
@@ -5289,57 +5408,87 @@ function createTab(path, name) {
 
 function closeTab(tabId) {
     if (tabs.length <= 1) return; // Don't close last tab
+    // Clean up DOM cache for the closed tab
+    tabDomCache.delete(tabId);
+    tabContentCache.delete(tabId);
     tabs = tabs.filter(t => t.id !== tabId);
     if (activeTabId === tabId) {
         activeTabId = tabs[0]?.id || null;
     }
-    saveTabs();
-    renderTabs();
+    // switchToTab already calls saveTabs() + renderTabs(), so skip them here
     if (activeTabId) {
         switchToTab(activeTabId);
+    } else {
+        saveTabs();
+        renderTabs();
     }
 }
 
 function switchToTab(tabId) {
+    const previousTabId = activeTabId;
+
+    // Snapshot current tab's DOM before switching away (for instant restore later)
+    if (previousTabId && previousTabId !== tabId) {
+        snapshotCurrentTabDom();
+    }
+
     activeTabId = tabId;
     const tab = tabs.find(t => t.id === tabId);
     if (tab) {
         // Restore tab's sorting preferences
         sortType = tab.sortType || 'name';
         sortOrder = tab.sortOrder || 'ascending';
-        
+
         // Update UI to reflect tab's sorting preferences
         if (sortTypeSelect) sortTypeSelect.value = sortType;
         if (sortOrderSelect) sortOrderSelect.value = sortOrder;
-        
+
         if (tab.path) {
-            // Check if we have cached content for this tab
-            const tabCache = tabContentCache.get(tabId);
-            const now = Date.now();
-            const normalizedTabPath = normalizePath(tab.path);
-            
-            if (tabCache) {
-                const cachePathNormalized = normalizePath(tabCache.path);
-                if ((cachePathNormalized === normalizedTabPath || tabCache.path === tab.path) && 
-                    (now - tabCache.timestamp) < FOLDER_CACHE_TTL) {
-                    // Use cached content - instant tab switching!
-                    currentFolderPath = tab.path;
-                    currentItems = tabCache.items;
-                    updateBreadcrumb(tab.path);
-                    searchBox.value = '';
-                    currentFilter = 'all';
-                    filterAllBtn.classList.add('active');
-                    filterVideosBtn.classList.remove('active');
-                    filterImagesBtn.classList.remove('active');
-                    filterAudioBtn.classList.remove('active');
-                    
-                    // Filter, sort and render immediately
-                    const filteredItems = filterItems(tabCache.items);
-                    const sortedItems = sortItems(filteredItems);
-                    renderItems(sortedItems);
+            // Try to restore DOM snapshot first (near-instant tab switch)
+            if (restoreTabDomSnapshot(tabId)) {
+                currentFolderPath = tab.path;
+                const tabCache = tabContentCache.get(tabId);
+                if (tabCache) currentItems = tabCache.items;
+                updateBreadcrumb(tab.path);
+                searchBox.value = '';
+                currentFilter = 'all';
+                filterAllBtn.classList.add('active');
+                filterVideosBtn.classList.remove('active');
+                filterImagesBtn.classList.remove('active');
+                filterAudioBtn.classList.remove('active');
+            } else {
+                // No DOM snapshot - fall back to content cache or full navigation
+                const tabCache = tabContentCache.get(tabId);
+                const now = Date.now();
+                const normalizedTabPath = normalizePath(tab.path);
+
+                if (tabCache) {
+                    const cachePathNormalized = normalizePath(tabCache.path);
+                    if ((cachePathNormalized === normalizedTabPath || tabCache.path === tab.path) &&
+                        (now - tabCache.timestamp) < FOLDER_CACHE_TTL) {
+                        // Use cached content
+                        currentFolderPath = tab.path;
+                        currentItems = tabCache.items;
+                        updateBreadcrumb(tab.path);
+                        searchBox.value = '';
+                        currentFilter = 'all';
+                        filterAllBtn.classList.add('active');
+                        filterVideosBtn.classList.remove('active');
+                        filterImagesBtn.classList.remove('active');
+                        filterAudioBtn.classList.remove('active');
+
+                        const filteredItems = filterItems(tabCache.items);
+                        const sortedItems = sortItems(filteredItems);
+                        renderItems(sortedItems);
+                    } else {
+                        setTimeout(() => {
+                            navigateToFolder(tab.path, false).catch(err => {
+                                console.error('Error navigating to tab folder:', err);
+                                hideLoadingIndicator();
+                            });
+                        }, 0);
+                    }
                 } else {
-                    // Cache expired or path mismatch, navigate normally
-                    // Use setTimeout to yield control back to event loop, making button responsive
                     setTimeout(() => {
                         navigateToFolder(tab.path, false).catch(err => {
                             console.error('Error navigating to tab folder:', err);
@@ -5347,15 +5496,6 @@ function switchToTab(tabId) {
                         });
                     }, 0);
                 }
-            } else {
-                // No cache, navigate normally
-                // Use setTimeout to yield control back to event loop, making button responsive
-                setTimeout(() => {
-                    navigateToFolder(tab.path, false).catch(err => {
-                        console.error('Error navigating to tab folder:', err);
-                        hideLoadingIndicator();
-                    });
-                }, 0);
             }
         } else {
             // If tab has no path, clear the grid
@@ -5505,6 +5645,7 @@ function initZoom() {
 }
 
 function applyZoom() {
+    invalidateMasonryStyleCache();
     const scale = zoomLevel / 100;
     // Update CSS variable for zoom
     document.documentElement.style.setProperty('--zoom-level', zoomLevel);
@@ -5514,17 +5655,11 @@ function applyZoom() {
     const scaledGap = baseGap * scale;
     gridContainer.style.setProperty('--gap', `${scaledGap}px`);
     
-    // For grid layout, adjust column width
+    // For grid layout, adjust column width — CSS grid auto-recalculates on variable change
     if (layoutMode === 'grid') {
         const baseMinWidth = 250;
         const scaledMinWidth = baseMinWidth * scale;
         gridContainer.style.setProperty('--grid-min-width', `${scaledMinWidth}px`);
-        // Force grid recalculation
-        requestAnimationFrame(() => {
-            gridContainer.style.display = 'none';
-            void gridContainer.offsetHeight; // Force reflow
-            gridContainer.style.display = 'grid';
-        });
     }
     
     // Recalculate masonry layout if needed
@@ -5544,12 +5679,13 @@ function initTheme() {
 }
 
 function applyTheme() {
+    invalidateMasonryStyleCache();
     if (currentTheme === 'light') {
         document.documentElement.classList.add('light-theme');
     } else {
         document.documentElement.classList.remove('light-theme');
     }
-    localStorage.setItem('theme', currentTheme);
+    deferLocalStorageWrite('theme', currentTheme);
 }
 
 // ==================== THUMBNAIL QUALITY ====================
@@ -6306,7 +6442,7 @@ function updateCardStars(card, rating, filePath) {
 }
 
 function saveRatings() {
-    localStorage.setItem('fileRatings', JSON.stringify(fileRatings));
+    deferLocalStorageWrite('fileRatings', JSON.stringify(fileRatings));
 }
 
 function loadRatings() {
@@ -6986,7 +7122,7 @@ function initNewFeatures() {
                 const sortedItems = sortItems(filteredItems);
                 renderItems(sortedItems);
             } else {
-                applyFilters();
+                scheduleApplyFilters();
             }
         });
     }

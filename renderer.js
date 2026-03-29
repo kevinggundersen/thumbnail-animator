@@ -7764,19 +7764,15 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (rememberLastFolder) {
         const lastFolderPath = localStorage.getItem('lastFolderPath');
         if (lastFolderPath) {
-            // Try to navigate to the last folder
-            // navigateToFolder will handle errors gracefully
+            showLoadingIndicator();
             try {
-                // Validate path exists first before navigating
-                const skipStats = sortType === 'name';
-                const items = await window.electronAPI.scanFolder(lastFolderPath, { skipStats });
-                // If scan succeeds, navigate to the folder
                 await navigateToFolder(lastFolderPath);
             } catch (error) {
                 // Silently fail if the folder no longer exists (don't show alert on startup)
                 console.log('Last folder no longer exists:', lastFolderPath);
-                // Clear the invalid path from localStorage
                 localStorage.removeItem('lastFolderPath');
+            } finally {
+                hideLoadingIndicator();
             }
         }
     }

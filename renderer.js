@@ -5861,7 +5861,7 @@ function renderTabs() {
             <span class="tab-close" data-tab-id="${tab.id}">${icon('x', 14)}</span>
         `;
         tabEl.addEventListener('click', (e) => {
-            if (e.target.classList.contains('tab-close')) {
+            if (e.target.closest('.tab-close')) {
                 e.stopPropagation();
                 closeTab(tab.id);
             } else {

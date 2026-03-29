@@ -299,6 +299,11 @@ const videoScrubber = document.getElementById('video-scrubber');
 const scrubberCanvas = document.getElementById('scrubber-canvas');
 const scrubberTime = document.getElementById('scrubber-time');
 const loadingIndicator = document.getElementById('loading-indicator');
+const folderSidebar = document.getElementById('folder-sidebar');
+const sidebarTree = document.getElementById('sidebar-tree');
+const sidebarResizeHandle = document.getElementById('sidebar-resize-handle');
+const sidebarToggleBtn = document.getElementById('sidebar-toggle-btn');
+const sidebarCollapseBtn = document.getElementById('sidebar-collapse-btn');
 
 // Track current folder path for navigation
 let currentFolderPath = null;
@@ -530,6 +535,288 @@ function normalizePath(path) {
     if (!path) return path;
     // Normalize separators and remove trailing separators
     return path.replace(/\\/g, '/').replace(/\/+$/, '') || path;
+}
+
+// ============================================================================
+// FOLDER TREE SIDEBAR
+// ============================================================================
+
+let sidebarWidth = parseInt(localStorage.getItem('sidebarWidth')) || 260;
+let sidebarCollapsed = localStorage.getItem('sidebarCollapsed') === 'true';
+const sidebarExpandedNodes = new Set(JSON.parse(localStorage.getItem('sidebarExpandedNodes') || '[]'));
+
+function saveSidebarExpandedNodes() {
+    deferLocalStorageWrite('sidebarExpandedNodes', JSON.stringify([...sidebarExpandedNodes]));
+}
+
+function createTreeNode(item, depth, isDrive = false) {
+    const node = document.createElement('div');
+    node.className = 'tree-node';
+    node.dataset.path = item.path;
+
+    const row = document.createElement('div');
+    row.className = 'tree-node-row';
+    row.style.paddingLeft = `${depth * 16 + 8}px`;
+
+    // Toggle arrow
+    const toggle = document.createElement('span');
+    toggle.className = 'tree-toggle' + (item.hasChildren === false && !isDrive ? ' no-children' : '');
+    toggle.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>';
+
+    // Folder icon
+    const icon = document.createElement('span');
+    icon.className = 'tree-node-icon';
+    if (isDrive) {
+        icon.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>';
+    } else {
+        icon.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg>';
+    }
+
+    // Label
+    const label = document.createElement('span');
+    label.className = 'tree-node-label';
+    label.textContent = item.name;
+    label.title = item.path;
+
+    row.appendChild(toggle);
+    row.appendChild(icon);
+    row.appendChild(label);
+
+    // Children container
+    const children = document.createElement('div');
+    children.className = 'tree-children';
+
+    node.appendChild(row);
+    node.appendChild(children);
+
+    // Click on row navigates to folder
+    row.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (e.target.closest('.tree-toggle') && (item.hasChildren !== false || isDrive)) {
+            toggleTreeNode(node, depth, isDrive);
+        } else {
+            navigateToFolder(item.path);
+        }
+    });
+
+    // Double-click toggle to expand
+    toggle.addEventListener('dblclick', (e) => e.stopPropagation());
+
+    return node;
+}
+
+async function toggleTreeNode(node, depth, isDrive = false) {
+    const children = node.querySelector('.tree-children');
+    const toggle = node.querySelector('.tree-toggle');
+    const nodePath = node.dataset.path;
+
+    if (children.classList.contains('expanded')) {
+        // Collapse
+        children.classList.remove('expanded');
+        toggle.classList.remove('expanded');
+        sidebarExpandedNodes.delete(nodePath);
+        saveSidebarExpandedNodes();
+        return;
+    }
+
+    // Expand
+    toggle.classList.add('expanded');
+    children.classList.add('expanded');
+    sidebarExpandedNodes.add(nodePath);
+    saveSidebarExpandedNodes();
+
+    // If children already loaded, don't reload
+    if (children.children.length > 0) return;
+
+    // Show loading indicator
+    const loading = document.createElement('div');
+    loading.className = 'tree-loading';
+    loading.textContent = 'Loading...';
+    children.appendChild(loading);
+
+    try {
+        const subdirs = await window.electronAPI.listSubdirectories(nodePath);
+        children.removeChild(loading);
+        for (const subdir of subdirs) {
+            const childNode = createTreeNode(subdir, depth + 1);
+            children.appendChild(childNode);
+            // If this child was previously expanded, restore it
+            if (sidebarExpandedNodes.has(subdir.path)) {
+                toggleTreeNode(childNode, depth + 1);
+            }
+        }
+        if (subdirs.length === 0) {
+            toggle.classList.add('no-children');
+        }
+    } catch (err) {
+        children.removeChild(loading);
+        toggle.classList.add('no-children');
+    }
+}
+
+function sidebarHighlightActive(folderPath) {
+    if (!folderPath || !sidebarTree) return;
+    const normalized = normalizePath(folderPath);
+    sidebarTree.querySelectorAll('.tree-node-row.active').forEach(r => r.classList.remove('active'));
+    const allNodes = sidebarTree.querySelectorAll('.tree-node');
+    for (const node of allNodes) {
+        if (normalizePath(node.dataset.path) === normalized) {
+            const row = node.querySelector(':scope > .tree-node-row');
+            if (row) {
+                row.classList.add('active');
+                row.scrollIntoView({ block: 'nearest' });
+            }
+            return;
+        }
+    }
+}
+
+async function sidebarExpandToPath(folderPath) {
+    if (!folderPath || !sidebarTree) return;
+    // Parse the path into segments
+    const normalized = folderPath.replace(/\//g, '\\');
+    const parts = normalized.split('\\').filter(Boolean);
+    if (parts.length === 0) return;
+
+    // Build the drive path (e.g. "C:\")
+    const drivePart = parts[0].endsWith(':') ? parts[0] + '\\' : parts[0];
+    let currentPath = drivePart;
+
+    // Find and expand the drive node
+    let parentContainer = sidebarTree;
+    let driveNode = null;
+    for (const node of parentContainer.querySelectorAll(':scope > .tree-node')) {
+        if (normalizePath(node.dataset.path) === normalizePath(currentPath)) {
+            driveNode = node;
+            break;
+        }
+    }
+
+    if (!driveNode) return;
+
+    // Expand drive if needed
+    const driveChildren = driveNode.querySelector('.tree-children');
+    if (!driveChildren.classList.contains('expanded')) {
+        await toggleTreeNode(driveNode, 0, true);
+    }
+
+    // Walk down the path segments
+    parentContainer = driveChildren;
+    for (let i = 1; i < parts.length; i++) {
+        currentPath = currentPath.replace(/\\$/, '') + '\\' + parts[i];
+        let found = null;
+        // Wait for children to be loaded
+        await new Promise(r => setTimeout(r, 0));
+        for (const node of parentContainer.querySelectorAll(':scope > .tree-node')) {
+            if (normalizePath(node.dataset.path) === normalizePath(currentPath)) {
+                found = node;
+                break;
+            }
+        }
+        if (!found) break;
+
+        if (i < parts.length - 1) {
+            // Intermediate segment — expand it
+            const childContainer = found.querySelector('.tree-children');
+            if (!childContainer.classList.contains('expanded')) {
+                await toggleTreeNode(found, i);
+            }
+            parentContainer = childContainer;
+        }
+    }
+
+    sidebarHighlightActive(folderPath);
+}
+
+function initSidebarResize() {
+    let isResizing = false;
+
+    sidebarResizeHandle.addEventListener('mousedown', (e) => {
+        isResizing = true;
+        sidebarResizeHandle.classList.add('active');
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+        e.preventDefault();
+    });
+
+    document.addEventListener('mousemove', (e) => {
+        if (!isResizing) return;
+        const newWidth = Math.min(500, Math.max(180, e.clientX));
+        folderSidebar.style.width = newWidth + 'px';
+        sidebarWidth = newWidth;
+    });
+
+    document.addEventListener('mouseup', () => {
+        if (!isResizing) return;
+        isResizing = false;
+        sidebarResizeHandle.classList.remove('active');
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        deferLocalStorageWrite('sidebarWidth', sidebarWidth.toString());
+    });
+}
+
+function setSidebarCollapsed(collapsed) {
+    sidebarCollapsed = collapsed;
+    if (collapsed) {
+        folderSidebar.classList.add('collapsed');
+    } else {
+        folderSidebar.classList.remove('collapsed');
+    }
+    deferLocalStorageWrite('sidebarCollapsed', collapsed.toString());
+}
+
+async function initSidebar() {
+    if (!folderSidebar || !sidebarTree) return;
+
+    // Restore width and collapsed state
+    folderSidebar.style.width = sidebarWidth + 'px';
+    if (sidebarCollapsed) {
+        folderSidebar.classList.add('collapsed');
+    }
+
+    // Toggle buttons
+    if (sidebarToggleBtn) {
+        sidebarToggleBtn.addEventListener('click', () => setSidebarCollapsed(!sidebarCollapsed));
+    }
+    if (sidebarCollapseBtn) {
+        sidebarCollapseBtn.addEventListener('click', () => setSidebarCollapsed(true));
+    }
+
+    // Resize handle
+    initSidebarResize();
+
+    // Load drive nodes
+    try {
+        const drives = await window.electronAPI.getDrives();
+        if (drives && drives.length > 0) {
+            for (const drive of drives) {
+                const node = createTreeNode(
+                    { name: drive.name, path: drive.path, hasChildren: true },
+                    0,
+                    true
+                );
+                sidebarTree.appendChild(node);
+                // Restore expanded state
+                if (sidebarExpandedNodes.has(drive.path)) {
+                    toggleTreeNode(node, 0, true);
+                }
+            }
+        } else {
+            // Non-Windows: show root
+            const node = createTreeNode(
+                { name: '/', path: '/', hasChildren: true },
+                0,
+                true
+            );
+            sidebarTree.appendChild(node);
+            if (sidebarExpandedNodes.has('/')) {
+                toggleTreeNode(node, 0, true);
+            }
+        }
+    } catch (err) {
+        console.error('Failed to load drives for sidebar:', err);
+    }
 }
 
 // Function to invalidate cache for a folder and its parent
@@ -3631,7 +3918,10 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
         filterImagesBtn.classList.remove('active');
         filterAudioBtn.classList.remove('active');
         loadVideos(folderPath, !forceReload); // Use cache unless forcing reload
-        
+
+        // Sync sidebar tree with current folder
+        sidebarHighlightActive(folderPath);
+
         // Reset keyboard focus
         focusedCardIndex = -1;
         perfTest.end('navigateToFolder', perfStart);
@@ -7389,6 +7679,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     loadTabs(); // This will handle tab restoration and navigation
     initVideoScrubber();
     initNewFeatures();
+    initSidebar();
     
     // If no tab has a path and we have a last folder, navigate to it
     const activeTab = tabs.find(t => t.id === activeTabId);
@@ -7405,6 +7696,8 @@ window.addEventListener('DOMContentLoaded', async () => {
                     renderTabs();
                 }
                 await navigateToFolder(lastFolderPath);
+                // Expand sidebar tree to match restored folder
+                sidebarExpandToPath(lastFolderPath);
             } catch (error) {
                 console.log('Last folder no longer exists:', lastFolderPath);
                 localStorage.removeItem('lastFolderPath');

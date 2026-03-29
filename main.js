@@ -640,6 +640,37 @@ ipcMain.handle('get-drives', async () => {
     }
 });
 
+// List subdirectories of a given path (for folder tree sidebar)
+ipcMain.handle('list-subdirectories', async (event, folderPath) => {
+    try {
+        const items = await fs.promises.readdir(folderPath, { withFileTypes: true });
+        const folders = [];
+        const SKIP_NAMES = new Set([
+            'System Volume Information', '$Recycle.Bin', '$RECYCLE.BIN',
+            'Recovery', 'Config.Msi', 'Documents and Settings',
+        ]);
+        for (const item of items) {
+            if (!item.isDirectory()) continue;
+            if (item.name.startsWith('.') || item.name.startsWith('$')) continue;
+            if (SKIP_NAMES.has(item.name)) continue;
+            const fullPath = path.join(folderPath, item.name);
+            let hasChildren = false;
+            try {
+                const children = await fs.promises.readdir(fullPath, { withFileTypes: true });
+                hasChildren = children.some(c => c.isDirectory() && !c.name.startsWith('.') && !c.name.startsWith('$'));
+            } catch (e) {
+                // Permission denied — show as leaf
+            }
+            folders.push({ name: item.name, path: fullPath, hasChildren });
+        }
+        folders.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+        return folders;
+    } catch (error) {
+        console.error('Error listing subdirectories:', error);
+        return [];
+    }
+});
+
 // File watching
 let chokidar = null;
 try {

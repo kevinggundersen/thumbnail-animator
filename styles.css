@@ -727,6 +727,22 @@ header {
     flex-shrink: 0;
 }
 
+.item-count {
+    margin-left: auto;
+    flex-shrink: 0;
+    font-size: 11px;
+    color: var(--text-tertiary);
+    white-space: nowrap;
+    padding: 1px 8px;
+    border-radius: 8px;
+    background: var(--bg-tertiary);
+    transition: opacity 0.2s;
+}
+
+.item-count:empty {
+    display: none;
+}
+
 .breadcrumb-item {
     color: var(--text-color);
     cursor: pointer;

@@ -262,6 +262,7 @@ if (!gridContainer) {
     console.error('gridContainer not found!');
 }
 const searchBox = document.getElementById('search-box');
+const itemCountEl = document.getElementById('item-count');
 const filterAllBtn = document.getElementById('filter-all');
 const filterVideosBtn = document.getElementById('filter-videos');
 const filterImagesBtn = document.getElementById('filter-images');
@@ -2166,6 +2167,7 @@ function renderItemsProgressive(items) {
     }
     
     gridContainer.appendChild(initialFragment);
+    updateItemCount();
     currentIndex = initialEnd;
     
     // Initialize layout mode class (but don't calculate layout yet for better performance)
@@ -2371,6 +2373,7 @@ function renderItems(items) {
         emptyMsg.style.cssText = 'grid-column: 1/-1; text-align: center;';
         emptyMsg.textContent = 'No folders or supported media found.';
         gridContainer.appendChild(emptyMsg);
+        updateItemCount();
         return;
     }
 
@@ -2394,6 +2397,7 @@ function renderItems(items) {
     });
 
     gridContainer.appendChild(fragment);
+    updateItemCount();
     perfTest.end('renderItems', perfStart, { itemCount: items.length });
 
     // Defer layout initialization and observer registration to allow DOM to render first
@@ -3309,6 +3313,26 @@ function scheduleApplyFilters() {
     });
 }
 
+function updateItemCount() {
+    const total = currentItems.length;
+    const query = searchBox.value.trim();
+    const hasAdvanced = advancedSearchFilters.sizeValue !== null ||
+        advancedSearchFilters.dateFrom !== null || advancedSearchFilters.dateTo !== null ||
+        advancedSearchFilters.width !== null || advancedSearchFilters.height !== null ||
+        advancedSearchFilters.aspectRatio !== '' || advancedSearchFilters.starRating !== '';
+    const hasFilter = currentFilter !== 'all' || query !== '' || hasAdvanced;
+
+    if (total === 0) {
+        itemCountEl.textContent = '';
+    } else if (hasFilter) {
+        const cards = gridContainer.querySelectorAll('.video-card, .folder-card');
+        const visible = Array.from(cards).filter(c => c.style.display !== 'none').length;
+        itemCountEl.textContent = `${visible} of ${total} items`;
+    } else {
+        itemCountEl.textContent = `${total} items`;
+    }
+}
+
 function applyFilters() {
     const perfStart = perfTest.start();
     const cards = gridContainer.querySelectorAll('.video-card, .folder-card');
@@ -3446,6 +3470,7 @@ function applyFilters() {
     if (layoutMode === 'masonry' && gridContainer.classList.contains('masonry')) {
         scheduleMasonryLayout();
     }
+    updateItemCount();
     perfTest.end('applyFilters', perfStart, { cardCount: cards.length });
 }
 
@@ -3701,6 +3726,7 @@ function updateBreadcrumb(folderPath) {
         }
         breadcrumbContainer.innerHTML = '<span id="current-path" class="breadcrumb-editable">No folder selected</span>';
         currentPathSpan = document.getElementById('current-path');
+        breadcrumbContainer.appendChild(itemCountEl);
         return;
     }
 
@@ -3761,7 +3787,8 @@ function updateBreadcrumb(folderPath) {
     breadcrumbHTML += `<input type="text" class="breadcrumb-input" value="${folderPath.replace(/\\/g, '\\\\')}" style="display: none;">`;
 
     breadcrumbContainer.innerHTML = breadcrumbHTML;
-    
+    breadcrumbContainer.appendChild(itemCountEl);
+
     const breadcrumbInput = breadcrumbContainer.querySelector('.breadcrumb-input');
     const breadcrumbItems = breadcrumbContainer.querySelectorAll('.breadcrumb-item, .breadcrumb-separator');
     

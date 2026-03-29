@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(node -c renderer.js)",
-      "Bash(node -c main.js)"
+      "Bash(node -c main.js)",
+      "Bash(grep -E \"\\\\.\\(js|html|css\\)$\")"
     ]
   }
 }

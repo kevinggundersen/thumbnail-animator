@@ -9,21 +9,21 @@
 <body>
     <div class="app-container">
         <header>
-            <button id="select-folder-btn">Select Folder</button>
+            <button id="select-folder-btn"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg> Open</button>
             <div class="nav-buttons">
-                <button id="back-btn" class="nav-btn" title="Back" disabled>←</button>
-                <button id="forward-btn" class="nav-btn" title="Forward" disabled>→</button>
+                <button id="back-btn" class="nav-btn" title="Back" disabled><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg></button>
+                <button id="forward-btn" class="nav-btn" title="Forward" disabled><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg></button>
             </div>
             <div class="filter-buttons">
-                <button id="filter-all" class="filter-btn active">All</button>
-                <button id="filter-videos" class="filter-btn">Videos</button>
-                <button id="filter-images" class="filter-btn">Images</button>
-                <button id="filter-audio" class="filter-btn">Audio</button>
-                <button id="filter-stars" class="filter-btn" title="Filter by Star Rating">⭐</button>
+                <button id="filter-all" class="filter-btn active"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg> All</button>
+                <button id="filter-videos" class="filter-btn"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M17 3v18"/><path d="M3 7h4"/><path d="M3 11h4"/><path d="M3 15h4"/><path d="M17 7h4"/><path d="M17 11h4"/><path d="M17 15h4"/></svg> Videos</button>
+                <button id="filter-images" class="filter-btn"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg> Images</button>
+                <button id="filter-audio" class="filter-btn"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg> Audio</button>
+                <button id="filter-stars" class="filter-btn" title="Filter by Star Rating"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg></button>
             </div>
-            <button id="organize-btn" class="header-btn" title="Organize Files">📁</button>
+            <button id="organize-btn" class="header-btn toolbar-icon-btn" title="Organize Files"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 17a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3.9a2 2 0 0 1-1.69-.9l-.81-1.2a2 2 0 0 0-1.67-.9H8a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2Z"/><path d="M2 8v11a2 2 0 0 0 2 2h14"/></svg></button>
             <div class="quick-access-container">
-                <button id="favorites-btn" class="quick-access-btn" title="Favorites">⭐</button>
+                <button id="favorites-btn" class="quick-access-btn toolbar-icon-btn" title="Favorites"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg></button>
                 <div id="favorites-dropdown" class="quick-access-dropdown hidden">
                     <div class="quick-access-header">Favorites</div>
                     <div id="favorites-list" class="quick-access-list"></div>
@@ -33,7 +33,7 @@
                 </div>
             </div>
             <div class="quick-access-container">
-                <button id="recent-files-btn" class="quick-access-btn" title="Recent Files">🕒</button>
+                <button id="recent-files-btn" class="quick-access-btn toolbar-icon-btn" title="Recent Files"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></button>
                 <div id="recent-files-dropdown" class="quick-access-dropdown hidden">
                     <div class="quick-access-header">Recent Files</div>
                     <div id="recent-files-list" class="quick-access-list"></div>
@@ -44,7 +44,7 @@
             </div>
             <div class="tabs-container" id="tabs-container"></div>
             <div class="settings-container">
-                <button id="settings-btn" class="settings-btn" title="Settings">⚙️</button>
+                <button id="settings-btn" class="settings-btn toolbar-icon-btn" title="Settings"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg></button>
                 <div id="settings-dropdown" class="settings-dropdown hidden">
                     <div class="settings-item">
                         <label class="settings-label">
@@ -144,7 +144,7 @@
             </div>
             <div class="search-box-container">
                 <input type="text" id="search-box" placeholder="Search files..." autocomplete="off">
-                <button id="advanced-search-btn" class="search-box-icon-btn" title="Advanced Search">🔍</button>
+                <button id="advanced-search-btn" class="search-box-icon-btn" title="Advanced Search"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg></button>
             </div>
         </header>
         <div id="breadcrumb-container" class="breadcrumb-container">
@@ -166,9 +166,9 @@
                 <video id="lightbox-video" controls></video>
                 <img id="lightbox-image" style="display: none;">
             </div>
-            <button id="close-lightbox">&times;</button>
-            <button id="lightbox-prev" class="lightbox-nav-btn" title="Previous (←)">‹</button>
-            <button id="lightbox-next" class="lightbox-nav-btn" title="Next (→)">›</button>
+            <button id="close-lightbox"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+            <button id="lightbox-prev" class="lightbox-nav-btn" title="Previous (←)"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg></button>
+            <button id="lightbox-next" class="lightbox-nav-btn" title="Next (→)"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg></button>
             <div class="lightbox-zoom-controls">
                 <label class="lightbox-zoom-label">
                     <span>Zoom:</span>
@@ -177,7 +177,7 @@
                 </label>
             </div>
             <div class="lightbox-video-menu-container">
-                <button id="lightbox-video-menu-btn" class="lightbox-video-menu-btn" title="Video Options">⋮</button>
+                <button id="lightbox-video-menu-btn" class="lightbox-video-menu-btn" title="Video Options"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg></button>
                 <div id="lightbox-video-menu" class="lightbox-video-menu hidden">
                     <div class="lightbox-menu-item" id="lightbox-speed-menu-item">
                         <span>Playback Speed:</span>
@@ -198,7 +198,7 @@
                 <div class="lightbox-copy-buttons">
                     <button class="copy-btn" id="copy-path-btn" title="Copy file path">Copy Path</button>
                     <button class="copy-btn" id="copy-name-btn" title="Copy file name">Copy Name</button>
-                    <button class="copy-btn" id="lightbox-info-btn" title="File Information">ℹ️</button>
+                    <button class="copy-btn" id="lightbox-info-btn" title="File Information"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg></button>
                 </div>
             </div>
         </div>
@@ -206,7 +206,7 @@
             <div class="file-info-content">
                 <div class="file-info-header">
                     <h3>File Information</h3>
-                    <button id="file-info-close" class="file-info-close-btn">&times;</button>
+                    <button id="file-info-close" class="file-info-close-btn"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
                 </div>
                 <div id="file-info-details"></div>
             </div>
@@ -301,12 +301,12 @@
             </div>
         </div>
         <div id="context-menu" class="context-menu hidden">
-            <div class="context-menu-item" data-action="open">Open</div>
-            <div class="context-menu-item" data-action="open-with">Open With</div>
-            <div class="context-menu-item" data-action="rename">Rename</div>
-            <div class="context-menu-item" data-action="reveal">Reveal in Explorer</div>
+            <div class="context-menu-item" data-action="open"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg> Open</div>
+            <div class="context-menu-item" data-action="open-with"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M10 4v4"/><path d="M2 8h20"/></svg> Open With</div>
+            <div class="context-menu-item" data-action="rename"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/></svg> Rename</div>
+            <div class="context-menu-item" data-action="reveal"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.7 20H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v4.1"/><path d="m21 21-1.9-1.9"/><circle cx="17" cy="17" r="3"/></svg> Reveal in Explorer</div>
             <div class="context-menu-divider"></div>
-            <div class="context-menu-item context-menu-item-danger" data-action="delete">Delete</div>
+            <div class="context-menu-item context-menu-item-danger" data-action="delete"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg> Delete</div>
         </div>
         <div id="rename-dialog" class="rename-dialog hidden">
             <div class="rename-dialog-content">
@@ -330,6 +330,7 @@
         </div>
         <div id="perf-dashboard-body" class="perf-dashboard-body"></div>
     </div>
+    <script src="icons.js"></script>
     <script src="renderer.js"></script>
 </body>
 </html>

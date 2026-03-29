@@ -1698,7 +1698,7 @@ function createCardFromItem(item) {
         // Create folder icon (use textContent instead of innerHTML for better performance)
         const folderIcon = document.createElement('div');
         folderIcon.className = 'folder-icon';
-        folderIcon.textContent = '📁';
+        folderIcon.innerHTML = icon('folder', 48);
         
         const info = document.createElement('div');
         info.className = 'folder-info';
@@ -1758,7 +1758,7 @@ function createCardFromItem(item) {
         for (let i = 1; i <= 5; i++) {
             const star = document.createElement('span');
             star.className = `star ${i <= rating ? 'active' : ''}`;
-            star.textContent = '★';
+            star.innerHTML = i <= rating ? iconFilled('star', 16, 'var(--warning)') : icon('star', 16);
             star.style.pointerEvents = 'auto';
             star.style.cursor = 'pointer';
             starContainer.appendChild(star);
@@ -5008,7 +5008,7 @@ function renderFavorites() {
         item.className = 'quick-access-item';
         item.innerHTML = `
             <span class="quick-access-item-name" title="${fav.path}">${fav.name}</span>
-            <span class="quick-access-item-remove" data-index="${index}">×</span>
+            <span class="quick-access-item-remove" data-index="${index}">${icon('x', 14)}</span>
         `;
         item.addEventListener('click', (e) => {
             if (e.target.classList.contains('quick-access-item-remove')) {
@@ -5333,7 +5333,7 @@ function renderTabs() {
         tabEl.className = `tab ${tab.id === activeTabId ? 'active' : ''}`;
         tabEl.innerHTML = `
             <span class="tab-name" title="${tab.path || 'Home'}">${tab.name}</span>
-            <span class="tab-close" data-tab-id="${tab.id}">×</span>
+            <span class="tab-close" data-tab-id="${tab.id}">${icon('x', 14)}</span>
         `;
         tabEl.addEventListener('click', (e) => {
             if (e.target.classList.contains('tab-close')) {
@@ -5349,7 +5349,7 @@ function renderTabs() {
     // Add "+" button
     const addBtn = document.createElement('div');
     addBtn.className = 'tab-add';
-    addBtn.textContent = '+';
+    addBtn.innerHTML = icon('plus', 16);
     addBtn.title = 'New Tab';
     addBtn.addEventListener('click', () => {
         selectFolderBtn.click();
@@ -6232,7 +6232,7 @@ function updateCardStars(card, rating, filePath) {
     for (let i = 1; i <= 5; i++) {
         const star = document.createElement('span');
         star.className = `star ${i <= rating ? 'active' : ''}`;
-        star.textContent = '★';
+        star.innerHTML = i <= rating ? iconFilled('star', 16, 'var(--warning)') : icon('star', 16);
         star.style.pointerEvents = 'auto';
         star.style.cursor = 'pointer';
         star.addEventListener('click', (e) => {

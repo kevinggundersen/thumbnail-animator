@@ -2196,8 +2196,9 @@ function createImageForCard(card, imageUrl) {
     img.style.imageRendering = 'auto';
     img.style.willChange = 'contents';
     
-    // For animated GIFs, capture the first frame as a static snapshot
-    const isGif = imageUrl.toLowerCase().endsWith('.gif');
+    // For animated GIFs/WEBPs, capture the first frame as a static snapshot
+    const urlLowerForAnim = imageUrl.toLowerCase();
+    const isGif = urlLowerForAnim.endsWith('.gif') || urlLowerForAnim.endsWith('.webp');
     if (isGif) {
         img.dataset.animatedSrc = imageUrl;
     }
@@ -5180,6 +5181,13 @@ function renderRecentFiles() {
         }
         
         item.addEventListener('click', () => {
+            // Remove hover preview before opening lightbox
+            const previewId = item.dataset.previewId;
+            if (previewId) {
+                const preview = document.getElementById(previewId);
+                if (preview) preview.remove();
+                delete item.dataset.previewId;
+            }
             openLightbox(file.url, file.path, file.name);
             recentFilesDropdown.classList.add('hidden');
         });

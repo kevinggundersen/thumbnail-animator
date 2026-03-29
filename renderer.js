@@ -2573,6 +2573,24 @@ function closeSettingsDropdown() {
     settingsDropdown.classList.add('hidden');
 }
 
+// Keyboard Shortcuts Cheat Sheet
+const shortcutsOverlay = document.getElementById('shortcuts-overlay');
+const shortcutsCloseBtn = document.getElementById('shortcuts-close-btn');
+
+function toggleShortcutsOverlay() {
+    shortcutsOverlay.classList.toggle('hidden');
+}
+
+shortcutsCloseBtn.addEventListener('click', () => {
+    shortcutsOverlay.classList.add('hidden');
+});
+
+shortcutsOverlay.addEventListener('click', (e) => {
+    if (e.target === shortcutsOverlay) {
+        shortcutsOverlay.classList.add('hidden');
+    }
+});
+
 function createMediaForCard(card, mediaUrl) {
     if (pendingMediaCreations.has(card)) return false;
     
@@ -5559,9 +5577,11 @@ function initKeyboardShortcuts() {
             return;
         }
 
-        // Escape: Close dialogs/lightbox
+        // Escape: Close dialogs/lightbox/shortcuts
         if (e.key === 'Escape') {
-            if (!lightbox.classList.contains('hidden')) {
+            if (!shortcutsOverlay.classList.contains('hidden')) {
+                shortcutsOverlay.classList.add('hidden');
+            } else if (!lightbox.classList.contains('hidden')) {
                 closeLightbox();
             } else if (!renameDialog.classList.contains('hidden')) {
                 handleRenameCancel();
@@ -5681,6 +5701,73 @@ function initKeyboardShortcuts() {
                 e.preventDefault();
                 switchFilter(filter);
             }
+            return;
+        }
+
+        // ?: Toggle keyboard shortcuts cheat sheet
+        if (e.key === '?' || (e.shiftKey && e.key === '/')) {
+            e.preventDefault();
+            toggleShortcutsOverlay();
+            return;
+        }
+
+        // G: Toggle grid/masonry layout
+        if (e.key === 'g' || e.key === 'G') {
+            e.preventDefault();
+            layoutModeToggle.checked = !layoutModeToggle.checked;
+            switchLayoutMode();
+            return;
+        }
+
+        // S: Toggle sidebar
+        if (e.key === 's' || e.key === 'S') {
+            e.preventDefault();
+            setSidebarCollapsed(!sidebarCollapsed);
+            return;
+        }
+
+        // Space: Open lightbox for focused card
+        if (e.key === ' ' && focusedCardIndex >= 0) {
+            e.preventDefault();
+            const card = visibleCards[focusedCardIndex];
+            if (card && !card.classList.contains('folder-card')) {
+                const url = card.dataset.src;
+                const filePath = card.dataset.filePath;
+                const name = card.querySelector('.video-info')?.textContent || '';
+                if (url) openLightbox(url, filePath, name);
+            }
+            return;
+        }
+
+        // + / =: Zoom in
+        if (e.key === '+' || e.key === '=') {
+            e.preventDefault();
+            const newZoom = Math.min(200, zoomLevel + 10);
+            zoomSlider.value = newZoom;
+            zoomLevel = newZoom;
+            applyZoom();
+            deferLocalStorageWrite('zoomLevel', zoomLevel.toString());
+            return;
+        }
+
+        // -: Zoom out
+        if (e.key === '-') {
+            e.preventDefault();
+            const newZoom = Math.max(50, zoomLevel - 10);
+            zoomSlider.value = newZoom;
+            zoomLevel = newZoom;
+            applyZoom();
+            deferLocalStorageWrite('zoomLevel', zoomLevel.toString());
+            return;
+        }
+
+        // 0: Reset zoom
+        if (e.key === '0' && !e.ctrlKey && !e.metaKey) {
+            e.preventDefault();
+            zoomSlider.value = 100;
+            zoomLevel = 100;
+            applyZoom();
+            deferLocalStorageWrite('zoomLevel', '100');
             return;
         }
     });

@@ -1230,6 +1230,29 @@ button:hover {
     -moz-osx-font-smoothing: grayscale;
 }
 
+/* Static frame overlay for pausing GIF/WEBP without flashing */
+.gif-static-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+    z-index: 1;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s ease;
+    will-change: opacity;
+    backface-visibility: hidden;
+    transform: translateZ(0);
+    image-rendering: auto;
+}
+
+.gif-static-overlay.visible {
+    opacity: 1;
+}
+
 .video-thumb {
     z-index: 0;
     opacity: 0;

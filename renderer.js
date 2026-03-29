@@ -1339,13 +1339,9 @@ function pauseThumbnailVideos() {
     allVideos.forEach(video => {
         video.pause();
     });
-    // Freeze animated GIFs by swapping to their static first-frame snapshot
-    const allImages = gridContainer.querySelectorAll('img.media-thumbnail');
-    allImages.forEach(img => {
-        if (img.dataset.animatedSrc && img.dataset.staticFrame) {
-            img.src = img.dataset.staticFrame;
-        }
-    });
+    // Freeze animated GIFs by showing static overlay
+    const allOverlays = gridContainer.querySelectorAll('.gif-static-overlay');
+    allOverlays.forEach(overlay => overlay.classList.add('visible'));
 }
 
 // Resume all grid thumbnail videos and unfreeze GIFs when lightbox is closed
@@ -1359,13 +1355,9 @@ function resumeThumbnailVideos() {
             playPromise.catch(() => {});
         }
     });
-    // Restore animated GIFs by swapping back to the original src
-    const allImages = gridContainer.querySelectorAll('img.media-thumbnail');
-    allImages.forEach(img => {
-        if (img.dataset.animatedSrc && img.src !== img.dataset.animatedSrc) {
-            img.src = img.dataset.animatedSrc;
-        }
-    });
+    // Restore animated GIFs by hiding static overlay
+    const allOverlays = gridContainer.querySelectorAll('.gif-static-overlay');
+    allOverlays.forEach(overlay => overlay.classList.remove('visible'));
 }
 
 // Track active media elements and pending creations
@@ -2599,17 +2591,24 @@ function createImageForCard(card, imageUrl) {
             }
         }
         // Capture first frame for GIF freezing (only once)
-        if (isGif && !img.dataset.staticFrame) {
+        if (isGif && !card.querySelector('.gif-static-overlay')) {
             try {
                 const canvas = document.createElement('canvas');
                 canvas.width = img.naturalWidth;
                 canvas.height = img.naturalHeight;
                 const ctx = canvas.getContext('2d');
                 ctx.drawImage(img, 0, 0);
-                img.dataset.staticFrame = canvas.toDataURL('image/png');
-                // If lightbox or blur pausing is active, freeze immediately
+                const overlay = document.createElement('img');
+                overlay.src = canvas.toDataURL('image/png');
+                overlay.className = 'gif-static-overlay';
+                overlay.draggable = false;
+                // Mark the card as having an animated image with overlay
+                img.dataset.hasOverlay = 'true';
+                const info = card.querySelector('.video-info');
+                card.insertBefore(overlay, info);
+                // If lightbox or blur pausing is active, show overlay immediately
                 if ((isLightboxOpen && pauseOnLightbox) || (isWindowBlurred && pauseOnBlur)) {
-                    img.src = img.dataset.staticFrame;
+                    overlay.classList.add('visible');
                 }
             } catch (e) {
                 // Ignore cross-origin or other canvas errors
@@ -3223,9 +3222,15 @@ function destroyVideoElement(video) {
 // Helper function to clean up image elements
 function destroyImageElement(img) {
     if (!img) return;
-    
+
     const parent = img.parentNode;
-    
+
+    // Also remove the static overlay if this is an animated image
+    if (parent && img.dataset.hasOverlay) {
+        const overlay = parent.querySelector('.gif-static-overlay');
+        if (overlay) overlay.remove();
+    }
+
     try {
         // Clear src to stop loading/rendering
         img.src = '';
@@ -7672,13 +7677,9 @@ window.addEventListener('DOMContentLoaded', async () => {
         allVideos.forEach(video => {
             video.pause();
         });
-        // Freeze animated GIFs
-        const allImages = gridContainer.querySelectorAll('img.media-thumbnail');
-        allImages.forEach(img => {
-            if (img.dataset.animatedSrc && img.dataset.staticFrame) {
-                img.src = img.dataset.staticFrame;
-            }
-        });
+        // Freeze animated GIFs by showing static overlay
+        const allOverlays = gridContainer.querySelectorAll('.gif-static-overlay');
+        allOverlays.forEach(overlay => overlay.classList.add('visible'));
     });
 
     // Resume thumbnails and unfreeze GIFs when window regains focus
@@ -7696,13 +7697,9 @@ window.addEventListener('DOMContentLoaded', async () => {
                 playPromise.catch(() => {});
             }
         });
-        // Restore animated GIFs
-        const allImages = gridContainer.querySelectorAll('img.media-thumbnail');
-        allImages.forEach(img => {
-            if (img.dataset.animatedSrc && img.src !== img.dataset.animatedSrc) {
-                img.src = img.dataset.animatedSrc;
-            }
-        });
+        // Restore animated GIFs by hiding static overlay
+        const allOverlays = gridContainer.querySelectorAll('.gif-static-overlay');
+        allOverlays.forEach(overlay => overlay.classList.remove('visible'));
     });
 
     // Initialize new features

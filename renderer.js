@@ -626,7 +626,7 @@ async function toggleTreeNode(node, depth, isDrive = false) {
     saveSidebarExpandedNodes();
 
     // If children already loaded, don't reload
-    if (children.children.length > 0) return;
+    if (children.dataset.loaded === '1') return;
 
     // Show loading indicator
     const loading = document.createElement('div');
@@ -636,7 +636,9 @@ async function toggleTreeNode(node, depth, isDrive = false) {
 
     try {
         const subdirs = await window.electronAPI.listSubdirectories(nodePath);
-        children.removeChild(loading);
+        children.innerHTML = ''; // remove loading indicator
+        children.dataset.loaded = '1';
+
         for (const subdir of subdirs) {
             const childNode = createTreeNode(subdir, depth + 1);
             children.appendChild(childNode);
@@ -646,21 +648,41 @@ async function toggleTreeNode(node, depth, isDrive = false) {
             }
         }
         if (subdirs.length === 0) {
+            // No subfolders — collapse immediately and hide the arrow
+            toggle.classList.remove('expanded');
             toggle.classList.add('no-children');
+            children.classList.remove('expanded');
+            sidebarExpandedNodes.delete(nodePath);
+            saveSidebarExpandedNodes();
         }
     } catch (err) {
-        children.removeChild(loading);
+        children.innerHTML = '';
+        toggle.classList.remove('expanded');
         toggle.classList.add('no-children');
+        children.classList.remove('expanded');
+        sidebarExpandedNodes.delete(nodePath);
+        saveSidebarExpandedNodes();
     }
+}
+
+// Normalize a path for sidebar comparisons — lowercase, forward slashes, no trailing slash
+function sidebarNormalize(p) {
+    if (!p) return '';
+    return p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
 }
 
 function sidebarHighlightActive(folderPath) {
     if (!folderPath || !sidebarTree) return;
-    const normalized = normalizePath(folderPath);
-    sidebarTree.querySelectorAll('.tree-node-row.active').forEach(r => r.classList.remove('active'));
+    const target = sidebarNormalize(folderPath);
+
+    // Clear previous highlight
+    const prev = sidebarTree.querySelector('.tree-node-row.active');
+    if (prev) prev.classList.remove('active');
+
+    // First try to find the node already in the DOM
     const allNodes = sidebarTree.querySelectorAll('.tree-node');
     for (const node of allNodes) {
-        if (normalizePath(node.dataset.path) === normalized) {
+        if (sidebarNormalize(node.dataset.path) === target) {
             const row = node.querySelector(':scope > .tree-node-row');
             if (row) {
                 row.classList.add('active');
@@ -669,29 +691,30 @@ function sidebarHighlightActive(folderPath) {
             return;
         }
     }
+
+    // Node not in DOM yet — expand the tree to it, then highlight
+    sidebarExpandToPath(folderPath);
 }
 
 async function sidebarExpandToPath(folderPath) {
     if (!folderPath || !sidebarTree) return;
-    // Parse the path into segments
+
+    // Parse the path into segments  (e.g. "C:\Users\foo" → ["C:", "Users", "foo"])
     const normalized = folderPath.replace(/\//g, '\\');
     const parts = normalized.split('\\').filter(Boolean);
     if (parts.length === 0) return;
 
     // Build the drive path (e.g. "C:\")
     const drivePart = parts[0].endsWith(':') ? parts[0] + '\\' : parts[0];
-    let currentPath = drivePart;
 
-    // Find and expand the drive node
-    let parentContainer = sidebarTree;
+    // Find the drive node
     let driveNode = null;
-    for (const node of parentContainer.querySelectorAll(':scope > .tree-node')) {
-        if (normalizePath(node.dataset.path) === normalizePath(currentPath)) {
+    for (const node of sidebarTree.querySelectorAll(':scope > .tree-node')) {
+        if (sidebarNormalize(node.dataset.path) === sidebarNormalize(drivePart)) {
             driveNode = node;
             break;
         }
     }
-
     if (!driveNode) return;
 
     // Expand drive if needed
@@ -700,32 +723,44 @@ async function sidebarExpandToPath(folderPath) {
         await toggleTreeNode(driveNode, 0, true);
     }
 
-    // Walk down the path segments
-    parentContainer = driveChildren;
+    // Walk down the remaining path segments
+    let parentContainer = driveChildren;
+    let currentPath = drivePart;
+
     for (let i = 1; i < parts.length; i++) {
         currentPath = currentPath.replace(/\\$/, '') + '\\' + parts[i];
+        const targetNorm = sidebarNormalize(currentPath);
+
+        // Wait a tick so freshly-appended children are queryable
+        await new Promise(r => setTimeout(r, 10));
+
         let found = null;
-        // Wait for children to be loaded
-        await new Promise(r => setTimeout(r, 0));
         for (const node of parentContainer.querySelectorAll(':scope > .tree-node')) {
-            if (normalizePath(node.dataset.path) === normalizePath(currentPath)) {
+            if (sidebarNormalize(node.dataset.path) === targetNorm) {
                 found = node;
                 break;
             }
         }
         if (!found) break;
 
-        if (i < parts.length - 1) {
-            // Intermediate segment — expand it
-            const childContainer = found.querySelector('.tree-children');
-            if (!childContainer.classList.contains('expanded')) {
-                await toggleTreeNode(found, i);
+        // Expand intermediate segments, and also the last segment so its children show
+        const childContainer = found.querySelector('.tree-children');
+        if (!childContainer.classList.contains('expanded')) {
+            await toggleTreeNode(found, i);
+        }
+        parentContainer = childContainer;
+
+        // On the final segment, highlight it
+        if (i === parts.length - 1) {
+            const prev = sidebarTree.querySelector('.tree-node-row.active');
+            if (prev) prev.classList.remove('active');
+            const row = found.querySelector(':scope > .tree-node-row');
+            if (row) {
+                row.classList.add('active');
+                row.scrollIntoView({ block: 'nearest' });
             }
-            parentContainer = childContainer;
         }
     }
-
-    sidebarHighlightActive(folderPath);
 }
 
 function initSidebarResize() {
@@ -3919,8 +3954,8 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
         filterAudioBtn.classList.remove('active');
         loadVideos(folderPath, !forceReload); // Use cache unless forcing reload
 
-        // Sync sidebar tree with current folder
-        sidebarHighlightActive(folderPath);
+        // Sync sidebar tree with current folder — expand tree then highlight
+        sidebarExpandToPath(folderPath);
 
         // Reset keyboard focus
         focusedCardIndex = -1;
@@ -5746,6 +5781,7 @@ function switchToTab(tabId) {
                 filterVideosBtn.classList.remove('active');
                 filterImagesBtn.classList.remove('active');
                 filterAudioBtn.classList.remove('active');
+                sidebarExpandToPath(tab.path);
             } else {
                 // No DOM snapshot - fall back to content cache or full navigation
                 const tabCache = tabContentCache.get(tabId);
@@ -5770,6 +5806,7 @@ function switchToTab(tabId) {
                         const filteredItems = filterItems(tabCache.items);
                         const sortedItems = sortItems(filteredItems);
                         renderItems(sortedItems);
+                        sidebarExpandToPath(tab.path);
                     } else {
                         setTimeout(() => {
                             navigateToFolder(tab.path, false).catch(err => {
@@ -7676,13 +7713,19 @@ window.addEventListener('DOMContentLoaded', async () => {
     loadFavorites();
     loadRecentFiles();
     loadRatings();
+    await initSidebar(); // Must be before loadTabs so sidebar is ready for highlight/expand
     loadTabs(); // This will handle tab restoration and navigation
     initVideoScrubber();
     initNewFeatures();
-    initSidebar();
     
     // If no tab has a path and we have a last folder, navigate to it
     const activeTab = tabs.find(t => t.id === activeTabId);
+
+    // Expand sidebar to match whichever folder is now active after tab restore
+    if (currentFolderPath) {
+        sidebarExpandToPath(currentFolderPath);
+    }
+
     if ((!activeTab || !activeTab.path) && rememberLastFolder) {
         const lastFolderPath = localStorage.getItem('lastFolderPath');
         if (lastFolderPath) {

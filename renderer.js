@@ -2428,6 +2428,7 @@ function renderItems(items) {
         gridContainer.removeChild(gridContainer.firstChild);
     }
     currentHoveredCard = null;
+    focusedCardIndex = -1;
     gridContainer.classList.remove('masonry'); // Reset masonry state
     gridContainer.classList.remove('grid'); // Reset grid state
 
@@ -4442,7 +4443,8 @@ function openLightbox(mediaUrl, filePath, fileName) {
             repeatBtn.classList.toggle('active', videoRepeat);
         }
         
-        // Set up repeat handler
+        // Set up repeat handler (remove first to prevent duplicates from previous lightbox opens)
+        lightboxVideo.removeEventListener('ended', handleVideoRepeat);
         if (videoRepeat) {
             lightboxVideo.addEventListener('ended', handleVideoRepeat);
         }
@@ -4608,7 +4610,7 @@ function applyPan(deltaX, deltaY) {
     const zoomValue = cachedZoomValue;
     
     // Build transform string once
-    const transformString = `scale(${zoomValue}) translate(${currentTranslateX}px, ${currentTranslateY}px)`;
+    const transformString = `translate(${currentTranslateX}px, ${currentTranslateY}px) scale(${zoomValue})`;
     
     // Apply to visible element only
     const imageDisplay = lightboxImage.style.display;
@@ -5517,16 +5519,20 @@ function navigateCards(direction) {
 
             let nextIndex = focusedCardIndex;
             if (direction === 'ArrowRight' || direction === 'ArrowDown') {
-                // Find next card
+                // Find next visible card
                 for (let i = focusedCardIndex + 1; i < cards.length; i++) {
-                    nextIndex = i;
-                    break;
+                    if (cards[i].style.display !== 'none') {
+                        nextIndex = i;
+                        break;
+                    }
                 }
             } else if (direction === 'ArrowLeft' || direction === 'ArrowUp') {
-                // Find previous card
+                // Find previous visible card
                 for (let i = focusedCardIndex - 1; i >= 0; i--) {
-                    nextIndex = i;
-                    break;
+                    if (cards[i].style.display !== 'none') {
+                        nextIndex = i;
+                        break;
+                    }
                 }
             }
 
@@ -6989,7 +6995,7 @@ function clearAdvancedSearch() {
         width: null,
         height: null,
         aspectRatio: '',
-        starRating: ''
+        starRating: null
     };
     
     document.getElementById('search-size-operator').value = '';
@@ -7282,7 +7288,9 @@ applyFilters = function() {
 };
 
 function parseAspectRatio(ratioStr) {
+    if (!ratioStr || ratioStr.trim() === '') return NaN;
     const [w, h] = ratioStr.split(':').map(Number);
+    if (isNaN(w) || isNaN(h) || h === 0) return NaN;
     return w / h;
 }
 

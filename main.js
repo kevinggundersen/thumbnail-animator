@@ -1121,22 +1121,28 @@ ipcMain.handle('watch-folder', async (event, folderPath) => {
         });
         
         // Wait for watcher to be ready before returning success
-        await new Promise((resolve, reject) => {
-            const timeout = setTimeout(() => {
-                reject(new Error('Watcher initialization timeout'));
-            }, 10000); // 10 second timeout
-            
-            watcher.on('ready', () => {
-                clearTimeout(timeout);
-                resolve();
+        try {
+            await new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => {
+                    reject(new Error('Watcher initialization timeout'));
+                }, 10000); // 10 second timeout
+
+                watcher.on('ready', () => {
+                    clearTimeout(timeout);
+                    resolve();
+                });
+
+                watcher.on('error', (error) => {
+                    clearTimeout(timeout);
+                    reject(error);
+                });
             });
-            
-            watcher.on('error', (error) => {
-                clearTimeout(timeout);
-                reject(error);
-            });
-        });
-        
+        } catch (initError) {
+            // Clean up the watcher if initialization failed to prevent zombie watchers
+            await watcher.close().catch(() => {});
+            throw initError;
+        }
+
         watcher.on('all', (event, filePath) => {
             if (mainWindow && !mainWindow.isDestroyed()) {
                 // Normalize the file path for consistent comparison

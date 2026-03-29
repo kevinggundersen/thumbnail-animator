@@ -3111,6 +3111,20 @@ gridContainer.addEventListener('mouseover', (e) => {
             showScrubber(card, video);
         }
     }
+    // Check if filename overlaps with resolution label and shift it up if needed
+    if (card) {
+        const info = card.querySelector('.video-info');
+        const resLabel = card.querySelector('.resolution-label');
+        if (info && resLabel) {
+            // Create a temporary range to measure actual text width
+            const range = document.createRange();
+            range.selectNodeContents(info);
+            const textWidth = range.getBoundingClientRect().width;
+            const cardWidth = card.offsetWidth;
+            const labelLeft = cardWidth - resLabel.offsetWidth - 16; // 8px right margin + buffer
+            resLabel.classList.toggle('shifted-up', textWidth + 10 > labelLeft); // 10px = left padding
+        }
+    }
 });
 
 gridContainer.addEventListener('mouseout', (e) => {

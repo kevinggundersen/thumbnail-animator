@@ -222,8 +222,9 @@ const INDEXEDDB_CACHE_TTL = 3600000; // IndexedDB persistent cache TTL (1 hour)
 
 // IndexedDB Configuration
 const DB_NAME = 'ThumbnailAnimatorCache';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_NAME = 'folderCache';
+const DIMENSIONS_STORE = 'dimensionCache';
 
 // ============================================================================
 // END CONFIGURATION CONSTANTS
@@ -416,6 +417,9 @@ async function initIndexedDB() {
                 const objectStore = database.createObjectStore(STORE_NAME, { keyPath: 'path' });
                 objectStore.createIndex('timestamp', 'timestamp', { unique: false });
             }
+            if (!database.objectStoreNames.contains(DIMENSIONS_STORE)) {
+                database.createObjectStore(DIMENSIONS_STORE, { keyPath: 'key' });
+            }
         };
     });
 }
@@ -531,6 +535,70 @@ async function cleanupIndexedDBCache() {
         };
     } catch (error) {
         console.warn('Failed to cleanup IndexedDB cache:', error);
+    }
+}
+
+// --- Dimension Cache ---
+// Persists image/video dimensions across sessions so repeat folder visits
+// don't need to re-scan file headers. Key = "filePath|mtimeMs".
+
+/**
+ * Look up cached dimensions for a batch of files.
+ * @param {Array<{path: string, mtime: number}>} files
+ * @returns {Promise<Map<string, {width: number, height: number}>>} map of filePath -> dimensions
+ */
+async function getCachedDimensions(files) {
+    const result = new Map();
+    if (!db || files.length === 0) return result;
+
+    try {
+        const transaction = db.transaction([DIMENSIONS_STORE], 'readonly');
+        const store = transaction.objectStore(DIMENSIONS_STORE);
+
+        const promises = files.map(f => {
+            const key = `${f.path}|${f.mtime || 0}`;
+            return new Promise(resolve => {
+                const req = store.get(key);
+                req.onsuccess = () => {
+                    if (req.result && req.result.width && req.result.height) {
+                        result.set(f.path, { width: req.result.width, height: req.result.height });
+                    }
+                    resolve();
+                };
+                req.onerror = () => resolve();
+            });
+        });
+
+        await Promise.all(promises);
+    } catch {
+        // Ignore errors — dimensions will just be re-scanned
+    }
+
+    return result;
+}
+
+/**
+ * Store dimensions for a batch of files.
+ * @param {Array<{path: string, mtime: number, width: number, height: number}>} entries
+ */
+async function cacheDimensions(entries) {
+    if (!db || entries.length === 0) return;
+
+    try {
+        const transaction = db.transaction([DIMENSIONS_STORE], 'readwrite');
+        const store = transaction.objectStore(DIMENSIONS_STORE);
+
+        for (const e of entries) {
+            if (e.width && e.height) {
+                store.put({
+                    key: `${e.path}|${e.mtime || 0}`,
+                    width: e.width,
+                    height: e.height
+                });
+            }
+        }
+    } catch {
+        // Ignore errors — caching is best-effort
     }
 }
 
@@ -2688,6 +2756,17 @@ function createImageForCard(card, imageUrl) {
             if (!card.dataset.mediaWidth) {
                 createResolutionLabel(card, img.naturalWidth, img.naturalHeight);
             }
+
+            // Cache discovered dimensions for future visits
+            if (card.dataset.filePath && !card.dataset.dimCached) {
+                card.dataset.dimCached = '1';
+                cacheDimensions([{
+                    path: card.dataset.filePath,
+                    mtime: 0,
+                    width: img.naturalWidth,
+                    height: img.naturalHeight
+                }]).catch(() => {});
+            }
         }
         // Capture first frame for GIF freezing (only once)
         if (isGif && !card.querySelector('.gif-static-overlay')) {
@@ -2849,11 +2928,22 @@ function createVideoForCard(card, videoUrl) {
         if (video.videoWidth && video.videoHeight) {
             const aspectRatioName = getClosestAspectRatio(video.videoWidth, video.videoHeight);
             applyAspectRatioToCard(card, aspectRatioName);
-            
+
             // Create resolution label
             createResolutionLabel(card, video.videoWidth, video.videoHeight);
+
+            // Cache discovered dimensions for future visits
+            if (card.dataset.filePath && !card.dataset.dimCached) {
+                card.dataset.dimCached = '1';
+                cacheDimensions([{
+                    path: card.dataset.filePath,
+                    mtime: 0,
+                    width: video.videoWidth,
+                    height: video.videoHeight
+                }]).catch(() => {});
+            }
         }
-        
+
         // After metadata loads, ensure video dimensions are constrained
         const rect = card.getBoundingClientRect();
         const maxWidth = rect.width;
@@ -5499,6 +5589,17 @@ async function loadVideos(folderPath, useCache = true) {
             storeFolderInIndexedDB(folderPath, items).catch(() => {
                 // Ignore errors, IndexedDB is optional
             });
+
+            // Cache any newly scanned dimensions for future visits
+            const dimensionEntries = items.filter(
+                item => item.type !== 'folder' && item.width && item.height
+            ).map(item => ({
+                path: item.path,
+                mtime: item.mtime || 0,
+                width: item.width,
+                height: item.height
+            }));
+            cacheDimensions(dimensionEntries).catch(() => {});
             
             // Clean up old cache entries (keep cache size reasonable)
             if (folderCache.size > 50) {
@@ -5516,9 +5617,28 @@ async function loadVideos(folderPath, useCache = true) {
             }
         }
         
+        // Apply cached dimensions to items that lack them
+        const itemsNeedingDimensions = items.filter(
+            item => item.type !== 'folder' && (!item.width || !item.height)
+        );
+        if (itemsNeedingDimensions.length > 0) {
+            const cached = await getCachedDimensions(
+                itemsNeedingDimensions.map(i => ({ path: i.path, mtime: i.mtime || 0 }))
+            );
+            if (cached.size > 0) {
+                for (const item of itemsNeedingDimensions) {
+                    const dims = cached.get(item.path);
+                    if (dims) {
+                        item.width = dims.width;
+                        item.height = dims.height;
+                    }
+                }
+            }
+        }
+
         // Yield control before sorting/rendering
         await yieldToEventLoop();
-        
+
         // Store items for re-sorting without re-fetching
         currentItems = items;
 

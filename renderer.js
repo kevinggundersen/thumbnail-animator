@@ -1689,12 +1689,17 @@ function applySorting() {
 
 // Progressive rendering uses constants defined at top of file
 
+// Card animation counter for stagger effect
+let cardAnimIndex = 0;
+
 // Function to create a card element from an item
 function createCardFromItem(item) {
     if (item.type === 'folder') {
         // Create folder card
         const card = document.createElement('div');
         card.className = 'folder-card';
+        card.style.animation = `card-enter 0.3s var(--ease-out-expo) ${Math.min(cardAnimIndex * 20, 600)}ms backwards`;
+        cardAnimIndex++;
         card.dataset.folderPath = item.path;
         card.dataset.searchText = item.name.toLowerCase();
 
@@ -1715,6 +1720,8 @@ function createCardFromItem(item) {
         // Create media card
         const card = document.createElement('div');
         card.className = 'video-card';
+        card.style.animation = `card-enter 0.3s var(--ease-out-expo) ${Math.min(cardAnimIndex * 20, 600)}ms backwards`;
+        cardAnimIndex++;
         card.dataset.src = item.url;
         card.dataset.path = item.path; // Store file path for context menu actions and star ratings
         card.dataset.filePath = item.path; // Keep for backward compatibility
@@ -1776,6 +1783,7 @@ function createCardFromItem(item) {
 
 // Progressive rendering function for large lists
 function renderItemsProgressive(items) {
+    cardAnimIndex = 0; // Reset card animation stagger
     const cardsToObserve = [];
     let currentIndex = 0;
     
@@ -1952,6 +1960,7 @@ function renderItemsProgressive(items) {
 
 // Function to render items (extracted from loadVideos for re-use)
 function renderItems(items) {
+    cardAnimIndex = 0; // Reset card animation stagger
     const perfStart = perfTest.start();
     // Clean up all existing media before rendering
     // Use a single querySelectorAll and batch operations

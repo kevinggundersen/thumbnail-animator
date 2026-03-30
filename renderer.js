@@ -2196,6 +2196,13 @@ function sortItems(items) {
 // Function to apply sorting and reload current folder
 function applySorting() {
     if (currentFolderPath && currentItems.length > 0) {
+        // If sorting by date but items lack mtime (were loaded with skipStats),
+        // reload from backend to get file stats
+        const needsStats = sortType === 'date' && currentItems.some(item => item.type !== 'folder' && !item.mtime);
+        if (needsStats) {
+            loadVideos(currentFolderPath, false);
+            return;
+        }
         // Filter items based on current filter, then sort and render
         const filteredItems = filterItems(currentItems);
         const sortedItems = sortItems(filteredItems);
@@ -5662,13 +5669,21 @@ async function loadVideos(folderPath, useCache = true) {
             // lack dimensions (from a previous non-masonry scan), skip the cache
             // so a fresh scan with dimension scanning is performed.
             const needsDimensions = layoutMode === 'masonry';
-            const cacheHasDimensions = (cachedItems) => {
-                if (!needsDimensions || !cachedItems || cachedItems.length === 0) return true;
+            const needsStats = sortType !== 'name';
+            const cacheIsValid = (cachedItems) => {
+                if (!cachedItems || cachedItems.length === 0) return true;
+                // When sorting by date, items need mtime data
+                if (needsStats) {
+                    const fileSample = cachedItems.find(item => item.type !== 'folder');
+                    if (fileSample && !fileSample.mtime) return false;
+                }
                 // Check both an image and a video sample — both must have dimensions
-                const imageSample = cachedItems.find(item => item.type === 'image');
-                const videoSample = cachedItems.find(item => item.type === 'video');
-                if (imageSample && (imageSample.width === undefined || imageSample.height === undefined)) return false;
-                if (videoSample && (videoSample.width === undefined || videoSample.height === undefined)) return false;
+                if (needsDimensions) {
+                    const imageSample = cachedItems.find(item => item.type === 'image');
+                    const videoSample = cachedItems.find(item => item.type === 'video');
+                    if (imageSample && (imageSample.width === undefined || imageSample.height === undefined)) return false;
+                    if (videoSample && (videoSample.width === undefined || videoSample.height === undefined)) return false;
+                }
                 return true;
             };
 
@@ -5679,7 +5694,7 @@ async function loadVideos(folderPath, useCache = true) {
                     const cachePathNormalized = normalizePath(tabCache.path);
                     if ((cachePathNormalized === normalizedPath || tabCache.path === folderPath) &&
                         (now - tabCache.timestamp) < FOLDER_CACHE_TTL &&
-                        cacheHasDimensions(tabCache.items)) {
+                        cacheIsValid(tabCache.items)) {
                         items = tabCache.items;
                     }
                 }
@@ -5689,7 +5704,7 @@ async function loadVideos(folderPath, useCache = true) {
             if (!items) {
                 const globalCache = folderCache.get(normalizedPath) || folderCache.get(folderPath);
                 if (globalCache && (now - globalCache.timestamp) < GLOBAL_CACHE_TTL &&
-                    cacheHasDimensions(globalCache.items)) {
+                    cacheIsValid(globalCache.items)) {
                     items = globalCache.items;
                 }
             }
@@ -5699,7 +5714,7 @@ async function loadVideos(folderPath, useCache = true) {
                 // Yield control periodically during IndexedDB lookup
                 await yieldToEventLoop();
                 const dbItems = await getFolderFromIndexedDB(folderPath);
-                if (dbItems && cacheHasDimensions(dbItems)) {
+                if (dbItems && cacheIsValid(dbItems)) {
                     items = dbItems;
                 }
             }

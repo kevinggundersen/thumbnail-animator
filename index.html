@@ -84,7 +84,22 @@
                 <span class="status-separator">|</span>
                 <span id="status-layout-mode"></span>
                 <span class="status-separator">|</span>
-                <span id="status-zoom-level"></span>
+                <label class="status-bar-control">
+                    <span>Sort:</span>
+                    <select id="sort-type-select" class="status-bar-select">
+                        <option value="name">Name</option>
+                        <option value="date">Date</option>
+                    </select>
+                    <select id="sort-order-select" class="status-bar-select">
+                        <option value="ascending">Asc</option>
+                        <option value="descending">Desc</option>
+                    </select>
+                </label>
+                <span class="status-separator">|</span>
+                <label class="status-bar-control">
+                    <input type="range" id="zoom-slider" min="50" max="200" value="100" step="10" class="status-bar-zoom-slider">
+                    <span class="zoom-value" id="zoom-value">100%</span>
+                </label>
                 <span class="status-separator status-keyboard-hint">|</span>
                 <span class="status-keyboard-hint status-muted"><kbd>?</kbd> Shortcuts</span>
             </div>
@@ -319,7 +334,6 @@
                 <div class="settings-tabs">
                     <button class="settings-tab active" data-tab="general">General</button>
                     <button class="settings-tab" data-tab="card-info">Card Info</button>
-                    <button class="settings-tab" data-tab="sorting">Sorting</button>
                     <button class="settings-tab" data-tab="playback">Playback</button>
                 </div>
                 <div class="settings-panel">
@@ -366,9 +380,13 @@
                         </div>
                         <div class="settings-item">
                             <label class="settings-label">
-                                <span>Zoom Level</span>
-                                <input type="range" id="zoom-slider" min="50" max="200" value="100" step="10" class="zoom-slider">
-                                <span class="zoom-value" id="zoom-value">100%</span>
+                                <span>Thumbnail Quality</span>
+                                <select id="thumbnail-quality-select" class="settings-select">
+                                    <option value="low">Low (Fast)</option>
+                                    <option value="medium" selected>Medium (Balanced)</option>
+                                    <option value="high">High (Best)</option>
+                                    <option value="original">Original (Full Res)</option>
+                                </select>
                             </label>
                         </div>
                     </div>
@@ -452,38 +470,6 @@
                                     <span class="toggle-slider"></span>
                                 </div>
                                 <span class="toggle-label" id="card-info-filename-label">On</span>
-                            </label>
-                        </div>
-                    </div>
-                    <!-- Sorting Tab -->
-                    <div class="settings-tab-content" data-tab="sorting">
-                        <div class="settings-item">
-                            <label class="settings-label">
-                                <span>Sort By</span>
-                                <select id="sort-type-select" class="settings-select">
-                                    <option value="name">Name</option>
-                                    <option value="date">Date</option>
-                                </select>
-                            </label>
-                        </div>
-                        <div class="settings-item">
-                            <label class="settings-label">
-                                <span>Sort Order</span>
-                                <select id="sort-order-select" class="settings-select">
-                                    <option value="ascending">Ascending</option>
-                                    <option value="descending">Descending</option>
-                                </select>
-                            </label>
-                        </div>
-                        <div class="settings-item">
-                            <label class="settings-label">
-                                <span>Thumbnail Quality</span>
-                                <select id="thumbnail-quality-select" class="settings-select">
-                                    <option value="low">Low (Fast)</option>
-                                    <option value="medium" selected>Medium (Balanced)</option>
-                                    <option value="high">High (Best)</option>
-                                    <option value="original">Original (Full Res)</option>
-                                </select>
                             </label>
                         </div>
                     </div>

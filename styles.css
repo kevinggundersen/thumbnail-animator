@@ -223,6 +223,76 @@ button:active:not(:disabled) {
     cursor: pointer;
 }
 
+.status-bar-control {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: default;
+    color: var(--text-secondary);
+    font-size: 11px;
+}
+
+.status-bar-select {
+    background: var(--bg-primary);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 3px;
+    font-size: 11px;
+    font-family: inherit;
+    padding: 1px 4px;
+    cursor: pointer;
+    outline: none;
+    height: 18px;
+    transition: border-color var(--duration-normal);
+}
+
+.status-bar-select:hover {
+    border-color: var(--accent);
+    color: var(--text-primary);
+}
+
+.status-bar-select:focus {
+    border-color: var(--accent);
+}
+
+.status-bar-select option {
+    background: var(--bg-secondary);
+    color: var(--text-color);
+}
+
+.status-bar-zoom-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 80px;
+    height: 4px;
+    background: var(--border-subtle);
+    border-radius: 2px;
+    outline: none;
+    cursor: pointer;
+}
+
+.status-bar-zoom-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 10px;
+    height: 10px;
+    background: var(--text-secondary);
+    border-radius: 50%;
+    cursor: pointer;
+    transition: background var(--duration-normal);
+}
+
+.status-bar-zoom-slider::-webkit-slider-thumb:hover {
+    background: var(--accent);
+}
+
+.status-bar .zoom-value {
+    min-width: 30px;
+    text-align: right;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
 .status-activity {
     color: var(--accent);
     font-size: 11px;

@@ -4914,7 +4914,7 @@ function updateStatusBar() {
 
     // Layout & zoom
     statusLayoutMode.textContent = layoutMode === 'masonry' ? 'Dynamic' : 'Grid';
-    statusZoomLevel.textContent = `${zoomLevel}%`;
+    if (statusZoomLevel) statusZoomLevel.textContent = `${zoomLevel}%`;
 }
 
 function updateStatusBarSelection(card) {

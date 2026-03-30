@@ -47,9 +47,10 @@ const INDEXEDDB_CACHE_TTL = 3600000; // IndexedDB persistent cache TTL (1 hour)
 
 // IndexedDB Configuration
 const DB_NAME = 'ThumbnailAnimatorCache';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const STORE_NAME = 'folderCache';
 const DIMENSIONS_STORE = 'dimensionCache';
+const GIF_DURATION_STORE = 'gifDurationCache';
 
 // ============================================================================
 // END CONFIGURATION CONSTANTS
@@ -1204,6 +1205,9 @@ async function initIndexedDB() {
             if (!database.objectStoreNames.contains(DIMENSIONS_STORE)) {
                 database.createObjectStore(DIMENSIONS_STORE, { keyPath: 'key' });
             }
+            if (!database.objectStoreNames.contains(GIF_DURATION_STORE)) {
+                database.createObjectStore(GIF_DURATION_STORE, { keyPath: 'key' });
+            }
         };
     });
 }
@@ -1383,6 +1387,36 @@ async function cacheDimensions(entries) {
         }
     } catch {
         // Ignore errors — caching is best-effort
+    }
+}
+
+async function getCachedGifDuration(filePath, mtime) {
+    if (!db) return null;
+    try {
+        const transaction = db.transaction([GIF_DURATION_STORE], 'readonly');
+        const store = transaction.objectStore(GIF_DURATION_STORE);
+        return new Promise((resolve) => {
+            const request = store.get(`${filePath}|${mtime || 0}`);
+            request.onsuccess = () => resolve(request.result || null);
+            request.onerror = () => resolve(null);
+        });
+    } catch {
+        return null;
+    }
+}
+
+async function cacheGifDuration(filePath, mtime, totalDuration, frameCount) {
+    if (!db || !totalDuration) return;
+    try {
+        const transaction = db.transaction([GIF_DURATION_STORE], 'readwrite');
+        const store = transaction.objectStore(GIF_DURATION_STORE);
+        store.put({
+            key: `${filePath}|${mtime || 0}`,
+            totalDuration,
+            frameCount
+        });
+    } catch {
+        // Caching is best-effort
     }
 }
 
@@ -3938,6 +3972,56 @@ shortcutsOverlay.addEventListener('click', (e) => {
     }
 });
 
+async function resolveGifDuration(card, imageUrl) {
+    if (card.dataset.gifDuration) return;
+    const filePath = card.dataset.filePath;
+    const mtime = Number(card.dataset.mtime || 0);
+
+    // Try cache first
+    const cached = await getCachedGifDuration(filePath, mtime);
+    if (cached) {
+        card.dataset.gifDuration = String(cached.totalDuration);
+        card.dataset.gifFrameCount = String(cached.frameCount);
+        return;
+    }
+
+    // Skip very large files (>100MB)
+    const fileSize = Number(card.dataset.fileSize || 0);
+    if (fileSize > 104857600) {
+        card.dataset.gifDuration = '0';
+        return;
+    }
+
+    try {
+        const response = await fetch(imageUrl);
+        const buffer = await response.arrayBuffer();
+        const urlLower = imageUrl.toLowerCase();
+        let result = null;
+
+        if (urlLower.endsWith('.gif')) {
+            result = parseGifDuration(buffer);
+        } else if (urlLower.endsWith('.webp')) {
+            result = parseWebpDuration(buffer);
+            if (!result) {
+                // Static WebP – not animated
+                card.dataset.isStaticWebp = 'true';
+                card.dataset.gifDuration = '0';
+                return;
+            }
+        }
+
+        if (result && result.totalDuration > 0) {
+            card.dataset.gifDuration = String(result.totalDuration);
+            card.dataset.gifFrameCount = String(result.frameCount);
+            cacheGifDuration(filePath, mtime, result.totalDuration, result.frameCount);
+        } else {
+            card.dataset.gifDuration = '0';
+        }
+    } catch {
+        card.dataset.gifDuration = '0';
+    }
+}
+
 function createMediaForCard(card, mediaUrl) {
     if (pendingMediaCreations.has(card)) return false;
     
@@ -4099,6 +4183,11 @@ function createImageForCard(card, imageUrl) {
             } catch (e) {
                 // Ignore cross-origin or other canvas errors
             }
+        }
+        // Parse GIF/animated WebP duration for progress bar
+        if (isGif) {
+            card.dataset.gifLoadTime = String(performance.now());
+            resolveGifDuration(card, imageUrl);
         }
         scheduleMediaLoadSettle();
     }, { once: true });
@@ -4815,6 +4904,21 @@ function destroyImageElement(img) {
         if (overlay) overlay.remove();
     }
 
+    // Clean up GIF progress bar animation
+    if (card) {
+        if (card._gifAnimId) {
+            cancelAnimationFrame(card._gifAnimId);
+            delete card._gifAnimId;
+        }
+        const gifBar = card.querySelector('.gif-progress-bar');
+        if (gifBar) gifBar.remove();
+        const gifTimeLabel = card.querySelector('.gif-time-label');
+        if (gifTimeLabel) gifTimeLabel.remove();
+        delete card.dataset.gifDuration;
+        delete card.dataset.gifLoadTime;
+        delete card.dataset.gifFrameCount;
+    }
+
     try {
         // Clear src to stop loading/rendering
         img.src = '';
@@ -5142,11 +5246,16 @@ gridContainer.addEventListener('auxclick', (e) => {
 
 gridContainer.addEventListener('mouseover', (e) => {
     const card = e.target.closest('.video-card');
-    if (card && card !== currentHoveredCard && card.dataset.mediaType === 'video') {
-        currentHoveredCard = card;
-        const video = card.querySelector('video');
-        if (video) {
-            showScrubber(card, video);
+    if (card && card !== currentHoveredCard) {
+        if (card.dataset.mediaType === 'video') {
+            currentHoveredCard = card;
+            const video = card.querySelector('video');
+            if (video) {
+                showScrubber(card, video);
+            }
+        } else if (card.dataset.gifDuration && Number(card.dataset.gifDuration) > 0) {
+            currentHoveredCard = card;
+            showGifProgress(card);
         }
     }
     // Check if filename overlaps with resolution label and shift it up if needed
@@ -5176,6 +5285,7 @@ gridContainer.addEventListener('mouseout', (e) => {
     const relatedCard = e.relatedTarget ? e.relatedTarget.closest('.video-card') : null;
     if (relatedCard !== currentHoveredCard) {
         hideScrubber(currentHoveredCard);
+        hideGifProgress(currentHoveredCard);
         currentHoveredCard = null;
     }
 });
@@ -6305,7 +6415,16 @@ function openLightbox(mediaUrl, filePath, fileName) {
         
         lightboxImage.src = mediaUrl;
         lightboxImage.dataset.src = mediaUrl; // Store for restoration after minimize
+
+        // Start GIF progress bar in lightbox if animated
+        const urlLower = mediaUrl.toLowerCase();
+        if (urlLower.endsWith('.gif') || urlLower.endsWith('.webp')) {
+            startLightboxGifProgress(mediaUrl);
+        } else {
+            stopLightboxGifProgress();
+        }
     } else {
+        stopLightboxGifProgress();
         // Hide image, show video
         lightboxImage.style.display = 'none';
         lightboxVideo.style.display = 'block';
@@ -6582,7 +6701,10 @@ function closeLightbox() {
     // Clean up image
     lightboxImage.src = "";
     lightboxImage.removeAttribute('src');
-    
+
+    // Stop lightbox GIF progress bar
+    stopLightboxGifProgress();
+
     // Reset zoom
     resetZoom();
     

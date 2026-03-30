@@ -121,6 +121,10 @@
             <div class="lightbox-content">
                 <video id="lightbox-video" controls></video>
                 <img id="lightbox-image" style="display: none;">
+                <div id="lightbox-gif-progress" class="lightbox-gif-progress">
+                    <div class="lightbox-gif-progress-fill"></div>
+                </div>
+                <div id="lightbox-gif-time" class="lightbox-gif-time"></div>
             </div>
             <button id="close-lightbox"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
             <button id="lightbox-prev" class="lightbox-nav-btn" title="Previous (←)"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg></button>
@@ -582,6 +586,7 @@
     </div>
     <script src="icons.js"></script>
     <script src="perf-dashboard.js"></script>
+    <script src="gif-duration-parser.js"></script>
     <script src="renderer.js"></script>
     <script defer src="renderer-features.js"></script>
 </body>

@@ -1199,6 +1199,159 @@ function formatTime(seconds) {
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 }
 
+// ==================== GIF PROGRESS BAR ====================
+
+function showGifProgress(card) {
+    if (!card) return;
+    if (typeof cardInfoSettings !== 'undefined' && !cardInfoSettings.duration) {
+        hideGifProgress(card);
+        return;
+    }
+
+    const duration = Number(card.dataset.gifDuration || 0);
+    if (duration <= 0) return;
+
+    // Don't show if GIF is frozen/paused
+    const frozenOverlay = card.querySelector('.gif-static-overlay.visible');
+    if (frozenOverlay) return;
+
+    // Get or create the progress bar
+    let progressBar = card.querySelector('.gif-progress-bar');
+    if (!progressBar) {
+        progressBar = document.createElement('div');
+        progressBar.className = 'gif-progress-bar';
+        const fill = document.createElement('div');
+        fill.className = 'gif-progress-fill';
+        progressBar.appendChild(fill);
+        card.appendChild(progressBar);
+    }
+
+    // Get or create the time label (reuse video-time-label class for consistency)
+    let timeLabel = card.querySelector('.gif-time-label');
+    if (!timeLabel) {
+        timeLabel = document.createElement('div');
+        timeLabel.className = 'video-time-label gif-time-label';
+        card.appendChild(timeLabel);
+    }
+
+    const fill = progressBar.querySelector('.gif-progress-fill');
+    const loadTime = Number(card.dataset.gifLoadTime || performance.now());
+    const durationSec = duration / 1000;
+    const durationFormatted = formatTime(durationSec);
+
+    const animate = () => {
+        const elapsed = performance.now() - loadTime;
+        const currentMs = elapsed % duration;
+        const progress = currentMs / duration;
+        fill.style.width = (progress * 100) + '%';
+
+        // Update time label
+        const currentSec = currentMs / 1000;
+        timeLabel.textContent = `${formatTime(currentSec)} / ${durationFormatted}`;
+
+        card._gifAnimId = requestAnimationFrame(animate);
+    };
+
+    progressBar.classList.add('show');
+    timeLabel.classList.add('show');
+    card._gifAnimId = requestAnimationFrame(animate);
+}
+
+function hideGifProgress(card) {
+    if (!card) return;
+
+    if (card._gifAnimId) {
+        cancelAnimationFrame(card._gifAnimId);
+        delete card._gifAnimId;
+    }
+
+    const progressBar = card.querySelector('.gif-progress-bar');
+    if (progressBar) progressBar.classList.remove('show');
+
+    const timeLabel = card.querySelector('.gif-time-label');
+    if (timeLabel) timeLabel.classList.remove('show');
+}
+
+// ==================== LIGHTBOX GIF PROGRESS ====================
+
+let _lightboxGifAnimId = null;
+
+async function startLightboxGifProgress(mediaUrl) {
+    stopLightboxGifProgress();
+
+    const progressBar = document.getElementById('lightbox-gif-progress');
+    const timeDisplay = document.getElementById('lightbox-gif-time');
+    if (!progressBar) return;
+
+    const fill = progressBar.querySelector('.lightbox-gif-progress-fill');
+
+    // Try to find duration from an existing card's dataset first
+    let totalDuration = 0;
+    const cards = document.querySelectorAll('.video-card');
+    for (const card of cards) {
+        const img = card.querySelector('img.media-thumbnail');
+        if (img && img.src === mediaUrl && card.dataset.gifDuration) {
+            totalDuration = Number(card.dataset.gifDuration);
+            break;
+        }
+    }
+
+    // If not found, parse the binary
+    if (!totalDuration) {
+        try {
+            const response = await fetch(mediaUrl);
+            const buffer = await response.arrayBuffer();
+            const urlLower = mediaUrl.toLowerCase();
+            let result = null;
+            if (urlLower.endsWith('.gif')) {
+                result = parseGifDuration(buffer);
+            } else if (urlLower.endsWith('.webp')) {
+                result = parseWebpDuration(buffer);
+            }
+            if (result) totalDuration = result.totalDuration;
+        } catch {
+            // Parsing failed
+        }
+    }
+
+    if (!totalDuration || totalDuration <= 0) {
+        progressBar.style.display = 'none';
+        if (timeDisplay) timeDisplay.style.display = 'none';
+        return;
+    }
+
+    progressBar.style.display = 'block';
+    if (timeDisplay) timeDisplay.style.display = 'block';
+
+    const startTime = performance.now();
+    const durationSec = totalDuration / 1000;
+    const durationFormatted = formatTime(durationSec);
+
+    const animate = () => {
+        const elapsed = performance.now() - startTime;
+        const currentMs = elapsed % totalDuration;
+        const progress = currentMs / totalDuration;
+        if (fill) fill.style.width = (progress * 100) + '%';
+        if (timeDisplay) {
+            timeDisplay.textContent = `${formatTime(currentMs / 1000)} / ${durationFormatted}`;
+        }
+        _lightboxGifAnimId = requestAnimationFrame(animate);
+    };
+
+    _lightboxGifAnimId = requestAnimationFrame(animate);
+}
+
+function stopLightboxGifProgress() {
+    if (_lightboxGifAnimId) {
+        cancelAnimationFrame(_lightboxGifAnimId);
+        _lightboxGifAnimId = null;
+    }
+    const progressBar = document.getElementById('lightbox-gif-progress');
+    if (progressBar) progressBar.style.display = 'none';
+    const timeDisplay = document.getElementById('lightbox-gif-time');
+    if (timeDisplay) timeDisplay.style.display = 'none';
+}
+
 // ==================== ZOOM CONTROLS ====================
 function initZoom() {
     const savedZoom = localStorage.getItem('zoomLevel');

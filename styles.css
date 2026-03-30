@@ -1060,6 +1060,31 @@ header {
     opacity: 1;
 }
 
+/* GIF Progress Bar */
+.gif-progress-bar {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: rgba(0, 0, 0, 0.3);
+    z-index: 4;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+}
+
+.gif-progress-bar.show {
+    opacity: 1;
+}
+
+.gif-progress-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--accent-color, #4d96ff);
+    will-change: width;
+}
+
 .nav-buttons {
     display: flex;
     gap: 4px;
@@ -2084,6 +2109,44 @@ button:hover {
 
 #lightbox.hidden .lightbox-content {
     transform: scale(0.9);
+}
+
+/* Lightbox GIF Progress Bar */
+.lightbox-gif-progress {
+    position: absolute;
+    bottom: 80px;
+    left: 0;
+    right: 0;
+    height: 4px;
+    background: rgba(0, 0, 0, 0.3);
+    z-index: 10;
+    pointer-events: none;
+    display: none;
+}
+
+.lightbox-gif-progress-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--accent-color, #4d96ff);
+    will-change: width;
+}
+
+.lightbox-gif-time {
+    position: absolute;
+    bottom: 88px;
+    left: 50%;
+    transform: translateX(-50%);
+    background-color: rgba(0, 0, 0, 0.75);
+    color: white;
+    padding: 4px 10px;
+    font-size: 12px;
+    font-weight: bold;
+    border-radius: 4px;
+    z-index: 10;
+    pointer-events: none;
+    backdrop-filter: blur(4px);
+    white-space: nowrap;
+    display: none;
 }
 
 #lightbox-video,

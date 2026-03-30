@@ -1020,6 +1020,17 @@ header {
     display: none;
 }
 
+.settings-section-title {
+    margin: 8px 0 10px;
+    padding-top: 4px;
+    border-top: 1px solid var(--border-subtle);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-tertiary, rgba(255, 255, 255, 0.45));
+}
+
 .settings-item {
     margin-bottom: 16px;
 }
@@ -1535,6 +1546,44 @@ button:hover {
 
 .video-card:hover .resolution-label.shifted-up {
     bottom: 28px;
+}
+
+.card-meta-row {
+    position: absolute;
+    top: 36px;
+    left: 8px;
+    right: auto;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 8px;
+    z-index: 3;
+    pointer-events: none;
+    max-width: calc(100% - 90px);
+    opacity: 0;
+    transition: opacity 0.2s ease;
+}
+
+.video-card:hover .card-meta-row {
+    opacity: 1;
+}
+
+.card-meta-row:empty {
+    display: none;
+}
+
+.card-meta-chip {
+    background: rgba(0, 0, 0, 0.75);
+    color: #ffffff;
+    padding: 2px 7px;
+    font-size: 10px;
+    font-weight: 600;
+    border-radius: 4px;
+    letter-spacing: 0.03em;
+    backdrop-filter: blur(4px);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.25);
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+    white-space: nowrap;
 }
 
 .video-info {

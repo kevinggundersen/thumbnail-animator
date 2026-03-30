@@ -793,6 +793,10 @@ function initVideoScrubber() {
 
 function showScrubber(card, video) {
     if (!video || !card) return;
+    if (typeof cardInfoSettings !== 'undefined' && !cardInfoSettings.duration) {
+        hideScrubber(card);
+        return;
+    }
     
     // Get or create the time label element
     let timeLabel = card.querySelector('.video-time-label');
@@ -1684,6 +1688,10 @@ function updateCardStars(card, rating, filePath) {
         });
         starContainer.appendChild(star);
     }
+
+    if (typeof applyCardInfoStarRatingVisibility === 'function') {
+        applyCardInfoStarRatingVisibility(card);
+    }
 }
 
 function saveRatings() {
@@ -2522,6 +2530,11 @@ window.addEventListener('DOMContentLoaded', async () => {
         // Update toggle checkbox state
         layoutModeToggle.checked = layoutMode === 'grid';
         layoutModeLabel.textContent = layoutMode === 'grid' ? 'Rigid' : 'Dynamic';
+    }
+
+    // Restore card metadata visibility preferences
+    if (typeof hydrateCardInfoSettings === 'function') {
+        hydrateCardInfoSettings();
     }
     
     // Restore sorting preferences (will be overridden by tab's preferences in loadTabs)

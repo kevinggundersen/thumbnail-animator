@@ -594,6 +594,7 @@ ipcMain.handle('scan-folder', async (event, folderPath, options = {}) => {
                     type: isImage ? 'image' : 'video',
                     isImage: isImage,
                     mtime: 0,
+                    size: 0,
                     width: undefined,
                     height: undefined
                 });
@@ -648,6 +649,7 @@ ipcMain.handle('scan-folder', async (event, folderPath, options = {}) => {
                 try {
                     const stats = await fs.promises.stat(fileObj.path);
                     fileObj.mtime = stats.mtime.getTime();
+                    fileObj.size = stats.size;
                 } catch {
                     // mtime stays 0
                 }

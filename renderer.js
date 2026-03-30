@@ -632,6 +632,8 @@ function vsPopulateExistingCard(card, item) {
         card.dataset.searchText = item.name.toLowerCase();
         card.dataset.mediaType = item.type;
         card.dataset.mtime = String(item.mtime || 0);
+        if (item.size > 0) card.dataset.fileSize = String(item.size);
+        else delete card.dataset.fileSize;
 
         const lastDot = item.name.lastIndexOf('.');
         const fileExtension = lastDot !== -1 ? item.name.substring(lastDot + 1).toUpperCase() : '';
@@ -661,9 +663,8 @@ function vsPopulateExistingCard(card, item) {
 
         card.appendChild(extensionLabel);
 
-        // Star rating (cloned from template for speed)
-        const rating = getFileRating(item.path);
-        card.appendChild(getStarRatingElement(rating));
+        syncStarRatingOnCard(card, item.path);
+        syncCardMetaRow(card, item, null);
         card.appendChild(info);
 
         return { card, isMedia: true };
@@ -1013,6 +1014,16 @@ const autoRepeatToggle = document.getElementById('auto-repeat-toggle');
 const autoRepeatLabel = document.getElementById('auto-repeat-label');
 const zoomSlider = document.getElementById('zoom-slider');
 const zoomValue = document.getElementById('zoom-value');
+const cardInfoResolutionToggle = document.getElementById('card-info-resolution-toggle');
+const cardInfoSizeToggle = document.getElementById('card-info-size-toggle');
+const cardInfoDateToggle = document.getElementById('card-info-date-toggle');
+const cardInfoDurationToggle = document.getElementById('card-info-duration-toggle');
+const cardInfoStarsToggle = document.getElementById('card-info-stars-toggle');
+const cardInfoResolutionLabel = document.getElementById('card-info-resolution-label');
+const cardInfoSizeLabel = document.getElementById('card-info-size-label');
+const cardInfoDateLabel = document.getElementById('card-info-date-label');
+const cardInfoDurationLabel = document.getElementById('card-info-duration-label');
+const cardInfoStarsLabel = document.getElementById('card-info-stars-label');
 const favoritesBtn = document.getElementById('favorites-btn');
 const favoritesDropdown = document.getElementById('favorites-dropdown');
 const favoritesList = document.getElementById('favorites-list');
@@ -1072,6 +1083,16 @@ let hasFfmpegAvailable = false;
 
 // Track zoom level
 let zoomLevel = 100; // Percentage
+
+// --- Card info (metadata chips on grid cards) ---
+const DEFAULT_CARD_INFO = Object.freeze({
+    resolution: true,
+    fileSize: false,
+    date: false,
+    duration: true,
+    starRating: true
+});
+let cardInfoSettings = { ...DEFAULT_CARD_INFO };
 
 // Track favorites
 let favorites = []; // Array of { path, name }
@@ -1390,7 +1411,12 @@ function applyUpdatedDimensionsToVisibleCards(updatedPaths) {
         card.dataset.mediaWidth = item.width;
         card.dataset.mediaHeight = item.height;
         card.dataset.mtime = String(item.mtime || 0);
+        if (item.size > 0) card.dataset.fileSize = String(item.size);
+        else delete card.dataset.fileSize;
         createResolutionLabel(card, item.width, item.height);
+        const vEl = card.querySelector('video.media-thumbnail');
+        const dur = vEl && isFinite(vEl.duration) && vEl.duration > 0 ? vEl.duration : null;
+        syncCardMetaRow(card, item, dur);
         updatedVisibleCards++;
     }
 
@@ -2667,8 +2693,210 @@ function getClosestAspectRatio(videoWidth, videoHeight) {
     return closest.name;
 }
 
+// --- Card metadata helpers (grid cards) ---
+function formatBytesForCardLabel(bytes) {
+    if (bytes == null || bytes <= 0 || !isFinite(bytes)) return '';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.min(Math.floor(Math.log(bytes) / Math.log(k)), sizes.length - 1);
+    return `${Math.round((bytes / Math.pow(k, i)) * 100) / 100} ${sizes[i]}`;
+}
+
+function formatMediaDuration(seconds) {
+    if (seconds == null || !isFinite(seconds) || seconds < 0) return '';
+    const total = Math.floor(seconds);
+    const s = total % 60;
+    const m = Math.floor(total / 60) % 60;
+    const h = Math.floor(total / 3600);
+    if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function formatCardDate(mtimeMs) {
+    if (!mtimeMs || mtimeMs <= 0) return '';
+    try {
+        return new Date(mtimeMs).toLocaleString(undefined, {
+            year: 'numeric',
+            month: 'short',
+            day: 'numeric'
+        });
+    } catch {
+        return '';
+    }
+}
+
+function syncCardInfoToggleLabels() {
+    if (cardInfoResolutionLabel) cardInfoResolutionLabel.textContent = cardInfoSettings.resolution ? 'On' : 'Off';
+    if (cardInfoSizeLabel) cardInfoSizeLabel.textContent = cardInfoSettings.fileSize ? 'On' : 'Off';
+    if (cardInfoDateLabel) cardInfoDateLabel.textContent = cardInfoSettings.date ? 'On' : 'Off';
+    if (cardInfoDurationLabel) cardInfoDurationLabel.textContent = cardInfoSettings.duration ? 'On' : 'Off';
+    if (cardInfoStarsLabel) cardInfoStarsLabel.textContent = cardInfoSettings.starRating ? 'On' : 'Off';
+}
+
+function syncCardInfoTogglesFromState() {
+    if (cardInfoResolutionToggle) cardInfoResolutionToggle.checked = cardInfoSettings.resolution;
+    if (cardInfoSizeToggle) cardInfoSizeToggle.checked = cardInfoSettings.fileSize;
+    if (cardInfoDateToggle) cardInfoDateToggle.checked = cardInfoSettings.date;
+    if (cardInfoDurationToggle) cardInfoDurationToggle.checked = cardInfoSettings.duration;
+    if (cardInfoStarsToggle) cardInfoStarsToggle.checked = cardInfoSettings.starRating;
+    syncCardInfoToggleLabels();
+}
+
+function hydrateCardInfoSettings() {
+    try {
+        const raw = localStorage.getItem('cardInfoSettings');
+        if (raw) {
+            const parsed = JSON.parse(raw);
+            for (const key of Object.keys(DEFAULT_CARD_INFO)) {
+                if (typeof parsed[key] === 'boolean') {
+                    cardInfoSettings[key] = parsed[key];
+                }
+            }
+        }
+    } catch {
+        /* use defaults */
+    }
+    syncCardInfoTogglesFromState();
+}
+
+function saveCardInfoSettings() {
+    deferLocalStorageWrite('cardInfoSettings', JSON.stringify(cardInfoSettings));
+}
+
+function onCardInfoSettingsChanged() {
+    const previous = { ...cardInfoSettings };
+    cardInfoSettings.resolution = !!cardInfoResolutionToggle?.checked;
+    cardInfoSettings.fileSize = !!cardInfoSizeToggle?.checked;
+    cardInfoSettings.date = !!cardInfoDateToggle?.checked;
+    cardInfoSettings.duration = !!cardInfoDurationToggle?.checked;
+    cardInfoSettings.starRating = !!cardInfoStarsToggle?.checked;
+    syncCardInfoToggleLabels();
+    saveCardInfoSettings();
+    refreshAllVisibleMediaCardInfo();
+
+    // If size/date was just enabled but current items were loaded with skipStats,
+    // refresh folder data once so metadata chips can populate.
+    const needsStatsNow = cardInfoSettings.fileSize || cardInfoSettings.date;
+    const neededBefore = previous.fileSize || previous.date;
+    if (needsStatsNow && !neededBefore && currentFolderPath) {
+        const hasMissingStats = currentItems.some(item =>
+            item.type !== 'folder' && ((!item.mtime && cardInfoSettings.date) || ((item.size == null || item.size <= 0) && cardInfoSettings.fileSize))
+        );
+        if (hasMissingStats) {
+            loadVideos(currentFolderPath, false, gridContainer.scrollTop);
+        }
+    }
+}
+
+function getMediaItemForCard(card) {
+    const path = card.dataset.filePath || card.dataset.path;
+    if (!path) return null;
+    if (typeof card._vsItemIndex === 'number' && vsSortedItems[card._vsItemIndex]) {
+        const it = vsSortedItems[card._vsItemIndex];
+        if (it && it.path === path) return it;
+    }
+    const found = currentItems.find(i => i.path === path);
+    return found || null;
+}
+
+function syncCardMetaRow(card, item, _durationSec) {
+    const stub = item || {};
+    const mtime = stub.mtime != null ? stub.mtime : Number(card.dataset.mtime || 0);
+    const size = stub.size != null ? stub.size : (card.dataset.fileSize ? Number(card.dataset.fileSize) : 0);
+
+    const showSize = cardInfoSettings.fileSize && size > 0;
+    const showDate = cardInfoSettings.date && mtime > 0;
+    // Duration display is handled by the existing video-time overlay (showScrubber),
+    // not by the metadata chip row.
+    const showDur = false;
+
+    if (!showSize && !showDate && !showDur) {
+        card.querySelector('.card-meta-row')?.remove();
+        return;
+    }
+
+    let row = card.querySelector('.card-meta-row');
+    if (!row) {
+        row = document.createElement('div');
+        row.className = 'card-meta-row';
+        const infoEl = card.querySelector('.video-info');
+        if (infoEl) card.insertBefore(row, infoEl);
+        else card.appendChild(row);
+    }
+
+    row.textContent = '';
+    if (showSize) {
+        const span = document.createElement('span');
+        span.className = 'card-meta-chip';
+        span.textContent = formatBytesForCardLabel(size);
+        row.appendChild(span);
+    }
+    if (showDate) {
+        const span = document.createElement('span');
+        span.className = 'card-meta-chip';
+        span.textContent = formatCardDate(mtime);
+        row.appendChild(span);
+    }
+    // No duration chip here by design.
+}
+
+function applyCardInfoStarRatingVisibility(card) {
+    const el = card.querySelector('.star-rating');
+    if (!el) return;
+    el.style.display = cardInfoSettings.starRating ? '' : 'none';
+}
+
+function syncStarRatingOnCard(card, filePath) {
+    let starEl = card.querySelector('.star-rating');
+    if (cardInfoSettings.starRating) {
+        const rating = getFileRating(filePath);
+        if (!starEl) {
+            starEl = getStarRatingElement(rating);
+            const infoEl = card.querySelector('.video-info');
+            if (infoEl) card.insertBefore(starEl, infoEl);
+            else card.appendChild(starEl);
+        }
+        starEl.style.display = '';
+    } else if (starEl) {
+        starEl.remove();
+    }
+}
+
+function refreshAllVisibleMediaCardInfo() {
+    const cards = vsEnabled && vsActiveCards.size > 0
+        ? Array.from(vsActiveCards.values())
+        : Array.from(gridContainer.querySelectorAll('.video-card'));
+
+    for (const card of cards) {
+        if (!card.classList.contains('video-card')) continue;
+        delete card.dataset.overlapChecked;
+
+        const item = getMediaItemForCard(card);
+        const video = card.querySelector('video.media-thumbnail, video');
+        const dur = video && isFinite(video.duration) && video.duration > 0 ? video.duration : null;
+
+        syncCardMetaRow(card, item, dur);
+        syncStarRatingOnCard(card, item?.path || card.dataset.path || card.dataset.filePath);
+        if (!cardInfoSettings.duration && typeof hideScrubber === 'function') {
+            hideScrubber(card);
+        }
+
+        const w = item?.width || parseInt(card.dataset.mediaWidth || card.dataset.width || '0', 10);
+        const h = item?.height || parseInt(card.dataset.mediaHeight || card.dataset.height || '0', 10);
+        if (cardInfoSettings.resolution && w > 0 && h > 0) {
+            createResolutionLabel(card, w, h);
+        } else {
+            card.querySelector('.resolution-label')?.remove();
+        }
+    }
+}
+
 // Create or update resolution label for a card
 function createResolutionLabel(card, width, height) {
+    if (!cardInfoSettings.resolution) {
+        card.querySelector('.resolution-label')?.remove();
+        return;
+    }
     if (!width || !height) return;
     
     // Check if label already exists
@@ -3257,7 +3485,9 @@ function createCardFromItem(item) {
         card.dataset.searchText = item.name.toLowerCase();
         card.dataset.mediaType = item.type;
         card.dataset.mtime = String(item.mtime || 0);
-        
+        if (item.size > 0) card.dataset.fileSize = String(item.size);
+        else delete card.dataset.fileSize;
+
         // Extract file extension for label (optimized - use lastIndexOf instead of split)
         const lastDot = item.name.lastIndexOf('.');
         const fileExtension = lastDot !== -1 ? item.name.substring(lastDot + 1).toUpperCase() : '';
@@ -3306,9 +3536,8 @@ function createCardFromItem(item) {
 
         card.appendChild(extensionLabel);
 
-        // Star rating (cloned from template for speed)
-        const rating = getFileRating(item.path);
-        card.appendChild(getStarRatingElement(rating));
+        syncStarRatingOnCard(card, item.path);
+        syncCardMetaRow(card, item, null);
 
         card.appendChild(info);
 
@@ -3899,6 +4128,7 @@ function createVideoForCard(card, videoUrl) {
     const decodeHeight = Math.max(1, Math.floor(rect.height * qualityMultiplier));
     
     const video = document.createElement('video');
+    video.className = 'media-thumbnail';
     if (card.dataset.filePath && videoPosterUrlCache.has(card.dataset.filePath)) {
         video.poster = videoPosterUrlCache.get(card.dataset.filePath);
     }
@@ -4014,6 +4244,17 @@ function createVideoForCard(card, videoUrl) {
 
         // Also check when video can play (more reliable for some browsers)
         video.addEventListener('canplay', checkAudio, { once: true });
+
+        const itemForMeta = getMediaItemForCard(card);
+        const dur = isFinite(video.duration) && video.duration > 0 ? video.duration : null;
+        if (dur) {
+            card.dataset.mediaDuration = String(dur);
+            if (itemForMeta && itemForMeta.type === 'video') {
+                itemForMeta.duration = dur;
+            }
+        }
+        syncCardMetaRow(card, itemForMeta, dur);
+
         scheduleMediaLoadSettle();
     });
 
@@ -5488,8 +5729,8 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
             showLoadingIndicator();
             try {
                 // Validate path exists by trying to scan it
-                // Skip stats if sorting by name for faster validation
-                const skipStats = sortType === 'name';
+                // Skip stats only when neither sorting nor card metadata needs them.
+                const skipStats = sortType === 'name' && !cardInfoSettings.fileSize && !cardInfoSettings.date;
                 await window.electronAPI.scanFolder(folderPath, { skipStats });
             } finally {
                 // Hide loading indicator after a short delay to prevent flicker
@@ -5648,6 +5889,11 @@ rememberFolderToggle.addEventListener('change', () => {
 includeMovingImagesToggle.addEventListener('change', () => {
     toggleIncludeMovingImages();
 });
+
+// Card info toggles
+[cardInfoResolutionToggle, cardInfoSizeToggle, cardInfoDateToggle, cardInfoDurationToggle, cardInfoStarsToggle]
+    .filter(Boolean)
+    .forEach(el => el.addEventListener('change', () => onCardInfoSettingsChanged()));
 
 // Pause on lightbox toggle
 pauseOnLightboxToggle.addEventListener('change', () => {
@@ -6676,13 +6922,19 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
             // Only block on dimensions when the active filters depend on them.
             // Masonry can start with fallback ratios and refine in the background.
             const needsDimensions = hasDimensionDependentFilters();
-            const needsStats = sortType !== 'name';
+            const needsMetadataStats = cardInfoSettings.fileSize || cardInfoSettings.date;
+            const needsStats = sortType !== 'name' || needsMetadataStats;
             const cacheIsValid = (cachedItems) => {
                 if (!cachedItems || cachedItems.length === 0) return true;
                 // When sorting by date, items need mtime data
                 if (needsStats) {
                     const fileSample = cachedItems.find(item => item.type !== 'folder');
                     if (fileSample && !fileSample.mtime) return false;
+                }
+                // File-size chip needs size data in cache as well.
+                if (needsMetadataStats && cardInfoSettings.fileSize) {
+                    const fileSample = cachedItems.find(item => item.type !== 'folder');
+                    if (fileSample && (fileSample.size == null || fileSample.size <= 0)) return false;
                 }
                 // Check both an image and a video sample — both must have dimensions
                 if (needsDimensions) {
@@ -6732,8 +6984,8 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
             // Yield control before starting scan to keep UI responsive
             await yieldToEventLoop();
             
-            // Skip stats if sorting by name (faster loading)
-            const skipStats = sortType === 'name';
+            // Keep stats when needed for sorting or enabled card metadata chips.
+            const skipStats = sortType === 'name' && !cardInfoSettings.fileSize && !cardInfoSettings.date;
             // Only block on dimension scans when the active filters require them.
             const scanImageDimensions = hasDimensionDependentFilters();
             const scanVideoDimensions = hasDimensionDependentFilters();

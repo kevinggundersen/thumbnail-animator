@@ -957,6 +957,7 @@ if (!gridContainer) {
     console.error('gridContainer not found!');
 }
 const searchBox = document.getElementById('search-box');
+const searchClearBtn = document.getElementById('search-clear-btn');
 const itemCountEl = document.getElementById('item-count');
 
 // Status bar elements
@@ -5461,7 +5462,16 @@ async function goForward() {
 
 // Live search as user types (debounced)
 searchBox.addEventListener('input', (e) => {
+    searchClearBtn.style.display = e.target.value ? '' : 'none';
     performSearch(e.target.value);
+});
+
+// Clear search button
+searchClearBtn.addEventListener('click', () => {
+    searchBox.value = '';
+    searchClearBtn.style.display = 'none';
+    performSearch('');
+    searchBox.focus();
 });
 
 // Filter button event listeners

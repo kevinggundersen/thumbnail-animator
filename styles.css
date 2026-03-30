@@ -876,7 +876,7 @@ header {
     align-items: center;
     gap: 4px;
     padding: 0 var(--space-2);
-    flex: 1;
+    flex: 0 1 auto;
     height: 100%;
     overflow-x: auto;
     overflow-y: hidden;

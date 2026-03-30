@@ -1,7 +1,7 @@
 // Increase libuv threadpool for parallel stat() calls (must be before any async I/O)
 process.env.UV_THREADPOOL_SIZE = '16';
 
-const { app, BrowserWindow, ipcMain, dialog, shell, screen, nativeImage } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, dialog, shell, screen, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const DimensionWorkerPool = require('./worker-pool');
@@ -467,6 +467,17 @@ function createWindow() {
     // Hide menu bar when window loses focus
     win.on('blur', () => {
         win.setMenuBarVisibility(false);
+    });
+
+    // Show application menu as popup (native menu bar is suppressed by titleBarOverlay)
+    ipcMain.on('toggle-menu-bar', (event) => {
+        const sender = BrowserWindow.fromWebContents(event.sender);
+        if (sender) {
+            const menu = Menu.getApplicationMenu();
+            if (menu) {
+                menu.popup({ window: sender, x: 0, y: 38 });
+            }
+        }
     });
     
     // Track window minimize/maximize events to reduce resource usage

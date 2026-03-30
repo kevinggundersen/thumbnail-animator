@@ -34,5 +34,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     scanDuplicates: (folderPath, options) => ipcRenderer.invoke('scan-duplicates', folderPath, options),
     deleteFilesBatch: (filePaths) => ipcRenderer.invoke('delete-files-batch', filePaths),
     onDuplicateScanProgress: (callback) => ipcRenderer.on('duplicate-scan-progress', callback),
-    removeDuplicateScanProgressListener: () => ipcRenderer.removeAllListeners('duplicate-scan-progress')
+    removeDuplicateScanProgressListener: () => ipcRenderer.removeAllListeners('duplicate-scan-progress'),
+    toggleMenuBar: () => ipcRenderer.send('toggle-menu-bar')
 });

@@ -1049,6 +1049,18 @@ tabsContainer.addEventListener('wheel', (e) => {
         tabsContainer.scrollLeft += e.deltaY;
     }
 }, { passive: false });
+
+// Toggle system menu with Alt key (needed because titleBarStyle: 'hidden' disables native Alt behavior)
+let altKeyOnly = false;
+document.addEventListener('keydown', (e) => {
+    altKeyOnly = e.key === 'Alt' && !e.ctrlKey && !e.shiftKey && !e.metaKey;
+});
+document.addEventListener('keyup', (e) => {
+    if (e.key === 'Alt' && altKeyOnly) {
+        window.electronAPI.toggleMenuBar();
+    }
+    altKeyOnly = false;
+});
 const videoScrubber = document.getElementById('video-scrubber');
 const scrubberCanvas = document.getElementById('scrubber-canvas');
 const scrubberTime = document.getElementById('scrubber-time');

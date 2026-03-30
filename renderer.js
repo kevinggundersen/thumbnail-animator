@@ -1149,6 +1149,12 @@ let currentProgress = null; // { current: number, total: number, cancelled: bool
 // Cache folder contents per tab to avoid re-scanning
 const tabContentCache = new Map(); // Map<tabId, { items, timestamp }>
 const tabDomCache = new Map(); // Map<tabId, { fragment, scrollTop, layoutMode, timestamp }>
+const tabFolderScrollPositions = new Map(); // Map<tabId, Map<normalizedPath, scrollTop>>
+
+function getTabScrollMap(tabId) {
+    if (!tabFolderScrollPositions.has(tabId)) tabFolderScrollPositions.set(tabId, new Map());
+    return tabFolderScrollPositions.get(tabId);
+}
 
 // Cache folder contents globally (for recently accessed folders)
 const folderCache = new Map(); // Map<folderPath, { items, timestamp }>
@@ -5741,6 +5747,14 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
     setStatusActivity(`Navigating to ${folderName}...`);
     const previousFolderPath = currentFolderPath;
     const previousScrollTop = gridContainer.scrollTop;
+    // Save scroll position for the folder we're leaving (only within the same tab —
+    // tab switches are handled by snapshotCurrentTabDom before activeTabId changes)
+    if (previousFolderPath && activeTabId != null) {
+        const currentTab = tabs.find(t => t.id === activeTabId);
+        if (currentTab && normalizePath(currentTab.path) === normalizePath(previousFolderPath)) {
+            getTabScrollMap(activeTabId).set(normalizePath(previousFolderPath), previousScrollTop);
+        }
+    }
     try {
         // If forcing reload, invalidate cache first
         if (forceReload) {
@@ -5828,6 +5842,11 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
         const normalizedTargetPath = normalizePath(folderPath);
         const isSameFolder = previousFolderPath && normalizePath(previousFolderPath) === normalizedTargetPath;
         let preservedScrollTop = isSameFolder ? previousScrollTop : null;
+        // Check per-folder scroll position map
+        if (preservedScrollTop === null && activeTabId != null) {
+            const saved = getTabScrollMap(activeTabId).get(normalizedTargetPath);
+            if (saved !== undefined) preservedScrollTop = saved;
+        }
         if (preservedScrollTop === null) {
             const pendingRestore = getPendingSessionScrollRestore();
             if (pendingRestore && normalizePath(pendingRestore.path) === normalizedTargetPath) {

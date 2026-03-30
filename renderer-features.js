@@ -559,6 +559,12 @@ function saveTabs() {
 // Snapshot the current tab's DOM into a DocumentFragment for instant restore
 function snapshotCurrentTabDom() {
     if (!activeTabId || gridContainer.children.length === 0) return;
+    // Capture scroll BEFORE moving children (moving empties the container and resets scrollTop)
+    const scrollTop = gridContainer.scrollTop || window.scrollY || 0;
+    // Save per-folder scroll position for the current folder in this tab
+    if (currentFolderPath) {
+        getTabScrollMap(activeTabId).set(normalizePath(currentFolderPath), scrollTop);
+    }
     const fragment = document.createDocumentFragment();
     // Move children to fragment (detaches from DOM without destroying)
     while (gridContainer.firstChild) {
@@ -566,7 +572,7 @@ function snapshotCurrentTabDom() {
     }
     tabDomCache.set(activeTabId, {
         fragment,
-        scrollTop: gridContainer.scrollTop || window.scrollY || 0,
+        scrollTop,
         layoutMode: layoutMode,
         timestamp: Date.now()
     });
@@ -636,6 +642,7 @@ function closeTab(tabId) {
     if (tabs.length <= 1) return; // Don't close last tab
     // Clean up DOM cache for the closed tab
     tabDomCache.delete(tabId);
+    tabFolderScrollPositions.delete(tabId);
     tabContentCache.delete(tabId);
     tabs = tabs.filter(t => t.id !== tabId);
     if (activeTabId === tabId) {
@@ -672,52 +679,36 @@ function switchToTab(tabId) {
         if (sortOrderSelect) sortOrderSelect.value = sortOrder;
 
         if (tab.path) {
-            // Try to restore DOM snapshot first (near-instant tab switch)
-            if (restoreTabDomSnapshot(tabId)) {
-                currentFolderPath = tab.path;
-                const tabCache = tabContentCache.get(tabId);
-                if (tabCache) currentItems = tabCache.items;
-                updateBreadcrumb(tab.path);
-                searchBox.value = '';
-                currentFilter = 'all';
-                filterAllBtn.classList.add('active');
-                filterVideosBtn.classList.remove('active');
-                filterImagesBtn.classList.remove('active');
-            
-                sidebarExpandToPath(tab.path);
-            } else {
-                // No DOM snapshot - fall back to content cache or full navigation
-                const tabCache = tabContentCache.get(tabId);
-                const now = Date.now();
-                const normalizedTabPath = normalizePath(tab.path);
+            // Look up saved per-folder scroll position for this tab
+            const savedScroll = getTabScrollMap(tabId).get(normalizePath(tab.path));
 
-                if (tabCache) {
-                    const cachePathNormalized = normalizePath(tabCache.path);
-                    if ((cachePathNormalized === normalizedTabPath || tabCache.path === tab.path) &&
-                        (now - tabCache.timestamp) < FOLDER_CACHE_TTL) {
-                        // Use cached content
-                        currentFolderPath = tab.path;
-                        currentItems = tabCache.items;
-                        updateBreadcrumb(tab.path);
-                        searchBox.value = '';
-                        currentFilter = 'all';
-                        filterAllBtn.classList.add('active');
-                        filterVideosBtn.classList.remove('active');
-                        filterImagesBtn.classList.remove('active');
-                    
+            // Try DOM snapshot first for the item data, then fall back to content cache
+            const snapshot = tabDomCache.get(tabId);
+            const tabCache = tabContentCache.get(tabId);
+            const now = Date.now();
+            const normalizedTabPath = normalizePath(tab.path);
 
-                        const filteredItems = filterItems(tabCache.items);
-                        const sortedItems = sortItems(filteredItems);
-                        renderItems(sortedItems);
-                        sidebarExpandToPath(tab.path);
-                    } else {
-                        setTimeout(() => {
-                            navigateToFolder(tab.path, false).catch(err => {
-                                console.error('Error navigating to tab folder:', err);
-                                hideLoadingIndicator();
-                            });
-                        }, 0);
-                    }
+            // Consume DOM snapshot (we won't use the fragment, but clear it to free memory)
+            if (snapshot) tabDomCache.delete(tabId);
+
+            if (tabCache) {
+                const cachePathNormalized = normalizePath(tabCache.path);
+                if ((cachePathNormalized === normalizedTabPath || tabCache.path === tab.path) &&
+                    (now - tabCache.timestamp) < FOLDER_CACHE_TTL) {
+                    // Use cached content with proper virtual scroll initialization
+                    currentFolderPath = tab.path;
+                    currentItems = tabCache.items;
+                    updateBreadcrumb(tab.path);
+                    searchBox.value = '';
+                    currentFilter = 'all';
+                    filterAllBtn.classList.add('active');
+                    filterVideosBtn.classList.remove('active');
+                    filterImagesBtn.classList.remove('active');
+
+                    const filteredItems = filterItems(tabCache.items);
+                    const sortedItems = sortItems(filteredItems);
+                    renderItems(sortedItems, savedScroll !== undefined ? savedScroll : null);
+                    sidebarExpandToPath(tab.path);
                 } else {
                     setTimeout(() => {
                         navigateToFolder(tab.path, false).catch(err => {
@@ -726,7 +717,15 @@ function switchToTab(tabId) {
                         });
                     }, 0);
                 }
-            }
+            } else {
+                setTimeout(() => {
+                    navigateToFolder(tab.path, false).catch(err => {
+                        console.error('Error navigating to tab folder:', err);
+                        hideLoadingIndicator();
+                    });
+                }, 0);
+                }
+
         } else {
             // If tab has no path, clear the grid
             gridContainer.innerHTML = '';

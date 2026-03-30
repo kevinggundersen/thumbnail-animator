@@ -1016,6 +1016,9 @@ const pauseOnBlurToggle = document.getElementById('pause-on-blur-toggle');
 const pauseOnBlurLabel = document.getElementById('pause-on-blur-label');
 const autoRepeatToggle = document.getElementById('auto-repeat-toggle');
 const autoRepeatLabel = document.getElementById('auto-repeat-label');
+const zoomToFitToggle = document.getElementById('zoom-to-fit-toggle');
+const zoomToFitLabel = document.getElementById('zoom-to-fit-label');
+const lightboxZoomToFitToggle = document.getElementById('lightbox-zoom-to-fit-toggle');
 const zoomSlider = document.getElementById('zoom-slider');
 const zoomValue = document.getElementById('zoom-value');
 const cardInfoResolutionToggle = document.getElementById('card-info-resolution-toggle');
@@ -1160,6 +1163,7 @@ let videoPlaybackSpeed = 1.0;
 let videoLoop = false;
 let videoRepeat = false;
 let autoRepeatVideos = false;
+let zoomToFit = true;
 
 // Track progress
 let currentProgress = null; // { current: number, total: number, cancelled: boolean }
@@ -6070,6 +6074,41 @@ autoRepeatToggle.addEventListener('change', () => {
     }
 });
 
+function applyZoomToFitNow() {
+    if (lightbox.classList.contains('hidden')) return;
+    const isImageVisible = lightboxImage.style.display === 'block';
+    const isVideoVisible = lightboxVideo.style.display === 'block';
+    if (zoomToFit) {
+        let fitLevel = 100;
+        if (isImageVisible && lightboxImage.naturalWidth > 0) {
+            fitLevel = calculateFitZoomLevel(lightboxImage.naturalWidth, lightboxImage.naturalHeight);
+        } else if (isVideoVisible && lightboxVideo.videoWidth > 0) {
+            fitLevel = calculateFitZoomLevel(lightboxVideo.videoWidth, lightboxVideo.videoHeight);
+        }
+        if (fitLevel > 100) {
+            applyLightboxZoom(fitLevel);
+        }
+    } else {
+        resetZoom();
+    }
+}
+
+zoomToFitToggle.addEventListener('change', () => {
+    zoomToFit = zoomToFitToggle.checked;
+    zoomToFitLabel.textContent = zoomToFit ? 'On' : 'Off';
+    if (lightboxZoomToFitToggle) lightboxZoomToFitToggle.checked = zoomToFit;
+    deferLocalStorageWrite('zoomToFit', zoomToFit.toString());
+    applyZoomToFitNow();
+});
+
+lightboxZoomToFitToggle.addEventListener('change', () => {
+    zoomToFit = lightboxZoomToFitToggle.checked;
+    if (zoomToFitToggle) zoomToFitToggle.checked = zoomToFit;
+    if (zoomToFitLabel) zoomToFitLabel.textContent = zoomToFit ? 'On' : 'Off';
+    deferLocalStorageWrite('zoomToFit', zoomToFit.toString());
+    applyZoomToFitNow();
+});
+
 // Sorting dropdown event listeners
 sortTypeSelect.addEventListener('change', () => {
     updateSorting();
@@ -6147,6 +6186,21 @@ document.addEventListener('click', (e) => {
         toolsMenuDropdown.classList.add('hidden');
     }
 });
+
+function calculateFitZoomLevel(naturalWidth, naturalHeight) {
+    const availableW = window.innerWidth * 0.9;
+    const availableH = window.innerHeight * 0.9;
+    const scaleX = availableW / naturalWidth;
+    const scaleY = availableH / naturalHeight;
+    const fitScale = Math.min(scaleX, scaleY);
+
+    if (fitScale <= 1) return 100; // Already fits or larger
+
+    // Inverse of exponential zoom curve: fitScale = 1.06^((zoomLevel - 100) / 5)
+    const zoomLevel = 100 + 5 * Math.log(fitScale) / Math.log(1.06);
+    // Snap to nearest step of 5, cap at slider max
+    return Math.min(Math.round(zoomLevel / 5) * 5, 500);
+}
 
 function openLightbox(mediaUrl, filePath, fileName) {
     const perfStart = perfTest.start();
@@ -6227,14 +6281,17 @@ function openLightbox(mediaUrl, filePath, fileName) {
         lightboxImage.style.width = 'auto';
         lightboxImage.style.height = 'auto';
         
-        // Wait for image to load, then capture its displayed size for zoom calculations
+        // Wait for image to load, then capture its displayed size and zoom to fit
         const handleImageLoad = () => {
-            // Use requestAnimationFrame to ensure layout is complete
             requestAnimationFrame(() => {
                 const rect = lightboxImage.getBoundingClientRect();
                 lightboxImage.dataset.baseWidth = rect.width.toString();
                 lightboxImage.dataset.baseHeight = rect.height.toString();
-                console.log('Image loaded, captured base size:', rect.width, 'x', rect.height);
+                // Zoom to fit: if image is smaller than viewport, scale it up
+                const fitLevel = calculateFitZoomLevel(lightboxImage.naturalWidth, lightboxImage.naturalHeight);
+                if (zoomToFit && fitLevel > 100) {
+                    applyLightboxZoom(fitLevel);
+                }
             });
             lightboxImage.removeEventListener('load', handleImageLoad);
         };
@@ -6288,9 +6345,28 @@ function openLightbox(mediaUrl, filePath, fileName) {
             lightboxVideo.addEventListener('ended', handleVideoRepeat);
         }
         
+        // Zoom to fit: if video is smaller than viewport, scale it up
+        const handleVideoMeta = () => {
+            requestAnimationFrame(() => {
+                const fitLevel = calculateFitZoomLevel(lightboxVideo.videoWidth, lightboxVideo.videoHeight);
+                if (zoomToFit && fitLevel > 100) {
+                    const rect = lightboxVideo.getBoundingClientRect();
+                    lightboxVideo.dataset.baseWidth = rect.width.toString();
+                    lightboxVideo.dataset.baseHeight = rect.height.toString();
+                    applyLightboxZoom(fitLevel);
+                }
+            });
+            lightboxVideo.removeEventListener('loadedmetadata', handleVideoMeta);
+        };
+        if (lightboxVideo.videoWidth > 0) {
+            handleVideoMeta();
+        } else {
+            lightboxVideo.addEventListener('loadedmetadata', handleVideoMeta);
+        }
+
         lightboxVideo.play();
     }
-    
+
     // Reset keyboard focus
     focusedCardIndex = -1;
     perfTest.end('openLightbox', perfStart);

@@ -3372,6 +3372,15 @@ window.addEventListener('DOMContentLoaded', async () => {
         pauseOnBlurLabel.textContent = pauseOnBlur ? 'On' : 'Off';
     }
 
+    // Restore zoom to fit preference
+    const savedZoomToFit = localStorage.getItem('zoomToFit');
+    if (savedZoomToFit !== null) {
+        zoomToFit = savedZoomToFit === 'true';
+        if (zoomToFitToggle) zoomToFitToggle.checked = zoomToFit;
+        if (zoomToFitLabel) zoomToFitLabel.textContent = zoomToFit ? 'On' : 'Off';
+        if (lightboxZoomToFitToggle) lightboxZoomToFitToggle.checked = zoomToFit;
+    }
+
     // Restore layout mode preference
     const savedLayoutMode = localStorage.getItem('layoutMode');
     if (savedLayoutMode === 'grid' || savedLayoutMode === 'masonry') {

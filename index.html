@@ -131,6 +131,13 @@
                     <input type="range" id="lightbox-zoom-slider" min="25" max="500" value="100" step="5" class="lightbox-zoom-slider">
                     <span class="lightbox-zoom-value" id="lightbox-zoom-value">100%</span>
                 </label>
+                <label class="lightbox-zoom-fit-label">
+                    <span>Fit:</span>
+                    <div class="toggle-switch small">
+                        <input type="checkbox" id="lightbox-zoom-to-fit-toggle" checked>
+                        <span class="toggle-slider"></span>
+                    </div>
+                </label>
             </div>
             <div class="lightbox-video-menu-container" id="lightbox-video-menu-container">
                 <button id="lightbox-video-menu-btn" class="lightbox-video-menu-btn" title="Video Options"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg></button>
@@ -545,6 +552,16 @@
                                     <span class="toggle-slider"></span>
                                 </div>
                                 <span class="toggle-label" id="auto-repeat-label">Off</span>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <span>Zoom to Fit</span>
+                                <div class="toggle-switch">
+                                    <input type="checkbox" id="zoom-to-fit-toggle" checked>
+                                    <span class="toggle-slider"></span>
+                                </div>
+                                <span class="toggle-label" id="zoom-to-fit-label">On</span>
                             </label>
                         </div>
                     </div>

@@ -1,7 +1,7 @@
 // Increase libuv threadpool for parallel stat() calls (must be before any async I/O)
 process.env.UV_THREADPOOL_SIZE = '16';
 
-const { app, BrowserWindow, ipcMain, dialog, shell, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, screen, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const DimensionWorkerPool = require('./worker-pool');
@@ -24,6 +24,30 @@ try {
 }
 // const mime = require('mime-types'); // Removed unused dependency
 const { execFile } = require('child_process');
+const { performance } = require('perf_hooks');
+
+const PERF_TEST_ENABLED = process.env.PERF_TEST === '1';
+
+function logPerf(operation, startTime, details = {}) {
+    if (!PERF_TEST_ENABLED || !startTime) return;
+    const duration = Math.round((performance.now() - startTime) * 100) / 100;
+    const suffix = Object.entries(details)
+        .filter(([, value]) => value !== undefined && value !== null)
+        .map(([key, value]) => `${key}=${value}`)
+        .join(' ');
+    console.log(`[Perf] ${operation}: ${duration}ms${suffix ? ` ${suffix}` : ''}`);
+}
+
+async function readImageHeader(filePath, maxBytes = 512 * 1024) {
+    const fd = await fs.promises.open(filePath, 'r');
+    try {
+        const buffer = Buffer.alloc(maxBytes);
+        const { bytesRead } = await fd.read(buffer, 0, buffer.length, 0);
+        return buffer.subarray(0, bytesRead);
+    } finally {
+        await fd.close();
+    }
+}
 
 // Detect ffprobe availability for reading video dimensions from file headers
 let ffprobePath = null;
@@ -62,17 +86,33 @@ let ffmpegPath = null;
 // Worker pool for parallel dimension scanning
 let dimensionPool = new DimensionWorkerPool(ffprobePath);
 
-// Video thumbnail cache directory (initialized after userDataPath is set)
+// Thumbnail cache directories (initialized after userDataPath is set)
 const crypto = require('crypto');
 let videoThumbDir = null;
+let imageThumbDir = null;
+const pendingVideoThumbnailJobs = new Map();
+const pendingImageThumbnailJobs = new Map();
+
+function createThumbCacheKey(filePath, mtimeMs, extra = '') {
+    return crypto.createHash('md5').update(`${filePath}|${mtimeMs || 0}|${extra}`).digest('hex');
+}
 
 /**
  * Get the cached thumbnail path for a video file.
  * Uses a hash of the file path + mtime for cache invalidation.
  */
 function getThumbCachePath(filePath, mtimeMs) {
-    const hash = crypto.createHash('md5').update(`${filePath}|${mtimeMs || 0}`).digest('hex');
-    return path.join(videoThumbDir, `${hash}.jpg`);
+    return path.join(videoThumbDir, `${createThumbCacheKey(filePath, mtimeMs)}.jpg`);
+}
+
+function getImageThumbCachePath(filePath, mtimeMs, maxSize) {
+    return path.join(imageThumbDir, `${createThumbCacheKey(filePath, mtimeMs, `img:${maxSize}`)}.png`);
+}
+
+function pathToFileUrl(filePath) {
+    return process.platform === 'win32'
+        ? `file:///${filePath.replace(/\\/g, '/')}`
+        : `file://${filePath}`;
 }
 
 /**
@@ -105,6 +145,10 @@ async function generateVideoThumbnail(filePath) {
     try {
         const stats = await fs.promises.stat(filePath);
         const thumbPath = getThumbCachePath(filePath, stats.mtimeMs);
+        const pendingJob = pendingVideoThumbnailJobs.get(thumbPath);
+        if (pendingJob) {
+            return pendingJob;
+        }
 
         // Return cached thumbnail if it exists
         try {
@@ -112,31 +156,105 @@ async function generateVideoThumbnail(filePath) {
             return thumbPath;
         } catch { /* not cached yet */ }
 
-        // Ensure cache directory exists
-        await fs.promises.mkdir(videoThumbDir, { recursive: true });
+        const generationPromise = (async () => {
+            const perfStart = performance.now();
 
-        // Get video duration to pick a good frame
-        const duration = await getVideoDuration(filePath);
-        const seekTime = duration ? Math.min(duration * 0.25, 10) : 1;
+            // Ensure cache directory exists
+            await fs.promises.mkdir(videoThumbDir, { recursive: true });
 
-        return new Promise((resolve) => {
-            execFile(ffmpegPath, [
-                '-ss', String(seekTime),
-                '-i', filePath,
-                '-vframes', '1',
-                '-q:v', '6',
-                '-vf', 'scale=320:-2',
-                '-y',
-                thumbPath
-            ], { timeout: 10000 }, (err) => {
-                if (err) {
-                    // Clean up partial file
-                    fs.promises.unlink(thumbPath).catch(() => {});
-                    return resolve(null);
-                }
-                resolve(thumbPath);
+            // Get video duration to pick a good frame
+            const duration = await getVideoDuration(filePath);
+            const seekTime = duration ? Math.min(duration * 0.25, 10) : 1;
+
+            const result = await new Promise((resolve) => {
+                execFile(ffmpegPath, [
+                    '-ss', String(seekTime),
+                    '-i', filePath,
+                    '-vframes', '1',
+                    '-q:v', '6',
+                    '-vf', 'scale=320:-2',
+                    '-y',
+                    thumbPath
+                ], { timeout: 10000 }, (err) => {
+                    if (err) {
+                        // Clean up partial file
+                        fs.promises.unlink(thumbPath).catch(() => {});
+                        return resolve(null);
+                    }
+                    resolve(thumbPath);
+                });
             });
-        });
+            logPerf('generate-video-thumbnail', perfStart, { cached: 0, success: result ? 1 : 0 });
+            return result;
+        })();
+
+        pendingVideoThumbnailJobs.set(thumbPath, generationPromise);
+        try {
+            return await generationPromise;
+        } finally {
+            pendingVideoThumbnailJobs.delete(thumbPath);
+        }
+    } catch {
+        return null;
+    }
+}
+
+async function generateImageThumbnail(filePath, maxSize = 512) {
+    try {
+        const stats = await fs.promises.stat(filePath);
+        const thumbPath = getImageThumbCachePath(filePath, stats.mtimeMs, maxSize);
+        const pendingJob = pendingImageThumbnailJobs.get(thumbPath);
+        if (pendingJob) {
+            return pendingJob;
+        }
+
+        try {
+            await fs.promises.access(thumbPath);
+            return thumbPath;
+        } catch { /* not cached yet */ }
+
+        const generationPromise = (async () => {
+            const perfStart = performance.now();
+            await fs.promises.mkdir(imageThumbDir, { recursive: true });
+
+            const image = nativeImage.createFromPath(filePath);
+            if (image.isEmpty()) {
+                logPerf('generate-image-thumbnail', perfStart, { cached: 0, success: 0, reason: 'empty' });
+                return null;
+            }
+
+            const size = image.getSize();
+            const longestEdge = Math.max(size.width || 0, size.height || 0);
+            if (!longestEdge) {
+                logPerf('generate-image-thumbnail', perfStart, { cached: 0, success: 0, reason: 'invalid-size' });
+                return null;
+            }
+
+            const scale = Math.min(1, maxSize / longestEdge);
+            const resized = scale < 1
+                ? image.resize({
+                    width: Math.max(1, Math.round((size.width || 1) * scale)),
+                    height: Math.max(1, Math.round((size.height || 1) * scale)),
+                    quality: 'good'
+                })
+                : image;
+
+            await fs.promises.writeFile(thumbPath, resized.toPNG());
+            logPerf('generate-image-thumbnail', perfStart, {
+                cached: 0,
+                success: 1,
+                width: resized.getSize().width,
+                height: resized.getSize().height
+            });
+            return thumbPath;
+        })();
+
+        pendingImageThumbnailJobs.set(thumbPath, generationPromise);
+        try {
+            return await generationPromise;
+        } finally {
+            pendingImageThumbnailJobs.delete(thumbPath);
+        }
     } catch {
         return null;
     }
@@ -186,6 +304,7 @@ app.setPath('userData', userDataPath);
 
 // Initialize video thumbnail cache directory now that userDataPath is set
 videoThumbDir = path.join(userDataPath, 'video-thumbnails');
+imageThumbDir = path.join(userDataPath, 'image-thumbnails');
 
 // Fix for VRAM leak: Disable Hardware Acceleration
 // This forces software decoding which is often more stable for many simultaneous videos
@@ -433,10 +552,12 @@ async function asyncPool(limit, items, fn) {
 const IO_CONCURRENCY_LIMIT = 20;
 
 ipcMain.handle('scan-folder', async (event, folderPath, options = {}) => {
+    const scanStart = performance.now();
     try {
-        const scanStart = performance.now();
         const { skipStats = false, scanImageDimensions = false, scanVideoDimensions = false } = options;
+        const readdirStart = performance.now();
         const items = await fs.promises.readdir(folderPath, { withFileTypes: true });
+        logPerf('scan-folder.readdir', readdirStart, { entries: items.length });
 
         // Use Sets for O(1) lookup instead of O(n) array.includes()
         const videoExtensions = new Set(['.mp4', '.webm', '.ogg', '.mov']);
@@ -483,7 +604,9 @@ ipcMain.handle('scan-folder', async (event, folderPath, options = {}) => {
             ).map(f => ({ path: f.path, isImage: f.isImage }));
 
             if (filesToScan.length > 0) {
+                const dimensionStart = performance.now();
                 const dimensionMap = await dimensionPool.scanDimensions(filesToScan);
+                logPerf('scan-folder.dimensions', dimensionStart, { files: filesToScan.length, hits: dimensionMap.size });
                 for (const fileObj of fileObjs) {
                     const dims = dimensionMap.get(fileObj.path);
                     if (dims) {
@@ -503,8 +626,8 @@ ipcMain.handle('scan-folder', async (event, folderPath, options = {}) => {
                 folders.push({ name: item.name, path: path.join(folderPath, item.name), type: 'folder', mtime: 0 });
             }
         } else {
-            // Parallel stat for folders using Promise.all (libuv threadpool = 16)
-            const folderResults = await Promise.all(folderItems.map(async (item) => {
+            const folderStatStart = performance.now();
+            const folderResults = await asyncPool(IO_CONCURRENCY_LIMIT, folderItems, async (item) => {
                 const itemPath = path.join(folderPath, item.name);
                 try {
                     const stats = await fs.promises.stat(itemPath);
@@ -512,18 +635,20 @@ ipcMain.handle('scan-folder', async (event, folderPath, options = {}) => {
                 } catch {
                     return { name: item.name, path: itemPath, type: 'folder', mtime: 0 };
                 }
-            }));
+            });
             folders.push(...folderResults);
+            logPerf('scan-folder.folder-stats', folderStatStart, { count: folderItems.length, limit: IO_CONCURRENCY_LIMIT });
 
-            // Parallel stat for files
-            await Promise.all(fileObjs.map(async (fileObj) => {
+            const fileStatStart = performance.now();
+            await asyncPool(IO_CONCURRENCY_LIMIT, fileObjs, async (fileObj) => {
                 try {
                     const stats = await fs.promises.stat(fileObj.path);
                     fileObj.mtime = stats.mtime.getTime();
                 } catch {
                     // mtime stays 0
                 }
-            }));
+            });
+            logPerf('scan-folder.file-stats', fileStatStart, { count: fileObjs.length, limit: IO_CONCURRENCY_LIMIT });
         }
 
         // Clean up internal field before sending to renderer
@@ -539,11 +664,10 @@ ipcMain.handle('scan-folder', async (event, folderPath, options = {}) => {
 
         // Return folders first, then media files
         const result = folders.length + mediaFiles.length > 0 ? [...folders, ...mediaFiles] : [];
-        if (process.env.PERF_TEST === '1') {
-            console.log(`[Perf] scan-folder: ${(performance.now() - scanStart).toFixed(2)}ms (${folders.length} folders, ${mediaFiles.length} files)`);
-        }
+        logPerf('scan-folder.total', scanStart, { folders: folders.length, files: mediaFiles.length, skipStats: skipStats ? 1 : 0 });
         return result;
     } catch (error) {
+        logPerf('scan-folder.total', scanStart, { error: 1 });
         console.error('Error scanning folder:', error);
         return [];
     }
@@ -683,6 +807,7 @@ ipcMain.handle('get-drives', async () => {
 // Performance: hasChildren checks run in parallel so expanding a folder with
 // many subfolders is almost as fast as a single readdir.
 ipcMain.handle('list-subdirectories', async (event, folderPath) => {
+    const listStart = performance.now();
     try {
         const items = await fs.promises.readdir(folderPath, { withFileTypes: true });
         const SKIP_NAMES = new Set([
@@ -697,8 +822,8 @@ ipcMain.handle('list-subdirectories', async (event, folderPath) => {
             dirItems.push({ name: item.name, path: path.join(folderPath, item.name) });
         }
 
-        // Check hasChildren for all folders in parallel
-        const results = await Promise.all(dirItems.map(async (dir) => {
+        // Check hasChildren with bounded parallelism
+        const results = await asyncPool(IO_CONCURRENCY_LIMIT, dirItems, async (dir) => {
             let hasChildren = false;
             try {
                 const children = await fs.promises.readdir(dir.path, { withFileTypes: true });
@@ -707,11 +832,13 @@ ipcMain.handle('list-subdirectories', async (event, folderPath) => {
                 // Permission denied — show as leaf
             }
             return { name: dir.name, path: dir.path, hasChildren };
-        }));
+        });
 
         results.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+        logPerf('list-subdirectories', listStart, { count: results.length, limit: IO_CONCURRENCY_LIMIT });
         return results;
     } catch (error) {
+        logPerf('list-subdirectories', listStart, { error: 1 });
         console.error('Error listing subdirectories:', error);
         return [];
     }
@@ -970,6 +1097,7 @@ function extractComfyUIWorkflow(filePath) {
 
 // Get file information
 ipcMain.handle('get-file-info', async (event, filePath) => {
+    const infoStart = performance.now();
     try {
         const stats = await fs.promises.stat(filePath);
         const ext = path.extname(filePath).toLowerCase();
@@ -994,8 +1122,8 @@ ipcMain.handle('get-file-info', async (event, filePath) => {
         // Get dimensions for images (image-size v2 requires a Buffer)
         if (isImage && sizeOf) {
             try {
-                if (fs.existsSync(filePath)) {
-                    const fileBuffer = fs.readFileSync(filePath);
+                const fileBuffer = await readImageHeader(filePath);
+                if (fileBuffer.length > 0) {
                     const dimensions = sizeOf(fileBuffer);
                     if (dimensions && dimensions.width && dimensions.height) {
                         info.width = dimensions.width;
@@ -1023,9 +1151,11 @@ ipcMain.handle('get-file-info', async (event, filePath) => {
                 console.error(error);
             }
         }
-        
+
+        logPerf('get-file-info', infoStart, { type: info.type });
         return { success: true, info };
     } catch (error) {
+        logPerf('get-file-info', infoStart, { error: 1 });
         console.error('Error getting file info:', error);
         return { success: false, error: error.message };
     }
@@ -1220,17 +1350,34 @@ ipcMain.handle('unwatch-folder', async (event, folderPath) => {
 
 // Generate a video thumbnail (returns file:// URL to cached JPEG or null)
 ipcMain.handle('generate-video-thumbnail', async (event, filePath) => {
+    const startTime = performance.now();
     try {
         const thumbPath = await generateVideoThumbnail(filePath);
         if (thumbPath) {
-            const isWindows = process.platform === 'win32';
-            const url = isWindows
-                ? `file:///${thumbPath.replace(/\\/g, '/')}`
-                : `file://${thumbPath}`;
+            logPerf('generate-video-thumbnail.ipc', startTime, { success: 1 });
+            const url = pathToFileUrl(thumbPath);
             return { success: true, url };
         }
+        logPerf('generate-video-thumbnail.ipc', startTime, { success: 0 });
         return { success: false };
     } catch (error) {
+        logPerf('generate-video-thumbnail.ipc', startTime, { error: 1 });
+        return { success: false, error: error.message };
+    }
+});
+
+ipcMain.handle('generate-image-thumbnail', async (event, filePath, maxSize = 512) => {
+    const startTime = performance.now();
+    try {
+        const thumbPath = await generateImageThumbnail(filePath, maxSize);
+        if (thumbPath) {
+            logPerf('generate-image-thumbnail.ipc', startTime, { success: 1, maxSize });
+            return { success: true, url: pathToFileUrl(thumbPath) };
+        }
+        logPerf('generate-image-thumbnail.ipc', startTime, { success: 0, maxSize });
+        return { success: false };
+    } catch (error) {
+        logPerf('generate-image-thumbnail.ipc', startTime, { error: 1, maxSize });
         return { success: false, error: error.message };
     }
 });

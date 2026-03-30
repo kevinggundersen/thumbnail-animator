@@ -16,6 +16,8 @@ const perfTest = (() => {
         'scanFolder (IPC)':   { fast: 100, medium: 500 },
         'navigateToFolder':   { fast: 150, medium: 600 },
         'processEntries':     { fast: 1,   medium: 8   },
+        'vsCalculatePositions': { fast: 8, medium: 24  },
+        'performCleanupCheck': { fast: 4, medium: 16  },
         'openLightbox':       { fast: 10,  medium: 50  },
     };
     const defaultThreshold = { fast: 10, medium: 50 };
@@ -79,10 +81,9 @@ const perfTest = (() => {
             const speedClass = getSpeedClass(op, last);
             const barPercent = getBarPercent(op, last);
 
-            // Detail line (card/item count from last measurement)
-            let detail = '';
-            if (lastEntry.cardCount != null) detail = `${lastEntry.cardCount} cards`;
-            else if (lastEntry.itemCount != null) detail = `${lastEntry.itemCount} items`;
+            const detail = lastEntry.detail ||
+                (lastEntry.cardCount != null ? `${lastEntry.cardCount} cards`
+                    : (lastEntry.itemCount != null ? `${lastEntry.itemCount} items` : ''));
 
             html += `<div class="perf-metric">
                 <div class="perf-metric-header">
@@ -199,6 +200,8 @@ const CLEANUP_COOLDOWN_MS = 5; // Cooldown between cleanup operations (ms)
 const CLEANUP_IDLE_INTERVAL_MS = 200; // Low-frequency safety cleanup while idle (ms)
 const VIEWPORT_CACHE_TTL = 100; // Cache viewport bounds for N ms
 const MEDIA_COUNT_CACHE_TTL = 50; // Cache media counts for N ms
+const CARD_RECT_CACHE_TTL = 34; // Short-lived rect cache for hot scroll/cleanup paths
+const IMAGE_THUMBNAIL_MAX_EDGE = 768; // Cap cached image thumbs to a practical grid size
 
 // Progressive Rendering Configuration
 const PROGRESSIVE_RENDER_THRESHOLD = 1000; // Use progressive rendering for N+ items
@@ -272,6 +275,7 @@ function vsGetAspectRatioValue(name) {
  * Returns { positions: Float64Array, totalHeight: number }
  */
 function vsCalculatePositions(items, containerWidth, mode, zoom) {
+    const perfStart = perfTest.start();
     const positions = new Float64Array(items.length * 4); // left, top, width, height per item
 
     // Get gap from CSS variable
@@ -335,7 +339,9 @@ function vsCalculatePositions(items, containerWidth, mode, zoom) {
         for (let c = 0; c < columns; c++) {
             if (colHeights[c] > maxHeight) maxHeight = colHeights[c];
         }
-        return { positions, totalHeight: maxHeight + paddingTop + (parseInt(gridStyles.paddingBottom) || 0) };
+        const result = { positions, totalHeight: maxHeight + paddingTop + (parseInt(gridStyles.paddingBottom) || 0) };
+        perfTest.end('vsCalculatePositions', perfStart, { itemCount: items.length, detail: `${mode} @ ${zoom}%` });
+        return result;
 
     } else {
         // Grid mode: uniform columns, height based on aspect ratio + padding-bottom trick
@@ -390,7 +396,9 @@ function vsCalculatePositions(items, containerWidth, mode, zoom) {
 
         // Account for last partial row
         const totalHeight = rowTop + (currentCol > 0 ? rowMaxHeight : 0) + paddingTop + (parseInt(gridStyles.paddingBottom) || 0);
-        return { positions, totalHeight };
+        const result = { positions, totalHeight };
+        perfTest.end('vsCalculatePositions', perfStart, { itemCount: items.length, detail: `${mode} @ ${zoom}%` });
+        return result;
     }
 }
 
@@ -677,9 +685,7 @@ function vsPopulateExistingCard(card, item) {
 function vsOnScroll() {
     if (!vsEnabled || isWindowMinimized) return;
 
-    // Invalidate viewport cache
-    cachedViewportBounds = null;
-    viewportBoundsCacheTime = 0;
+    invalidateScrollCaches();
 
     if (vsScrollRafId) return; // Already scheduled
     vsScrollRafId = requestAnimationFrame(() => {
@@ -694,7 +700,7 @@ function vsOnScroll() {
         }
 
         // Also trigger media cleanup/loading cycle
-        scheduleCleanupCycle();
+        scheduleScrollCleanup();
     });
 }
 
@@ -1812,31 +1818,43 @@ function scheduleCleanupCycle() {
     });
 }
 
-function handleGridScroll() {
-    if (isWindowMinimized) return;
-    
+function invalidateScrollCaches() {
     cachedViewportBounds = null;
     viewportBoundsCacheTime = 0;
+    cardRectCache = new WeakMap();
+}
+
+function scheduleScrollCleanup() {
+    invalidateScrollCaches();
     scheduleCleanupCycle();
-    
+
     clearTimeout(cleanupScrollTimeout);
     cleanupScrollTimeout = setTimeout(() => {
-        cachedViewportBounds = null;
-        viewportBoundsCacheTime = 0;
+        invalidateScrollCaches();
         runCleanupCycle();
     }, SCROLL_DEBOUNCE_MS);
 }
 
+function handleGridScroll() {
+    if (isWindowMinimized) return;
+
+    scheduleScrollCleanup();
+}
+
 function ensureCleanupScrollListener() {
-    if (cleanupScrollListenerAttached) return;
+    if (cleanupScrollListenerAttached || vsEnabled) return;
     gridContainer.addEventListener('scroll', handleGridScroll, { passive: true });
     cleanupScrollListenerAttached = true;
 }
 
 function performCleanupCheck() {
+    const perfStart = perfTest.start();
     // Check all media cards and clean up media that aren't intersecting
     const allCards = gridContainer.querySelectorAll('.video-card');
-    if (allCards.length === 0) return;
+    if (allCards.length === 0) {
+        perfTest.end('performCleanupCheck', perfStart, { cardCount: 0, detail: 'empty' });
+        return;
+    }
     
     let cleaned = false;
     
@@ -1852,7 +1870,10 @@ function performCleanupCheck() {
     let allVideos = Array.from(gridContainer.querySelectorAll('video'));
     let allImages = Array.from(gridContainer.querySelectorAll('img.media-thumbnail'));
 
-    if (allVideos.length === 0 && allImages.length === 0) return;
+    if (allVideos.length === 0 && allImages.length === 0) {
+        perfTest.end('performCleanupCheck', perfStart, { cardCount: allCards.length, detail: 'no media' });
+        return;
+    }
 
     // Build a map of card -> { videos, images } for fast lookup
     const cardMediaMap = new Map();
@@ -1870,10 +1891,13 @@ function performCleanupCheck() {
     }
 
     const cardsWithMedia = Array.from(cardMediaMap.keys());
-    if (cardsWithMedia.length === 0) return;
+    if (cardsWithMedia.length === 0) {
+        perfTest.end('performCleanupCheck', perfStart, { cardCount: allCards.length, detail: 'no active cards' });
+        return;
+    }
 
     // Batch all getBoundingClientRect calls together to minimize layout thrashing
-    const rects = cardsWithMedia.map(card => card.getBoundingClientRect());
+    const rects = cardsWithMedia.map(card => getCachedCardRect(card));
 
     // Track destroyed elements to remove from local arrays
     const destroyedVideos = new Set();
@@ -1929,7 +1953,7 @@ function performCleanupCheck() {
     // Second pass: If we still have too many videos, aggressively remove furthest ones
     if (allVideos.length > MAX_VIDEOS) {
         const videoCards = allVideos.map(video => video.closest('.video-card')).filter(Boolean);
-        const videoRects = videoCards.map(card => card.getBoundingClientRect());
+        const videoRects = videoCards.map(card => getCachedCardRect(card));
 
         const viewportCenterY = window.innerHeight / 2;
         const viewportCenterX = window.innerWidth / 2;
@@ -1965,7 +1989,7 @@ function performCleanupCheck() {
         ];
 
         const mediaCards = allMedia.map(({ element }) => element.closest('.video-card')).filter(Boolean);
-        const mediaRects = mediaCards.map(card => card.getBoundingClientRect());
+        const mediaRects = mediaCards.map(card => getCachedCardRect(card));
 
         const viewportCenterY = window.innerHeight / 2;
         const mediaDistances = allMedia.map(({ element, type }, index) => {
@@ -1999,6 +2023,11 @@ function performCleanupCheck() {
     if (cleaned) {
         scheduleGC();
     }
+    const removedCount = destroyedVideos.size + destroyedImages.size;
+    perfTest.end('performCleanupCheck', perfStart, {
+        cardCount: cardsWithMedia.length,
+        detail: `${removedCount} removed, ${allVideos.length} videos, ${allImages.length} images`
+    });
 }
 
 function startPeriodicCleanup() {
@@ -2031,6 +2060,10 @@ function stopPeriodicCleanup() {
     if (cleanupAnimationFrame !== null) {
         cancelAnimationFrame(cleanupAnimationFrame);
         cleanupAnimationFrame = null;
+    }
+    if (cleanupScrollListenerAttached) {
+        gridContainer.removeEventListener('scroll', handleGridScroll);
+        cleanupScrollListenerAttached = false;
     }
 }
 
@@ -2198,6 +2231,10 @@ let cachedViewportBounds = null;
 let viewportBoundsCacheTime = 0;
 let cachedMediaCounts = { videos: 0, images: 0, timestamp: 0 };
 let cardRectCache = new WeakMap(); // Cache getBoundingClientRect results
+const imageThumbnailUrlCache = new Map();
+const imageThumbnailRequests = new Map();
+const videoPosterUrlCache = new Map();
+const videoPosterRequests = new Map();
 
 // Optimized function to get media counts with caching
 function getMediaCounts() {
@@ -2234,10 +2271,81 @@ function getViewportBounds() {
     return cachedViewportBounds;
 }
 
+function setCachedUrl(cache, key, value, maxEntries = 500) {
+    cache.set(key, value);
+    if (cache.size > maxEntries) {
+        const firstKey = cache.keys().next().value;
+        if (firstKey !== undefined) {
+            cache.delete(firstKey);
+        }
+    }
+}
+
+function getImageThumbnailCacheKey(filePath, maxSize) {
+    return `${filePath}|${maxSize}`;
+}
+
+function requestImageThumbnailUrl(filePath, maxSize) {
+    const key = getImageThumbnailCacheKey(filePath, maxSize);
+    if (imageThumbnailUrlCache.has(key)) {
+        return Promise.resolve(imageThumbnailUrlCache.get(key));
+    }
+    if (imageThumbnailRequests.has(key)) {
+        return imageThumbnailRequests.get(key);
+    }
+    if (!window.electronAPI?.generateImageThumbnail) {
+        return Promise.resolve(null);
+    }
+
+    const request = window.electronAPI.generateImageThumbnail(filePath, maxSize)
+        .then(result => {
+            const url = result && result.success && result.url ? result.url : null;
+            if (url) {
+                setCachedUrl(imageThumbnailUrlCache, key, url);
+            }
+            return url;
+        })
+        .catch(() => null)
+        .finally(() => {
+            imageThumbnailRequests.delete(key);
+        });
+
+    imageThumbnailRequests.set(key, request);
+    return request;
+}
+
+function requestVideoPosterUrl(filePath) {
+    if (videoPosterUrlCache.has(filePath)) {
+        return Promise.resolve(videoPosterUrlCache.get(filePath));
+    }
+    if (videoPosterRequests.has(filePath)) {
+        return videoPosterRequests.get(filePath);
+    }
+    if (!window.electronAPI?.generateVideoThumbnail) {
+        return Promise.resolve(null);
+    }
+
+    const request = window.electronAPI.generateVideoThumbnail(filePath)
+        .then(result => {
+            const url = result && result.success && result.url ? result.url : null;
+            if (url) {
+                setCachedUrl(videoPosterUrlCache, filePath, url);
+            }
+            return url;
+        })
+        .catch(() => null)
+        .finally(() => {
+            videoPosterRequests.delete(filePath);
+        });
+
+    videoPosterRequests.set(filePath, request);
+    return request;
+}
+
 // Optimized function to check if card is in preload zone
 // Uses viewport coordinates since IntersectionObserver uses viewport as root
 function isCardInPreloadZone(card) {
-    const cardRect = card.getBoundingClientRect();
+    const cardRect = getCachedCardRect(card);
     const bounds = getViewportBounds();
     
     return (
@@ -2250,9 +2358,14 @@ function isCardInPreloadZone(card) {
 
 // Cache getBoundingClientRect results (with very short TTL to avoid stale positions)
 function getCachedCardRect(card) {
-    // For now, always get fresh rect to avoid issues with masonry layout changes
-    // The caching can be re-enabled later if needed, but it's safer to always get fresh values
-    return card.getBoundingClientRect();
+    const now = Date.now();
+    const cached = cardRectCache.get(card);
+    if (cached && (now - cached.timestamp) < CARD_RECT_CACHE_TTL) {
+        return cached.rect;
+    }
+    const rect = card.getBoundingClientRect();
+    cardRectCache.set(card, { rect, timestamp: now });
+    return rect;
 }
 
 // Helper function to detect file type from URL
@@ -3354,12 +3467,12 @@ function createImageForCard(card, imageUrl) {
     const decodeHeight = Math.max(1, Math.floor(rect.height * qualityMultiplier));
     
     const img = document.createElement('img');
-    img.src = imageUrl;
     img.className = 'media-thumbnail';
-    // Use 'eager' for images in viewport/preload zone for faster loading
-    // The IntersectionObserver rootMargin handles preloading, so we can be eager here
-    img.loading = 'eager';
+    img.loading = 'lazy';
     img.decoding = 'async'; // Decode asynchronously for better performance
+    if ('fetchPriority' in img) {
+        img.fetchPriority = 'low';
+    }
     img.draggable = true;
 
     // Enable dragging images out of the app
@@ -3380,6 +3493,15 @@ function createImageForCard(card, imageUrl) {
     // Optimize rendering
     img.style.imageRendering = 'auto';
     img.style.willChange = 'contents';
+
+    const requestedThumbSize = Math.max(256, Math.ceil(Math.max(decodeWidth, decodeHeight) * 1.5));
+    const thumbMaxSize = Math.min(IMAGE_THUMBNAIL_MAX_EDGE, requestedThumbSize);
+
+    const setImageSource = (src, mode) => {
+        if (!img.isConnected) return;
+        img.dataset.sourceMode = mode;
+        img.src = src;
+    };
     
     // For animated GIFs/WEBPs, capture the first frame as a static snapshot
     const urlLowerForAnim = imageUrl.toLowerCase();
@@ -3444,6 +3566,10 @@ function createImageForCard(card, imageUrl) {
 
     // Add error handler - retry on error with exponential backoff
     img.addEventListener('error', () => {
+        if (img.dataset.sourceMode === 'thumb') {
+            setImageSource(imageUrl, 'original');
+            return;
+        }
         scheduleMediaLoadSettle();
         destroyImageElement(img);
         activeImageCount = Math.max(0, activeImageCount - 1);
@@ -3476,6 +3602,20 @@ function createImageForCard(card, imageUrl) {
     const info = card.querySelector('.video-info');
     card.insertBefore(img, info);
     card.dataset.hasMedia = '1';
+
+    if (card.dataset.filePath) {
+        requestImageThumbnailUrl(card.dataset.filePath, thumbMaxSize)
+            .then(url => {
+                if (!img.isConnected) return;
+                setImageSource(url || imageUrl, url ? 'thumb' : 'original');
+            })
+            .catch(() => {
+                if (!img.isConnected) return;
+                setImageSource(imageUrl, 'original');
+            });
+    } else {
+        setImageSource(imageUrl, 'original');
+    }
 
     pendingMediaCreations.delete(card);
     return true;
@@ -3524,6 +3664,9 @@ function createVideoForCard(card, videoUrl) {
     const decodeHeight = Math.max(1, Math.floor(rect.height * qualityMultiplier));
     
     const video = document.createElement('video');
+    if (card.dataset.filePath && videoPosterUrlCache.has(card.dataset.filePath)) {
+        video.poster = videoPosterUrlCache.get(card.dataset.filePath);
+    }
     video.src = videoUrl;
     video.muted = true;
     video.loop = true;
@@ -3537,9 +3680,9 @@ function createVideoForCard(card, videoUrl) {
 
     // Request a thumbnail poster from ffmpeg (non-blocking)
     if (hasFfmpegAvailable && card.dataset.filePath) {
-        window.electronAPI.generateVideoThumbnail(card.dataset.filePath).then(result => {
-            if (result && result.success && result.url && video.isConnected) {
-                video.poster = result.url;
+        requestVideoPosterUrl(card.dataset.filePath).then(url => {
+            if (url && video.isConnected) {
+                video.poster = url;
             }
         }).catch(() => { /* ignore thumbnail errors */ });
     }
@@ -3591,7 +3734,7 @@ function createVideoForCard(card, videoUrl) {
         }
 
         // After metadata loads, ensure video dimensions are constrained
-        const rect = card.getBoundingClientRect();
+        const rect = getCachedCardRect(card);
         const maxWidth = rect.width;
         const maxHeight = rect.height;
         if (video.videoWidth > maxWidth || video.videoHeight > maxHeight) {

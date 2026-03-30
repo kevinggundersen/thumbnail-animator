@@ -11,10 +11,8 @@ function initKeyboardShortcuts() {
                     closeLightbox();
                 } else if (!settingsModal.classList.contains('hidden')) {
                     closeSettingsModal();
-                } else if (!favoritesDropdown.classList.contains('hidden')) {
-                    favoritesDropdown.classList.add('hidden');
-                } else if (!recentFilesDropdown.classList.contains('hidden')) {
-                    recentFilesDropdown.classList.add('hidden');
+                } else if (!toolsMenuDropdown.classList.contains('hidden')) {
+                    toolsMenuDropdown.classList.add('hidden');
                 }
             }
             return;
@@ -43,12 +41,8 @@ function initKeyboardShortcuts() {
                 closeLightbox();
             } else if (!renameDialog.classList.contains('hidden')) {
                 handleRenameCancel();
-            } else if (!settingsDropdown.classList.contains('hidden')) {
-                closeSettingsDropdown();
-            } else if (!favoritesDropdown.classList.contains('hidden')) {
-                favoritesDropdown.classList.add('hidden');
-            } else if (!recentFilesDropdown.classList.contains('hidden')) {
-                recentFilesDropdown.classList.add('hidden');
+            } else if (!toolsMenuDropdown.classList.contains('hidden')) {
+                toolsMenuDropdown.classList.add('hidden');
             }
             return;
         }
@@ -337,7 +331,7 @@ function saveFavorites() {
 function renderFavorites() {
     favoritesList.innerHTML = '';
     if (favorites.length === 0) {
-        favoritesList.innerHTML = '<div style="padding: 16px; text-align: center; color: rgba(224, 224, 224, 0.5); font-size: 12px;">No favorites yet</div>';
+        favoritesList.innerHTML = '<div class="tools-menu-empty">No favorites yet</div>';
         return;
     }
     favorites.forEach((fav, index) => {
@@ -352,7 +346,7 @@ function renderFavorites() {
                 e.stopPropagation();
                 removeFavorite(index);
             } else {
-                favoritesDropdown.classList.add('hidden');
+                toolsMenuDropdown.classList.add('hidden');
                 // Use setTimeout to yield control back to event loop, making button responsive
                 setTimeout(() => {
                     navigateToFolder(fav.path).catch(err => {
@@ -418,7 +412,7 @@ function addRecentFile(path, name, url, type) {
 function renderRecentFiles() {
     recentFilesList.innerHTML = '';
     if (recentFiles.length === 0) {
-        recentFilesList.innerHTML = '<div style="padding: 16px; text-align: center; color: rgba(224, 224, 224, 0.5); font-size: 12px;">No recent files</div>';
+        recentFilesList.innerHTML = '<div class="tools-menu-empty">No recent files</div>';
         return;
     }
     recentFiles.forEach((file) => {
@@ -498,7 +492,7 @@ function renderRecentFiles() {
                 delete item.dataset.previewId;
             }
             openLightbox(file.url, file.path, file.name);
-            recentFilesDropdown.classList.add('hidden');
+            toolsMenuDropdown.classList.add('hidden');
         });
         recentFilesList.appendChild(item);
     });

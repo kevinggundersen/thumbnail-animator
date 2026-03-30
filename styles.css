@@ -554,20 +554,18 @@ header {
 
 .tools-menu-dropdown {
     position: absolute;
-    top: calc(100% + 8px);
+    top: calc(100% + 6px);
     left: 0;
-    background-color: var(--bg-secondary);
+    background-color: var(--bg-tertiary);
     border: 1px solid var(--border-default);
-    border-radius: var(--radius-md);
-    box-shadow: var(--shadow-lg);
-    min-width: 280px;
-    max-width: 400px;
-    max-height: 500px;
+    border-radius: var(--radius-xl);
+    box-shadow: var(--shadow-xl);
+    width: 300px;
     z-index: 1000;
     backdrop-filter: blur(16px);
     display: flex;
     flex-direction: column;
-    overflow-y: auto;
+    overflow: visible;
     animation: dropdown-enter 0.15s var(--ease-out);
 }
 
@@ -575,69 +573,138 @@ header {
     display: none;
 }
 
-.tools-menu-section {
-    border-bottom: 1px solid var(--border-default);
-    padding: 8px 0;
+.tools-menu-header {
+    padding: var(--space-4) var(--space-5) var(--space-3);
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+    border-bottom: 1px solid var(--border-subtle);
 }
 
-.tools-menu-section:last-child {
-    border-bottom: none;
+.tools-menu-body {
+    overflow: visible;
+}
+
+.tools-menu-section {
+    padding: var(--space-2) 0;
+}
+
+.tools-menu-section + .tools-menu-section {
+    border-top: 1px solid var(--border-subtle);
 }
 
 .tools-menu-section-label {
-    padding: 4px 16px 6px;
-    font-weight: bold;
+    padding: var(--space-1) var(--space-5) var(--space-1);
+    font-weight: 600;
     font-size: 11px;
     color: var(--text-tertiary);
     text-transform: uppercase;
-    letter-spacing: 0.5px;
+    letter-spacing: 0.4px;
 }
 
 .tools-menu-item {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: var(--space-3);
     width: 100%;
-    padding: 8px 16px;
+    padding: var(--space-2) var(--space-5);
     background: transparent;
     border: none;
-    color: var(--text-color);
+    color: var(--text-primary);
     cursor: pointer;
     font-size: 13px;
     text-align: left;
-    transition: background-color 0.15s;
+    border-radius: 0;
+    transition: background-color var(--duration-normal), color var(--duration-normal);
 }
 
 .tools-menu-item:hover {
+    background-color: var(--bg-hover);
+}
+
+.tools-menu-item:active {
     background-color: var(--accent-muted);
 }
 
+.tools-menu-item svg {
+    color: var(--text-secondary);
+    flex-shrink: 0;
+    transition: color var(--duration-normal);
+}
+
+.tools-menu-item:hover svg {
+    color: var(--text-primary);
+}
+
 .tools-menu-list {
-    max-height: 200px;
+    max-height: 180px;
     overflow-y: auto;
-    padding: 0;
 }
 
 .tools-menu-action-btn {
-    width: calc(100% - 16px);
-    margin: 4px 8px;
-    padding: 6px 8px;
-    background-color: var(--bg-color);
-    color: var(--text-color);
-    border: 1px solid var(--border-default);
-    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: calc(100% - var(--space-5) * 2);
+    margin: var(--space-1) var(--space-5) var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    background-color: transparent;
+    color: var(--text-secondary);
+    border: 1px dashed var(--border-default);
+    border-radius: var(--radius-sm);
     cursor: pointer;
     font-size: 12px;
-    transition: background-color 0.2s, border-color 0.2s;
+    transition: background-color var(--duration-normal), border-color var(--duration-normal), color var(--duration-normal);
 }
 
 .tools-menu-action-btn:hover {
     background-color: var(--accent-muted);
     border-color: var(--accent);
+    color: var(--accent);
+}
+
+.tools-menu-empty {
+    padding: var(--space-3) var(--space-5);
+    text-align: center;
+    color: var(--text-tertiary);
+    font-size: 12px;
+    font-style: italic;
+}
+
+/* List items inside tools menu */
+.tools-menu-list .quick-access-item {
+    padding: 6px var(--space-5);
+    border-radius: 0;
+    transition: background-color var(--duration-normal);
+}
+
+.tools-menu-list .quick-access-item:hover {
+    background-color: var(--bg-hover);
+}
+
+.tools-menu-list .quick-access-item-name {
+    font-size: 13px;
+    color: var(--text-primary);
+}
+
+.tools-menu-list .quick-access-item-remove {
+    opacity: 0;
+    padding: 2px 4px;
+    border-radius: var(--radius-sm);
+    transition: opacity var(--duration-normal), background-color var(--duration-normal);
+}
+
+.tools-menu-list .quick-access-item:hover .quick-access-item-remove {
+    opacity: 0.5;
+}
+
+.tools-menu-list .quick-access-item-remove:hover {
+    opacity: 1;
+    background-color: rgba(248, 113, 113, 0.15);
 }
 
 .quick-access-item {
-    padding: 10px 16px;
+    padding: 7px 16px;
     color: var(--text-color);
     cursor: pointer;
     font-size: 13px;

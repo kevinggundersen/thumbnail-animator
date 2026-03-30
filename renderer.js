@@ -3165,20 +3165,21 @@ function sortItems(items) {
 // Function to apply sorting and reload current folder
 function applySorting() {
     if (currentFolderPath && currentItems.length > 0) {
+        const previousScrollTop = gridContainer.scrollTop;
         // If sorting by date but items lack mtime (were loaded with skipStats),
         // reload from backend to get file stats
         const needsStats = sortType === 'date' && currentItems.some(item => item.type !== 'folder' && !item.mtime);
         if (needsStats) {
-            loadVideos(currentFolderPath, false);
+            loadVideos(currentFolderPath, false, previousScrollTop);
             return;
         }
         // Filter items based on current filter, then sort and render
         const filteredItems = filterItems(currentItems);
         const sortedItems = sortItems(filteredItems);
-        renderItems(sortedItems);
+        renderItems(sortedItems, previousScrollTop);
     } else if (currentFolderPath) {
         // If no items cached, reload from backend
-        loadVideos(currentFolderPath);
+        loadVideos(currentFolderPath, true, gridContainer.scrollTop);
     }
 }
 
@@ -3457,7 +3458,7 @@ function renderItemsProgressive(items) {
 }
 
 // Function to render items (extracted from loadVideos for re-use)
-function renderItems(items) {
+function renderItems(items, preservedScrollTop = null) {
     cardAnimIndex = 0; // Reset card animation stagger
     const perfStart = perfTest.start();
     if (items.length > 50) setStatusActivity(`Rendering ${items.length} items...`);
@@ -3515,6 +3516,7 @@ function renderItems(items) {
 
     // Use virtual scrolling for all lists - only render visible cards
     vsInit(items);
+    restoreGridScrollPosition(preservedScrollTop);
     updateItemCount();
     perfTest.end('renderItems', perfStart, { itemCount: items.length });
 
@@ -4810,6 +4812,7 @@ function getDroppedFilePaths(dataTransfer) {
 // Copy external files into a destination folder
 async function copyFilesToFolder(filePaths, destFolder) {
     if (!filePaths || filePaths.length === 0) return;
+    const previousScrollTop = gridContainer.scrollTop;
 
     showProgress(0, filePaths.length, 'Copying files...');
     let success = 0;
@@ -4837,7 +4840,11 @@ async function copyFilesToFolder(filePaths, destFolder) {
 
     hideProgress();
     if (success > 0) {
-        await navigateToFolder(currentFolderPath); // Refresh
+        // Refresh current folder while preserving the user's viewport position.
+        if (currentFolderPath) {
+            invalidateFolderCache(currentFolderPath);
+            await loadVideos(currentFolderPath, false, previousScrollTop);
+        }
     }
     if (failed > 0) {
         alert(`Failed to copy ${failed} file(s)`);
@@ -4967,6 +4974,19 @@ document.addEventListener('dragover', (e) => {
 });
 document.addEventListener('drop', (e) => {
     e.preventDefault();
+});
+
+window.addEventListener('beforeunload', () => {
+    if (!currentFolderPath) return;
+    try {
+        sessionStorage.setItem(SESSION_SCROLL_RESTORE_KEY, JSON.stringify({
+            path: currentFolderPath,
+            scrollTop: gridContainer.scrollTop,
+            timestamp: Date.now()
+        }));
+    } catch {
+        // Ignore storage errors
+    }
 });
 
 // --- Event Listeners ---
@@ -5309,11 +5329,58 @@ function yieldToEventLoop() {
     });
 }
 
+const SESSION_SCROLL_RESTORE_KEY = 'thumbnailAnimator.pendingScrollRestore';
+
+function getPendingSessionScrollRestore() {
+    try {
+        const raw = sessionStorage.getItem(SESSION_SCROLL_RESTORE_KEY);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed.path !== 'string' || typeof parsed.scrollTop !== 'number') return null;
+        return parsed;
+    } catch {
+        return null;
+    }
+}
+
+function clearPendingSessionScrollRestore() {
+    try {
+        sessionStorage.removeItem(SESSION_SCROLL_RESTORE_KEY);
+    } catch {
+        // Ignore storage errors
+    }
+}
+
+function restoreGridScrollPosition(targetScrollTop) {
+    if (typeof targetScrollTop !== 'number' || !Number.isFinite(targetScrollTop)) return;
+    const applyRestore = () => {
+        const maxScrollTop = Math.max(0, gridContainer.scrollHeight - gridContainer.clientHeight);
+        const clamped = Math.max(0, Math.min(targetScrollTop, maxScrollTop));
+        gridContainer.scrollTop = clamped;
+        if (vsEnabled) {
+            const viewportHeight = gridContainer.clientHeight;
+            const { startIndex, endIndex } = vsGetVisibleRange(gridContainer.scrollTop, viewportHeight);
+            // Force the virtual list to match the restored viewport immediately.
+            vsUpdateDOM(startIndex, endIndex);
+        }
+    };
+    applyRestore();
+    requestAnimationFrame(() => {
+        applyRestore();
+        setTimeout(() => {
+            applyRestore();
+            scheduleCleanupCycle();
+        }, 0);
+    });
+}
+
 // Function to navigate to a folder
 async function navigateToFolder(folderPath, addToHistory = true, forceReload = false) {
     const perfStart = perfTest.start();
     const folderName = folderPath.split(/[/\\]/).filter(Boolean).pop() || folderPath;
     setStatusActivity(`Navigating to ${folderName}...`);
+    const previousFolderPath = currentFolderPath;
+    const previousScrollTop = gridContainer.scrollTop;
     try {
         // If forcing reload, invalidate cache first
         if (forceReload) {
@@ -5398,7 +5465,17 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
         filterVideosBtn.classList.remove('active');
         filterImagesBtn.classList.remove('active');
     
-        loadVideos(folderPath, !forceReload); // Use cache unless forcing reload
+        const normalizedTargetPath = normalizePath(folderPath);
+        const isSameFolder = previousFolderPath && normalizePath(previousFolderPath) === normalizedTargetPath;
+        let preservedScrollTop = isSameFolder ? previousScrollTop : null;
+        if (preservedScrollTop === null) {
+            const pendingRestore = getPendingSessionScrollRestore();
+            if (pendingRestore && normalizePath(pendingRestore.path) === normalizedTargetPath) {
+                preservedScrollTop = pendingRestore.scrollTop;
+            }
+        }
+        await loadVideos(folderPath, !forceReload, preservedScrollTop); // Use cache unless forcing reload
+        clearPendingSessionScrollRestore();
 
         // Sync sidebar tree with current folder — expand tree then highlight
         sidebarExpandToPath(folderPath);
@@ -5576,7 +5653,7 @@ thumbnailQualitySelect.addEventListener('change', () => {
     deferLocalStorageWrite('thumbnailQuality', thumbnailQuality);
     // Reload current folder to apply new quality
     if (currentFolderPath) {
-        loadVideos(currentFolderPath);
+        loadVideos(currentFolderPath, true, gridContainer.scrollTop);
     }
 });
 
@@ -6393,7 +6470,8 @@ contextMenu.addEventListener('click', async (e) => {
                         // Invalidate cache and reload the current folder to reflect the change
                         if (currentFolderPath) {
                             invalidateFolderCache(currentFolderPath);
-                            await loadVideos(currentFolderPath, false); // Force reload, don't use cache
+                            const previousScrollTop = gridContainer.scrollTop;
+                            await loadVideos(currentFolderPath, false, previousScrollTop); // Force reload, don't use cache
                         }
                     } else {
                         alert(`Error deleting file: ${result.error}`);
@@ -6451,7 +6529,8 @@ async function handleRenameConfirm() {
             // Invalidate cache and reload the current folder to reflect the change
             if (currentFolderPath) {
                 invalidateFolderCache(currentFolderPath);
-                await loadVideos(currentFolderPath, false); // Force reload, don't use cache
+                const previousScrollTop = gridContainer.scrollTop;
+                await loadVideos(currentFolderPath, false, previousScrollTop); // Force reload, don't use cache
             }
         } else {
             alert(`Error renaming file: ${result.error}`);
@@ -6487,7 +6566,7 @@ renameDialog.addEventListener('click', (e) => {
     }
 });
 
-async function loadVideos(folderPath, useCache = true) {
+async function loadVideos(folderPath, useCache = true, preservedScrollTop = null) {
     // Stop periodic cleanup during folder switch
     stopPeriodicCleanup();
     activeDimensionHydrationToken++;
@@ -6680,7 +6759,7 @@ async function loadVideos(folderPath, useCache = true) {
         await yieldToEventLoop();
         
         // Render the filtered and sorted items
-        renderItems(sortedItems);
+        renderItems(sortedItems, preservedScrollTop);
 
         // Show "Loading media..." while IntersectionObserver lazy-loads images/videos into cards
         const mediaItemCount = sortedItems.filter(i => i.type !== 'folder').length;

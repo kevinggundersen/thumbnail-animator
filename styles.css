@@ -936,6 +936,12 @@ header {
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 }
 
+#filter-stars {
+    margin-left: 4px;
+    border-left: 1px solid var(--border-default);
+    padding-left: 10px;
+}
+
 .settings-container {
     position: relative;
     margin-left: 8px;

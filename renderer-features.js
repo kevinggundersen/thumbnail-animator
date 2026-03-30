@@ -2284,25 +2284,13 @@ function initNewFeatures() {
         cancelProgressBtn.addEventListener('click', cancelProgress);
     }
     
-    // Star rating filter - filter to show only rated files
+    // Star rating filter - independent toggle to show only rated files
     const filterStarsBtn = document.getElementById('filter-stars');
     if (filterStarsBtn) {
         filterStarsBtn.addEventListener('click', () => {
-            if (currentFilter === 'stars') {
-                // Toggle off - go back to 'all'
-                currentFilter = 'all';
-                filterStarsBtn.classList.remove('active');
-                filterAllBtn.classList.add('active');
-            } else {
-                // Toggle on - filter to stars
-                currentFilter = 'stars';
-                filterStarsBtn.classList.add('active');
-                filterAllBtn.classList.remove('active');
-                filterVideosBtn.classList.remove('active');
-                filterImagesBtn.classList.remove('active');
-                filterAudioBtn.classList.remove('active');
-            }
-            // Re-render with filtered items (like video/image filters)
+            starFilterActive = !starFilterActive;
+            filterStarsBtn.classList.toggle('active', starFilterActive);
+            // Re-render with filtered items
             if (currentFolderPath && currentItems.length > 0) {
                 const filteredItems = filterItems(currentItems);
                 const sortedItems = sortItems(filteredItems);

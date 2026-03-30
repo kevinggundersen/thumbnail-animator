@@ -1039,6 +1039,7 @@ let currentItems = [];
 
 // Track current filter state
 let currentFilter = 'all'; // 'all', 'video', 'image', 'audio'
+let starFilterActive = false;
 
 // Track layout mode: 'masonry' (dynamic) or 'grid' (rigid row-based)
 let layoutMode = 'masonry'; // Default to masonry
@@ -3089,29 +3090,22 @@ function toggleIncludeMovingImages() {
 
 // Function to filter items based on current filter (before rendering)
 function filterItems(items) {
-    if (currentFilter === 'stars') {
-        // Filter to only show items with star ratings (exclude folders)
-        return items.filter(item => {
-            // Exclude folders - they don't have star ratings
-            if (item.type === 'folder') return false;
-            // Must have a valid path
-            if (!item.path) return false;
-            // Check rating - must be > 0
-            const rating = getFileRating(item.path);
-            return rating > 0; // Only show items with rating > 0
-        });
-    } else if (currentFilter === 'video') {
-        // Filter to only show video files
-        return items.filter(item => item.type === 'video');
+    let filtered = items;
+    if (currentFilter === 'video') {
+        filtered = filtered.filter(item => item.type === 'video');
     } else if (currentFilter === 'image') {
-        // Filter to only show image files
-        return items.filter(item => item.type === 'image');
+        filtered = filtered.filter(item => item.type === 'image');
     } else if (currentFilter === 'audio') {
-        // Filter to only show video files (audio filter is handled at card level)
-        return items.filter(item => item.type === 'video');
+        filtered = filtered.filter(item => item.type === 'video');
     }
-    // 'all' - return all items
-    return items;
+    if (starFilterActive) {
+        filtered = filtered.filter(item => {
+            if (item.type === 'folder') return false;
+            if (!item.path) return false;
+            return getFileRating(item.path) > 0;
+        });
+    }
+    return filtered;
 }
 
 // Function to sort items based on current sorting preferences
@@ -3152,7 +3146,7 @@ function sortItems(items) {
             if (comparison === 0) {
                 comparison = a.name.localeCompare(b.name);
             }
-        } else if (sortType === 'rating' || currentFilter === 'stars') {
+        } else if (sortType === 'rating' || starFilterActive) {
             // Sort by star rating (highest to lowest: 5 to 1)
             const aRating = getFileRating(a.path);
             const bRating = getFileRating(b.path);
@@ -4554,9 +4548,10 @@ function updateStatusBar() {
 
     // Filter info
     const query = searchBox.value.trim();
-    const filterNames = { all: '', video: 'Videos', image: 'Images', audio: 'Audio', stars: 'Starred' };
+    const filterNames = { all: '', video: 'Videos', image: 'Images', audio: 'Audio' };
     const filterParts = [];
     if (currentFilter !== 'all') filterParts.push(filterNames[currentFilter] || currentFilter);
+    if (starFilterActive) filterParts.push('Starred');
     if (query) filterParts.push(`"${query}"`);
     statusFilterInfo.textContent = filterParts.length > 0 ? `[${filterParts.join(' + ')}]` : '';
 
@@ -4608,15 +4603,15 @@ function applyFilters() {
         } else if (currentFilter === 'audio') {
             // For audio filter, we show all videos (audio detection happens at media load)
             matchesFilter = item.type === 'video';
-        } else if (currentFilter === 'stars') {
-            if (item.type === 'folder') {
-                matchesFilter = false;
-            } else {
-                const rating = getFileRating(item.path);
-                matchesFilter = rating > 0;
-            }
         }
         if (!matchesFilter) return false;
+
+        // Star filter (independent toggle)
+        if (starFilterActive) {
+            if (item.type === 'folder') return false;
+            const rating = getFileRating(item.path);
+            if (rating <= 0) return false;
+        }
 
         // Advanced search filters
         if (advancedSearchFilters.width || advancedSearchFilters.height) {
@@ -4648,7 +4643,7 @@ function applyFilters() {
 
     // Sort by star rating if stars filter is active
     let sortedFiltered = filteredItems;
-    if (currentFilter === 'stars') {
+    if (starFilterActive) {
         sortedFiltered = [...filteredItems].sort((a, b) => {
             if (a.type === 'folder' && b.type === 'folder') return 0;
             if (a.type === 'folder') return 1;
@@ -5481,8 +5476,6 @@ filterAllBtn.addEventListener('click', () => {
     filterVideosBtn.classList.remove('active');
     filterImagesBtn.classList.remove('active');
     filterAudioBtn.classList.remove('active');
-    const filterStarsBtn = document.getElementById('filter-stars');
-    if (filterStarsBtn) filterStarsBtn.classList.remove('active');
     scheduleApplyFilters();
 });
 
@@ -5492,8 +5485,6 @@ filterVideosBtn.addEventListener('click', () => {
     filterVideosBtn.classList.add('active');
     filterImagesBtn.classList.remove('active');
     filterAudioBtn.classList.remove('active');
-    const filterStarsBtn = document.getElementById('filter-stars');
-    if (filterStarsBtn) filterStarsBtn.classList.remove('active');
     scheduleApplyFilters();
 });
 
@@ -5503,8 +5494,6 @@ filterImagesBtn.addEventListener('click', () => {
     filterVideosBtn.classList.remove('active');
     filterImagesBtn.classList.add('active');
     filterAudioBtn.classList.remove('active');
-    const filterStarsBtn = document.getElementById('filter-stars');
-    if (filterStarsBtn) filterStarsBtn.classList.remove('active');
     scheduleApplyFilters();
 });
 
@@ -5514,8 +5503,6 @@ filterAudioBtn.addEventListener('click', () => {
     filterVideosBtn.classList.remove('active');
     filterImagesBtn.classList.remove('active');
     filterAudioBtn.classList.add('active');
-    const filterStarsBtn = document.getElementById('filter-stars');
-    if (filterStarsBtn) filterStarsBtn.classList.remove('active');
     scheduleApplyFilters();
 });
 

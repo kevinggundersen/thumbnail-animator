@@ -3414,10 +3414,20 @@ function sortItems(items) {
             if (comparison === 0) {
                 comparison = a.name.localeCompare(b.name);
             }
+        } else if (sortType === 'size') {
+            const aSize = a.size || 0;
+            const bSize = b.size || 0;
+            comparison = aSize - bSize;
+            if (comparison === 0) comparison = a.name.localeCompare(b.name);
+        } else if (sortType === 'dimensions') {
+            const aPixels = (a.width || 0) * (a.height || 0);
+            const bPixels = (b.width || 0) * (b.height || 0);
+            comparison = aPixels - bPixels;
+            if (comparison === 0) comparison = a.name.localeCompare(b.name);
         }
         return sortOrder === 'ascending' ? comparison : -comparison;
     });
-    
+
     // Return folders first, then files
     return [...folders, ...files];
 }

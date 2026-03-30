@@ -1751,8 +1751,20 @@ function applyAdvancedSearch() {
         aspectRatio: aspectRatio,
         starRating: isNaN(starRating) ? null : starRating
     };
-    
-    applyFilters();
+
+    // Apply sort selection
+    const advancedSortVal = document.getElementById('advanced-sort-type')?.value;
+    if (advancedSortVal) {
+        sortType = advancedSortVal;
+        // Keep the settings panel in sync for name/date (the only values it supports)
+        const sortTypeSelect = document.getElementById('sort-type-select');
+        if (sortTypeSelect && (advancedSortVal === 'name' || advancedSortVal === 'date')) {
+            sortTypeSelect.value = advancedSortVal;
+        }
+        applySorting();
+    } else {
+        applyFilters();
+    }
     updateAdvancedSearchIndicator();
     const panel = document.getElementById('advanced-search-panel');
     if (panel) panel.classList.add('hidden');
@@ -1779,7 +1791,13 @@ function clearAdvancedSearch() {
     document.getElementById('search-aspect-ratio').value = '';
     document.getElementById('search-star-rating').value = '';
 
-    applyFilters();
+    // Reset sort to name
+    const advSortEl = document.getElementById('advanced-sort-type');
+    if (advSortEl) advSortEl.value = 'name';
+    sortType = 'name';
+    const sortTypeSelect = document.getElementById('sort-type-select');
+    if (sortTypeSelect) sortTypeSelect.value = 'name';
+    applySorting();
     updateAdvancedSearchIndicator();
 }
 
@@ -2208,7 +2226,14 @@ function initNewFeatures() {
 
     if (advancedSearchBtn) {
         advancedSearchBtn.addEventListener('click', () => {
-            if (advancedSearchPanel) advancedSearchPanel.classList.toggle('hidden');
+            if (advancedSearchPanel) {
+                advancedSearchPanel.classList.toggle('hidden');
+                // Sync sort dropdown to current sort state when opening
+                if (!advancedSearchPanel.classList.contains('hidden')) {
+                    const advSortEl = document.getElementById('advanced-sort-type');
+                    if (advSortEl) advSortEl.value = sortType || 'name';
+                }
+            }
         });
     }
 

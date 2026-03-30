@@ -1172,11 +1172,34 @@ header {
     padding: 4px;
     font-size: 16px;
     opacity: 0.6;
-    transition: opacity 0.2s;
+    transition: opacity 0.2s, color 0.2s;
 }
 
 .search-box-icon-btn:hover {
     opacity: 1;
+}
+
+.search-box-icon-btn.active {
+    color: var(--accent);
+    opacity: 1;
+}
+
+.filter-badge {
+    position: absolute;
+    top: -4px;
+    right: -4px;
+    background-color: var(--accent);
+    color: var(--bg-primary);
+    font-size: 9px;
+    font-weight: 700;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+    pointer-events: none;
 }
 
 #search-box:focus {
@@ -2387,11 +2410,39 @@ button:hover {
     animation: modal-enter 0.2s var(--ease-out-expo);
 }
 
-.advanced-search-content h3 {
-    margin: 0 0 20px 0;
+.advanced-search-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+}
+
+.advanced-search-header h3 {
+    margin: 0;
     color: var(--text-color);
     font-size: 18px;
     font-weight: bold;
+}
+
+.advanced-search-close-btn {
+    background: none;
+    border: none;
+    color: var(--text-color);
+    cursor: pointer;
+    padding: 0;
+    width: 30px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-sm);
+    opacity: 0.6;
+    transition: background-color 0.2s, opacity 0.2s;
+}
+
+.advanced-search-close-btn:hover {
+    background-color: var(--border-default);
+    opacity: 1;
 }
 
 .search-filter-group {
@@ -2399,6 +2450,34 @@ button:hover {
     display: flex;
     flex-direction: column;
     gap: 8px;
+}
+
+.search-filter-inline {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.search-filter-inline input,
+.search-filter-inline select {
+    flex: 1;
+    min-width: 0;
+}
+
+.search-filter-separator {
+    color: var(--text-muted);
+    font-size: 13px;
+    flex-shrink: 0;
+}
+
+.search-filter-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+}
+
+.search-filter-row .search-filter-group {
+    margin-bottom: 16px;
 }
 
 .search-filter-group label {
@@ -2433,10 +2512,6 @@ button:hover {
     width: 100%;
 }
 
-.search-filter-group span {
-    color: var(--text-color);
-    margin: 0 8px;
-}
 
 .advanced-search-buttons {
     display: flex;
@@ -2460,8 +2535,7 @@ button:hover {
     color: var(--bg-primary);
 }
 
-#clear-advanced-search,
-#close-advanced-search {
+#clear-advanced-search {
     background-color: transparent;
     color: var(--text-color);
     border: 1px solid var(--border-default);

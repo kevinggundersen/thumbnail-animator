@@ -160,7 +160,7 @@
             <div class="search-box-container">
                 <input type="text" id="search-box" placeholder="Search files..." autocomplete="off">
                 <button id="search-clear-btn" class="search-clear-btn" title="Clear search" style="display:none"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
-                <button id="advanced-search-btn" class="search-box-icon-btn" title="Advanced Search"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg></button>
+                <button id="advanced-search-btn" class="search-box-icon-btn" title="Advanced Search"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg></button>
             </div>
         </header>
         <div class="content-wrapper">
@@ -258,52 +258,64 @@
         </div>
         <div id="advanced-search-panel" class="advanced-search-panel hidden">
             <div class="advanced-search-content">
-                <h3>Advanced Search</h3>
-                <div class="search-filter-group">
-                    <label>File Size:</label>
-                    <select id="search-size-operator">
-                        <option value="">Any</option>
-                        <option value="<">Less than</option>
-                        <option value=">">Greater than</option>
-                        <option value="=">Equal to</option>
-                    </select>
-                    <input type="number" id="search-size-value" placeholder="Size in MB" step="0.1">
+                <div class="advanced-search-header">
+                    <h3>Advanced Search</h3>
+                    <button id="advanced-search-close-x" class="advanced-search-close-btn" title="Close"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
                 </div>
                 <div class="search-filter-group">
-                    <label>Date Range:</label>
-                    <input type="date" id="search-date-from" placeholder="From">
-                    <input type="date" id="search-date-to" placeholder="To">
+                    <label>File Size</label>
+                    <div class="search-filter-inline">
+                        <select id="search-size-operator">
+                            <option value="">Any</option>
+                            <option value="<">Less than</option>
+                            <option value=">">Greater than</option>
+                            <option value="=">Equal to</option>
+                        </select>
+                        <input type="number" id="search-size-value" placeholder="MB" step="0.1">
+                    </div>
                 </div>
                 <div class="search-filter-group">
-                    <label>Dimensions:</label>
-                    <input type="number" id="search-width" placeholder="Width">
-                    <span>x</span>
-                    <input type="number" id="search-height" placeholder="Height">
+                    <label>Date Range</label>
+                    <div class="search-filter-inline">
+                        <input type="date" id="search-date-from" placeholder="From">
+                        <span class="search-filter-separator">to</span>
+                        <input type="date" id="search-date-to" placeholder="To">
+                    </div>
                 </div>
                 <div class="search-filter-group">
-                    <label>Aspect Ratio:</label>
-                    <select id="search-aspect-ratio">
-                        <option value="">Any</option>
-                        <option value="16:9">16:9</option>
-                        <option value="4:3">4:3</option>
-                        <option value="1:1">1:1</option>
-                        <option value="9:16">9:16</option>
-                        <option value="21:9">21:9</option>
-                    </select>
+                    <label>Dimensions</label>
+                    <div class="search-filter-inline">
+                        <input type="number" id="search-width" placeholder="Width">
+                        <span class="search-filter-separator">&times;</span>
+                        <input type="number" id="search-height" placeholder="Height">
+                    </div>
+                </div>
+                <div class="search-filter-row">
+                    <div class="search-filter-group">
+                        <label>Aspect Ratio</label>
+                        <select id="search-aspect-ratio">
+                            <option value="">Any</option>
+                            <option value="16:9">16:9</option>
+                            <option value="4:3">4:3</option>
+                            <option value="1:1">1:1</option>
+                            <option value="9:16">9:16</option>
+                            <option value="21:9">21:9</option>
+                        </select>
+                    </div>
+                    <div class="search-filter-group">
+                        <label>Star Rating</label>
+                        <select id="search-star-rating">
+                            <option value="">Any</option>
+                            <option value="1">1 Star</option>
+                            <option value="2">2 Stars</option>
+                            <option value="3">3 Stars</option>
+                            <option value="4">4 Stars</option>
+                            <option value="5">5 Stars</option>
+                        </select>
+                    </div>
                 </div>
                 <div class="search-filter-group">
-                    <label>Star Rating:</label>
-                    <select id="search-star-rating">
-                        <option value="">Any</option>
-                        <option value="1">1 Star</option>
-                        <option value="2">2 Stars</option>
-                        <option value="3">3 Stars</option>
-                        <option value="4">4 Stars</option>
-                        <option value="5">5 Stars</option>
-                    </select>
-                </div>
-                <div class="search-filter-group">
-                    <label>Sort By:</label>
+                    <label>Sort By</label>
                     <select id="advanced-sort-type">
                         <option value="name">Name</option>
                         <option value="date">Date</option>
@@ -315,7 +327,6 @@
                 <div class="advanced-search-buttons">
                     <button id="apply-advanced-search" class="search-btn">Apply</button>
                     <button id="clear-advanced-search" class="search-btn">Clear</button>
-                    <button id="close-advanced-search" class="search-btn">Close</button>
                 </div>
             </div>
         </div>

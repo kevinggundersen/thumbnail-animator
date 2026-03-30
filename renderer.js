@@ -4541,6 +4541,11 @@ function updateStatusBar() {
         const sortLabel = { none: 'Starred', desc: 'Starred ▼', asc: 'Starred ▲' };
         filterParts.push(sortLabel[starSortOrder] || 'Starred');
     }
+    if (advancedSearchFilters.sizeValue !== null) filterParts.push('Size');
+    if (advancedSearchFilters.dateFrom !== null || advancedSearchFilters.dateTo !== null) filterParts.push('Date');
+    if (advancedSearchFilters.width !== null || advancedSearchFilters.height !== null) filterParts.push('Dimensions');
+    if (advancedSearchFilters.aspectRatio !== '') filterParts.push(advancedSearchFilters.aspectRatio);
+    if (advancedSearchFilters.starRating !== null && advancedSearchFilters.starRating !== '') filterParts.push(`${advancedSearchFilters.starRating}+ Stars`);
     if (query) filterParts.push(`"${query}"`);
     statusFilterInfo.textContent = filterParts.length > 0 ? `[${filterParts.join(' + ')}]` : '';
 

@@ -1745,6 +1745,7 @@ function applyAdvancedSearch() {
     };
     
     applyFilters();
+    updateAdvancedSearchIndicator();
     const panel = document.getElementById('advanced-search-panel');
     if (panel) panel.classList.add('hidden');
 }
@@ -1760,7 +1761,7 @@ function clearAdvancedSearch() {
         aspectRatio: '',
         starRating: null
     };
-    
+
     document.getElementById('search-size-operator').value = '';
     document.getElementById('search-size-value').value = '';
     document.getElementById('search-date-from').value = '';
@@ -1769,8 +1770,35 @@ function clearAdvancedSearch() {
     document.getElementById('search-height').value = '';
     document.getElementById('search-aspect-ratio').value = '';
     document.getElementById('search-star-rating').value = '';
-    
+
     applyFilters();
+    updateAdvancedSearchIndicator();
+}
+
+function updateAdvancedSearchIndicator() {
+    const btn = document.getElementById('advanced-search-btn');
+    if (!btn) return;
+
+    let count = 0;
+    if (advancedSearchFilters.sizeValue !== null) count++;
+    if (advancedSearchFilters.dateFrom !== null || advancedSearchFilters.dateTo !== null) count++;
+    if (advancedSearchFilters.width !== null || advancedSearchFilters.height !== null) count++;
+    if (advancedSearchFilters.aspectRatio !== '') count++;
+    if (advancedSearchFilters.starRating !== null && advancedSearchFilters.starRating !== '') count++;
+
+    btn.classList.toggle('active', count > 0);
+
+    let badge = btn.querySelector('.filter-badge');
+    if (count > 0) {
+        if (!badge) {
+            badge = document.createElement('span');
+            badge.className = 'filter-badge';
+            btn.appendChild(badge);
+        }
+        badge.textContent = count;
+    } else if (badge) {
+        badge.remove();
+    }
 }
 
 // File organization
@@ -2168,25 +2196,34 @@ function initNewFeatures() {
     const advancedSearchPanel = document.getElementById('advanced-search-panel');
     const applyAdvancedSearchBtn = document.getElementById('apply-advanced-search');
     const clearAdvancedSearchBtn = document.getElementById('clear-advanced-search');
-    const closeAdvancedSearchBtn = document.getElementById('close-advanced-search');
-    
+    const advancedSearchCloseX = document.getElementById('advanced-search-close-x');
+
     if (advancedSearchBtn) {
         advancedSearchBtn.addEventListener('click', () => {
             if (advancedSearchPanel) advancedSearchPanel.classList.toggle('hidden');
         });
     }
-    
+
     if (applyAdvancedSearchBtn) {
         applyAdvancedSearchBtn.addEventListener('click', applyAdvancedSearch);
     }
-    
+
     if (clearAdvancedSearchBtn) {
         clearAdvancedSearchBtn.addEventListener('click', clearAdvancedSearch);
     }
-    
-    if (closeAdvancedSearchBtn) {
-        closeAdvancedSearchBtn.addEventListener('click', () => {
+
+    if (advancedSearchCloseX) {
+        advancedSearchCloseX.addEventListener('click', () => {
             if (advancedSearchPanel) advancedSearchPanel.classList.add('hidden');
+        });
+    }
+
+    // Click outside to close advanced search
+    if (advancedSearchPanel) {
+        advancedSearchPanel.addEventListener('click', (e) => {
+            if (e.target === advancedSearchPanel) {
+                advancedSearchPanel.classList.add('hidden');
+            }
         });
     }
     

@@ -1216,8 +1216,10 @@ button:hover {
     position: relative;
     box-shadow: var(--shadow-sm);
     border: 1px solid var(--border-subtle);
-    transition: transform 0.2s var(--ease-out), box-shadow 0.2s ease, border-color 0.2s ease, left 0.3s ease, top 0.3s ease;
+    transition: transform 0.2s var(--ease-out), box-shadow 0.2s ease, border-color 0.2s ease;
     contain: layout style paint;
+    content-visibility: auto;
+    contain-intrinsic-size: auto 300px;
 }
 
 /* Gradient overlay for card info */
@@ -1243,7 +1245,7 @@ button:hover {
     padding-bottom: 100%; /* Square aspect ratio for folders */
     position: relative;
     box-shadow: var(--shadow-sm);
-    transition: transform 0.2s var(--ease-out), box-shadow 0.2s ease, border-color 0.2s ease, left 0.3s ease, top 0.3s ease;
+    transition: transform 0.2s var(--ease-out), box-shadow 0.2s ease, border-color 0.2s ease;
     cursor: pointer;
     border: 1px solid var(--border-default);
     display: flex;
@@ -1347,8 +1349,7 @@ button:hover {
     height: 100%;
     object-fit: cover;
     display: block;
-    /* Optimize for lower VRAM usage */
-    will-change: contents;
+    /* GPU compositing layer */
     backface-visibility: hidden;
     transform: translateZ(0);
     /* Reduce rendering quality to save VRAM */

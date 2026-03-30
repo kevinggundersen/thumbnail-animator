@@ -366,8 +366,8 @@ function vsGetVisibleRange(scrollTop, viewportHeight) {
 
     // Find startIndex: first item whose bottom edge (top + height) > visibleTop
     let startIndex = 0;
-    // Simple linear scan is fine for most cases; binary search for very large lists
-    if (itemCount > 5000) {
+    // Binary search for efficient lookup; linear scan only for tiny lists
+    if (itemCount > 500) {
         // Binary search for start
         let lo = 0, hi = itemCount - 1;
         while (lo < hi) {
@@ -637,11 +637,10 @@ function vsPopulateExistingCard(card, item) {
 function vsOnScroll() {
     if (!vsEnabled || isWindowMinimized) return;
 
-    invalidateScrollCaches();
-
     if (vsScrollRafId) return; // Already scheduled
     vsScrollRafId = requestAnimationFrame(() => {
         vsScrollRafId = null;
+        invalidateScrollCaches();
         const scrollTop = gridContainer.scrollTop;
         const viewportHeight = gridContainer.clientHeight;
         const { startIndex, endIndex } = vsGetVisibleRange(scrollTop, viewportHeight);
@@ -650,10 +649,14 @@ function vsOnScroll() {
         if (startIndex !== vsLastStartIndex || endIndex !== vsLastEndIndex) {
             vsUpdateDOM(startIndex, endIndex);
         }
-
-        // Also trigger media cleanup/loading cycle
-        scheduleScrollCleanup();
     });
+
+    // Debounce cleanup — only run after scrolling settles, not every frame
+    clearTimeout(cleanupScrollTimeout);
+    cleanupScrollTimeout = setTimeout(() => {
+        invalidateScrollCaches();
+        runCleanupCycle();
+    }, SCROLL_DEBOUNCE_MS);
 }
 
 /**
@@ -705,7 +708,7 @@ function vsInit(items) {
     vsResizeHandler = () => {
         cachedViewportBounds = null;
         viewportBoundsCacheTime = 0;
-        cardRectCache = new WeakMap();
+        cardRectCacheGeneration++;
         clearTimeout(resizeTimeout);
         resizeTimeout = setTimeout(() => {
             vsRecalculate();
@@ -1894,7 +1897,7 @@ function scheduleCleanupCycle() {
 function invalidateScrollCaches() {
     cachedViewportBounds = null;
     viewportBoundsCacheTime = 0;
-    cardRectCache = new WeakMap();
+    cardRectCacheGeneration++;
 }
 
 function scheduleScrollCleanup() {
@@ -2304,6 +2307,7 @@ let cachedViewportBounds = null;
 let viewportBoundsCacheTime = 0;
 let cachedMediaCounts = { videos: 0, images: 0, timestamp: 0 };
 let cardRectCache = new WeakMap(); // Cache getBoundingClientRect results
+let cardRectCacheGeneration = 0; // Increment to invalidate without creating new WeakMap
 const imageThumbnailUrlCache = new Map();
 const imageThumbnailRequests = new Map();
 const videoPosterUrlCache = new Map();
@@ -2489,11 +2493,11 @@ function isCardInPreloadZone(card) {
 function getCachedCardRect(card) {
     const now = Date.now();
     const cached = cardRectCache.get(card);
-    if (cached && (now - cached.timestamp) < CARD_RECT_CACHE_TTL) {
+    if (cached && cached.generation === cardRectCacheGeneration && (now - cached.timestamp) < CARD_RECT_CACHE_TTL) {
         return cached.rect;
     }
     const rect = card.getBoundingClientRect();
-    cardRectCache.set(card, { rect, timestamp: now });
+    cardRectCache.set(card, { rect, timestamp: now, generation: cardRectCacheGeneration });
     return rect;
 }
 
@@ -2887,7 +2891,7 @@ function initMasonry() {
         // Invalidate viewport cache on resize
         cachedViewportBounds = null;
         viewportBoundsCacheTime = 0;
-        cardRectCache = new WeakMap(); // Clear rect cache on resize
+        cardRectCacheGeneration++; // Invalidate rect cache on resize
         
         clearTimeout(resizeTimeout);
         resizeTimeout = setTimeout(() => {
@@ -3461,7 +3465,7 @@ function renderItems(items) {
     lastCleanupTime = 0;
     // Clear caches
     cachedMediaCounts = { videos: 0, images: 0, timestamp: 0 };
-    cardRectCache = new WeakMap();
+    cardRectCacheGeneration++;
     cachedViewportBounds = null;
 
     // Clean up masonry spacer if it exists

@@ -6871,7 +6871,7 @@ contextMenu.addEventListener('click', async (e) => {
             
         case 'delete':
             try {
-                if (confirm(`Are you sure you want to delete "${fileName}"?`)) {
+                if (confirm(`Move "${fileName}" to Recycle Bin?`)) {
                     setStatusActivity(`Deleting ${fileName}...`);
                     const result = await window.electronAPI.deleteFile(filePath);
                     setStatusActivity('');

@@ -721,7 +721,7 @@ ipcMain.handle('rename-file', async (event, filePath, newName) => {
 
 ipcMain.handle('delete-file', async (event, filePath) => {
     try {
-        await fs.promises.unlink(filePath);
+        await shell.trashItem(filePath);
         return { success: true };
     } catch (error) {
         console.error('Error deleting file:', error);

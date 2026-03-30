@@ -155,8 +155,8 @@ function initKeyboardShortcuts() {
         }
 
         // Number keys: Switch filters
-        if (e.key >= '1' && e.key <= '4') {
-            const filterMap = { '1': 'all', '2': 'video', '3': 'image', '4': 'audio' };
+        if (e.key >= '1' && e.key <= '3') {
+            const filterMap = { '1': 'all', '2': 'video', '3': 'image' };
             const filter = filterMap[e.key];
             if (filter) {
                 e.preventDefault();
@@ -306,12 +306,12 @@ function switchFilter(filter) {
     filterAllBtn.classList.remove('active');
     filterVideosBtn.classList.remove('active');
     filterImagesBtn.classList.remove('active');
-    filterAudioBtn.classList.remove('active');
+
     
     if (filter === 'all') filterAllBtn.classList.add('active');
     else if (filter === 'video') filterVideosBtn.classList.add('active');
     else if (filter === 'image') filterImagesBtn.classList.add('active');
-    else if (filter === 'audio') filterAudioBtn.classList.add('active');
+
     
     applyFilters();
     focusedCardIndex = -1; // Reset focus
@@ -683,7 +683,7 @@ function switchToTab(tabId) {
                 filterAllBtn.classList.add('active');
                 filterVideosBtn.classList.remove('active');
                 filterImagesBtn.classList.remove('active');
-                filterAudioBtn.classList.remove('active');
+            
                 sidebarExpandToPath(tab.path);
             } else {
                 // No DOM snapshot - fall back to content cache or full navigation
@@ -704,7 +704,7 @@ function switchToTab(tabId) {
                         filterAllBtn.classList.add('active');
                         filterVideosBtn.classList.remove('active');
                         filterImagesBtn.classList.remove('active');
-                        filterAudioBtn.classList.remove('active');
+                    
 
                         const filteredItems = filterItems(tabCache.items);
                         const sortedItems = sortItems(filteredItems);

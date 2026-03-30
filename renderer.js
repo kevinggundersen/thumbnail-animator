@@ -974,6 +974,7 @@ function setStatusActivity(msg) {
 
 // Debounced clear for "Loading media..." — fires after media load burst settles
 let _mediaSettleTimer = null;
+
 function scheduleMediaLoadSettle() {
     clearTimeout(_mediaSettleTimer);
     _mediaSettleTimer = setTimeout(() => {
@@ -990,7 +991,7 @@ document.querySelectorAll('.status-keyboard-hint').forEach(el => {
 const filterAllBtn = document.getElementById('filter-all');
 const filterVideosBtn = document.getElementById('filter-videos');
 const filterImagesBtn = document.getElementById('filter-images');
-const filterAudioBtn = document.getElementById('filter-audio');
+
 const settingsBtn = document.getElementById('settings-btn');
 const settingsDropdown = document.getElementById('settings-dropdown');
 const layoutModeToggle = document.getElementById('layout-mode-toggle');
@@ -1038,7 +1039,7 @@ let activeDimensionHydrationToken = 0;
 let currentItems = [];
 
 // Track current filter state
-let currentFilter = 'all'; // 'all', 'video', 'image', 'audio'
+let currentFilter = 'all'; // 'all', 'video', 'image'
 let starFilterActive = false;
 let starSortOrder = 'none'; // 'none' (use settings sort), 'desc' (high to low), 'asc' (low to high)
 
@@ -3096,8 +3097,6 @@ function filterItems(items) {
         filtered = filtered.filter(item => item.type === 'video');
     } else if (currentFilter === 'image') {
         filtered = filtered.filter(item => item.type === 'image');
-    } else if (currentFilter === 'audio') {
-        filtered = filtered.filter(item => item.type === 'video');
     }
     if (starFilterActive) {
         filtered = filtered.filter(item => {
@@ -3821,28 +3820,22 @@ function createSoundLabel(card) {
     if (card.querySelector('.sound-label')) {
         return;
     }
-    
-    // Mark card as having audio in dataset (for instant filtering)
+
+    // Mark card as having audio in dataset
     card.dataset.hasAudio = 'true';
-    
+
     // Create sound label
     const soundLabel = document.createElement('div');
     soundLabel.className = 'sound-label';
     soundLabel.textContent = 'AUDIO';
     soundLabel.style.backgroundColor = hexToRgba('#4ecdc4', 0.87); // Teal color similar to extension labels
-    
+
     // Insert before the video-info element
     const info = card.querySelector('.video-info');
     if (info) {
         card.insertBefore(soundLabel, info);
     } else {
         card.appendChild(soundLabel);
-    }
-    
-    // If audio filter is active, re-apply filters to show this video immediately
-    if (currentFilter === 'audio') {
-        // Re-apply filters synchronously since we're checking dataset attribute, not DOM element
-        applyFilters();
     }
 }
 
@@ -3940,7 +3933,7 @@ function createVideoForCard(card, videoUrl) {
         // Check if video has audio tracks (cross-browser compatible)
         const checkAudio = () => {
             let hasAudio = false;
-            
+
             // Method 1: Check audioTracks API (Chrome, Edge, Safari)
             if (video.audioTracks && video.audioTracks.length > 0) {
                 hasAudio = true;
@@ -3953,22 +3946,15 @@ function createVideoForCard(card, videoUrl) {
             else if (video.webkitAudioDecodedByteCount !== undefined && video.webkitAudioDecodedByteCount > 0) {
                 hasAudio = true;
             }
-            
+
             if (hasAudio) {
                 createSoundLabel(card);
-            } else {
-                // Explicitly mark as no audio - this will hide the card if audio filter is active
-                card.dataset.hasAudio = 'false';
-                // If audio filter is active, re-apply filters to hide videos without audio
-                if (currentFilter === 'audio') {
-                    applyFilters();
-                }
             }
         };
-        
+
         // Check immediately when metadata loads
         checkAudio();
-        
+
         // Also check when video can play (more reliable for some browsers)
         video.addEventListener('canplay', checkAudio, { once: true });
         scheduleMediaLoadSettle();
@@ -4603,9 +4589,6 @@ function applyFilters() {
             } else {
                 matchesFilter = isImage;
             }
-        } else if (currentFilter === 'audio') {
-            // For audio filter, we show all videos (audio detection happens at media load)
-            matchesFilter = item.type === 'video';
         }
         if (!matchesFilter) return false;
 
@@ -5409,7 +5392,7 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
         filterAllBtn.classList.add('active');
         filterVideosBtn.classList.remove('active');
         filterImagesBtn.classList.remove('active');
-        filterAudioBtn.classList.remove('active');
+    
         loadVideos(folderPath, !forceReload); // Use cache unless forcing reload
 
         // Sync sidebar tree with current folder — expand tree then highlight
@@ -5478,7 +5461,7 @@ filterAllBtn.addEventListener('click', () => {
     filterAllBtn.classList.add('active');
     filterVideosBtn.classList.remove('active');
     filterImagesBtn.classList.remove('active');
-    filterAudioBtn.classList.remove('active');
+
     scheduleApplyFilters();
 });
 
@@ -5487,7 +5470,7 @@ filterVideosBtn.addEventListener('click', () => {
     filterAllBtn.classList.remove('active');
     filterVideosBtn.classList.add('active');
     filterImagesBtn.classList.remove('active');
-    filterAudioBtn.classList.remove('active');
+
     scheduleApplyFilters();
 });
 
@@ -5496,18 +5479,10 @@ filterImagesBtn.addEventListener('click', () => {
     filterAllBtn.classList.remove('active');
     filterVideosBtn.classList.remove('active');
     filterImagesBtn.classList.add('active');
-    filterAudioBtn.classList.remove('active');
+
     scheduleApplyFilters();
 });
 
-filterAudioBtn.addEventListener('click', () => {
-    currentFilter = 'audio';
-    filterAllBtn.classList.remove('active');
-    filterVideosBtn.classList.remove('active');
-    filterImagesBtn.classList.remove('active');
-    filterAudioBtn.classList.add('active');
-    scheduleApplyFilters();
-});
 
 // Settings button event listener
 settingsBtn.addEventListener('click', (e) => {

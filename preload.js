@@ -29,5 +29,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     generateImageThumbnail: (filePath, maxSize) => ipcRenderer.invoke('generate-image-thumbnail', filePath, maxSize),
     scanFileDimensions: (files) => ipcRenderer.invoke('scan-file-dimensions', files),
     hasFfmpeg: () => ipcRenderer.invoke('has-ffmpeg'),
-    generateThumbnailBatch: (items) => ipcRenderer.invoke('generate-thumbnails-batch', items)
+    generateThumbnailBatch: (items) => ipcRenderer.invoke('generate-thumbnails-batch', items),
+    // Duplicate detection
+    scanDuplicates: (folderPath, options) => ipcRenderer.invoke('scan-duplicates', folderPath, options),
+    deleteFilesBatch: (filePaths) => ipcRenderer.invoke('delete-files-batch', filePaths),
+    onDuplicateScanProgress: (callback) => ipcRenderer.on('duplicate-scan-progress', callback),
+    removeDuplicateScanProgressListener: () => ipcRenderer.removeAllListeners('duplicate-scan-progress')
 });

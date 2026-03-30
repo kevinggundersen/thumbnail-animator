@@ -41,6 +41,8 @@ function initKeyboardShortcuts() {
                 closeLightbox();
             } else if (!renameDialog.classList.contains('hidden')) {
                 handleRenameCancel();
+            } else if (!document.getElementById('duplicates-modal').classList.contains('hidden')) {
+                closeDuplicatesModal();
             } else if (!toolsMenuDropdown.classList.contains('hidden')) {
                 toolsMenuDropdown.classList.add('hidden');
             }
@@ -2829,6 +2831,496 @@ function initNewFeatures() {
 // Hook into navigateToFolder to start watching (will be called after navigation completes)
 // This is handled in the navigateToFolder function itself
 
+// ==================== DUPLICATE DETECTION ====================
+
+let duplicateGroups = [];
+let duplicateMarkedForDeletion = new Set();
+let duplicateScanActive = false;
+
+function initDuplicateDetection() {
+    const btn = document.getElementById('find-duplicates-btn');
+    const modal = document.getElementById('duplicates-modal');
+    const closeBtn = document.getElementById('duplicates-modal-close');
+    const thresholdInput = document.getElementById('duplicates-threshold');
+    const thresholdValue = document.getElementById('duplicates-threshold-value');
+    const highlightBtn = document.getElementById('duplicates-highlight-btn');
+    const deleteBtn = document.getElementById('duplicates-delete-btn');
+
+    if (!btn || !modal) return;
+
+    btn.addEventListener('click', () => {
+        if (!currentFolderPath) return;
+        // Close tools menu
+        const toolsMenu = document.getElementById('tools-menu');
+        if (toolsMenu) toolsMenu.classList.add('hidden');
+        openDuplicatesModal();
+    });
+
+    closeBtn.addEventListener('click', closeDuplicatesModal);
+
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) closeDuplicatesModal();
+    });
+
+    thresholdInput.addEventListener('input', () => {
+        const val = parseInt(thresholdInput.value);
+        thresholdValue.textContent = Math.round(((64 - val) / 64) * 100) + '%';
+    });
+
+    highlightBtn.addEventListener('click', () => {
+        highlightDuplicatesInGrid();
+        closeDuplicatesModal();
+    });
+
+    deleteBtn.addEventListener('click', async () => {
+        if (duplicateMarkedForDeletion.size === 0) return;
+        const count = duplicateMarkedForDeletion.size;
+        if (!confirm(`Move ${count} file(s) to trash?`)) return;
+
+        deleteBtn.disabled = true;
+        deleteBtn.textContent = 'Deleting...';
+
+        const result = await window.electronAPI.deleteFilesBatch([...duplicateMarkedForDeletion]);
+        if (result.failed && result.failed.length > 0) {
+            alert(`Failed to delete ${result.failed.length} file(s).`);
+        }
+
+        duplicateMarkedForDeletion.clear();
+        closeDuplicatesModal();
+        clearDuplicateHighlights();
+
+        if (currentFolderPath) {
+            loadVideos(currentFolderPath);
+        }
+    });
+}
+
+function openDuplicatesModal() {
+    const modal = document.getElementById('duplicates-modal');
+    const scanning = document.getElementById('duplicates-scanning');
+    const results = document.getElementById('duplicates-results');
+    const empty = document.getElementById('duplicates-empty');
+    const highlightBtn = document.getElementById('duplicates-highlight-btn');
+    const deleteBtn = document.getElementById('duplicates-delete-btn');
+    const summary = document.getElementById('duplicates-summary');
+
+    modal.classList.remove('hidden');
+    scanning.classList.remove('hidden');
+    results.innerHTML = '';
+    empty.classList.add('hidden');
+    highlightBtn.disabled = true;
+    deleteBtn.disabled = true;
+    deleteBtn.textContent = 'Delete Selected (0)';
+    summary.textContent = '';
+    duplicateGroups = [];
+    duplicateMarkedForDeletion.clear();
+    duplicateScanActive = true;
+
+    startDuplicateScan();
+}
+
+function closeDuplicatesModal() {
+    const modal = document.getElementById('duplicates-modal');
+    modal.classList.add('hidden');
+    duplicateScanActive = false;
+    window.electronAPI.removeDuplicateScanProgressListener();
+}
+
+async function startDuplicateScan() {
+    const progressFill = document.getElementById('duplicates-progress-fill');
+    const progressText = document.getElementById('duplicates-progress-text');
+    const scanning = document.getElementById('duplicates-scanning');
+    const thresholdInput = document.getElementById('duplicates-threshold');
+    const threshold = parseInt(thresholdInput.value);
+
+    progressFill.style.width = '0%';
+    progressText.textContent = 'Scanning files...';
+
+    window.electronAPI.removeDuplicateScanProgressListener();
+    window.electronAPI.onDuplicateScanProgress((event, data) => {
+        if (!duplicateScanActive) return;
+        if (data.phase === 'hashing' && data.total > 0) {
+            const pct = Math.round((data.current / data.total) * 100);
+            progressFill.style.width = pct + '%';
+            progressText.textContent = `Hashing files... ${data.current}/${data.total}`;
+        } else if (data.phase === 'comparing') {
+            progressFill.style.width = '100%';
+            progressText.textContent = 'Comparing hashes...';
+        }
+    });
+
+    try {
+        const result = await window.electronAPI.scanDuplicates(currentFolderPath, { threshold });
+        if (!duplicateScanActive) return;
+
+        scanning.classList.add('hidden');
+        window.electronAPI.removeDuplicateScanProgressListener();
+
+        const allGroups = [];
+        if (result.exactGroups) {
+            for (const group of result.exactGroups) {
+                allGroups.push({ type: 'exact', files: group });
+            }
+        }
+        if (result.similarGroups) {
+            for (const group of result.similarGroups) {
+                allGroups.push({ type: 'similar', files: group });
+            }
+        }
+
+        duplicateGroups = allGroups;
+        renderDuplicateGroups(allGroups);
+    } catch (error) {
+        scanning.classList.add('hidden');
+        console.error('Duplicate scan failed:', error);
+        const empty = document.getElementById('duplicates-empty');
+        empty.querySelector('p').textContent = 'Scan failed: ' + error.message;
+        empty.classList.remove('hidden');
+    }
+}
+
+function renderDuplicateGroups(groups) {
+    const container = document.getElementById('duplicates-results');
+    const empty = document.getElementById('duplicates-empty');
+    const highlightBtn = document.getElementById('duplicates-highlight-btn');
+    const summary = document.getElementById('duplicates-summary');
+
+    container.innerHTML = '';
+
+    if (groups.length === 0) {
+        empty.classList.remove('hidden');
+        summary.textContent = 'No duplicates found';
+        return;
+    }
+
+    empty.classList.add('hidden');
+    highlightBtn.disabled = false;
+
+    let totalFiles = 0;
+    let totalGroups = groups.length;
+
+    groups.forEach((group, groupIdx) => {
+        totalFiles += group.files.length;
+        const groupEl = document.createElement('div');
+        groupEl.className = 'duplicate-group';
+        groupEl.dataset.groupId = groupIdx;
+
+        const typeLabel = group.type === 'exact' ? 'Exact Match' : 'Similar';
+        const header = document.createElement('div');
+        header.className = 'duplicate-group-header';
+        header.innerHTML = `
+            <span class="duplicate-group-label">Group ${groupIdx + 1} (${typeLabel}) &mdash; ${group.files.length} files</span>
+        `;
+
+        const keepBestBtn = document.createElement('button');
+        keepBestBtn.className = 'duplicate-group-keep-best';
+        keepBestBtn.textContent = 'Keep Largest';
+        keepBestBtn.addEventListener('click', () => keepBestInGroup(groupIdx));
+        header.appendChild(keepBestBtn);
+
+        groupEl.appendChild(header);
+
+        const itemsContainer = document.createElement('div');
+        itemsContainer.className = 'duplicate-group-items';
+
+        for (const file of group.files) {
+            const itemEl = createDuplicateItemEl(file, groupIdx);
+            itemsContainer.appendChild(itemEl);
+        }
+
+        groupEl.appendChild(itemsContainer);
+        container.appendChild(groupEl);
+
+        // Auto-keep priority: 1) star rating, 2) no copy marker in name
+        const ratedFiles = group.files.filter(f => getFileRating(f.path) > 0);
+        if (ratedFiles.length >= 1) {
+            let best = ratedFiles[0];
+            for (const f of ratedFiles) {
+                if (getFileRating(f.path) > getFileRating(best.path)) best = f;
+            }
+            keepFileInGroup(best.path, groupIdx);
+        } else {
+            // No rated files — prefer the original (no copy marker)
+            const copyPattern = /[\s\-_]*\((\d+)\)\s*(?=\.[^.]+$)/;
+            const originals = group.files.filter(f => !copyPattern.test(f.name));
+            const copies = group.files.filter(f => copyPattern.test(f.name));
+            if (originals.length >= 1 && copies.length >= 1) {
+                // Keep the largest original
+                let best = originals[0];
+                for (const f of originals) {
+                    if (f.size > best.size) best = f;
+                }
+                keepFileInGroup(best.path, groupIdx);
+            }
+        }
+    });
+
+    summary.textContent = `${totalGroups} group(s), ${totalFiles} files`;
+}
+
+function createDuplicateItemEl(file, groupIdx) {
+    const el = document.createElement('div');
+    el.className = 'duplicate-item';
+    el.dataset.path = file.path;
+    el.dataset.groupId = groupIdx;
+
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.className = 'duplicate-select';
+    checkbox.addEventListener('change', () => {
+        if (checkbox.checked) {
+            duplicateMarkedForDeletion.add(file.path);
+            el.classList.add('marked-for-deletion');
+            el.classList.remove('kept');
+        } else {
+            duplicateMarkedForDeletion.delete(file.path);
+            el.classList.remove('marked-for-deletion');
+        }
+        updateDeleteButton();
+    });
+
+    const thumb = document.createElement('img');
+    thumb.className = 'duplicate-thumb';
+    // Use file URL for thumbnail
+    const fileUrl = file.path.replace(/\\/g, '/');
+    thumb.src = `file:///${fileUrl}`;
+    thumb.alt = file.name;
+    thumb.loading = 'lazy';
+    thumb.onerror = () => {
+        thumb.style.display = 'none';
+    };
+
+    const info = document.createElement('div');
+    info.className = 'duplicate-info';
+
+    const nameRow = document.createElement('span');
+    nameRow.className = 'duplicate-name';
+    nameRow.title = file.name;
+    nameRow.textContent = file.name;
+    const copyPattern = /[\s\-_]*\((\d+)\)\s*(?=\.[^.]+$)/;
+    if (copyPattern.test(file.name)) {
+        const copyTag = document.createElement('span');
+        copyTag.className = 'duplicate-copy-tag';
+        copyTag.textContent = 'Copy';
+        nameRow.appendChild(copyTag);
+    }
+
+    const details = document.createElement('span');
+    details.className = 'duplicate-details';
+    details.textContent = formatFileSize(file.size) + ' \u2014 ' + new Date(file.mtime).toLocaleDateString();
+
+    const pathEl = document.createElement('span');
+    pathEl.className = 'duplicate-path';
+    pathEl.textContent = file.path;
+    pathEl.title = file.path;
+
+    info.appendChild(nameRow);
+    info.appendChild(details);
+    info.appendChild(pathEl);
+
+    // Star rating indicator
+    const rating = getFileRating(file.path);
+    if (rating > 0) {
+        const ratingEl = document.createElement('div');
+        ratingEl.className = 'duplicate-rating';
+        for (let i = 0; i < rating; i++) {
+            const star = document.createElement('span');
+            star.innerHTML = iconFilled('star', 12, 'var(--warning)');
+            ratingEl.appendChild(star);
+        }
+        info.appendChild(ratingEl);
+    }
+
+    const keepBtn = document.createElement('button');
+    keepBtn.className = 'duplicate-keep-btn';
+    keepBtn.textContent = 'Keep';
+    keepBtn.addEventListener('click', () => keepFileInGroup(file.path, groupIdx));
+
+    el.appendChild(checkbox);
+    el.appendChild(thumb);
+    el.appendChild(info);
+    el.appendChild(keepBtn);
+
+    // Hover preview — reuses the recent-file-preview pattern
+    const ext = file.name.split('.').pop().toLowerCase();
+    const videoExts = ['mp4', 'webm', 'ogg', 'mov'];
+    const isVideo = videoExts.includes(ext);
+
+    el.addEventListener('mouseenter', () => {
+        const preview = document.createElement('div');
+        preview.className = 'duplicate-hover-preview';
+
+        if (isVideo) {
+            const vid = document.createElement('video');
+            vid.src = `file:///${file.path.replace(/\\/g, '/')}`;
+            vid.muted = true;
+            vid.loop = true;
+            vid.play().catch(() => {});
+            preview.appendChild(vid);
+        } else {
+            const img = document.createElement('img');
+            img.src = `file:///${file.path.replace(/\\/g, '/')}`;
+            preview.appendChild(img);
+        }
+
+        document.body.appendChild(preview);
+
+        const itemRect = el.getBoundingClientRect();
+        let top = itemRect.top;
+        preview.style.top = `${top}px`;
+        preview.style.visibility = 'hidden';
+        preview.style.display = 'block';
+
+        setTimeout(() => {
+            const previewRect = preview.getBoundingClientRect();
+            // Position to the right of the modal by default
+            let left = itemRect.right + 10;
+            if (left + previewRect.width > window.innerWidth) {
+                left = itemRect.left - previewRect.width - 10;
+            }
+            if (left < 0) left = 10;
+            if (top + previewRect.height > window.innerHeight) {
+                top = window.innerHeight - previewRect.height - 10;
+                preview.style.top = `${top}px`;
+            }
+            preview.style.left = `${left}px`;
+            preview.style.visibility = 'visible';
+        }, 10);
+
+        el._previewId = 'dup-preview-' + Date.now();
+        preview.id = el._previewId;
+    });
+
+    el.addEventListener('mouseleave', () => {
+        if (el._previewId) {
+            const p = document.getElementById(el._previewId);
+            if (p) p.remove();
+            el._previewId = null;
+        }
+    });
+
+    return el;
+}
+
+function formatFileSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+}
+
+function keepBestInGroup(groupIdx) {
+    const group = duplicateGroups[groupIdx];
+    if (!group) return;
+
+    // Find the largest file
+    let largest = group.files[0];
+    for (const f of group.files) {
+        if (f.size > largest.size) largest = f;
+    }
+
+    // Mark all others for deletion
+    for (const f of group.files) {
+        if (f.path === largest.path) {
+            duplicateMarkedForDeletion.delete(f.path);
+        } else {
+            duplicateMarkedForDeletion.add(f.path);
+        }
+    }
+
+    // Update UI
+    const groupEl = document.querySelector(`.duplicate-group[data-group-id="${groupIdx}"]`);
+    if (groupEl) {
+        const items = groupEl.querySelectorAll('.duplicate-item');
+        items.forEach(item => {
+            const path = item.dataset.path;
+            const cb = item.querySelector('.duplicate-select');
+            if (duplicateMarkedForDeletion.has(path)) {
+                cb.checked = true;
+                item.classList.add('marked-for-deletion');
+                item.classList.remove('kept');
+            } else {
+                cb.checked = false;
+                item.classList.remove('marked-for-deletion');
+                item.classList.add('kept');
+            }
+        });
+    }
+    updateDeleteButton();
+}
+
+function keepFileInGroup(filePath, groupIdx) {
+    const group = duplicateGroups[groupIdx];
+    if (!group) return;
+
+    // Mark all others for deletion, keep this one
+    for (const f of group.files) {
+        if (f.path === filePath) {
+            duplicateMarkedForDeletion.delete(f.path);
+        } else {
+            duplicateMarkedForDeletion.add(f.path);
+        }
+    }
+
+    // Update UI
+    const groupEl = document.querySelector(`.duplicate-group[data-group-id="${groupIdx}"]`);
+    if (groupEl) {
+        const items = groupEl.querySelectorAll('.duplicate-item');
+        items.forEach(item => {
+            const path = item.dataset.path;
+            const cb = item.querySelector('.duplicate-select');
+            if (duplicateMarkedForDeletion.has(path)) {
+                cb.checked = true;
+                item.classList.add('marked-for-deletion');
+                item.classList.remove('kept');
+            } else {
+                cb.checked = false;
+                item.classList.remove('marked-for-deletion');
+                item.classList.add('kept');
+            }
+        });
+    }
+    updateDeleteButton();
+}
+
+function updateDeleteButton() {
+    const deleteBtn = document.getElementById('duplicates-delete-btn');
+    const count = duplicateMarkedForDeletion.size;
+    deleteBtn.textContent = `Delete Selected (${count})`;
+    deleteBtn.disabled = count === 0;
+}
+
+function highlightDuplicatesInGrid() {
+    clearDuplicateHighlights();
+
+    const pathToGroup = new Map();
+    duplicateGroups.forEach((group, idx) => {
+        group.files.forEach(f => pathToGroup.set(f.path, idx));
+    });
+
+    const cards = document.querySelectorAll('.video-card, .folder-card');
+    cards.forEach(card => {
+        const filePath = card.dataset.path;
+        if (pathToGroup.has(filePath)) {
+            card.classList.add('duplicate-highlight');
+            const badge = document.createElement('div');
+            badge.className = 'duplicate-badge';
+            badge.textContent = 'D' + (pathToGroup.get(filePath) + 1);
+            card.style.position = 'relative';
+            card.appendChild(badge);
+        }
+    });
+}
+
+function clearDuplicateHighlights() {
+    document.querySelectorAll('.duplicate-highlight').forEach(card => {
+        card.classList.remove('duplicate-highlight');
+    });
+    document.querySelectorAll('.duplicate-badge').forEach(badge => {
+        badge.remove();
+    });
+}
+
 // Restore last folder and layout mode on app startup
 window.addEventListener('DOMContentLoaded', async () => {
     // Check ffmpeg availability for video thumbnail generation
@@ -2993,6 +3485,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     loadTabs(); // This will handle tab restoration and navigation
     initVideoScrubber();
     initNewFeatures();
+    initDuplicateDetection();
     
     // If no tab has a path and we have a last folder, navigate to it
     const activeTab = tabs.find(t => t.id === activeTabId);

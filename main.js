@@ -6,6 +6,7 @@ const path = require('path');
 const fs = require('fs');
 const DimensionWorkerPool = require('./worker-pool');
 const ThumbnailWorkerPool = require('./thumbnail-pool');
+const HashWorkerPool = require('./hash-pool');
 let sizeOf;
 try {
     const imageSizeModule = require('image-size');
@@ -89,6 +90,7 @@ let dimensionPool = new DimensionWorkerPool(ffprobePath);
 
 // Worker pool for thumbnail generation (off main process)
 let thumbnailPool = new ThumbnailWorkerPool({ ffmpegPath, ffprobePath });
+let hashPool = new HashWorkerPool();
 
 // Thumbnail cache directories (initialized after userDataPath is set)
 const crypto = require('crypto');
@@ -1504,6 +1506,161 @@ ipcMain.handle('scan-file-dimensions', async (event, files) => {
     }
 });
 
+// ==================== DUPLICATE DETECTION ====================
+
+function hammingDistance(hex1, hex2) {
+    const b1 = BigInt('0x' + hex1);
+    const b2 = BigInt('0x' + hex2);
+    let xor = b1 ^ b2;
+    let dist = 0;
+    while (xor > 0n) {
+        dist += Number(xor & 1n);
+        xor >>= 1n;
+    }
+    return dist;
+}
+
+ipcMain.handle('scan-duplicates', async (event, folderPath, options = {}) => {
+    const threshold = options.threshold != null ? options.threshold : 10;
+    try {
+        const entries = await fs.promises.readdir(folderPath, { withFileTypes: true });
+        const videoExtensions = new Set(['.mp4', '.webm', '.ogg', '.mov']);
+        const imageExtensions = new Set(['.gif', '.jpg', '.jpeg', '.png', '.webp', '.bmp', '.svg']);
+
+        const files = [];
+        const statPromises = [];
+
+        for (const entry of entries) {
+            if (!entry.isFile()) continue;
+            const ext = path.extname(entry.name).toLowerCase();
+            const isVideo = videoExtensions.has(ext);
+            const isImage = imageExtensions.has(ext);
+            if (!isVideo && !isImage) continue;
+
+            const filePath = path.join(folderPath, entry.name);
+            statPromises.push(
+                fs.promises.stat(filePath).then(stat => {
+                    let thumbPath = null;
+                    if (isVideo && videoThumbDir) {
+                        thumbPath = getThumbCachePath(filePath, stat.mtimeMs);
+                    }
+                    files.push({
+                        path: filePath,
+                        name: entry.name,
+                        size: stat.size,
+                        mtime: stat.mtimeMs,
+                        isImage,
+                        isVideo,
+                        thumbPath
+                    });
+                }).catch(() => {})
+            );
+        }
+        await Promise.all(statPromises);
+
+        if (files.length === 0) return { exactGroups: [], similarGroups: [] };
+
+        event.sender.send('duplicate-scan-progress', { current: 0, total: files.length, phase: 'hashing' });
+
+        const hashMap = await hashPool.scanHashes(files, (completed, total) => {
+            event.sender.send('duplicate-scan-progress', { current: completed, total, phase: 'hashing' });
+        });
+
+        event.sender.send('duplicate-scan-progress', { current: 0, total: 0, phase: 'comparing' });
+
+        // Group by exact hash
+        const exactMap = new Map();
+        for (const file of files) {
+            const h = hashMap.get(file.path);
+            if (!h || !h.exactHash) continue;
+            if (!exactMap.has(h.exactHash)) exactMap.set(h.exactHash, []);
+            exactMap.get(h.exactHash).push({
+                path: file.path,
+                name: file.name,
+                size: file.size,
+                mtime: file.mtime
+            });
+        }
+        const exactGroups = [];
+        for (const group of exactMap.values()) {
+            if (group.length >= 2) exactGroups.push(group);
+        }
+
+        // Collect files with perceptual hashes (exclude those already in exact groups)
+        const exactPaths = new Set();
+        for (const group of exactGroups) {
+            for (const f of group) exactPaths.add(f.path);
+        }
+
+        const perceptualFiles = [];
+        for (const file of files) {
+            if (exactPaths.has(file.path)) continue;
+            const h = hashMap.get(file.path);
+            if (!h || !h.perceptualHash) continue;
+            perceptualFiles.push({ ...file, perceptualHash: h.perceptualHash });
+        }
+
+        // Union-find grouping for perceptual similarity
+        const parent = new Map();
+        const find = (x) => {
+            if (!parent.has(x)) parent.set(x, x);
+            if (parent.get(x) !== x) parent.set(x, find(parent.get(x)));
+            return parent.get(x);
+        };
+        const union = (a, b) => {
+            const ra = find(a);
+            const rb = find(b);
+            if (ra !== rb) parent.set(ra, rb);
+        };
+
+        for (let i = 0; i < perceptualFiles.length; i++) {
+            for (let j = i + 1; j < perceptualFiles.length; j++) {
+                const dist = hammingDistance(perceptualFiles[i].perceptualHash, perceptualFiles[j].perceptualHash);
+                if (dist <= threshold) {
+                    union(perceptualFiles[i].path, perceptualFiles[j].path);
+                }
+            }
+        }
+
+        const similarMap = new Map();
+        for (const file of perceptualFiles) {
+            const root = find(file.path);
+            if (!similarMap.has(root)) similarMap.set(root, []);
+            similarMap.get(root).push({
+                path: file.path,
+                name: file.name,
+                size: file.size,
+                mtime: file.mtime
+            });
+        }
+        const similarGroups = [];
+        for (const group of similarMap.values()) {
+            if (group.length >= 2) similarGroups.push(group);
+        }
+
+        event.sender.send('duplicate-scan-progress', { current: 0, total: 0, phase: 'done' });
+
+        return { exactGroups, similarGroups };
+    } catch (error) {
+        console.error('Error scanning duplicates:', error);
+        return { exactGroups: [], similarGroups: [], error: error.message };
+    }
+});
+
+ipcMain.handle('delete-files-batch', async (event, filePaths) => {
+    const deleted = [];
+    const failed = [];
+    for (const filePath of filePaths) {
+        try {
+            await shell.trashItem(filePath);
+            deleted.push(filePath);
+        } catch (error) {
+            failed.push({ path: filePath, error: error.message });
+        }
+    }
+    return { deleted, failed };
+});
+
 // Check if ffmpeg is available (renderer can adapt UI accordingly)
 ipcMain.handle('has-ffmpeg', async () => {
     return { ffmpeg: !!ffmpegPath, ffprobe: !!ffprobePath };
@@ -1518,6 +1675,10 @@ app.on('before-quit', async () => {
     if (dimensionPool) {
         dimensionPool.terminate();
         dimensionPool = null;
+    }
+    if (hashPool) {
+        hashPool.terminate();
+        hashPool = null;
     }
     for (const [folderPath, watcher] of watchedFolders) {
         try {

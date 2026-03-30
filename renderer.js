@@ -661,11 +661,15 @@ function vsPopulateExistingCard(card, item) {
         info.className = 'video-info';
         info.textContent = item.name;
 
+        if (!cardInfoSettings.extension) extensionLabel.style.display = 'none';
         card.appendChild(extensionLabel);
 
         syncStarRatingOnCard(card, item.path);
         syncCardMetaRow(card, item, null);
+        if (!cardInfoSettings.filename) info.style.display = 'none';
         card.appendChild(info);
+
+        applyCardInfoLayoutClasses(card);
 
         return { card, isMedia: true };
     }
@@ -1019,11 +1023,17 @@ const cardInfoSizeToggle = document.getElementById('card-info-size-toggle');
 const cardInfoDateToggle = document.getElementById('card-info-date-toggle');
 const cardInfoDurationToggle = document.getElementById('card-info-duration-toggle');
 const cardInfoStarsToggle = document.getElementById('card-info-stars-toggle');
+const cardInfoExtensionToggle = document.getElementById('card-info-extension-toggle');
+const cardInfoAudioToggle = document.getElementById('card-info-audio-toggle');
+const cardInfoFilenameToggle = document.getElementById('card-info-filename-toggle');
 const cardInfoResolutionLabel = document.getElementById('card-info-resolution-label');
 const cardInfoSizeLabel = document.getElementById('card-info-size-label');
 const cardInfoDateLabel = document.getElementById('card-info-date-label');
 const cardInfoDurationLabel = document.getElementById('card-info-duration-label');
 const cardInfoStarsLabel = document.getElementById('card-info-stars-label');
+const cardInfoExtensionLabel = document.getElementById('card-info-extension-label');
+const cardInfoAudioLabel = document.getElementById('card-info-audio-label');
+const cardInfoFilenameLabel = document.getElementById('card-info-filename-label');
 const favoritesBtn = document.getElementById('favorites-btn');
 const favoritesDropdown = document.getElementById('favorites-dropdown');
 const favoritesList = document.getElementById('favorites-list');
@@ -1086,11 +1096,14 @@ let zoomLevel = 100; // Percentage
 
 // --- Card info (metadata chips on grid cards) ---
 const DEFAULT_CARD_INFO = Object.freeze({
+    extension: true,
     resolution: true,
     fileSize: false,
     date: false,
     duration: true,
-    starRating: true
+    starRating: true,
+    audioLabel: true,
+    filename: true
 });
 let cardInfoSettings = { ...DEFAULT_CARD_INFO };
 
@@ -2726,19 +2739,25 @@ function formatCardDate(mtimeMs) {
 }
 
 function syncCardInfoToggleLabels() {
+    if (cardInfoExtensionLabel) cardInfoExtensionLabel.textContent = cardInfoSettings.extension ? 'On' : 'Off';
     if (cardInfoResolutionLabel) cardInfoResolutionLabel.textContent = cardInfoSettings.resolution ? 'On' : 'Off';
     if (cardInfoSizeLabel) cardInfoSizeLabel.textContent = cardInfoSettings.fileSize ? 'On' : 'Off';
     if (cardInfoDateLabel) cardInfoDateLabel.textContent = cardInfoSettings.date ? 'On' : 'Off';
     if (cardInfoDurationLabel) cardInfoDurationLabel.textContent = cardInfoSettings.duration ? 'On' : 'Off';
     if (cardInfoStarsLabel) cardInfoStarsLabel.textContent = cardInfoSettings.starRating ? 'On' : 'Off';
+    if (cardInfoAudioLabel) cardInfoAudioLabel.textContent = cardInfoSettings.audioLabel ? 'On' : 'Off';
+    if (cardInfoFilenameLabel) cardInfoFilenameLabel.textContent = cardInfoSettings.filename ? 'On' : 'Off';
 }
 
 function syncCardInfoTogglesFromState() {
+    if (cardInfoExtensionToggle) cardInfoExtensionToggle.checked = cardInfoSettings.extension;
     if (cardInfoResolutionToggle) cardInfoResolutionToggle.checked = cardInfoSettings.resolution;
     if (cardInfoSizeToggle) cardInfoSizeToggle.checked = cardInfoSettings.fileSize;
     if (cardInfoDateToggle) cardInfoDateToggle.checked = cardInfoSettings.date;
     if (cardInfoDurationToggle) cardInfoDurationToggle.checked = cardInfoSettings.duration;
     if (cardInfoStarsToggle) cardInfoStarsToggle.checked = cardInfoSettings.starRating;
+    if (cardInfoAudioToggle) cardInfoAudioToggle.checked = cardInfoSettings.audioLabel;
+    if (cardInfoFilenameToggle) cardInfoFilenameToggle.checked = cardInfoSettings.filename;
     syncCardInfoToggleLabels();
 }
 
@@ -2765,11 +2784,14 @@ function saveCardInfoSettings() {
 
 function onCardInfoSettingsChanged() {
     const previous = { ...cardInfoSettings };
+    cardInfoSettings.extension = !!cardInfoExtensionToggle?.checked;
     cardInfoSettings.resolution = !!cardInfoResolutionToggle?.checked;
     cardInfoSettings.fileSize = !!cardInfoSizeToggle?.checked;
     cardInfoSettings.date = !!cardInfoDateToggle?.checked;
     cardInfoSettings.duration = !!cardInfoDurationToggle?.checked;
     cardInfoSettings.starRating = !!cardInfoStarsToggle?.checked;
+    cardInfoSettings.audioLabel = !!cardInfoAudioToggle?.checked;
+    cardInfoSettings.filename = !!cardInfoFilenameToggle?.checked;
     syncCardInfoToggleLabels();
     saveCardInfoSettings();
     refreshAllVisibleMediaCardInfo();
@@ -2862,6 +2884,13 @@ function syncStarRatingOnCard(card, filePath) {
     }
 }
 
+function applyCardInfoLayoutClasses(card) {
+    card.classList.toggle('ci-no-ext', !cardInfoSettings.extension);
+    card.classList.toggle('ci-no-filename', !cardInfoSettings.filename);
+    card.classList.toggle('ci-no-stars', !cardInfoSettings.starRating);
+    card.classList.toggle('ci-no-audio', !cardInfoSettings.audioLabel);
+}
+
 function refreshAllVisibleMediaCardInfo() {
     const cards = vsEnabled && vsActiveCards.size > 0
         ? Array.from(vsActiveCards.values())
@@ -2888,6 +2917,21 @@ function refreshAllVisibleMediaCardInfo() {
         } else {
             card.querySelector('.resolution-label')?.remove();
         }
+
+        // Toggle extension label visibility
+        const extLabel = card.querySelector('.extension-label');
+        if (extLabel) extLabel.style.display = cardInfoSettings.extension ? '' : 'none';
+
+        // Toggle audio/sound label visibility
+        const sndLabel = card.querySelector('.sound-label');
+        if (sndLabel) sndLabel.style.display = cardInfoSettings.audioLabel ? '' : 'none';
+
+        // Toggle filename visibility
+        const infoEl = card.querySelector('.video-info');
+        if (infoEl) infoEl.style.display = cardInfoSettings.filename ? '' : 'none';
+
+        // Apply responsive layout classes
+        applyCardInfoLayoutClasses(card);
     }
 }
 
@@ -3544,12 +3588,16 @@ function createCardFromItem(item) {
         info.className = 'video-info';
         info.textContent = item.name;
 
+        if (!cardInfoSettings.extension) extensionLabel.style.display = 'none';
         card.appendChild(extensionLabel);
 
         syncStarRatingOnCard(card, item.path);
         syncCardMetaRow(card, item, null);
 
+        if (!cardInfoSettings.filename) info.style.display = 'none';
         card.appendChild(info);
+
+        applyCardInfoLayoutClasses(card);
 
         return { card, isMedia: true };
     }
@@ -4116,6 +4164,7 @@ function createSoundLabel(card) {
     soundLabel.className = 'sound-label';
     soundLabel.textContent = 'AUDIO';
     soundLabel.style.backgroundColor = hexToRgba('#4ecdc4', 0.87); // Teal color similar to extension labels
+    if (!cardInfoSettings.audioLabel) soundLabel.style.display = 'none';
 
     // Insert before the video-info element
     const info = card.querySelector('.video-info');
@@ -5056,16 +5105,21 @@ gridContainer.addEventListener('mouseover', (e) => {
     }
     // Check if filename overlaps with resolution label and shift it up if needed
     // Cache the result per card to avoid layout thrashing on every hover
+    // Skip when filename is hidden — no overlap possible
     if (card && !card.dataset.overlapChecked) {
         const info = card.querySelector('.video-info');
         const resLabel = card.querySelector('.resolution-label');
         if (info && resLabel) {
-            const range = document.createRange();
-            range.selectNodeContents(info);
-            const textWidth = range.getBoundingClientRect().width;
-            const cardWidth = card.offsetWidth;
-            const labelLeft = cardWidth - resLabel.offsetWidth - 16;
-            resLabel.classList.toggle('shifted-up', textWidth + 10 > labelLeft);
+            if (!cardInfoSettings.filename) {
+                resLabel.classList.remove('shifted-up');
+            } else {
+                const range = document.createRange();
+                range.selectNodeContents(info);
+                const textWidth = range.getBoundingClientRect().width;
+                const cardWidth = card.offsetWidth;
+                const labelLeft = cardWidth - resLabel.offsetWidth - 16;
+                resLabel.classList.toggle('shifted-up', textWidth + 10 > labelLeft);
+            }
             card.dataset.overlapChecked = '1';
         }
     }
@@ -5901,7 +5955,7 @@ includeMovingImagesToggle.addEventListener('change', () => {
 });
 
 // Card info toggles
-[cardInfoResolutionToggle, cardInfoSizeToggle, cardInfoDateToggle, cardInfoDurationToggle, cardInfoStarsToggle]
+[cardInfoExtensionToggle, cardInfoResolutionToggle, cardInfoSizeToggle, cardInfoDateToggle, cardInfoDurationToggle, cardInfoStarsToggle, cardInfoAudioToggle, cardInfoFilenameToggle]
     .filter(Boolean)
     .forEach(el => el.addEventListener('change', () => onCardInfoSettingsChanged()));
 

@@ -1572,6 +1572,27 @@ button:hover {
     display: none;
 }
 
+/* Responsive label repositioning when sibling labels are hidden */
+
+/* Meta-row shifts up into extension label's spot when extension is hidden */
+.video-card.ci-no-ext .card-meta-row {
+    top: 8px;
+}
+
+/* Bottom labels move down when filename bar is hidden */
+.video-card.ci-no-filename .video-time-label.show {
+    bottom: 8px;
+}
+.video-card.ci-no-filename .resolution-label,
+.video-card.ci-no-filename .resolution-label.shifted-up {
+    bottom: 8px;
+}
+
+/* Star rating shifts below audio label to avoid overlap when both visible */
+.video-card[data-has-audio="true"]:not(.ci-no-audio) .star-rating {
+    top: 36px;
+}
+
 .card-meta-chip {
     background: rgba(0, 0, 0, 0.75);
     color: #ffffff;

@@ -3422,7 +3422,7 @@ function sortItems(items) {
     folders.sort((a, b) => {
         let comparison = 0;
         if (sortType === 'name') {
-            comparison = a.name.localeCompare(b.name);
+            comparison = a.name.localeCompare(b.name, undefined, { numeric: true });
         } else if (sortType === 'date') {
             // Use mtime if available, otherwise fall back to name
             const aTime = a.mtime || 0;
@@ -3430,7 +3430,7 @@ function sortItems(items) {
             comparison = aTime - bTime;
             // If times are equal or missing, fall back to name
             if (comparison === 0) {
-                comparison = a.name.localeCompare(b.name);
+                comparison = a.name.localeCompare(b.name, undefined, { numeric: true });
             }
         }
         return sortOrder === 'ascending' ? comparison : -comparison;
@@ -3446,28 +3446,28 @@ function sortItems(items) {
             const order = starSortOrder !== 'none' ? starSortOrder : 'desc';
             comparison = order === 'asc' ? aRating - bRating : bRating - aRating;
             if (comparison === 0) {
-                comparison = a.name.localeCompare(b.name);
+                comparison = a.name.localeCompare(b.name, undefined, { numeric: true });
             }
             return comparison;
         } else if (sortType === 'name') {
-            comparison = a.name.localeCompare(b.name);
+            comparison = a.name.localeCompare(b.name, undefined, { numeric: true });
         } else if (sortType === 'date') {
             const aTime = a.mtime || 0;
             const bTime = b.mtime || 0;
             comparison = aTime - bTime;
             if (comparison === 0) {
-                comparison = a.name.localeCompare(b.name);
+                comparison = a.name.localeCompare(b.name, undefined, { numeric: true });
             }
         } else if (sortType === 'size') {
             const aSize = a.size || 0;
             const bSize = b.size || 0;
             comparison = aSize - bSize;
-            if (comparison === 0) comparison = a.name.localeCompare(b.name);
+            if (comparison === 0) comparison = a.name.localeCompare(b.name, undefined, { numeric: true });
         } else if (sortType === 'dimensions') {
             const aPixels = (a.width || 0) * (a.height || 0);
             const bPixels = (b.width || 0) * (b.height || 0);
             comparison = aPixels - bPixels;
-            if (comparison === 0) comparison = a.name.localeCompare(b.name);
+            if (comparison === 0) comparison = a.name.localeCompare(b.name, undefined, { numeric: true });
         }
         return sortOrder === 'ascending' ? comparison : -comparison;
     });

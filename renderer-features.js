@@ -1276,7 +1276,7 @@ function extractComfyUIParameters(workflow) {
         // Determine positive and negative prompts from collected nodes
         if (clipTextNodes.length > 0) {
             // Sort by nodeId to get consistent order (but note: nodeId order may not match workflow order)
-            clipTextNodes.sort((a, b) => a.nodeId.localeCompare(b.nodeId));
+            clipTextNodes.sort((a, b) => a.nodeId.localeCompare(b.nodeId, undefined, { numeric: true }));
             
             // If we have explicit negative markers, use those
             const negativeNode = clipTextNodes.find(n => n.isNegative);

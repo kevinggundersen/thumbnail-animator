@@ -662,10 +662,10 @@ ipcMain.handle('scan-folder', async (event, folderPath, options = {}) => {
 
         // Default alphabetical sorting for backward compatibility
         if (folders.length > 1) {
-            folders.sort((a, b) => a.name.localeCompare(b.name));
+            folders.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
         }
         if (mediaFiles.length > 1) {
-            mediaFiles.sort((a, b) => a.name.localeCompare(b.name));
+            mediaFiles.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
         }
 
         // Return folders first, then media files
@@ -840,7 +840,7 @@ ipcMain.handle('list-subdirectories', async (event, folderPath) => {
             return { name: dir.name, path: dir.path, hasChildren };
         });
 
-        results.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+        results.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base', numeric: true }));
         logPerf('list-subdirectories', listStart, { count: results.length, limit: IO_CONCURRENCY_LIMIT });
         return results;
     } catch (error) {

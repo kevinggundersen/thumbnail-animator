@@ -1382,6 +1382,42 @@ ipcMain.handle('generate-image-thumbnail', async (event, filePath, maxSize = 512
     }
 });
 
+ipcMain.handle('scan-file-dimensions', async (event, files) => {
+    const startTime = performance.now();
+    try {
+        if (!dimensionPool || !Array.isArray(files) || files.length === 0) {
+            logPerf('scan-file-dimensions', startTime, { files: 0, hits: 0 });
+            return [];
+        }
+
+        const sanitizedFiles = files.filter(file =>
+            file &&
+            typeof file.path === 'string' &&
+            typeof file.isImage === 'boolean'
+        );
+        if (sanitizedFiles.length === 0) {
+            logPerf('scan-file-dimensions', startTime, { files: 0, hits: 0 });
+            return [];
+        }
+
+        const dimensionMap = await dimensionPool.scanDimensions(sanitizedFiles);
+        const results = sanitizedFiles.map(file => {
+            const dims = dimensionMap.get(file.path);
+            return {
+                path: file.path,
+                width: dims ? dims.width : undefined,
+                height: dims ? dims.height : undefined
+            };
+        });
+
+        logPerf('scan-file-dimensions', startTime, { files: sanitizedFiles.length, hits: dimensionMap.size });
+        return results;
+    } catch (error) {
+        logPerf('scan-file-dimensions', startTime, { error: 1 });
+        return [];
+    }
+});
+
 // Check if ffmpeg is available (renderer can adapt UI accordingly)
 ipcMain.handle('has-ffmpeg', async () => {
     return { ffmpeg: !!ffmpegPath, ffprobe: !!ffprobePath };

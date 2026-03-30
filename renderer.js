@@ -18,6 +18,7 @@ const perfTest = (() => {
         'processEntries':     { fast: 1,   medium: 8   },
         'vsCalculatePositions': { fast: 8, medium: 24  },
         'performCleanupCheck': { fast: 4, medium: 16  },
+        'backgroundDimensions (IPC)': { fast: 50, medium: 200 },
         'openLightbox':       { fast: 10,  medium: 50  },
     };
     const defaultThreshold = { fast: 10, medium: 50 };
@@ -202,6 +203,7 @@ const VIEWPORT_CACHE_TTL = 100; // Cache viewport bounds for N ms
 const MEDIA_COUNT_CACHE_TTL = 50; // Cache media counts for N ms
 const CARD_RECT_CACHE_TTL = 34; // Short-lived rect cache for hot scroll/cleanup paths
 const IMAGE_THUMBNAIL_MAX_EDGE = 768; // Cap cached image thumbs to a practical grid size
+const BACKGROUND_DIMENSION_SCAN_CHUNK_SIZE = 400; // Keep background scans incremental
 
 // Progressive Rendering Configuration
 const PROGRESSIVE_RENDER_THRESHOLD = 1000; // Use progressive rendering for N+ items
@@ -630,6 +632,7 @@ function vsPopulateExistingCard(card, item) {
         card.dataset.name = item.name;
         card.dataset.searchText = item.name.toLowerCase();
         card.dataset.mediaType = item.type;
+        card.dataset.mtime = String(item.mtime || 0);
 
         const lastDot = item.name.lastIndexOf('.');
         const fileExtension = lastDot !== -1 ? item.name.substring(lastDot + 1).toUpperCase() : '';
@@ -1035,6 +1038,7 @@ const sidebarCollapseBtn = document.getElementById('sidebar-collapse-btn');
 
 // Track current folder path for navigation
 let currentFolderPath = null;
+let activeDimensionHydrationToken = 0;
 
 // Store current items for re-sorting without re-fetching
 let currentItems = [];
@@ -1320,6 +1324,123 @@ async function cacheDimensions(entries) {
     } catch {
         // Ignore errors — caching is best-effort
     }
+}
+
+function hasDimensionDependentFilters() {
+    return advancedSearchFilters.width !== null ||
+        advancedSearchFilters.height !== null ||
+        advancedSearchFilters.aspectRatio !== '';
+}
+
+function updateInMemoryFolderCaches(folderPath, items) {
+    const normalizedPath = normalizePath(folderPath);
+    const timestamp = Date.now();
+
+    if (activeTabId) {
+        tabContentCache.set(activeTabId, {
+            items,
+            path: normalizedPath,
+            timestamp
+        });
+    }
+
+    folderCache.set(normalizedPath, {
+        items,
+        timestamp
+    });
+}
+
+function applyUpdatedDimensionsToVisibleCards(updatedPaths) {
+    let updatedVisibleCards = 0;
+
+    for (const [itemIdx, card] of vsActiveCards) {
+        const item = vsSortedItems[itemIdx];
+        if (!item || item.type === 'folder' || !updatedPaths.has(item.path) || !item.width || !item.height) {
+            continue;
+        }
+
+        const aspectRatioName = getClosestAspectRatio(item.width, item.height);
+        applyAspectRatioToCard(card, aspectRatioName);
+        card.dataset.width = item.width;
+        card.dataset.height = item.height;
+        card.dataset.mediaWidth = item.width;
+        card.dataset.mediaHeight = item.height;
+        card.dataset.mtime = String(item.mtime || 0);
+        createResolutionLabel(card, item.width, item.height);
+        updatedVisibleCards++;
+    }
+
+    return updatedVisibleCards;
+}
+
+async function hydrateMissingDimensionsInBackground(folderPath, items) {
+    if (!window.electronAPI?.scanFileDimensions || items.length === 0) return;
+
+    const needsBackgroundScan = items.filter(item =>
+        item.type !== 'folder' &&
+        (!item.width || !item.height)
+    );
+    if (needsBackgroundScan.length === 0) return;
+
+    const scanToken = ++activeDimensionHydrationToken;
+    const perfStart = perfTest.start();
+    const shouldReapplyFilters = hasDimensionDependentFilters();
+    let updatedCount = 0;
+    const cacheEntries = [];
+
+    for (let i = 0; i < needsBackgroundScan.length; i += BACKGROUND_DIMENSION_SCAN_CHUNK_SIZE) {
+        if (scanToken !== activeDimensionHydrationToken || currentFolderPath !== folderPath) return;
+
+        const chunk = needsBackgroundScan.slice(i, i + BACKGROUND_DIMENSION_SCAN_CHUNK_SIZE)
+            .filter(item => !item.width || !item.height);
+        if (chunk.length === 0) continue;
+
+        const results = await window.electronAPI.scanFileDimensions(
+            chunk.map(item => ({ path: item.path, isImage: item.type === 'image' }))
+        );
+        if (scanToken !== activeDimensionHydrationToken || currentFolderPath !== folderPath) return;
+
+        const updatedPaths = new Set();
+        for (const result of results || []) {
+            if (!result || !result.path || !result.width || !result.height) continue;
+            const item = chunk.find(entry => entry.path === result.path);
+            if (!item) continue;
+
+            item.width = result.width;
+            item.height = result.height;
+            updatedPaths.add(item.path);
+            updatedCount++;
+            cacheEntries.push({
+                path: item.path,
+                mtime: item.mtime || 0,
+                width: item.width,
+                height: item.height
+            });
+        }
+
+        if (updatedPaths.size > 0) {
+            applyUpdatedDimensionsToVisibleCards(updatedPaths);
+            updateInMemoryFolderCaches(folderPath, items);
+
+            if (shouldReapplyFilters) {
+                applyFilters();
+            } else if (layoutMode === 'masonry') {
+                vsRecalculate();
+            }
+        }
+
+        await yieldToEventLoop();
+    }
+
+    if (cacheEntries.length > 0) {
+        cacheDimensions(cacheEntries).catch(() => {});
+        storeFolderInIndexedDB(folderPath, items).catch(() => {});
+    }
+
+    perfTest.end('backgroundDimensions (IPC)', perfStart, {
+        itemCount: needsBackgroundScan.length,
+        detail: `${updatedCount}/${needsBackgroundScan.length} updated`
+    });
 }
 
 // Initialize IndexedDB on page load
@@ -3058,6 +3179,7 @@ function createCardFromItem(item) {
         card.dataset.name = item.name;
         card.dataset.searchText = item.name.toLowerCase();
         card.dataset.mediaType = item.type;
+        card.dataset.mtime = String(item.mtime || 0);
         
         // Extract file extension for label (optimized - use lastIndexOf instead of split)
         const lastDot = item.name.lastIndexOf('.');
@@ -3528,7 +3650,7 @@ function createImageForCard(card, imageUrl) {
                 card.dataset.dimCached = '1';
                 cacheDimensions([{
                     path: card.dataset.filePath,
-                    mtime: 0,
+                    mtime: Number(card.dataset.mtime || 0),
                     width: img.naturalWidth,
                     height: img.naturalHeight
                 }]).catch(() => {});
@@ -3726,7 +3848,7 @@ function createVideoForCard(card, videoUrl) {
                 card.dataset.dimCached = '1';
                 cacheDimensions([{
                     path: card.dataset.filePath,
-                    mtime: 0,
+                    mtime: Number(card.dataset.mtime || 0),
                     width: video.videoWidth,
                     height: video.videoHeight
                 }]).catch(() => {});
@@ -6315,6 +6437,7 @@ renameDialog.addEventListener('click', (e) => {
 async function loadVideos(folderPath, useCache = true) {
     // Stop periodic cleanup during folder switch
     stopPeriodicCleanup();
+    activeDimensionHydrationToken++;
     
     // Show loading indicator if we need to scan
     let needsScan = false;
@@ -6363,10 +6486,9 @@ async function loadVideos(folderPath, useCache = true) {
         if (useCache) {
             const normalizedPath = normalizePath(folderPath);
 
-            // In masonry mode, we need items with dimensions. If cached items
-            // lack dimensions (from a previous non-masonry scan), skip the cache
-            // so a fresh scan with dimension scanning is performed.
-            const needsDimensions = layoutMode === 'masonry';
+            // Only block on dimensions when the active filters depend on them.
+            // Masonry can start with fallback ratios and refine in the background.
+            const needsDimensions = hasDimensionDependentFilters();
             const needsStats = sortType !== 'name';
             const cacheIsValid = (cachedItems) => {
                 if (!cachedItems || cachedItems.length === 0) return true;
@@ -6425,9 +6547,9 @@ async function loadVideos(folderPath, useCache = true) {
             
             // Skip stats if sorting by name (faster loading)
             const skipStats = sortType === 'name';
-            // Scan media dimensions when in masonry mode to build layout upfront
-            const scanImageDimensions = layoutMode === 'masonry';
-            const scanVideoDimensions = layoutMode === 'masonry';
+            // Only block on dimension scans when the active filters require them.
+            const scanImageDimensions = hasDimensionDependentFilters();
+            const scanVideoDimensions = hasDimensionDependentFilters();
             const scanPerfStart = perfTest.start();
             items = await window.electronAPI.scanFolder(folderPath, { skipStats, scanImageDimensions, scanVideoDimensions });
             perfTest.end('scanFolder (IPC)', scanPerfStart, { itemCount: items ? items.length : 0 });
@@ -6436,18 +6558,7 @@ async function loadVideos(folderPath, useCache = true) {
             await yieldToEventLoop();
             
             // Cache the results (use normalized path for consistency)
-            const normalizedPath = normalizePath(folderPath);
-            if (activeTabId) {
-                tabContentCache.set(activeTabId, {
-                    items: items,
-                    path: normalizedPath, // Store normalized path
-                    timestamp: now
-                });
-            }
-            folderCache.set(normalizedPath, {
-                items: items,
-                timestamp: now
-            });
+            updateInMemoryFolderCaches(folderPath, items);
             
             // Store in IndexedDB for persistence (async, don't wait)
             storeFolderInIndexedDB(folderPath, items).catch(() => {
@@ -6500,6 +6611,8 @@ async function loadVideos(folderPath, useCache = true) {
             }
         }
 
+        updateInMemoryFolderCaches(folderPath, items);
+
         // Yield control before sorting/rendering
         await yieldToEventLoop();
 
@@ -6523,6 +6636,11 @@ async function loadVideos(folderPath, useCache = true) {
             scheduleMediaLoadSettle();
         } else {
             setStatusActivity('');
+        }
+
+        const canHydrateDimensionsInBackground = layoutMode === 'masonry' || hasDimensionDependentFilters();
+        if (canHydrateDimensionsInBackground) {
+            hydrateMissingDimensionsInBackground(folderPath, items).catch(() => {});
         }
 
         // Start watching folder for changes

@@ -5,6 +5,7 @@ const { app, BrowserWindow, ipcMain, dialog, shell, screen, nativeImage } = requ
 const path = require('path');
 const fs = require('fs');
 const DimensionWorkerPool = require('./worker-pool');
+const ThumbnailWorkerPool = require('./thumbnail-pool');
 let sizeOf;
 try {
     const imageSizeModule = require('image-size');
@@ -85,6 +86,9 @@ let ffmpegPath = null;
 
 // Worker pool for parallel dimension scanning
 let dimensionPool = new DimensionWorkerPool(ffprobePath);
+
+// Worker pool for thumbnail generation (off main process)
+let thumbnailPool = new ThumbnailWorkerPool({ ffmpegPath, ffprobePath });
 
 // Thumbnail cache directories (initialized after userDataPath is set)
 const crypto = require('crypto');
@@ -1287,11 +1291,13 @@ ipcMain.handle('watch-folder', async (event, folderPath) => {
                 stabilityThreshold: 100, // Wait 100ms after file stops changing
                 pollInterval: 100 // Check every 100ms
             },
-            // Better Windows support
-            usePolling: process.platform === 'win32', // Use polling on Windows for better reliability
-            interval: process.platform === 'win32' ? 300 : 100 // Poll interval for Windows
+            // Use event-driven ReadDirectoryChangesW on Windows (no polling)
+            // Falls back gracefully; polling only needed for network drives
+            usePolling: false,
+            // Atomic writes: treat rename pairs as a single change
+            atomic: 200
         });
-        
+
         // Wait for watcher to be ready before returning success
         try {
             await new Promise((resolve, reject) => {
@@ -1315,12 +1321,27 @@ ipcMain.handle('watch-folder', async (event, folderPath) => {
             throw initError;
         }
 
+        // Debounce/dedup watcher events to coalesce duplicate notifications
+        // Windows ReadDirectoryChangesW can fire multiple events for single file changes
+        const watcherDebounceMap = new Map();
+        const WATCHER_DEBOUNCE_MS = 500;
+
         watcher.on('all', (event, filePath) => {
-            if (mainWindow && !mainWindow.isDestroyed()) {
-                // Normalize the file path for consistent comparison
-                const normalizedFilePath = path.normalize(filePath);
-                mainWindow.webContents.send('folder-changed', { folderPath: normalizedPath, event, filePath: normalizedFilePath });
+            if (!mainWindow || mainWindow.isDestroyed()) return;
+            const normalizedFilePath = path.normalize(filePath);
+            const dedupeKey = `${event}:${normalizedFilePath}`;
+
+            // Clear previous pending notification for same event+path
+            if (watcherDebounceMap.has(dedupeKey)) {
+                clearTimeout(watcherDebounceMap.get(dedupeKey));
             }
+
+            watcherDebounceMap.set(dedupeKey, setTimeout(() => {
+                watcherDebounceMap.delete(dedupeKey);
+                if (mainWindow && !mainWindow.isDestroyed()) {
+                    mainWindow.webContents.send('folder-changed', { folderPath: normalizedPath, event, filePath: normalizedFilePath });
+                }
+            }, WATCHER_DEBOUNCE_MS));
         });
         
         watchedFolders.set(normalizedPath, watcher);
@@ -1348,17 +1369,19 @@ ipcMain.handle('unwatch-folder', async (event, folderPath) => {
     }
 });
 
-// Generate a video thumbnail (returns file:// URL to cached JPEG or null)
+// Generate a video thumbnail via worker pool (returns file:// URL to cached JPEG or null)
 ipcMain.handle('generate-video-thumbnail', async (event, filePath) => {
     const startTime = performance.now();
     try {
-        const thumbPath = await generateVideoThumbnail(filePath);
-        if (thumbPath) {
-            logPerf('generate-video-thumbnail.ipc', startTime, { success: 1 });
-            const url = pathToFileUrl(thumbPath);
-            return { success: true, url };
+        if (!thumbnailPool) return { success: false };
+        const stats = await fs.promises.stat(filePath);
+        const thumbPath = getThumbCachePath(filePath, stats.mtimeMs);
+        const result = await thumbnailPool.generate({ type: 'video', filePath, thumbPath });
+        if (result.success && result.thumbPath) {
+            logPerf('generate-video-thumbnail.ipc', startTime, { success: 1, worker: 1 });
+            return { success: true, url: pathToFileUrl(result.thumbPath) };
         }
-        logPerf('generate-video-thumbnail.ipc', startTime, { success: 0 });
+        logPerf('generate-video-thumbnail.ipc', startTime, { success: 0, worker: 1 });
         return { success: false };
     } catch (error) {
         logPerf('generate-video-thumbnail.ipc', startTime, { error: 1 });
@@ -1366,19 +1389,74 @@ ipcMain.handle('generate-video-thumbnail', async (event, filePath) => {
     }
 });
 
+// Generate an image thumbnail via worker pool (returns file:// URL to cached PNG or null)
 ipcMain.handle('generate-image-thumbnail', async (event, filePath, maxSize = 512) => {
     const startTime = performance.now();
     try {
-        const thumbPath = await generateImageThumbnail(filePath, maxSize);
-        if (thumbPath) {
-            logPerf('generate-image-thumbnail.ipc', startTime, { success: 1, maxSize });
-            return { success: true, url: pathToFileUrl(thumbPath) };
+        if (!thumbnailPool) return { success: false };
+        const stats = await fs.promises.stat(filePath);
+        const thumbPath = getImageThumbCachePath(filePath, stats.mtimeMs, maxSize);
+        const result = await thumbnailPool.generate({ type: 'image', filePath, thumbPath, maxSize });
+        if (result.success && result.thumbPath) {
+            logPerf('generate-image-thumbnail.ipc', startTime, { success: 1, maxSize, worker: 1 });
+            return { success: true, url: pathToFileUrl(result.thumbPath) };
         }
-        logPerf('generate-image-thumbnail.ipc', startTime, { success: 0, maxSize });
+        logPerf('generate-image-thumbnail.ipc', startTime, { success: 0, maxSize, worker: 1 });
         return { success: false };
     } catch (error) {
         logPerf('generate-image-thumbnail.ipc', startTime, { error: 1, maxSize });
         return { success: false, error: error.message };
+    }
+});
+
+// Batch thumbnail generation -- reduces IPC round-trips for large folders
+// items: Array<{ filePath, type: 'image'|'video', maxSize? }>
+// Returns: Array<{ filePath, success, url? }>
+ipcMain.handle('generate-thumbnails-batch', async (event, items) => {
+    const startTime = performance.now();
+    try {
+        if (!thumbnailPool || !Array.isArray(items) || items.length === 0) {
+            return [];
+        }
+
+        // Build thumb paths and stat files in parallel
+        const prepared = await Promise.all(items.map(async (item) => {
+            try {
+                const stats = await fs.promises.stat(item.filePath);
+                const thumbPath = item.type === 'video'
+                    ? getThumbCachePath(item.filePath, stats.mtimeMs)
+                    : getImageThumbCachePath(item.filePath, stats.mtimeMs, item.maxSize || 512);
+                return { ...item, thumbPath };
+            } catch {
+                return { ...item, thumbPath: null };
+            }
+        }));
+
+        const validItems = prepared.filter(i => i.thumbPath);
+        const invalidItems = prepared.filter(i => !i.thumbPath);
+
+        const results = await thumbnailPool.generateBatch(validItems);
+
+        // Merge results back, preserving original order
+        const resultMap = new Map();
+        validItems.forEach((item, i) => {
+            const r = results[i];
+            resultMap.set(item.filePath, {
+                filePath: item.filePath,
+                success: r && r.success,
+                url: r && r.success && r.thumbPath ? pathToFileUrl(r.thumbPath) : null
+            });
+        });
+        for (const item of invalidItems) {
+            resultMap.set(item.filePath, { filePath: item.filePath, success: false, url: null });
+        }
+
+        const output = items.map(item => resultMap.get(item.filePath) || { filePath: item.filePath, success: false, url: null });
+        logPerf('generate-thumbnails-batch', startTime, { count: items.length, success: output.filter(r => r.success).length });
+        return output;
+    } catch (error) {
+        logPerf('generate-thumbnails-batch', startTime, { error: 1 });
+        return items.map(item => ({ filePath: item.filePath, success: false, url: null }));
     }
 });
 
@@ -1425,6 +1503,10 @@ ipcMain.handle('has-ffmpeg', async () => {
 
 // Cleanup watchers on app quit
 app.on('before-quit', async () => {
+    if (thumbnailPool) {
+        thumbnailPool.terminate();
+        thumbnailPool = null;
+    }
     if (dimensionPool) {
         dimensionPool.terminate();
         dimensionPool = null;

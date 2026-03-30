@@ -10,14 +10,22 @@
     "dist": "electron-builder --publish=never",
     "release": "electron-builder --publish=always"
   },
-  "keywords": ["electron", "thumbnail", "media-browser", "image-viewer", "video-player", "desktop-app"],
+  "keywords": [
+    "electron",
+    "thumbnail",
+    "media-browser",
+    "image-viewer",
+    "video-player",
+    "desktop-app"
+  ],
   "author": "Kevin Gundersen",
   "license": "ISC",
   "description": "Thumbnail Animator - An Electron app for creating animated thumbnails",
   "dependencies": {
     "chokidar": "^3.6.0",
     "image-size": "^2.0.2",
-    "png-chunks-extract": "^1.0.0"
+    "png-chunks-extract": "^1.0.0",
+    "sharp": "^0.34.5"
   },
   "devDependencies": {
     "electron": "^39.2.3",

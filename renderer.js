@@ -256,6 +256,21 @@ let vsLastEndIndex = -1;           // Last rendered range end
 let vsSpacer = null;               // Spacer element that sets total scroll height
 let vsResizeHandler = null;        // Window resize handler
 
+// Masonry layout cache for incremental updates
+let vsLayoutCache = {
+    itemCount: 0,
+    containerWidth: 0,
+    mode: null,
+    zoom: 0,
+    columns: 0,
+    columnWidth: 0,
+    gap: 0,
+    positions: null,
+    totalHeight: 0,
+    colHeights: null,       // Float64Array of column heights (for incremental updates)
+    columnAssignments: null  // Uint16Array: which column each item was placed in
+};
+
 // Build a lookup from ASPECT_RATIOS name to ratio value for fast access
 // (ASPECT_RATIOS is defined later, so we build this lazily)
 let vsAspectRatioMap = null;
@@ -275,10 +290,14 @@ function vsGetAspectRatioValue(name) {
 /**
  * Pre-calculate all card positions without touching the DOM.
  * Returns { positions: Float64Array, totalHeight: number }
+ *
+ * Memoization strategy:
+ *  - If only zoom changed and column count is unchanged, scale positions proportionally (O(n) memcpy, no layout logic)
+ *  - If container width changed but column count stayed the same, scale widths proportionally
+ *  - Full recalculation only when column count, item count, mode, or items change
  */
 function vsCalculatePositions(items, containerWidth, mode, zoom) {
     const perfStart = perfTest.start();
-    const positions = new Float64Array(items.length * 4); // left, top, width, height per item
 
     // Get gap from CSS variable
     const rootStyles = getComputedStyle(document.documentElement);
@@ -286,24 +305,109 @@ function vsCalculatePositions(items, containerWidth, mode, zoom) {
     const gridStyles = getComputedStyle(gridContainer);
     const paddingLeft = parseInt(gridStyles.paddingLeft) || 0;
     const paddingTop = parseInt(gridStyles.paddingTop) || 0;
+    const paddingBottom = parseInt(gridStyles.paddingBottom) || 0;
     const availableWidth = containerWidth - (paddingLeft * 2);
 
+    // Calculate what the column count would be for this zoom/width/mode
+    let newColumns, newColumnWidth;
     if (mode === 'masonry') {
-        // Masonry: variable height cards in shortest-column layout
-        const baseMinColumnWidth = 250;
-        const minColumnWidth = baseMinColumnWidth * (zoom / 100);
-        const columns = Math.max(1, Math.floor((availableWidth + gap) / (minColumnWidth + gap)));
-        const columnWidth = (availableWidth - gap * (columns - 1)) / columns;
-        const colHeights = new Float64Array(columns); // All zeros
+        const minColumnWidth = 250 * (zoom / 100);
+        newColumns = Math.max(1, Math.floor((availableWidth + gap) / (minColumnWidth + gap)));
+        newColumnWidth = (availableWidth - gap * (newColumns - 1)) / newColumns;
+    } else {
+        const gridMinWidth = 220 * (zoom / 100);
+        newColumns = Math.max(1, Math.floor((availableWidth + gap) / (gridMinWidth + gap)));
+        newColumnWidth = (availableWidth - gap * (newColumns - 1)) / newColumns;
+    }
+
+    // --- Fast path: scale existing positions when column count and items haven't changed ---
+    const cache = vsLayoutCache;
+    if (
+        cache.positions &&
+        cache.itemCount === items.length &&
+        cache.mode === mode &&
+        cache.columns === newColumns &&
+        items.length > 0
+    ) {
+        // Column count unchanged -- scale all positions proportionally
+        const scaleX = newColumnWidth / cache.columnWidth;
+        const scaleY = newColumnWidth / cache.columnWidth; // heights scale with width (aspect ratio preserved)
+        const scaleGap = gap / cache.gap;
+        const positions = new Float64Array(items.length * 4);
+
+        if (mode === 'masonry') {
+            // For masonry, we need to rescale left, top, width, height
+            // left = col * (columnWidth + gap), so it scales with (columnWidth + gap) / (oldColumnWidth + oldGap)
+            const oldColStep = cache.columnWidth + cache.gap;
+            const newColStep = newColumnWidth + gap;
+            const stepScale = oldColStep > 0 ? newColStep / oldColStep : 1;
+
+            for (let i = 0; i < items.length; i++) {
+                const idx = i * 4;
+                // Scale left by column step ratio
+                positions[idx] = cache.positions[idx] * stepScale;
+                // Scale top and height proportionally
+                positions[idx + 1] = cache.positions[idx + 1] * scaleY;
+                positions[idx + 2] = newColumnWidth;
+                positions[idx + 3] = cache.positions[idx + 3] * scaleY;
+            }
+
+            const newTotalHeight = cache.totalHeight * scaleY;
+
+            // Update cache
+            cache.containerWidth = containerWidth;
+            cache.zoom = zoom;
+            cache.columnWidth = newColumnWidth;
+            cache.gap = gap;
+            cache.positions = positions;
+            cache.totalHeight = newTotalHeight;
+
+            perfTest.end('vsCalculatePositions', perfStart, { itemCount: items.length, detail: `${mode} @ ${zoom}% (scaled)` });
+            return { positions, totalHeight: newTotalHeight };
+        } else {
+            // Grid: same logic
+            const oldColStep = cache.columnWidth + cache.gap;
+            const newColStep = newColumnWidth + gap;
+            const stepScale = oldColStep > 0 ? newColStep / oldColStep : 1;
+
+            for (let i = 0; i < items.length; i++) {
+                const idx = i * 4;
+                positions[idx] = cache.positions[idx] * stepScale;
+                positions[idx + 1] = cache.positions[idx + 1] * scaleY;
+                positions[idx + 2] = newColumnWidth;
+                positions[idx + 3] = cache.positions[idx + 3] * scaleY;
+            }
+
+            const newTotalHeight = cache.totalHeight * scaleY;
+            cache.containerWidth = containerWidth;
+            cache.zoom = zoom;
+            cache.columnWidth = newColumnWidth;
+            cache.gap = gap;
+            cache.positions = positions;
+            cache.totalHeight = newTotalHeight;
+
+            perfTest.end('vsCalculatePositions', perfStart, { itemCount: items.length, detail: `${mode} @ ${zoom}% (scaled)` });
+            return { positions, totalHeight: newTotalHeight };
+        }
+    }
+
+    // --- Full recalculation path ---
+    const positions = new Float64Array(items.length * 4);
+
+    if (mode === 'masonry') {
+        const columns = newColumns;
+        const columnWidth = newColumnWidth;
+        const colHeights = new Float64Array(columns);
+        const columnAssignments = new Uint16Array(items.length);
 
         for (let i = 0; i < items.length; i++) {
             const item = items[i];
             let cardHeight;
 
             if (item.type === 'folder') {
-                cardHeight = columnWidth; // Folders are square
+                cardHeight = columnWidth;
             } else {
-                let arName = '16:9'; // default
+                let arName = '16:9';
                 if (item.width && item.height) {
                     arName = getClosestAspectRatio(item.width, item.height);
                 }
@@ -334,6 +438,7 @@ function vsCalculatePositions(items, containerWidth, mode, zoom) {
             positions[idx + 2] = columnWidth;
             positions[idx + 3] = cardHeight;
 
+            columnAssignments[i] = shortestCol;
             colHeights[shortestCol] += cardHeight + gap;
         }
 
@@ -341,19 +446,30 @@ function vsCalculatePositions(items, containerWidth, mode, zoom) {
         for (let c = 0; c < columns; c++) {
             if (colHeights[c] > maxHeight) maxHeight = colHeights[c];
         }
-        const result = { positions, totalHeight: maxHeight + paddingTop + (parseInt(gridStyles.paddingBottom) || 0) };
-        perfTest.end('vsCalculatePositions', perfStart, { itemCount: items.length, detail: `${mode} @ ${zoom}%` });
-        return result;
+        const totalHeight = maxHeight + paddingTop + paddingBottom;
+
+        // Update cache
+        vsLayoutCache = {
+            itemCount: items.length,
+            containerWidth,
+            mode,
+            zoom,
+            columns,
+            columnWidth,
+            gap,
+            positions,
+            totalHeight,
+            colHeights,
+            columnAssignments
+        };
+
+        perfTest.end('vsCalculatePositions', perfStart, { itemCount: items.length, detail: `${mode} @ ${zoom}% (full)` });
+        return { positions, totalHeight };
 
     } else {
-        // Grid mode: uniform columns, height based on aspect ratio + padding-bottom trick
-        // In grid mode, all cards use the same column width but variable height via aspect ratio
-        const gridMinWidth = 220 * (zoom / 100);
-        const columns = Math.max(1, Math.floor((availableWidth + gap) / (gridMinWidth + gap)));
-        const columnWidth = (availableWidth - gap * (columns - 1)) / columns;
-
-        // Track row positions
-        let currentRow = 0;
+        // Grid mode
+        const columns = newColumns;
+        const columnWidth = newColumnWidth;
         let currentCol = 0;
         let rowTop = 0;
         let rowMaxHeight = 0;
@@ -392,15 +508,28 @@ function vsCalculatePositions(items, containerWidth, mode, zoom) {
                 rowTop += rowMaxHeight + gap;
                 rowMaxHeight = 0;
                 currentCol = 0;
-                currentRow++;
             }
         }
 
-        // Account for last partial row
-        const totalHeight = rowTop + (currentCol > 0 ? rowMaxHeight : 0) + paddingTop + (parseInt(gridStyles.paddingBottom) || 0);
-        const result = { positions, totalHeight };
-        perfTest.end('vsCalculatePositions', perfStart, { itemCount: items.length, detail: `${mode} @ ${zoom}%` });
-        return result;
+        const totalHeight = rowTop + (currentCol > 0 ? rowMaxHeight : 0) + paddingTop + paddingBottom;
+
+        // Update cache
+        vsLayoutCache = {
+            itemCount: items.length,
+            containerWidth,
+            mode,
+            zoom,
+            columns,
+            columnWidth,
+            gap,
+            positions,
+            totalHeight,
+            colHeights: null,
+            columnAssignments: null
+        };
+
+        perfTest.end('vsCalculatePositions', perfStart, { itemCount: items.length, detail: `${mode} @ ${zoom}% (full)` });
+        return { positions, totalHeight };
     }
 }
 
@@ -844,6 +973,9 @@ function vsUpdateItems(items) {
     mediaToRetry.clear();
 
     vsSortedItems = items;
+
+    // Invalidate layout cache -- items changed, force full recalculation
+    vsLayoutCache.itemCount = 0;
 
     // Recalculate positions
     const containerWidth = gridContainer.clientWidth;
@@ -2406,6 +2538,72 @@ function getImageThumbnailCacheKey(filePath, maxSize) {
     return `${filePath}|${maxSize}`;
 }
 
+// --- Thumbnail batch queue ---
+// Accumulates individual thumbnail requests and flushes them as a single batch IPC call
+// every animation frame, reducing IPC round-trip overhead for large folders.
+const _thumbnailBatchQueue = [];
+let _thumbnailBatchTimer = null;
+const THUMBNAIL_BATCH_MAX = 50;
+
+function _flushThumbnailBatch() {
+    _thumbnailBatchTimer = null;
+    if (_thumbnailBatchQueue.length === 0) return;
+
+    const batch = _thumbnailBatchQueue.splice(0, THUMBNAIL_BATCH_MAX);
+
+    // If batch API not available, fall back to individual calls
+    if (!window.electronAPI?.generateThumbnailBatch) {
+        for (const item of batch) {
+            const fallback = item.type === 'video'
+                ? window.electronAPI.generateVideoThumbnail(item.filePath)
+                : window.electronAPI.generateImageThumbnail(item.filePath, item.maxSize);
+            fallback
+                .then(result => {
+                    const url = result && result.success && result.url ? result.url : null;
+                    item.resolve(url);
+                })
+                .catch(() => item.resolve(null));
+        }
+        // Schedule next flush if items remain
+        if (_thumbnailBatchQueue.length > 0) {
+            _thumbnailBatchTimer = requestAnimationFrame(_flushThumbnailBatch);
+        }
+        return;
+    }
+
+    const batchItems = batch.map(item => ({
+        filePath: item.filePath,
+        type: item.type,
+        maxSize: item.maxSize
+    }));
+
+    window.electronAPI.generateThumbnailBatch(batchItems)
+        .then(results => {
+            for (let i = 0; i < batch.length; i++) {
+                const r = results[i];
+                const url = r && r.success && r.url ? r.url : null;
+                batch[i].resolve(url);
+            }
+        })
+        .catch(() => {
+            for (const item of batch) item.resolve(null);
+        });
+
+    // Schedule next flush if items remain in queue
+    if (_thumbnailBatchQueue.length > 0) {
+        _thumbnailBatchTimer = requestAnimationFrame(_flushThumbnailBatch);
+    }
+}
+
+function _enqueueThumbnailRequest(type, filePath, maxSize) {
+    return new Promise((resolve) => {
+        _thumbnailBatchQueue.push({ type, filePath, maxSize, resolve });
+        if (!_thumbnailBatchTimer) {
+            _thumbnailBatchTimer = requestAnimationFrame(_flushThumbnailBatch);
+        }
+    });
+}
+
 function requestImageThumbnailUrl(filePath, maxSize) {
     const key = getImageThumbnailCacheKey(filePath, maxSize);
     if (imageThumbnailUrlCache.has(key)) {
@@ -2414,19 +2612,14 @@ function requestImageThumbnailUrl(filePath, maxSize) {
     if (imageThumbnailRequests.has(key)) {
         return imageThumbnailRequests.get(key);
     }
-    if (!window.electronAPI?.generateImageThumbnail) {
-        return Promise.resolve(null);
-    }
 
-    const request = window.electronAPI.generateImageThumbnail(filePath, maxSize)
-        .then(result => {
-            const url = result && result.success && result.url ? result.url : null;
+    const request = _enqueueThumbnailRequest('image', filePath, maxSize)
+        .then(url => {
             if (url) {
                 setCachedUrl(imageThumbnailUrlCache, key, url);
             }
             return url;
         })
-        .catch(() => null)
         .finally(() => {
             imageThumbnailRequests.delete(key);
         });
@@ -2442,19 +2635,14 @@ function requestVideoPosterUrl(filePath) {
     if (videoPosterRequests.has(filePath)) {
         return videoPosterRequests.get(filePath);
     }
-    if (!window.electronAPI?.generateVideoThumbnail) {
-        return Promise.resolve(null);
-    }
 
-    const request = window.electronAPI.generateVideoThumbnail(filePath)
-        .then(result => {
-            const url = result && result.success && result.url ? result.url : null;
+    const request = _enqueueThumbnailRequest('video', filePath)
+        .then(url => {
             if (url) {
                 setCachedUrl(videoPosterUrlCache, filePath, url);
             }
             return url;
         })
-        .catch(() => null)
         .finally(() => {
             videoPosterRequests.delete(filePath);
         });

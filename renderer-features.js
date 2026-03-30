@@ -2284,20 +2284,48 @@ function initNewFeatures() {
         cancelProgressBtn.addEventListener('click', cancelProgress);
     }
     
-    // Star rating filter - independent toggle to show only rated files
-    const filterStarsBtn = document.getElementById('filter-stars');
-    if (filterStarsBtn) {
-        filterStarsBtn.addEventListener('click', () => {
+    // Star rating filter - 2-part button
+    // Left: toggle star filter on/off
+    // Right: cycle sort direction (none → desc → asc → none)
+    const filterStarsToggle = document.getElementById('filter-stars-toggle');
+    const filterStarsSortBtn = document.getElementById('filter-stars-sort');
+
+    function reapplyStarFilter() {
+        if (currentFolderPath && currentItems.length > 0) {
+            const filteredItems = filterItems(currentItems);
+            const sortedItems = sortItems(filteredItems);
+            renderItems(sortedItems);
+        } else {
+            scheduleApplyFilters();
+        }
+    }
+
+    function updateStarSortButtonState() {
+        if (!filterStarsSortBtn) return;
+        filterStarsSortBtn.classList.remove('sort-desc', 'sort-asc');
+        if (starSortOrder === 'desc') filterStarsSortBtn.classList.add('sort-desc');
+        else if (starSortOrder === 'asc') filterStarsSortBtn.classList.add('sort-asc');
+        const titles = { none: 'Sort: using settings', desc: 'Sort: high to low', asc: 'Sort: low to high' };
+        filterStarsSortBtn.title = titles[starSortOrder] || titles.none;
+    }
+
+    if (filterStarsToggle) {
+        filterStarsToggle.addEventListener('click', () => {
             starFilterActive = !starFilterActive;
-            filterStarsBtn.classList.toggle('active', starFilterActive);
-            // Re-render with filtered items
-            if (currentFolderPath && currentItems.length > 0) {
-                const filteredItems = filterItems(currentItems);
-                const sortedItems = sortItems(filteredItems);
-                renderItems(sortedItems);
-            } else {
-                scheduleApplyFilters();
-            }
+            filterStarsToggle.classList.toggle('active', starFilterActive);
+            reapplyStarFilter();
+        });
+    }
+
+    if (filterStarsSortBtn) {
+        updateStarSortButtonState();
+        filterStarsSortBtn.addEventListener('click', () => {
+            // Cycle: none → desc → asc → none
+            if (starSortOrder === 'none') starSortOrder = 'desc';
+            else if (starSortOrder === 'desc') starSortOrder = 'asc';
+            else starSortOrder = 'none';
+            updateStarSortButtonState();
+            reapplyStarFilter();
         });
     }
     

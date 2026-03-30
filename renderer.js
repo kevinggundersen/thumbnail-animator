@@ -1040,6 +1040,7 @@ let currentItems = [];
 // Track current filter state
 let currentFilter = 'all'; // 'all', 'video', 'image', 'audio'
 let starFilterActive = false;
+let starSortOrder = 'none'; // 'none' (use settings sort), 'desc' (high to low), 'asc' (low to high)
 
 // Track layout mode: 'masonry' (dynamic) or 'grid' (rigid row-based)
 let layoutMode = 'masonry'; // Default to masonry
@@ -3135,23 +3136,22 @@ function sortItems(items) {
     // Sort files
     files.sort((a, b) => {
         let comparison = 0;
-        if (sortType === 'name') {
-            comparison = a.name.localeCompare(b.name);
-        } else if (sortType === 'date') {
-            // Use mtime if available, otherwise fall back to name
-            const aTime = a.mtime || 0;
-            const bTime = b.mtime || 0;
-            comparison = aTime - bTime;
-            // If times are equal or missing, fall back to name
+        if ((starFilterActive && starSortOrder !== 'none') || sortType === 'rating') {
+            // Sort by rating using starSortOrder (or desc for sortType=rating)
+            const aRating = getFileRating(a.path);
+            const bRating = getFileRating(b.path);
+            const order = starSortOrder !== 'none' ? starSortOrder : 'desc';
+            comparison = order === 'asc' ? aRating - bRating : bRating - aRating;
             if (comparison === 0) {
                 comparison = a.name.localeCompare(b.name);
             }
-        } else if (sortType === 'rating' || starFilterActive) {
-            // Sort by star rating (highest to lowest: 5 to 1)
-            const aRating = getFileRating(a.path);
-            const bRating = getFileRating(b.path);
-            comparison = bRating - aRating; // Descending order (5 stars first)
-            // If ratings are equal, fall back to name
+            return comparison;
+        } else if (sortType === 'name') {
+            comparison = a.name.localeCompare(b.name);
+        } else if (sortType === 'date') {
+            const aTime = a.mtime || 0;
+            const bTime = b.mtime || 0;
+            comparison = aTime - bTime;
             if (comparison === 0) {
                 comparison = a.name.localeCompare(b.name);
             }
@@ -4551,7 +4551,10 @@ function updateStatusBar() {
     const filterNames = { all: '', video: 'Videos', image: 'Images', audio: 'Audio' };
     const filterParts = [];
     if (currentFilter !== 'all') filterParts.push(filterNames[currentFilter] || currentFilter);
-    if (starFilterActive) filterParts.push('Starred');
+    if (starFilterActive) {
+        const sortLabel = { none: 'Starred', desc: 'Starred ▼', asc: 'Starred ▲' };
+        filterParts.push(sortLabel[starSortOrder] || 'Starred');
+    }
     if (query) filterParts.push(`"${query}"`);
     statusFilterInfo.textContent = filterParts.length > 0 ? `[${filterParts.join(' + ')}]` : '';
 
@@ -4641,16 +4644,16 @@ function applyFilters() {
         return true;
     });
 
-    // Sort by star rating if stars filter is active
+    // Sort by star rating if stars filter is active and sort direction is set
     let sortedFiltered = filteredItems;
-    if (starFilterActive) {
+    if (starFilterActive && starSortOrder !== 'none') {
         sortedFiltered = [...filteredItems].sort((a, b) => {
             if (a.type === 'folder' && b.type === 'folder') return 0;
             if (a.type === 'folder') return 1;
             if (b.type === 'folder') return -1;
             const aRating = getFileRating(a.path);
             const bRating = getFileRating(b.path);
-            return bRating - aRating;
+            return starSortOrder === 'asc' ? aRating - bRating : bRating - aRating;
         });
     }
 

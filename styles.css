@@ -936,10 +936,41 @@ header {
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 }
 
-#filter-stars {
+.filter-stars-group {
+    display: flex;
     margin-left: 4px;
     border-left: 1px solid var(--border-default);
-    padding-left: 10px;
+    padding-left: 4px;
+}
+
+.star-toggle-btn {
+    border-top-right-radius: 0 !important;
+    border-bottom-right-radius: 0 !important;
+    padding-right: 8px;
+}
+
+.star-sort-btn {
+    border-top-left-radius: 0 !important;
+    border-bottom-left-radius: 0 !important;
+    padding: 5px 6px;
+    border-left: 1px solid var(--border-default);
+}
+
+.star-sort-btn svg {
+    transition: transform var(--duration-normal);
+}
+
+.star-sort-btn.sort-asc svg {
+    transform: rotate(180deg);
+}
+
+.star-sort-btn.sort-desc svg,
+.star-sort-btn.sort-asc svg {
+    opacity: 1;
+}
+
+.star-sort-btn:not(.sort-desc):not(.sort-asc) svg {
+    opacity: 0.4;
 }
 
 .settings-container {

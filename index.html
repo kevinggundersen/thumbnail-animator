@@ -47,197 +47,7 @@
                 </div>
             </div>
             <div class="tabs-container" id="tabs-container"></div>
-            <div class="settings-container">
-                <button id="settings-btn" class="settings-btn toolbar-icon-btn" title="Settings"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg></button>
-                <div id="settings-dropdown" class="settings-dropdown hidden">
-                    <div class="settings-item">
-                        <label class="settings-label">
-                            <span>Layout Mode:</span>
-                            <div class="toggle-switch">
-                                <input type="checkbox" id="layout-mode-toggle">
-                                <span class="toggle-slider"></span>
-                            </div>
-                            <span class="toggle-label" id="layout-mode-label">Dynamic</span>
-                        </label>
-                    </div>
-                    <div class="settings-item">
-                        <label class="settings-label">
-                            <span>Remember Last Folder:</span>
-                            <div class="toggle-switch">
-                                <input type="checkbox" id="remember-folder-toggle" checked>
-                                <span class="toggle-slider"></span>
-                            </div>
-                            <span class="toggle-label" id="remember-folder-label">On</span>
-                        </label>
-                    </div>
-                    <div class="settings-item">
-                        <label class="settings-label">
-                            <span>Include Moving Images:</span>
-                            <div class="toggle-switch">
-                                <input type="checkbox" id="include-moving-images-toggle" checked>
-                                <span class="toggle-slider"></span>
-                            </div>
-                            <span class="toggle-label" id="include-moving-images-label">On</span>
-                        </label>
-                    </div>
-                    <div class="settings-section-title">Card info</div>
-                    <div class="settings-item">
-                        <label class="settings-label">
-                            <span>Show extension:</span>
-                            <div class="toggle-switch">
-                                <input type="checkbox" id="card-info-extension-toggle" checked>
-                                <span class="toggle-slider"></span>
-                            </div>
-                            <span class="toggle-label" id="card-info-extension-label">On</span>
-                        </label>
-                    </div>
-                    <div class="settings-item">
-                        <label class="settings-label">
-                            <span>Show resolution:</span>
-                            <div class="toggle-switch">
-                                <input type="checkbox" id="card-info-resolution-toggle" checked>
-                                <span class="toggle-slider"></span>
-                            </div>
-                            <span class="toggle-label" id="card-info-resolution-label">On</span>
-                        </label>
-                    </div>
-                    <div class="settings-item">
-                        <label class="settings-label">
-                            <span>Show file size:</span>
-                            <div class="toggle-switch">
-                                <input type="checkbox" id="card-info-size-toggle">
-                                <span class="toggle-slider"></span>
-                            </div>
-                            <span class="toggle-label" id="card-info-size-label">Off</span>
-                        </label>
-                    </div>
-                    <div class="settings-item">
-                        <label class="settings-label">
-                            <span>Show modified date:</span>
-                            <div class="toggle-switch">
-                                <input type="checkbox" id="card-info-date-toggle">
-                                <span class="toggle-slider"></span>
-                            </div>
-                            <span class="toggle-label" id="card-info-date-label">Off</span>
-                        </label>
-                    </div>
-                    <div class="settings-item">
-                        <label class="settings-label">
-                            <span>Show duration (video):</span>
-                            <div class="toggle-switch">
-                                <input type="checkbox" id="card-info-duration-toggle" checked>
-                                <span class="toggle-slider"></span>
-                            </div>
-                            <span class="toggle-label" id="card-info-duration-label">On</span>
-                        </label>
-                    </div>
-                    <div class="settings-item">
-                        <label class="settings-label">
-                            <span>Show star rating:</span>
-                            <div class="toggle-switch">
-                                <input type="checkbox" id="card-info-stars-toggle" checked>
-                                <span class="toggle-slider"></span>
-                            </div>
-                            <span class="toggle-label" id="card-info-stars-label">On</span>
-                        </label>
-                    </div>
-                    <div class="settings-item">
-                        <label class="settings-label">
-                            <span>Show audio label:</span>
-                            <div class="toggle-switch">
-                                <input type="checkbox" id="card-info-audio-toggle" checked>
-                                <span class="toggle-slider"></span>
-                            </div>
-                            <span class="toggle-label" id="card-info-audio-label">On</span>
-                        </label>
-                    </div>
-                    <div class="settings-item">
-                        <label class="settings-label">
-                            <span>Show filename:</span>
-                            <div class="toggle-switch">
-                                <input type="checkbox" id="card-info-filename-toggle" checked>
-                                <span class="toggle-slider"></span>
-                            </div>
-                            <span class="toggle-label" id="card-info-filename-label">On</span>
-                        </label>
-                    </div>
-                    <div class="settings-item">
-                        <label class="settings-label">
-                            <span>Sort By:</span>
-                            <select id="sort-type-select" class="settings-select">
-                                <option value="name">Name</option>
-                                <option value="date">Date</option>
-                            </select>
-                        </label>
-                    </div>
-                    <div class="settings-item">
-                        <label class="settings-label">
-                            <span>Sort Order:</span>
-                            <select id="sort-order-select" class="settings-select">
-                                <option value="ascending">Ascending</option>
-                                <option value="descending">Descending</option>
-                            </select>
-                        </label>
-                    </div>
-                    <div class="settings-item">
-                        <label class="settings-label">
-                            <span>Theme:</span>
-                            <select id="theme-select" class="settings-select">
-                                <option value="dark">Dark</option>
-                                <option value="light">Light</option>
-                            </select>
-                        </label>
-                    </div>
-                    <div class="settings-item">
-                        <label class="settings-label">
-                            <span>Thumbnail Quality:</span>
-                            <select id="thumbnail-quality-select" class="settings-select">
-                                <option value="low">Low (Fast)</option>
-                                <option value="medium" selected>Medium (Balanced)</option>
-                                <option value="high">High (Best)</option>
-                                <option value="original">Original (Full Res)</option>
-                            </select>
-                        </label>
-                    </div>
-                    <div class="settings-item">
-                        <label class="settings-label">
-                            <span>Pause on Fullscreen:</span>
-                            <div class="toggle-switch">
-                                <input type="checkbox" id="pause-on-lightbox-toggle" checked>
-                                <span class="toggle-slider"></span>
-                            </div>
-                            <span class="toggle-label" id="pause-on-lightbox-label">On</span>
-                        </label>
-                    </div>
-                    <div class="settings-item">
-                        <label class="settings-label">
-                            <span>Pause on Focus Loss:</span>
-                            <div class="toggle-switch">
-                                <input type="checkbox" id="pause-on-blur-toggle" checked>
-                                <span class="toggle-slider"></span>
-                            </div>
-                            <span class="toggle-label" id="pause-on-blur-label">On</span>
-                        </label>
-                    </div>
-                    <div class="settings-item">
-                        <label class="settings-label">
-                            <span>Auto-Repeat Videos:</span>
-                            <div class="toggle-switch">
-                                <input type="checkbox" id="auto-repeat-toggle">
-                                <span class="toggle-slider"></span>
-                            </div>
-                            <span class="toggle-label" id="auto-repeat-label">Off</span>
-                        </label>
-                    </div>
-                    <div class="settings-item">
-                        <label class="settings-label">
-                            <span>Zoom Level:</span>
-                            <input type="range" id="zoom-slider" min="50" max="200" value="100" step="10" class="zoom-slider">
-                            <span class="zoom-value" id="zoom-value">100%</span>
-                        </label>
-                    </div>
-                </div>
-            </div>
+            <button id="settings-btn" class="settings-btn toolbar-icon-btn" title="Settings"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg></button>
             <div class="search-box-container">
                 <input type="text" id="search-box" placeholder="Search files..." autocomplete="off">
                 <button id="search-clear-btn" class="search-clear-btn" title="Clear search" style="display:none"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
@@ -496,6 +306,222 @@
                 </div>
             </div>
             <div class="shortcuts-footer">Press <kbd>?</kbd> to toggle this panel</div>
+        </div>
+    </div>
+    <!-- Settings Modal -->
+    <div id="settings-modal" class="settings-modal hidden">
+        <div class="settings-modal-content">
+            <div class="settings-modal-header">
+                <h3>Settings</h3>
+                <button id="settings-modal-close" class="settings-modal-close-btn" title="Close"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+            </div>
+            <div class="settings-modal-body">
+                <div class="settings-tabs">
+                    <button class="settings-tab active" data-tab="general">General</button>
+                    <button class="settings-tab" data-tab="card-info">Card Info</button>
+                    <button class="settings-tab" data-tab="sorting">Sorting</button>
+                    <button class="settings-tab" data-tab="playback">Playback</button>
+                </div>
+                <div class="settings-panel">
+                    <!-- General Tab -->
+                    <div class="settings-tab-content active" data-tab="general">
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <span>Layout Mode</span>
+                                <div class="toggle-switch">
+                                    <input type="checkbox" id="layout-mode-toggle">
+                                    <span class="toggle-slider"></span>
+                                </div>
+                                <span class="toggle-label" id="layout-mode-label">Dynamic</span>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <span>Remember Last Folder</span>
+                                <div class="toggle-switch">
+                                    <input type="checkbox" id="remember-folder-toggle" checked>
+                                    <span class="toggle-slider"></span>
+                                </div>
+                                <span class="toggle-label" id="remember-folder-label">On</span>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <span>Include Moving Images</span>
+                                <div class="toggle-switch">
+                                    <input type="checkbox" id="include-moving-images-toggle" checked>
+                                    <span class="toggle-slider"></span>
+                                </div>
+                                <span class="toggle-label" id="include-moving-images-label">On</span>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <span>Theme</span>
+                                <select id="theme-select" class="settings-select">
+                                    <option value="dark">Dark</option>
+                                    <option value="light">Light</option>
+                                </select>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <span>Zoom Level</span>
+                                <input type="range" id="zoom-slider" min="50" max="200" value="100" step="10" class="zoom-slider">
+                                <span class="zoom-value" id="zoom-value">100%</span>
+                            </label>
+                        </div>
+                    </div>
+                    <!-- Card Info Tab -->
+                    <div class="settings-tab-content" data-tab="card-info">
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <span>Show Extension</span>
+                                <div class="toggle-switch">
+                                    <input type="checkbox" id="card-info-extension-toggle" checked>
+                                    <span class="toggle-slider"></span>
+                                </div>
+                                <span class="toggle-label" id="card-info-extension-label">On</span>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <span>Show Resolution</span>
+                                <div class="toggle-switch">
+                                    <input type="checkbox" id="card-info-resolution-toggle" checked>
+                                    <span class="toggle-slider"></span>
+                                </div>
+                                <span class="toggle-label" id="card-info-resolution-label">On</span>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <span>Show File Size</span>
+                                <div class="toggle-switch">
+                                    <input type="checkbox" id="card-info-size-toggle">
+                                    <span class="toggle-slider"></span>
+                                </div>
+                                <span class="toggle-label" id="card-info-size-label">Off</span>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <span>Show Modified Date</span>
+                                <div class="toggle-switch">
+                                    <input type="checkbox" id="card-info-date-toggle">
+                                    <span class="toggle-slider"></span>
+                                </div>
+                                <span class="toggle-label" id="card-info-date-label">Off</span>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <span>Show Duration (Video)</span>
+                                <div class="toggle-switch">
+                                    <input type="checkbox" id="card-info-duration-toggle" checked>
+                                    <span class="toggle-slider"></span>
+                                </div>
+                                <span class="toggle-label" id="card-info-duration-label">On</span>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <span>Show Star Rating</span>
+                                <div class="toggle-switch">
+                                    <input type="checkbox" id="card-info-stars-toggle" checked>
+                                    <span class="toggle-slider"></span>
+                                </div>
+                                <span class="toggle-label" id="card-info-stars-label">On</span>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <span>Show Audio Label</span>
+                                <div class="toggle-switch">
+                                    <input type="checkbox" id="card-info-audio-toggle" checked>
+                                    <span class="toggle-slider"></span>
+                                </div>
+                                <span class="toggle-label" id="card-info-audio-label">On</span>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <span>Show Filename</span>
+                                <div class="toggle-switch">
+                                    <input type="checkbox" id="card-info-filename-toggle" checked>
+                                    <span class="toggle-slider"></span>
+                                </div>
+                                <span class="toggle-label" id="card-info-filename-label">On</span>
+                            </label>
+                        </div>
+                    </div>
+                    <!-- Sorting Tab -->
+                    <div class="settings-tab-content" data-tab="sorting">
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <span>Sort By</span>
+                                <select id="sort-type-select" class="settings-select">
+                                    <option value="name">Name</option>
+                                    <option value="date">Date</option>
+                                </select>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <span>Sort Order</span>
+                                <select id="sort-order-select" class="settings-select">
+                                    <option value="ascending">Ascending</option>
+                                    <option value="descending">Descending</option>
+                                </select>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <span>Thumbnail Quality</span>
+                                <select id="thumbnail-quality-select" class="settings-select">
+                                    <option value="low">Low (Fast)</option>
+                                    <option value="medium" selected>Medium (Balanced)</option>
+                                    <option value="high">High (Best)</option>
+                                    <option value="original">Original (Full Res)</option>
+                                </select>
+                            </label>
+                        </div>
+                    </div>
+                    <!-- Playback Tab -->
+                    <div class="settings-tab-content" data-tab="playback">
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <span>Pause on Fullscreen</span>
+                                <div class="toggle-switch">
+                                    <input type="checkbox" id="pause-on-lightbox-toggle" checked>
+                                    <span class="toggle-slider"></span>
+                                </div>
+                                <span class="toggle-label" id="pause-on-lightbox-label">On</span>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <span>Pause on Focus Loss</span>
+                                <div class="toggle-switch">
+                                    <input type="checkbox" id="pause-on-blur-toggle" checked>
+                                    <span class="toggle-slider"></span>
+                                </div>
+                                <span class="toggle-label" id="pause-on-blur-label">On</span>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <span>Auto-Repeat Videos</span>
+                                <div class="toggle-switch">
+                                    <input type="checkbox" id="auto-repeat-toggle">
+                                    <span class="toggle-slider"></span>
+                                </div>
+                                <span class="toggle-label" id="auto-repeat-label">Off</span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
     <!-- Performance Dashboard (toggle with Ctrl+Shift+P) -->

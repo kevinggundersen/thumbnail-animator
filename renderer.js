@@ -999,7 +999,7 @@ const filterVideosBtn = document.getElementById('filter-videos');
 const filterImagesBtn = document.getElementById('filter-images');
 
 const settingsBtn = document.getElementById('settings-btn');
-const settingsDropdown = document.getElementById('settings-dropdown');
+const settingsModal = document.getElementById('settings-modal');
 const layoutModeToggle = document.getElementById('layout-mode-toggle');
 const layoutModeLabel = document.getElementById('layout-mode-label');
 const rememberFolderToggle = document.getElementById('remember-folder-toggle');
@@ -3872,12 +3872,12 @@ function updateSorting() {
     applySorting();
 }
 
-function toggleSettingsDropdown() {
-    settingsDropdown.classList.toggle('hidden');
+function toggleSettingsModal() {
+    settingsModal.classList.toggle('hidden');
 }
 
-function closeSettingsDropdown() {
-    settingsDropdown.classList.add('hidden');
+function closeSettingsModal() {
+    settingsModal.classList.add('hidden');
 }
 
 // Keyboard Shortcuts Cheat Sheet
@@ -5948,14 +5948,29 @@ filterImagesBtn.addEventListener('click', () => {
 // Settings button event listener
 settingsBtn.addEventListener('click', (e) => {
     e.stopPropagation();
-    toggleSettingsDropdown();
+    toggleSettingsModal();
 });
 
-// Close dropdown when clicking outside
-document.addEventListener('click', (e) => {
-    if (!settingsBtn.contains(e.target) && !settingsDropdown.contains(e.target)) {
-        closeSettingsDropdown();
+// Close settings modal when clicking backdrop
+settingsModal.addEventListener('click', (e) => {
+    if (e.target === settingsModal) {
+        closeSettingsModal();
     }
+});
+
+// Settings modal close button
+document.getElementById('settings-modal-close').addEventListener('click', () => {
+    closeSettingsModal();
+});
+
+// Settings tab switching
+document.querySelectorAll('.settings-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+        document.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.settings-tab-content').forEach(c => c.classList.remove('active'));
+        tab.classList.add('active');
+        document.querySelector(`.settings-tab-content[data-tab="${tab.dataset.tab}"]`).classList.add('active');
+    });
 });
 
 // Layout mode toggle event listener

@@ -9,8 +9,8 @@ function initKeyboardShortcuts() {
                     handleRenameCancel();
                 } else if (!lightbox.classList.contains('hidden')) {
                     closeLightbox();
-                } else if (!settingsDropdown.classList.contains('hidden')) {
-                    closeSettingsDropdown();
+                } else if (!settingsModal.classList.contains('hidden')) {
+                    closeSettingsModal();
                 } else if (!favoritesDropdown.classList.contains('hidden')) {
                     favoritesDropdown.classList.add('hidden');
                 } else if (!recentFilesDropdown.classList.contains('hidden')) {

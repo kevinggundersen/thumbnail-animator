@@ -75,6 +75,7 @@ let vsLastStartIndex = -1;         // Last rendered range start
 let vsLastEndIndex = -1;           // Last rendered range end
 let vsSpacer = null;               // Spacer element that sets total scroll height
 let vsResizeHandler = null;        // Window resize handler
+let vsDimensionRecalcRafId = null; // RAF ID for coalescing metadata-triggered recalcs
 
 // Masonry layout cache for incremental updates
 let vsLayoutCache = {
@@ -644,14 +645,14 @@ function vsPopulateExistingCard(card, item) {
         // Apply aspect ratio
         if (item.width && item.height) {
             const aspectRatioName = getClosestAspectRatio(item.width, item.height);
-            applyAspectRatioToCard(card, aspectRatioName);
+            applyAspectRatioToCard(card, aspectRatioName, 'prescanned');
             card.dataset.width = item.width;
             card.dataset.height = item.height;
             card.dataset.mediaWidth = item.width;
             card.dataset.mediaHeight = item.height;
             createResolutionLabel(card, item.width, item.height);
         } else {
-            applyAspectRatioToCard(card, '16:9');
+            applyAspectRatioToCard(card, '16:9', 'fallback');
         }
 
         const info = document.createElement('div');
@@ -1347,6 +1348,32 @@ function updateInMemoryFolderCaches(folderPath, items) {
     });
 }
 
+function scheduleVsRecalculateForDimensions() {
+    if (!vsEnabled || layoutMode !== 'masonry') return;
+    if (vsDimensionRecalcRafId !== null) return;
+
+    vsDimensionRecalcRafId = requestAnimationFrame(() => {
+        vsDimensionRecalcRafId = null;
+        // Force a full position rebuild so updated dimensions are reflected.
+        vsLayoutCache.itemCount = 0;
+        vsRecalculate();
+    });
+}
+
+function updateItemDimensionsByPath(filePath, width, height) {
+    if (!filePath || !width || !height) return false;
+
+    let updated = false;
+    for (const item of currentItems) {
+        if (item && item.path === filePath && item.type !== 'folder') {
+            item.width = width;
+            item.height = height;
+            updated = true;
+        }
+    }
+    return updated;
+}
+
 function applyUpdatedDimensionsToVisibleCards(updatedPaths) {
     let updatedVisibleCards = 0;
 
@@ -1357,7 +1384,7 @@ function applyUpdatedDimensionsToVisibleCards(updatedPaths) {
         }
 
         const aspectRatioName = getClosestAspectRatio(item.width, item.height);
-        applyAspectRatioToCard(card, aspectRatioName);
+        applyAspectRatioToCard(card, aspectRatioName, 'hydrated');
         card.dataset.width = item.width;
         card.dataset.height = item.height;
         card.dataset.mediaWidth = item.width;
@@ -2664,8 +2691,10 @@ function createResolutionLabel(card, width, height) {
     card.dataset.mediaHeight = height;
 }
 
-// Apply aspect ratio to card
-function applyAspectRatioToCard(card, aspectRatioName) {
+// Apply aspect ratio to card.
+// aspectRatioSource: 'fallback' (placeholder before dimensions), 'prescanned' (folder scan/cache),
+// 'metadata' (image/video element), 'hydrated' (background dimension scan)
+function applyAspectRatioToCard(card, aspectRatioName, aspectRatioSource) {
     // Remove any existing aspect ratio classes
     card.classList.remove(...ASPECT_RATIOS.map(ar => `aspect-${ar.name.replace(':', '-')}`));
     
@@ -2675,6 +2704,9 @@ function applyAspectRatioToCard(card, aspectRatioName) {
     
     // Store the aspect ratio on the card for persistence
     card.dataset.aspectRatio = aspectRatioName;
+    if (aspectRatioSource !== undefined) {
+        card.dataset.aspectRatioSource = aspectRatioSource;
+    }
     
     // In masonry mode, if this card already has a position (was laid out), update
     // just this card's height in-place. This handles the fallback case where ffprobe
@@ -3241,7 +3273,7 @@ function createCardFromItem(item) {
         // This prevents card shifting in masonry mode
         if (item.width && item.height && item.type === 'image') {
             const aspectRatioName = getClosestAspectRatio(item.width, item.height);
-            applyAspectRatioToCard(card, aspectRatioName);
+            applyAspectRatioToCard(card, aspectRatioName, 'prescanned');
             // Store dimensions on card for later use
             card.dataset.width = item.width;
             card.dataset.height = item.height;
@@ -3254,7 +3286,7 @@ function createCardFromItem(item) {
         // Apply pre-scanned dimensions for videos (from ffprobe during folder scan)
         if (item.width && item.height && item.type === 'video') {
             const aspectRatioName = getClosestAspectRatio(item.width, item.height);
-            applyAspectRatioToCard(card, aspectRatioName);
+            applyAspectRatioToCard(card, aspectRatioName, 'prescanned');
             card.dataset.width = item.width;
             card.dataset.height = item.height;
             card.dataset.mediaWidth = item.width;
@@ -3265,7 +3297,7 @@ function createCardFromItem(item) {
         // Fallback: if no pre-scanned dimensions available, default to 16:9
         // so masonry layout can be calculated upfront without waiting for metadata
         if (!card.dataset.aspectRatio) {
-            applyAspectRatioToCard(card, '16:9');
+            applyAspectRatioToCard(card, '16:9', 'fallback');
         }
 
         const info = document.createElement('div');
@@ -3673,14 +3705,28 @@ function createImageForCard(card, imageUrl) {
     // Track loading state
     img.addEventListener('load', () => {
         // Detect and apply aspect ratio to card
-        // Only update if aspect ratio wasn't already set from pre-scanned dimensions
-        if (img.naturalWidth && img.naturalHeight && !card.dataset.aspectRatio) {
+        // Replace placeholder fallback ratios once real dimensions are known; keep prescanned/hydrated.
+        const ratioSource = card.dataset.aspectRatioSource;
+        const canApplyFromImage =
+            img.naturalWidth &&
+            img.naturalHeight &&
+            (!card.dataset.aspectRatio || ratioSource === 'fallback');
+        if (canApplyFromImage) {
             const aspectRatioName = getClosestAspectRatio(img.naturalWidth, img.naturalHeight);
-            applyAspectRatioToCard(card, aspectRatioName);
+            applyAspectRatioToCard(card, aspectRatioName, 'metadata');
+            card.dataset.width = img.naturalWidth;
+            card.dataset.height = img.naturalHeight;
 
             // Create resolution label if not already created
             if (!card.dataset.mediaWidth) {
                 createResolutionLabel(card, img.naturalWidth, img.naturalHeight);
+            }
+
+            if (updateItemDimensionsByPath(card.dataset.filePath, img.naturalWidth, img.naturalHeight)) {
+                if (currentFolderPath) {
+                    updateInMemoryFolderCaches(currentFolderPath, currentItems);
+                }
+                scheduleVsRecalculateForDimensions();
             }
 
             // Cache discovered dimensions for future visits
@@ -3905,10 +3951,19 @@ function createVideoForCard(card, videoUrl) {
         // Detect and apply aspect ratio to card
         if (video.videoWidth && video.videoHeight) {
             const aspectRatioName = getClosestAspectRatio(video.videoWidth, video.videoHeight);
-            applyAspectRatioToCard(card, aspectRatioName);
+            applyAspectRatioToCard(card, aspectRatioName, 'metadata');
+            card.dataset.width = video.videoWidth;
+            card.dataset.height = video.videoHeight;
 
             // Create resolution label
             createResolutionLabel(card, video.videoWidth, video.videoHeight);
+
+            if (updateItemDimensionsByPath(card.dataset.filePath, video.videoWidth, video.videoHeight)) {
+                if (currentFolderPath) {
+                    updateInMemoryFolderCaches(currentFolderPath, currentItems);
+                }
+                scheduleVsRecalculateForDimensions();
+            }
 
             // Cache discovered dimensions for future visits
             if (card.dataset.filePath && !card.dataset.dimCached) {

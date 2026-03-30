@@ -1043,6 +1043,46 @@ header {
     opacity: 0.4;
 }
 
+/* Compact filter buttons when inside status bar */
+.status-bar .filter-buttons {
+    gap: 0;
+    padding: 1px;
+    border-radius: 3px;
+    border: 1px solid var(--border-subtle);
+    background: var(--bg-primary);
+    flex-shrink: 0;
+}
+
+.status-bar .filter-btn {
+    padding: 1px 8px;
+    font-size: 11px;
+    gap: 3px;
+    border-radius: 2px;
+}
+
+.status-bar .filter-btn svg {
+    width: 10px;
+    height: 10px;
+}
+
+.status-bar .filter-stars-group {
+    margin-left: 2px;
+    padding-left: 2px;
+}
+
+.status-bar .star-toggle-btn {
+    padding-right: 5px;
+}
+
+.status-bar .star-sort-btn {
+    padding: 1px 4px;
+}
+
+.status-bar .star-sort-btn svg {
+    width: 8px;
+    height: 8px;
+}
+
 .settings-btn {
     background: transparent;
     color: var(--text-secondary);

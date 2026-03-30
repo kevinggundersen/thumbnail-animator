@@ -3764,7 +3764,7 @@ function createImageForCard(card, imageUrl) {
     card.insertBefore(img, info);
     card.dataset.hasMedia = '1';
 
-    if (card.dataset.filePath) {
+    if (card.dataset.filePath && !isGif) {
         requestImageThumbnailUrl(card.dataset.filePath, thumbMaxSize)
             .then(url => {
                 if (!img.isConnected) return;

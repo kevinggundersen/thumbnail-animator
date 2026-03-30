@@ -230,6 +230,692 @@ const DIMENSIONS_STORE = 'dimensionCache';
 // END CONFIGURATION CONSTANTS
 // ============================================================================
 
+// ============================================================================
+// VIRTUAL SCROLLING ENGINE
+// Only renders DOM cards that are visible + buffer zone.
+// For 10,000 items, only ~50-100 cards exist in the DOM at any time.
+// ============================================================================
+
+// Virtual scrolling state
+let vsEnabled = false;             // Whether virtual scrolling is active for current render
+let vsSortedItems = [];            // Items array (sorted/filtered) backing current virtual scroll
+let vsPositions = null;            // Float64Array: [left0, top0, width0, height0, left1, ...]
+let vsTotalHeight = 0;             // Total computed height of all content
+let vsActiveCards = new Map();     // Map<itemIndex, HTMLElement> - currently rendered cards
+let vsRecyclePool = [];            // Pool of detached card DOM nodes for reuse
+const VS_MAX_POOL_SIZE = 150;      // Max recycled cards to keep
+const VS_BUFFER_PX = 1200;         // Buffer zone for rendering cards ahead of viewport
+let vsScrollRafId = null;          // RAF ID for scroll handler coalescing
+let vsLastStartIndex = -1;         // Last rendered range start
+let vsLastEndIndex = -1;           // Last rendered range end
+let vsSpacer = null;               // Spacer element that sets total scroll height
+let vsResizeHandler = null;        // Window resize handler
+
+// Build a lookup from ASPECT_RATIOS name to ratio value for fast access
+// (ASPECT_RATIOS is defined later, so we build this lazily)
+let vsAspectRatioMap = null;
+function vsGetAspectRatioValue(name) {
+    if (!vsAspectRatioMap) {
+        vsAspectRatioMap = new Map();
+        // ASPECT_RATIOS is defined at line ~1617
+        if (typeof ASPECT_RATIOS !== 'undefined') {
+            for (const ar of ASPECT_RATIOS) {
+                vsAspectRatioMap.set(ar.name, ar.ratio);
+            }
+        }
+    }
+    return vsAspectRatioMap.get(name) || (16 / 9);
+}
+
+/**
+ * Pre-calculate all card positions without touching the DOM.
+ * Returns { positions: Float64Array, totalHeight: number }
+ */
+function vsCalculatePositions(items, containerWidth, mode, zoom) {
+    const positions = new Float64Array(items.length * 4); // left, top, width, height per item
+
+    // Get gap from CSS variable
+    const rootStyles = getComputedStyle(document.documentElement);
+    const gap = parseInt(rootStyles.getPropertyValue('--gap')) || 16;
+    const gridStyles = getComputedStyle(gridContainer);
+    const paddingLeft = parseInt(gridStyles.paddingLeft) || 0;
+    const paddingTop = parseInt(gridStyles.paddingTop) || 0;
+    const availableWidth = containerWidth - (paddingLeft * 2);
+
+    if (mode === 'masonry') {
+        // Masonry: variable height cards in shortest-column layout
+        const baseMinColumnWidth = 250;
+        const minColumnWidth = baseMinColumnWidth * (zoom / 100);
+        const columns = Math.max(1, Math.floor((availableWidth + gap) / (minColumnWidth + gap)));
+        const columnWidth = (availableWidth - gap * (columns - 1)) / columns;
+        const colHeights = new Float64Array(columns); // All zeros
+
+        for (let i = 0; i < items.length; i++) {
+            const item = items[i];
+            let cardHeight;
+
+            if (item.type === 'folder') {
+                cardHeight = columnWidth; // Folders are square
+            } else {
+                let arName = '16:9'; // default
+                if (item.width && item.height) {
+                    arName = getClosestAspectRatio(item.width, item.height);
+                }
+                const arValue = vsGetAspectRatioValue(arName);
+                cardHeight = columnWidth / arValue;
+                if (!cardHeight || cardHeight <= 0 || !isFinite(cardHeight)) {
+                    cardHeight = columnWidth / (16 / 9);
+                }
+            }
+            if (cardHeight < 50) cardHeight = 50;
+
+            // Find shortest column
+            let shortestCol = 0;
+            let shortestHeight = colHeights[0];
+            for (let c = 1; c < columns; c++) {
+                if (colHeights[c] < shortestHeight) {
+                    shortestHeight = colHeights[c];
+                    shortestCol = c;
+                }
+            }
+
+            const left = shortestCol * (columnWidth + gap);
+            const top = colHeights[shortestCol];
+
+            const idx = i * 4;
+            positions[idx] = left;
+            positions[idx + 1] = top;
+            positions[idx + 2] = columnWidth;
+            positions[idx + 3] = cardHeight;
+
+            colHeights[shortestCol] += cardHeight + gap;
+        }
+
+        let maxHeight = 0;
+        for (let c = 0; c < columns; c++) {
+            if (colHeights[c] > maxHeight) maxHeight = colHeights[c];
+        }
+        return { positions, totalHeight: maxHeight + paddingTop + (parseInt(gridStyles.paddingBottom) || 0) };
+
+    } else {
+        // Grid mode: uniform columns, height based on aspect ratio + padding-bottom trick
+        // In grid mode, all cards use the same column width but variable height via aspect ratio
+        const gridMinWidth = 220 * (zoom / 100);
+        const columns = Math.max(1, Math.floor((availableWidth + gap) / (gridMinWidth + gap)));
+        const columnWidth = (availableWidth - gap * (columns - 1)) / columns;
+
+        // Track row positions
+        let currentRow = 0;
+        let currentCol = 0;
+        let rowTop = 0;
+        let rowMaxHeight = 0;
+
+        for (let i = 0; i < items.length; i++) {
+            const item = items[i];
+            let cardHeight;
+
+            if (item.type === 'folder') {
+                cardHeight = columnWidth;
+            } else {
+                let arName = '16:9';
+                if (item.width && item.height) {
+                    arName = getClosestAspectRatio(item.width, item.height);
+                }
+                const arValue = vsGetAspectRatioValue(arName);
+                cardHeight = columnWidth / arValue;
+                if (!cardHeight || cardHeight <= 0 || !isFinite(cardHeight)) {
+                    cardHeight = columnWidth / (16 / 9);
+                }
+            }
+            if (cardHeight < 50) cardHeight = 50;
+
+            const left = currentCol * (columnWidth + gap);
+
+            const idx = i * 4;
+            positions[idx] = left;
+            positions[idx + 1] = rowTop;
+            positions[idx + 2] = columnWidth;
+            positions[idx + 3] = cardHeight;
+
+            if (cardHeight > rowMaxHeight) rowMaxHeight = cardHeight;
+
+            currentCol++;
+            if (currentCol >= columns) {
+                rowTop += rowMaxHeight + gap;
+                rowMaxHeight = 0;
+                currentCol = 0;
+                currentRow++;
+            }
+        }
+
+        // Account for last partial row
+        const totalHeight = rowTop + (currentCol > 0 ? rowMaxHeight : 0) + paddingTop + (parseInt(gridStyles.paddingBottom) || 0);
+        return { positions, totalHeight };
+    }
+}
+
+/**
+ * Binary search to find the range of items visible at current scroll position.
+ * Returns { startIndex, endIndex } (endIndex is exclusive).
+ */
+function vsGetVisibleRange(scrollTop, viewportHeight) {
+    if (!vsPositions || vsSortedItems.length === 0) return { startIndex: 0, endIndex: 0 };
+
+    const itemCount = vsSortedItems.length;
+    const visibleTop = scrollTop - VS_BUFFER_PX;
+    const visibleBottom = scrollTop + viewportHeight + VS_BUFFER_PX;
+
+    // Find startIndex: first item whose bottom edge (top + height) > visibleTop
+    let startIndex = 0;
+    // Simple linear scan is fine for most cases; binary search for very large lists
+    if (itemCount > 5000) {
+        // Binary search for start
+        let lo = 0, hi = itemCount - 1;
+        while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            const idx = mid * 4;
+            if (vsPositions[idx + 1] + vsPositions[idx + 3] < visibleTop) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        startIndex = lo;
+    } else {
+        for (let i = 0; i < itemCount; i++) {
+            const idx = i * 4;
+            if (vsPositions[idx + 1] + vsPositions[idx + 3] >= visibleTop) {
+                startIndex = i;
+                break;
+            }
+            if (i === itemCount - 1) startIndex = itemCount;
+        }
+    }
+
+    // Find endIndex: first item whose top > visibleBottom
+    let endIndex = itemCount;
+    for (let i = startIndex; i < itemCount; i++) {
+        const idx = i * 4;
+        if (vsPositions[idx + 1] > visibleBottom) {
+            endIndex = i;
+            break;
+        }
+    }
+
+    return { startIndex, endIndex };
+}
+
+/**
+ * Create/recycle/remove card DOM nodes to match the visible range.
+ */
+function vsUpdateDOM(startIndex, endIndex) {
+    if (!vsEnabled) return;
+
+    // Remove cards outside visible range
+    for (const [itemIdx, card] of vsActiveCards) {
+        if (itemIdx < startIndex || itemIdx >= endIndex) {
+            // Destroy media on this card
+            const videos = card.querySelectorAll('video');
+            const images = card.querySelectorAll('img.media-thumbnail');
+            videos.forEach(video => {
+                destroyVideoElement(video);
+                activeVideoCount = Math.max(0, activeVideoCount - 1);
+            });
+            images.forEach(img => {
+                destroyImageElement(img);
+                activeImageCount = Math.max(0, activeImageCount - 1);
+            });
+            pendingMediaCreations.delete(card);
+            mediaToRetry.delete(card);
+
+            observer.unobserve(card);
+            card.remove();
+            vsActiveCards.delete(itemIdx);
+
+            // Add to recycle pool
+            if (vsRecyclePool.length < VS_MAX_POOL_SIZE) {
+                vsRecyclePool.push(card);
+            }
+        }
+    }
+
+    // Add cards for newly visible items
+    const fragment = document.createDocumentFragment();
+    const newCards = [];
+
+    for (let i = startIndex; i < endIndex; i++) {
+        if (vsActiveCards.has(i)) {
+            // Card already exists, just update position if needed
+            const card = vsActiveCards.get(i);
+            const idx = i * 4;
+            const newLeft = vsPositions[idx];
+            const newTop = vsPositions[idx + 1];
+            const newWidth = vsPositions[idx + 2];
+            const newHeight = vsPositions[idx + 3];
+            // Only update if position changed (avoids style recalc)
+            if (card._vsLeft !== newLeft || card._vsTop !== newTop ||
+                card._vsWidth !== newWidth || card._vsHeight !== newHeight) {
+                card.style.left = `${newLeft}px`;
+                card.style.top = `${newTop}px`;
+                card.style.width = `${newWidth}px`;
+                card.style.height = `${newHeight}px`;
+                card._vsLeft = newLeft;
+                card._vsTop = newTop;
+                card._vsWidth = newWidth;
+                card._vsHeight = newHeight;
+            }
+            continue;
+        }
+
+        const item = vsSortedItems[i];
+        const idx = i * 4;
+        const left = vsPositions[idx];
+        const top = vsPositions[idx + 1];
+        const width = vsPositions[idx + 2];
+        const height = vsPositions[idx + 3];
+
+        // Try to recycle a card
+        let card = vsRecyclePool.pop();
+        if (card) {
+            // Reset the recycled card
+            vsResetCard(card);
+        }
+
+        // Populate card with item data
+        const { card: newCard, isMedia } = card
+            ? vsPopulateExistingCard(card, item)
+            : createCardFromItem(item);
+
+        if (!card) {
+            card = newCard;
+        }
+
+        // Position absolutely
+        card.style.position = 'absolute';
+        card.style.left = `${left}px`;
+        card.style.top = `${top}px`;
+        card.style.width = `${width}px`;
+        card.style.height = `${height}px`;
+        card.style.paddingBottom = '0';
+        card.style.opacity = '1';
+        card.style.visibility = 'visible';
+        card.style.animation = 'none'; // Disable enter animation for recycled cards
+        card._vsLeft = left;
+        card._vsTop = top;
+        card._vsWidth = width;
+        card._vsHeight = height;
+        card._vsItemIndex = i;
+
+        vsActiveCards.set(i, card);
+        fragment.appendChild(card);
+
+        if (isMedia) {
+            newCards.push(card);
+            videoCards.add(card);
+        }
+    }
+
+    if (fragment.childNodes.length > 0) {
+        gridContainer.appendChild(fragment);
+
+        // Register new cards with IntersectionObserver for media loading
+        requestAnimationFrame(() => {
+            newCards.forEach(card => observer.observe(card));
+        });
+    }
+
+    vsLastStartIndex = startIndex;
+    vsLastEndIndex = endIndex;
+}
+
+/**
+ * Reset a recycled card to a blank state.
+ */
+function vsResetCard(card) {
+    // Remove all children
+    while (card.firstChild) card.removeChild(card.firstChild);
+
+    // Clear dataset
+    const dataset = card.dataset;
+    for (const key of Object.keys(dataset)) {
+        delete dataset[key];
+    }
+
+    // Reset classes
+    card.className = '';
+
+    // Clear custom properties
+    delete card._vsLeft;
+    delete card._vsTop;
+    delete card._vsWidth;
+    delete card._vsHeight;
+    delete card._vsItemIndex;
+}
+
+/**
+ * Populate an existing (recycled) card with new item data.
+ * Returns { card, isMedia } matching createCardFromItem's interface.
+ */
+function vsPopulateExistingCard(card, item) {
+    if (item.type === 'folder') {
+        card.className = 'folder-card';
+        card.dataset.folderPath = item.path;
+        card.dataset.searchText = item.name.toLowerCase();
+
+        const folderIcon = document.createElement('div');
+        folderIcon.className = 'folder-icon';
+        folderIcon.innerHTML = icon('folder', 48);
+
+        const info = document.createElement('div');
+        info.className = 'folder-info';
+        info.textContent = item.name;
+
+        card.appendChild(folderIcon);
+        card.appendChild(info);
+
+        return { card, isMedia: false };
+    } else {
+        card.className = 'video-card';
+        card.dataset.src = item.url;
+        card.dataset.path = item.path;
+        card.dataset.filePath = item.path;
+        card.dataset.name = item.name;
+        card.dataset.searchText = item.name.toLowerCase();
+        card.dataset.mediaType = item.type;
+
+        const lastDot = item.name.lastIndexOf('.');
+        const fileExtension = lastDot !== -1 ? item.name.substring(lastDot + 1).toUpperCase() : '';
+
+        const extensionLabel = document.createElement('div');
+        extensionLabel.className = 'extension-label';
+        extensionLabel.textContent = fileExtension;
+        const extensionColor = getExtensionColor(fileExtension);
+        extensionLabel.style.backgroundColor = hexToRgba(extensionColor, 0.87);
+
+        // Apply aspect ratio
+        if (item.width && item.height) {
+            const aspectRatioName = getClosestAspectRatio(item.width, item.height);
+            applyAspectRatioToCard(card, aspectRatioName);
+            card.dataset.width = item.width;
+            card.dataset.height = item.height;
+            card.dataset.mediaWidth = item.width;
+            card.dataset.mediaHeight = item.height;
+            createResolutionLabel(card, item.width, item.height);
+        } else {
+            applyAspectRatioToCard(card, '16:9');
+        }
+
+        const info = document.createElement('div');
+        info.className = 'video-info';
+        info.textContent = item.name;
+
+        card.appendChild(extensionLabel);
+
+        // Star rating
+        const rating = getFileRating(item.path);
+        const starContainer = document.createElement('div');
+        starContainer.className = rating > 0 ? 'star-rating has-rating' : 'star-rating';
+        starContainer.style.pointerEvents = 'auto';
+        for (let s = 1; s <= 5; s++) {
+            const star = document.createElement('span');
+            star.className = `star ${s <= rating ? 'active' : ''}`;
+            star.innerHTML = s <= rating ? iconFilled('star', 16, 'var(--warning)') : icon('star', 16);
+            star.style.pointerEvents = 'auto';
+            star.style.cursor = 'pointer';
+            starContainer.appendChild(star);
+        }
+        card.appendChild(starContainer);
+        card.appendChild(info);
+
+        return { card, isMedia: true };
+    }
+}
+
+/**
+ * Handle scroll events for virtual scrolling.
+ */
+function vsOnScroll() {
+    if (!vsEnabled || isWindowMinimized) return;
+
+    // Invalidate viewport cache
+    cachedViewportBounds = null;
+    viewportBoundsCacheTime = 0;
+
+    if (vsScrollRafId) return; // Already scheduled
+    vsScrollRafId = requestAnimationFrame(() => {
+        vsScrollRafId = null;
+        const scrollTop = gridContainer.scrollTop;
+        const viewportHeight = gridContainer.clientHeight;
+        const { startIndex, endIndex } = vsGetVisibleRange(scrollTop, viewportHeight);
+
+        // Only update if range changed
+        if (startIndex !== vsLastStartIndex || endIndex !== vsLastEndIndex) {
+            vsUpdateDOM(startIndex, endIndex);
+        }
+
+        // Also trigger media cleanup/loading cycle
+        scheduleCleanupCycle();
+    });
+}
+
+/**
+ * Initialize virtual scrolling for the current items.
+ */
+function vsInit(items) {
+    vsCleanup(); // Clean up any previous virtual scroll state
+
+    vsSortedItems = items;
+    vsEnabled = true;
+    vsActiveCards = new Map();
+    vsRecyclePool = [];
+    vsLastStartIndex = -1;
+    vsLastEndIndex = -1;
+    vsAspectRatioMap = null; // Rebuild on next access
+
+    // Calculate positions
+    const containerWidth = gridContainer.clientWidth;
+    const result = vsCalculatePositions(items, containerWidth, layoutMode, zoomLevel);
+    vsPositions = result.positions;
+    vsTotalHeight = result.totalHeight;
+
+    // Set up container for absolute positioning
+    gridContainer.classList.add('masonry'); // Always use block+absolute for virtual scroll
+    gridContainer.classList.remove('grid');
+
+    // Create spacer for total height
+    vsSpacer = document.createElement('div');
+    vsSpacer.className = 'masonry-spacer vs-spacer';
+    vsSpacer.style.width = '1px';
+    vsSpacer.style.height = `${vsTotalHeight}px`;
+    vsSpacer.style.position = 'static';
+    vsSpacer.style.pointerEvents = 'none';
+    vsSpacer.style.visibility = 'hidden';
+    vsSpacer.style.margin = '0';
+    vsSpacer.style.padding = '0';
+    gridContainer.appendChild(vsSpacer);
+
+    // Initial render
+    const scrollTop = gridContainer.scrollTop;
+    const viewportHeight = gridContainer.clientHeight;
+    const { startIndex, endIndex } = vsGetVisibleRange(scrollTop, viewportHeight);
+    vsUpdateDOM(startIndex, endIndex);
+
+    // Attach scroll listener
+    gridContainer.addEventListener('scroll', vsOnScroll, { passive: true });
+
+    // Attach resize handler
+    vsResizeHandler = () => {
+        cachedViewportBounds = null;
+        viewportBoundsCacheTime = 0;
+        cardRectCache = new WeakMap();
+        clearTimeout(resizeTimeout);
+        resizeTimeout = setTimeout(() => {
+            vsRecalculate();
+        }, 150);
+    };
+    window.addEventListener('resize', vsResizeHandler);
+}
+
+/**
+ * Recalculate positions (after resize, zoom change, or filter change).
+ */
+function vsRecalculate() {
+    if (!vsEnabled) return;
+
+    // Remember which item is at the top of viewport
+    const scrollTop = gridContainer.scrollTop;
+    const viewportHeight = gridContainer.clientHeight;
+    let anchorItemIndex = -1;
+    let anchorOffset = 0;
+
+    if (vsPositions && vsSortedItems.length > 0) {
+        const { startIndex } = vsGetVisibleRange(scrollTop, viewportHeight);
+        if (startIndex < vsSortedItems.length) {
+            anchorItemIndex = startIndex;
+            const idx = startIndex * 4;
+            anchorOffset = scrollTop - vsPositions[idx + 1];
+        }
+    }
+
+    // Recalculate positions
+    const containerWidth = gridContainer.clientWidth;
+    const result = vsCalculatePositions(vsSortedItems, containerWidth, layoutMode, zoomLevel);
+    vsPositions = result.positions;
+    vsTotalHeight = result.totalHeight;
+
+    // Update spacer
+    if (vsSpacer) {
+        vsSpacer.style.height = `${vsTotalHeight}px`;
+    }
+
+    // Restore scroll position relative to anchor item
+    if (anchorItemIndex >= 0 && anchorItemIndex < vsSortedItems.length) {
+        const idx = anchorItemIndex * 4;
+        const newTop = vsPositions[idx + 1];
+        gridContainer.scrollTop = newTop + anchorOffset;
+    }
+
+    // Force full re-render of visible range
+    vsLastStartIndex = -1;
+    vsLastEndIndex = -1;
+    const newScrollTop = gridContainer.scrollTop;
+    const { startIndex, endIndex } = vsGetVisibleRange(newScrollTop, viewportHeight);
+    vsUpdateDOM(startIndex, endIndex);
+}
+
+/**
+ * Update virtual scrolling with new filtered/sorted items.
+ */
+function vsUpdateItems(items) {
+    if (!vsEnabled) {
+        vsInit(items);
+        return;
+    }
+
+    // Remove all existing cards
+    for (const [itemIdx, card] of vsActiveCards) {
+        const videos = card.querySelectorAll('video');
+        const images = card.querySelectorAll('img.media-thumbnail');
+        videos.forEach(video => {
+            destroyVideoElement(video);
+            activeVideoCount = Math.max(0, activeVideoCount - 1);
+        });
+        images.forEach(img => {
+            destroyImageElement(img);
+            activeImageCount = Math.max(0, activeImageCount - 1);
+        });
+        observer.unobserve(card);
+        card.remove();
+        if (vsRecyclePool.length < VS_MAX_POOL_SIZE) {
+            vsRecyclePool.push(card);
+        }
+    }
+    vsActiveCards.clear();
+    pendingMediaCreations.clear();
+    mediaToRetry.clear();
+
+    vsSortedItems = items;
+
+    // Recalculate positions
+    const containerWidth = gridContainer.clientWidth;
+    const result = vsCalculatePositions(items, containerWidth, layoutMode, zoomLevel);
+    vsPositions = result.positions;
+    vsTotalHeight = result.totalHeight;
+
+    // Update spacer
+    if (vsSpacer) {
+        vsSpacer.style.height = `${vsTotalHeight}px`;
+    }
+
+    // Scroll to top for new items
+    gridContainer.scrollTop = 0;
+
+    // Render visible range
+    vsLastStartIndex = -1;
+    vsLastEndIndex = -1;
+    const viewportHeight = gridContainer.clientHeight;
+    const { startIndex, endIndex } = vsGetVisibleRange(0, viewportHeight);
+    vsUpdateDOM(startIndex, endIndex);
+}
+
+/**
+ * Clean up virtual scrolling state.
+ */
+function vsCleanup() {
+    vsEnabled = false;
+
+    if (vsScrollRafId) {
+        cancelAnimationFrame(vsScrollRafId);
+        vsScrollRafId = null;
+    }
+
+    gridContainer.removeEventListener('scroll', vsOnScroll);
+
+    if (vsResizeHandler) {
+        window.removeEventListener('resize', vsResizeHandler);
+        vsResizeHandler = null;
+    }
+
+    // Clean up active cards
+    for (const [, card] of vsActiveCards) {
+        const videos = card.querySelectorAll('video');
+        const images = card.querySelectorAll('img.media-thumbnail');
+        videos.forEach(video => destroyVideoElement(video));
+        images.forEach(img => destroyImageElement(img));
+        observer.unobserve(card);
+    }
+    vsActiveCards.clear();
+    vsRecyclePool = [];
+    vsPositions = null;
+    vsSortedItems = [];
+    vsTotalHeight = 0;
+    vsLastStartIndex = -1;
+    vsLastEndIndex = -1;
+
+    if (vsSpacer && vsSpacer.parentNode) {
+        vsSpacer.remove();
+    }
+    vsSpacer = null;
+}
+
+/**
+ * Get the item index for a given card element (used by features that reference cards).
+ */
+function vsGetItemIndex(card) {
+    return card._vsItemIndex;
+}
+
+/**
+ * Get the card element for a given item index (if currently rendered).
+ */
+function vsGetCardForIndex(index) {
+    return vsActiveCards.get(index) || null;
+}
+
+// ============================================================================
+// END VIRTUAL SCROLLING ENGINE
+// ============================================================================
+
 // --- Batched localStorage writes ---
 // Collects pending writes and flushes them together in the next idle frame
 const _pendingStorageWrites = new Map();
@@ -2056,20 +2742,25 @@ function initGrid() {
 function switchLayoutMode() {
     // Toggle layout mode based on checkbox state
     layoutMode = layoutModeToggle.checked ? 'grid' : 'masonry';
-    
+
     // Update label text
     layoutModeLabel.textContent = layoutMode === 'grid' ? 'Rigid' : 'Dynamic';
-    
+
     // Save preference to localStorage
     deferLocalStorageWrite('layoutMode', layoutMode);
-    
-    // Apply the new layout
-    if (layoutMode === 'masonry') {
-        initMasonry();
+
+    // With virtual scrolling, recalculate positions for new layout mode
+    if (vsEnabled) {
+        vsRecalculate();
     } else {
-        initGrid();
+        // Fallback for non-VS mode
+        if (layoutMode === 'masonry') {
+            initMasonry();
+        } else {
+            initGrid();
+        }
     }
-    
+
     // Apply zoom after layout change
     applyZoom();
 
@@ -2502,11 +3193,14 @@ function renderItems(items) {
     cardAnimIndex = 0; // Reset card animation stagger
     const perfStart = perfTest.start();
     if (items.length > 50) setStatusActivity(`Rendering ${items.length} items...`);
+
+    // Clean up previous virtual scrolling state
+    vsCleanup();
+
     // Clean up all existing media before rendering
-    // Use a single querySelectorAll and batch operations
     const existingCards = gridContainer.querySelectorAll('.video-card, .folder-card');
     const cardsArray = Array.from(existingCards);
-    
+
     // Batch unobserve and cleanup
     cardsArray.forEach(card => {
         observer.unobserve(card);
@@ -2515,7 +3209,7 @@ function renderItems(items) {
         videos.forEach(video => destroyVideoElement(video));
         images.forEach(img => destroyImageElement(img));
     });
-    
+
     // Reset counters
     activeVideoCount = 0;
     activeImageCount = 0;
@@ -2526,21 +3220,21 @@ function renderItems(items) {
     cachedMediaCounts = { videos: 0, images: 0, timestamp: 0 };
     cardRectCache = new WeakMap();
     cachedViewportBounds = null;
-    
+
     // Clean up masonry spacer if it exists
     const spacer = gridContainer.querySelector('.masonry-spacer');
     if (spacer) {
         spacer.remove();
     }
-    
-    // Use textContent for faster clearing (more efficient than innerHTML)
+
+    // Clear container
     while (gridContainer.firstChild) {
         gridContainer.removeChild(gridContainer.firstChild);
     }
     currentHoveredCard = null;
     focusedCardIndex = -1;
-    gridContainer.classList.remove('masonry'); // Reset masonry state
-    gridContainer.classList.remove('grid'); // Reset grid state
+    gridContainer.classList.remove('masonry');
+    gridContainer.classList.remove('grid');
 
     if (items.length === 0) {
         const emptyMsg = document.createElement('p');
@@ -2551,100 +3245,11 @@ function renderItems(items) {
         return;
     }
 
-    // Use progressive rendering for large lists
-    if (items.length >= PROGRESSIVE_RENDER_THRESHOLD) {
-        renderItemsProgressive(items);
-        return;
-    }
-
-    // For smaller lists, render all at once (existing behavior)
-    const fragment = document.createDocumentFragment();
-    const cardsToObserve = []; // Batch observer registration
-
-    items.forEach(item => {
-        const { card, isMedia } = createCardFromItem(item);
-        fragment.appendChild(card);
-        if (isMedia) {
-            cardsToObserve.push(card);
-            videoCards.add(card);
-        }
-    });
-
-    gridContainer.appendChild(fragment);
+    // Use virtual scrolling for all lists - only render visible cards
+    vsInit(items);
     updateItemCount();
     perfTest.end('renderItems', perfStart, { itemCount: items.length });
 
-    // Defer layout initialization and observer registration to allow DOM to render first
-    // This improves perceived performance
-    requestAnimationFrame(() => {
-        // Wait for layout to calculate before observing
-        requestAnimationFrame(() => {
-            // Batch observer registration after layout is ready
-            cardsToObserve.forEach(card => {
-                observer.observe(card);
-            });
-        });
-        
-        if (layoutMode === 'masonry') {
-            initMasonry();
-        } else {
-            initGrid();
-        }
-    });
-    
-    // Proactively load cards that are in the preload zone using idle callback
-    // This batches DOM reads to avoid layout thrashing with large folders
-    const scheduleProactiveLoad = (callback) => {
-        if ('requestIdleCallback' in window) {
-            requestIdleCallback(callback, { timeout: 100 });
-        } else {
-            // Fallback for browsers without requestIdleCallback
-            setTimeout(callback, 0);
-        }
-    };
-    
-    scheduleProactiveLoad(() => {
-        loadVisibleMediaRegular();
-    });
-    
-    // Helper function for regular (non-progressive) rendering
-    function loadVisibleMediaRegular() {
-        const allCards = gridContainer.querySelectorAll('.video-card');
-        if (allCards.length === 0) return;
-
-        const cardsToCheck = Array.from(allCards).filter(card => {
-            if (card.classList.contains('folder-card')) return false;
-            return !card.dataset.hasMedia && !pendingMediaCreations.has(card);
-        });
-        
-        if (cardsToCheck.length === 0) return;
-        
-        // Use viewport bounds (consistent with IntersectionObserver root: null)
-        const bounds = getViewportBounds();
-        const cardsToLoadNow = [];
-        
-        // Check each card's position relative to viewport
-        cardsToCheck.forEach(card => {
-            if (isCardInPreloadZone(card)) {
-                const cardRect = card.getBoundingClientRect();
-                const cardCenterY = cardRect.top + (cardRect.height / 2);
-                const distance = Math.abs(cardCenterY - bounds.centerY);
-                cardsToLoadNow.push({ card, mediaUrl: card.dataset.src, distance });
-            }
-        });
-        
-        // Sort by distance and load closest items first
-        cardsToLoadNow.sort((a, b) => a.distance - b.distance);
-        cardsToLoadNow.slice(0, PARALLEL_LOAD_LIMIT * 2).forEach(({ card, mediaUrl }) => {
-            createMediaForCard(card, mediaUrl);
-        });
-    }
-    
-    // Apply filters after loading (in case a filter is active)
-    requestAnimationFrame(() => {
-        applyFilters();
-    });
-    
     // Start periodic cleanup check
     startPeriodicCleanup();
 }
@@ -3578,8 +4183,11 @@ function updateItemCount() {
     if (total === 0) {
         itemCountEl.textContent = '';
     } else if (hasFilter) {
-        const cards = gridContainer.querySelectorAll('.video-card, .folder-card');
-        const visible = Array.from(cards).filter(c => c.style.display !== 'none').length;
+        // With virtual scrolling, vsSortedItems contains the filtered set
+        const visible = vsEnabled ? vsSortedItems.length : (() => {
+            const cards = gridContainer.querySelectorAll('.video-card, .folder-card');
+            return Array.from(cards).filter(c => c.style.display !== 'none').length;
+        })();
         itemCountEl.textContent = `${visible} of ${total} items`;
     } else {
         itemCountEl.textContent = `${total} items`;
@@ -3634,143 +4242,90 @@ function updateStatusBarSelection(card) {
 
 function applyFilters() {
     const perfStart = perfTest.start();
-    const cards = gridContainer.querySelectorAll('.video-card, .folder-card');
-    if (cards.length === 0) return;
+    if (currentItems.length === 0) return;
 
     const query = searchBox.value.toLowerCase().trim();
-    
-    // Read cached search text from dataset (set at card creation time, avoids DOM traversal)
-    const cardData = Array.from(cards).map(card => {
-        const fileName = card.dataset.searchText || '';
-        return { card, fileName };
-    });
-    
-    // Process all cards in a single pass
-    cardData.forEach(({ card, fileName }) => {
-        // Check if card matches search query
+
+    // Filter items array (works with virtual scrolling - no DOM iteration needed)
+    const filteredItems = currentItems.filter(item => {
+        const fileName = item.name.toLowerCase();
+
+        // Search query
         const matchesSearch = query === '' || fileName.includes(query);
-        
-        // Check if card matches filter
+        if (!matchesSearch) return false;
+
+        // Type filter
         let matchesFilter = true;
         if (currentFilter === 'video') {
-            // Show only video files (not folders or images)
-            matchesFilter = card.classList.contains('video-card') && card.dataset.mediaType === 'video';
+            matchesFilter = item.type === 'video';
         } else if (currentFilter === 'image') {
-            // Show only image files (not folders or videos)
-            const isImage = card.classList.contains('video-card') && card.dataset.mediaType === 'image';
+            const isImage = item.type === 'image';
             if (isImage && !includeMovingImages) {
-                // Check if it's a moving image type (gif, webp)
                 const isMovingImage = fileName.endsWith('.gif') || fileName.endsWith('.webp');
-                matchesFilter = !isMovingImage; // Exclude moving images if toggle is off
+                matchesFilter = !isMovingImage;
             } else {
-                matchesFilter = isImage; // Include all images if toggle is on
+                matchesFilter = isImage;
             }
         } else if (currentFilter === 'audio') {
-            // Show videos that have audio OR are still loading (hasAudio not set yet)
-            // This ensures videos show up immediately, then get filtered out if no audio once metadata loads
-            const isVideo = card.classList.contains('video-card') && card.dataset.mediaType === 'video';
-            const hasAudio = card.dataset.hasAudio === 'true';
-            const audioNotChecked = card.dataset.hasAudio === undefined || card.dataset.hasAudio === '';
-            matchesFilter = isVideo && (hasAudio || audioNotChecked);
+            // For audio filter, we show all videos (audio detection happens at media load)
+            matchesFilter = item.type === 'video';
         } else if (currentFilter === 'stars') {
-            // Show only files with star ratings (exclude folders)
-            // Match the pattern of video/image filters: check card type first
-            const isVideoCard = card.classList.contains('video-card');
-            if (!isVideoCard) {
-                matchesFilter = false; // Folders don't have star ratings
+            if (item.type === 'folder') {
+                matchesFilter = false;
             } else {
-                const filePath = card.dataset.path;
-                if (filePath) {
-                    const rating = getFileRating(filePath);
-                    matchesFilter = rating > 0; // Only show files with rating > 0
-                } else {
-                    matchesFilter = false; // No file path means no rating
-                }
-            }
-        } else {
-            // 'all' - show everything
-            matchesFilter = true;
-        }
-        
-        // Apply advanced search filters
-        let matchesAdvancedSearch = true;
-        if (matchesSearch && matchesFilter) {
-            const filePath = card.dataset.path;
-            
-            // Dimension filter
-            if (advancedSearchFilters.width || advancedSearchFilters.height) {
-                const width = parseInt(card.dataset.width);
-                const height = parseInt(card.dataset.height);
-                if (advancedSearchFilters.width && width !== advancedSearchFilters.width) matchesAdvancedSearch = false;
-                if (advancedSearchFilters.height && height !== advancedSearchFilters.height) matchesAdvancedSearch = false;
-            }
-            
-            // Aspect ratio filter
-            if (advancedSearchFilters.aspectRatio && matchesAdvancedSearch) {
-                const width = parseInt(card.dataset.width);
-                const height = parseInt(card.dataset.height);
-                if (width && height) {
-                    const ratio = width / height;
-                    const targetRatio = parseAspectRatio(advancedSearchFilters.aspectRatio);
-                    if (Math.abs(ratio - targetRatio) > 0.1) matchesAdvancedSearch = false;
-                } else {
-                    matchesAdvancedSearch = false; // No dimensions available
-                }
-            }
-            
-            // Star rating filter
-            if (advancedSearchFilters.starRating !== null && filePath && matchesAdvancedSearch) {
-                const rating = getFileRating(filePath);
-                if (rating < advancedSearchFilters.starRating) matchesAdvancedSearch = false;
+                const rating = getFileRating(item.path);
+                matchesFilter = rating > 0;
             }
         }
-        
-        // Show card only if it matches search, filter, and advanced search
-        if (matchesSearch && matchesFilter && matchesAdvancedSearch) {
-            card.style.display = '';
-        } else {
-            card.style.display = 'none';
+        if (!matchesFilter) return false;
+
+        // Advanced search filters
+        if (advancedSearchFilters.width || advancedSearchFilters.height) {
+            const width = item.width;
+            const height = item.height;
+            if (advancedSearchFilters.width && width !== advancedSearchFilters.width) return false;
+            if (advancedSearchFilters.height && height !== advancedSearchFilters.height) return false;
         }
+
+        if (advancedSearchFilters.aspectRatio) {
+            const width = item.width;
+            const height = item.height;
+            if (width && height) {
+                const ratio = width / height;
+                const targetRatio = parseAspectRatio(advancedSearchFilters.aspectRatio);
+                if (Math.abs(ratio - targetRatio) > 0.1) return false;
+            } else {
+                return false;
+            }
+        }
+
+        if (advancedSearchFilters.starRating !== null && item.path) {
+            const rating = getFileRating(item.path);
+            if (rating < advancedSearchFilters.starRating) return false;
+        }
+
+        return true;
     });
-    
-    // Sort by star rating if stars filter is active (highest to lowest: 5 to 1)
+
+    // Sort by star rating if stars filter is active
+    let sortedFiltered = filteredItems;
     if (currentFilter === 'stars') {
-        const visibleCards = Array.from(cards).filter(card => card.style.display !== 'none');
-        visibleCards.sort((a, b) => {
-            // Exclude folders from sorting
-            const aIsFolder = a.classList.contains('folder-card');
-            const bIsFolder = b.classList.contains('folder-card');
-            
-            if (aIsFolder && bIsFolder) return 0;
-            if (aIsFolder) return 1; // Folders go to end
-            if (bIsFolder) return -1; // Folders go to end
-            
-            const aPath = a.dataset.path;
-            const bPath = b.dataset.path;
-            
-            if (!aPath && !bPath) return 0;
-            if (!aPath) return 1; // No path goes to end
-            if (!bPath) return -1; // No path goes to end
-            
-            const aRating = getFileRating(aPath);
-            const bRating = getFileRating(bPath);
-            
-            // Sort from highest to lowest (5 stars to 1 star)
+        sortedFiltered = [...filteredItems].sort((a, b) => {
+            if (a.type === 'folder' && b.type === 'folder') return 0;
+            if (a.type === 'folder') return 1;
+            if (b.type === 'folder') return -1;
+            const aRating = getFileRating(a.path);
+            const bRating = getFileRating(b.path);
             return bRating - aRating;
         });
-        
-        // Reorder cards in DOM
-        visibleCards.forEach(card => {
-            gridContainer.appendChild(card);
-        });
     }
-    
-    // Recalculate layout after filtering
-    if (layoutMode === 'masonry' && gridContainer.classList.contains('masonry')) {
-        scheduleMasonryLayout();
+
+    // Update virtual scrolling with filtered items
+    if (vsEnabled) {
+        vsUpdateItems(sortedFiltered);
     }
     updateItemCount();
-    perfTest.end('applyFilters', perfStart, { cardCount: cards.length });
+    perfTest.end('applyFilters', perfStart, { cardCount: currentItems.length });
 }
 
 function performSearch(searchQuery) {
@@ -6734,8 +7289,10 @@ function applyZoom() {
         gridContainer.style.setProperty('--grid-min-width', `${scaledMinWidth}px`);
     }
     
-    // Recalculate masonry layout if needed
-    if (layoutMode === 'masonry') {
+    // Recalculate layout for new zoom level
+    if (vsEnabled) {
+        vsRecalculate();
+    } else if (layoutMode === 'masonry') {
         scheduleMasonryLayout();
     }
 }
@@ -6781,6 +7338,18 @@ function getThumbnailQualityMultiplier() {
 
 // Get current filtered items for lightbox navigation
 function getFilteredMediaItems() {
+    // With virtual scrolling, use the items array directly (includes all items, not just visible DOM cards)
+    if (vsEnabled && vsSortedItems.length > 0) {
+        return vsSortedItems
+            .filter(item => item.type !== 'folder' && item.url && item.path)
+            .map(item => ({
+                url: item.url,
+                path: item.path,
+                name: item.name || '',
+                type: item.type || 'video'
+            }));
+    }
+    // Fallback: query DOM
     const cards = gridContainer.querySelectorAll('.video-card:not(.folder-card)');
     const items = [];
     cards.forEach(card => {
@@ -7803,78 +8372,14 @@ async function startWatchingFolder(folderPath) {
 // Recent files preview is now handled inline in renderRecentFiles
 
 // Update applyFilters to include advanced search
+// Note: With virtual scrolling, all filtering (including advanced) is handled at the
+// items-array level in applyFilters itself, so this wrapper is only needed as a no-op
+// to maintain the override chain. The originalApplyFilters reference is kept for
+// backward compatibility if VS is ever disabled.
 const originalApplyFilters = applyFilters;
 applyFilters = function() {
+    // Virtual scrolling handles all filtering at the items-array level
     originalApplyFilters();
-    
-    // Apply advanced search filters
-    const cards = gridContainer.querySelectorAll('.video-card:not(.folder-card)');
-    cards.forEach(card => {
-        if (card.style.display === 'none') return;
-        
-        const filePath = card.dataset.path;
-        
-        // If stars filter is active, hide cards without filePath or without ratings
-        if (currentFilter === 'stars') {
-            if (!filePath) {
-                card.style.display = 'none';
-                return;
-            }
-            const rating = getFileRating(filePath);
-            if (rating === 0) {
-                card.style.display = 'none';
-                return;
-            }
-        }
-        
-        if (!filePath) return;
-        
-        let matches = true;
-        
-        // Size filter
-        if (advancedSearchFilters.sizeOperator && advancedSearchFilters.sizeValue !== null) {
-            // We'd need file size in card data - for now skip
-        }
-        
-        // Date filter
-        if (advancedSearchFilters.dateFrom || advancedSearchFilters.dateTo) {
-            // We'd need file date in card data - for now skip
-        }
-        
-        // Dimension filter
-        if (advancedSearchFilters.width || advancedSearchFilters.height) {
-            const width = parseInt(card.dataset.width);
-            const height = parseInt(card.dataset.height);
-            if (advancedSearchFilters.width && width !== advancedSearchFilters.width) matches = false;
-            if (advancedSearchFilters.height && height !== advancedSearchFilters.height) matches = false;
-        }
-        
-        // Aspect ratio filter
-        if (advancedSearchFilters.aspectRatio) {
-            const width = parseInt(card.dataset.width);
-            const height = parseInt(card.dataset.height);
-            if (width && height) {
-                const ratio = width / height;
-                const targetRatio = parseAspectRatio(advancedSearchFilters.aspectRatio);
-                if (Math.abs(ratio - targetRatio) > 0.1) matches = false;
-            }
-        }
-        
-        // Star rating filter
-        if (advancedSearchFilters.starRating !== null) {
-            const rating = getFileRating(filePath);
-            if (rating < advancedSearchFilters.starRating) matches = false;
-        }
-        
-        if (!matches) {
-            card.style.display = 'none';
-        }
-    });
-    
-    // Recalculate layout
-    if (layoutMode === 'masonry' && gridContainer.classList.contains('masonry')) {
-        scheduleMasonryLayout();
-    }
 };
 
 function parseAspectRatio(ratioStr) {

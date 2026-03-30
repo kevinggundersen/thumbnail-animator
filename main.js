@@ -1,6 +1,10 @@
+// Increase libuv threadpool for parallel stat() calls (must be before any async I/O)
+process.env.UV_THREADPOOL_SIZE = '16';
+
 const { app, BrowserWindow, ipcMain, dialog, shell, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const DimensionWorkerPool = require('./worker-pool');
 let sizeOf;
 try {
     const imageSizeModule = require('image-size');
@@ -54,6 +58,9 @@ let ffmpegPath = null;
     }
     if (!ffmpegPath) console.log('ffmpeg not found — video thumbnails will not be generated');
 })();
+
+// Worker pool for parallel dimension scanning
+let dimensionPool = new DimensionWorkerPool(ffprobePath);
 
 // Video thumbnail cache directory (initialized after userDataPath is set)
 const crypto = require('crypto');
@@ -430,214 +437,99 @@ ipcMain.handle('scan-folder', async (event, folderPath, options = {}) => {
         const scanStart = performance.now();
         const { skipStats = false, scanImageDimensions = false, scanVideoDimensions = false } = options;
         const items = await fs.promises.readdir(folderPath, { withFileTypes: true });
-        
+
         // Use Sets for O(1) lookup instead of O(n) array.includes()
         const videoExtensions = new Set(['.mp4', '.webm', '.ogg', '.mov']);
         const imageExtensions = new Set(['.gif', '.jpg', '.jpeg', '.png', '.webp', '.bmp', '.svg']);
         const supportedExtensions = new Set([...videoExtensions, ...imageExtensions]);
 
-        const folders = [];
-        const mediaFiles = [];
-        
-        // Pre-compute folder path separator for URL conversion
         const isWindows = process.platform === 'win32';
-        const urlSeparator = '/';
 
-        // Separate items into folders and files first (no async operations)
+        // === Phase A: Build base objects (sync, fast) ===
         const folderItems = [];
-        const fileItems = [];
-        
+        const fileObjs = [];
+
         for (const item of items) {
             if (item.isDirectory()) {
                 folderItems.push(item);
             } else if (item.isFile()) {
-                // Fast extension check using Set
                 const name = item.name;
                 const lastDot = name.lastIndexOf('.');
-                if (lastDot === -1) continue; // No extension, skip
-                
+                if (lastDot === -1) continue;
+
                 const ext = name.substring(lastDot).toLowerCase();
-                if (!supportedExtensions.has(ext)) continue; // Not a supported extension, skip
-                
-                fileItems.push(item);
+                if (!supportedExtensions.has(ext)) continue;
+
+                const itemPath = path.join(folderPath, name);
+                const isImage = imageExtensions.has(ext);
+                fileObjs.push({
+                    name: name,
+                    path: itemPath,
+                    url: isWindows ? `file:///${itemPath.replace(/\\/g, '/')}` : `file://${itemPath}`,
+                    type: isImage ? 'image' : 'video',
+                    isImage: isImage,
+                    mtime: 0,
+                    width: undefined,
+                    height: undefined
+                });
             }
         }
-        
-        // Process folders with concurrency limit (skip stats if not needed)
-        const folderResultsPromise = asyncPool(IO_CONCURRENCY_LIMIT, folderItems, async (item) => {
-            const itemPath = path.join(folderPath, item.name);
-            if (skipStats) {
-                // Skip stat call for faster loading when sorting by name
-                return {
-                    name: item.name,
-                    path: itemPath,
-                    type: 'folder',
-                    mtime: 0
-                };
-            }
-            try {
-                const stats = await fs.promises.stat(itemPath);
-                return {
-                    name: item.name,
-                    path: itemPath,
-                    type: 'folder',
-                    mtime: stats.mtime.getTime()
-                };
-            } catch (error) {
-                // If stat fails, still add folder without date
-                return {
-                    name: item.name,
-                    path: itemPath,
-                    type: 'folder',
-                    mtime: 0
-                };
-            }
-        });
-        
-        // Process files with optimized batching for dimension scanning
-        // Batch size for dimension scanning to avoid overwhelming the system
-        const DIMENSION_SCAN_BATCH_SIZE = 20; // Process 20 images at a time for dimensions
-        
-        const processFile = async (item) => {
-            const name = item.name;
-            const itemPath = path.join(folderPath, name);
-            const url = isWindows 
-                ? `file:///${itemPath.replace(/\\/g, '/')}` 
-                : `file://${itemPath}`;
-            
-            const lastDot = name.lastIndexOf('.');
-            const ext = name.substring(lastDot).toLowerCase();
-            const isImage = imageExtensions.has(ext);
-            
-            // Base file object
-            const fileObj = {
-                name: name,
-                path: itemPath,
-                url: url,
-                type: isImage ? 'image' : 'video',
-                mtime: 0,
-                width: undefined,
-                height: undefined
-            };
-            
-            // Get image dimensions if requested and file is an image
-            // This is done in batches to avoid overwhelming the system
-            if (scanImageDimensions && isImage && sizeOf) {
-                try {
-                    // image-size v2 requires a Buffer, not a file path
-                    // Read only the first 512KB — enough for any image header
-                    const fd = await fs.promises.open(itemPath, 'r');
-                    try {
-                        const headerBuf = Buffer.alloc(512 * 1024);
-                        const { bytesRead } = await fd.read(headerBuf, 0, headerBuf.length, 0);
-                        const dimensions = sizeOf(headerBuf.subarray(0, bytesRead));
-                        if (dimensions && dimensions.width && dimensions.height) {
-                            fileObj.width = dimensions.width;
-                            fileObj.height = dimensions.height;
-                        }
-                    } finally {
-                        await fd.close();
-                    }
-                } catch (error) {
-                    // If dimension scan fails, continue without dimensions
-                    // This can happen with corrupted images or unsupported formats
-                }
-            }
 
-            // Get video dimensions via ffprobe (reads only file headers)
-            if (scanVideoDimensions && !isImage && ffprobePath) {
-                try {
-                    const dimensions = await getVideoDimensions(itemPath);
-                    if (dimensions) {
-                        fileObj.width = dimensions.width;
-                        fileObj.height = dimensions.height;
-                    }
-                } catch (error) {
-                    // If ffprobe fails, continue without dimensions
-                }
-            }
-            
-            if (skipStats) {
-                // Skip stat call for faster loading when sorting by name
-                return fileObj;
-            }
-            
-            try {
-                const stats = await fs.promises.stat(itemPath);
-                fileObj.mtime = stats.mtime.getTime();
-                return fileObj;
-            } catch (error) {
-                // If stat fails, still add file without date
-                return fileObj;
-            }
-        };
-        
-        // Process files with batched dimension scanning for better performance
+        // === Phase B: Dimension scanning via worker pool (parallel across workers) ===
         const needsDimensionScan = (scanImageDimensions && sizeOf) || (scanVideoDimensions && ffprobePath);
-        let fileResults = [];
-        if (needsDimensionScan && fileItems.length > DIMENSION_SCAN_BATCH_SIZE) {
-            // For large folders with dimension scanning, process in batches
-            // Separate files that need dimension scanning from those that don't
-            const dimensionItems = [];
-            const plainItems = [];
+        if (needsDimensionScan && dimensionPool) {
+            const filesToScan = fileObjs.filter(f =>
+                (f.isImage && scanImageDimensions) || (!f.isImage && scanVideoDimensions && ffprobePath)
+            ).map(f => ({ path: f.path, isImage: f.isImage }));
 
-            for (const item of fileItems) {
-                const name = item.name;
-                const lastDot = name.lastIndexOf('.');
-                const ext = lastDot !== -1 ? name.substring(lastDot).toLowerCase() : '';
-                const isImage = imageExtensions.has(ext);
-                const isVideo = videoExtensions.has(ext);
-                if ((isImage && scanImageDimensions && sizeOf) || (isVideo && scanVideoDimensions && ffprobePath)) {
-                    dimensionItems.push({ item, isImage });
-                } else {
-                    plainItems.push({ item, isImage: false });
+            if (filesToScan.length > 0) {
+                const dimensionMap = await dimensionPool.scanDimensions(filesToScan);
+                for (const fileObj of fileObjs) {
+                    const dims = dimensionMap.get(fileObj.path);
+                    if (dims) {
+                        fileObj.width = dims.width;
+                        fileObj.height = dims.height;
+                    }
                 }
             }
+        }
 
-            // Process plain files immediately (no dimension scanning needed)
-            const plainPromises = plainItems.map(({ item }) => processFile(item));
+        // === Phase C: Batch stat() calls using Promise.all (libuv handles parallelism) ===
+        const folders = [];
 
-            // Process dimension-scanned files in batches
-            const dimensionResults = [];
-            for (let i = 0; i < dimensionItems.length; i += DIMENSION_SCAN_BATCH_SIZE) {
-                const batch = dimensionItems.slice(i, i + DIMENSION_SCAN_BATCH_SIZE);
-                const batchPromises = batch.map(({ item }) => processFile(item));
-                const batchResults = await Promise.all(batchPromises);
-                dimensionResults.push(...batchResults);
-
-                // Small delay between batches to keep UI responsive
-                if (i + DIMENSION_SCAN_BATCH_SIZE < dimensionItems.length) {
-                    await new Promise(resolve => setImmediate(resolve));
-                }
-            }
-
-            // Combine results maintaining original order
-            let dimIndex = 0;
-            let plainIndex = 0;
-            const plainResults = await Promise.all(plainPromises);
-
-            // Rebuild the set of items that needed dimension scanning for order lookup
-            const dimensionItemSet = new Set(dimensionItems.map(d => d.item));
-            for (const item of fileItems) {
-                if (dimensionItemSet.has(item)) {
-                    fileResults.push(dimensionResults[dimIndex++]);
-                } else {
-                    fileResults.push(plainResults[plainIndex++]);
-                }
+        if (skipStats) {
+            // Fast path: no stat calls needed
+            for (const item of folderItems) {
+                folders.push({ name: item.name, path: path.join(folderPath, item.name), type: 'folder', mtime: 0 });
             }
         } else {
-            // For smaller folders or when not scanning dimensions, process with concurrency limit
-            fileResults = await asyncPool(IO_CONCURRENCY_LIMIT, fileItems, processFile);
-        }
-        
-        // Wait for all folder operations to complete
-        const folderResults = await folderResultsPromise;
-        
-        folders.push(...folderResults);
-        mediaFiles.push(...fileResults);
+            // Parallel stat for folders using Promise.all (libuv threadpool = 16)
+            const folderResults = await Promise.all(folderItems.map(async (item) => {
+                const itemPath = path.join(folderPath, item.name);
+                try {
+                    const stats = await fs.promises.stat(itemPath);
+                    return { name: item.name, path: itemPath, type: 'folder', mtime: stats.mtime.getTime() };
+                } catch {
+                    return { name: item.name, path: itemPath, type: 'folder', mtime: 0 };
+                }
+            }));
+            folders.push(...folderResults);
 
-        // Note: Sorting will be done client-side based on user preferences
-        // Default alphabetical sorting kept for backward compatibility
+            // Parallel stat for files
+            await Promise.all(fileObjs.map(async (fileObj) => {
+                try {
+                    const stats = await fs.promises.stat(fileObj.path);
+                    fileObj.mtime = stats.mtime.getTime();
+                } catch {
+                    // mtime stays 0
+                }
+            }));
+        }
+
+        // Clean up internal field before sending to renderer
+        const mediaFiles = fileObjs.map(({ isImage, ...rest }) => rest);
+
+        // Default alphabetical sorting for backward compatibility
         if (folders.length > 1) {
             folders.sort((a, b) => a.name.localeCompare(b.name));
         }
@@ -1350,6 +1242,10 @@ ipcMain.handle('has-ffmpeg', async () => {
 
 // Cleanup watchers on app quit
 app.on('before-quit', async () => {
+    if (dimensionPool) {
+        dimensionPool.terminate();
+        dimensionPool = null;
+    }
     for (const [folderPath, watcher] of watchedFolders) {
         try {
             await watcher.close();

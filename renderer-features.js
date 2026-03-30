@@ -2275,6 +2275,8 @@ function initNewFeatures() {
     
     if (organizeBtn) {
         organizeBtn.addEventListener('click', () => {
+            const toolsDropdown = document.getElementById('tools-menu-dropdown');
+            if (toolsDropdown) toolsDropdown.classList.add('hidden');
             if (organizeDialog) organizeDialog.classList.remove('hidden');
         });
     }

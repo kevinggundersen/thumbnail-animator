@@ -15,24 +15,22 @@
                 <button id="back-btn" class="nav-btn" title="Back" disabled><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg></button>
                 <button id="forward-btn" class="nav-btn" title="Forward" disabled><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg></button>
             </div>
-            <button id="organize-btn" class="header-btn toolbar-icon-btn" title="Organize Files"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 17a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3.9a2 2 0 0 1-1.69-.9l-.81-1.2a2 2 0 0 0-1.67-.9H8a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2Z"/><path d="M2 8v11a2 2 0 0 0 2 2h14"/></svg></button>
-            <div class="quick-access-container">
-                <button id="favorites-btn" class="quick-access-btn toolbar-icon-btn" title="Favorites"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg></button>
-                <div id="favorites-dropdown" class="quick-access-dropdown hidden">
-                    <div class="quick-access-header">Favorites</div>
-                    <div id="favorites-list" class="quick-access-list"></div>
-                    <div class="quick-access-footer">
-                        <button id="add-favorite-btn" class="quick-access-action-btn">+ Add Current Folder</button>
+            <div class="tools-menu-container">
+                <button id="tools-menu-btn" class="toolbar-icon-btn" title="Tools"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg></button>
+                <div id="tools-menu-dropdown" class="tools-menu-dropdown hidden">
+                    <div class="tools-menu-section">
+                        <div class="tools-menu-section-label">Actions</div>
+                        <button id="organize-btn" class="tools-menu-item"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 17a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3.9a2 2 0 0 1-1.69-.9l-.81-1.2a2 2 0 0 0-1.67-.9H8a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2Z"/><path d="M2 8v11a2 2 0 0 0 2 2h14"/></svg> Organize Files</button>
                     </div>
-                </div>
-            </div>
-            <div class="quick-access-container">
-                <button id="recent-files-btn" class="quick-access-btn toolbar-icon-btn" title="Recent Files"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></button>
-                <div id="recent-files-dropdown" class="quick-access-dropdown hidden">
-                    <div class="quick-access-header">Recent Files</div>
-                    <div id="recent-files-list" class="quick-access-list"></div>
-                    <div class="quick-access-footer">
-                        <button id="clear-recent-btn" class="quick-access-action-btn">Clear History</button>
+                    <div class="tools-menu-section">
+                        <div class="tools-menu-section-label">Favorites</div>
+                        <div id="favorites-list" class="tools-menu-list"></div>
+                        <button id="add-favorite-btn" class="tools-menu-action-btn">+ Add Current Folder</button>
+                    </div>
+                    <div class="tools-menu-section">
+                        <div class="tools-menu-section-label">Recent Folders</div>
+                        <div id="recent-files-list" class="tools-menu-list"></div>
+                        <button id="clear-recent-btn" class="tools-menu-action-btn">Clear History</button>
                     </div>
                 </div>
             </div>

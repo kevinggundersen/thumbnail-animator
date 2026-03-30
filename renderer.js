@@ -1034,12 +1034,10 @@ const cardInfoStarsLabel = document.getElementById('card-info-stars-label');
 const cardInfoExtensionLabel = document.getElementById('card-info-extension-label');
 const cardInfoAudioLabel = document.getElementById('card-info-audio-label');
 const cardInfoFilenameLabel = document.getElementById('card-info-filename-label');
-const favoritesBtn = document.getElementById('favorites-btn');
-const favoritesDropdown = document.getElementById('favorites-dropdown');
+const toolsMenuBtn = document.getElementById('tools-menu-btn');
+const toolsMenuDropdown = document.getElementById('tools-menu-dropdown');
 const favoritesList = document.getElementById('favorites-list');
 const addFavoriteBtn = document.getElementById('add-favorite-btn');
-const recentFilesBtn = document.getElementById('recent-files-btn');
-const recentFilesDropdown = document.getElementById('recent-files-dropdown');
 const recentFilesList = document.getElementById('recent-files-list');
 const clearRecentBtn = document.getElementById('clear-recent-btn');
 const tabsContainer = document.getElementById('tabs-container');
@@ -6076,11 +6074,10 @@ zoomSlider.addEventListener('input', (e) => {
     }
 });
 
-// Favorites button event listener
-favoritesBtn.addEventListener('click', (e) => {
+// Tools menu toggle
+toolsMenuBtn.addEventListener('click', (e) => {
     e.stopPropagation();
-    favoritesDropdown.classList.toggle('hidden');
-    recentFilesDropdown.classList.add('hidden');
+    toolsMenuDropdown.classList.toggle('hidden');
 });
 
 // Add favorite button event listener
@@ -6088,14 +6085,6 @@ addFavoriteBtn.addEventListener('click', () => {
     if (currentFolderPath) {
         addFavorite(currentFolderPath, currentFolderPath.split(/[/\\]/).pop());
     }
-    favoritesDropdown.classList.add('hidden');
-});
-
-// Recent files button event listener
-recentFilesBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    recentFilesDropdown.classList.toggle('hidden');
-    favoritesDropdown.classList.add('hidden');
 });
 
 // Clear recent files button event listener
@@ -6103,13 +6092,10 @@ clearRecentBtn.addEventListener('click', () => {
     clearRecentFiles();
 });
 
-// Close dropdowns when clicking outside
+// Close tools menu when clicking outside
 document.addEventListener('click', (e) => {
-    if (!favoritesBtn.contains(e.target) && !favoritesDropdown.contains(e.target)) {
-        favoritesDropdown.classList.add('hidden');
-    }
-    if (!recentFilesBtn.contains(e.target) && !recentFilesDropdown.contains(e.target)) {
-        recentFilesDropdown.classList.add('hidden');
+    if (!toolsMenuBtn.contains(e.target) && !toolsMenuDropdown.contains(e.target)) {
+        toolsMenuDropdown.classList.add('hidden');
     }
 });
 

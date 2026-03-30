@@ -1038,6 +1038,8 @@ const toolsMenuBtn = document.getElementById('tools-menu-btn');
 const toolsMenuDropdown = document.getElementById('tools-menu-dropdown');
 const favoritesList = document.getElementById('favorites-list');
 const addFavoriteBtn = document.getElementById('add-favorite-btn');
+const newFavGroupBtn = document.getElementById('new-fav-group-btn');
+const favContextMenu = document.getElementById('fav-context-menu');
 const recentFilesList = document.getElementById('recent-files-list');
 const clearRecentBtn = document.getElementById('clear-recent-btn');
 const tabsContainer = document.getElementById('tabs-container');
@@ -1112,7 +1114,7 @@ const DEFAULT_CARD_INFO = Object.freeze({
 let cardInfoSettings = { ...DEFAULT_CARD_INFO };
 
 // Track favorites
-let favorites = []; // Array of { path, name }
+let favorites = { version: 2, groups: [] }; // Grouped favorites structure
 
 // Track recent files
 let recentFiles = []; // Array of { path, name, url, type, timestamp }
@@ -6111,6 +6113,11 @@ addFavoriteBtn.addEventListener('click', () => {
     }
 });
 
+// New favorite group button event listener
+newFavGroupBtn.addEventListener('click', () => {
+    promptFavGroupName((name) => createFavoriteGroup(name));
+});
+
 // Clear recent files button event listener
 clearRecentBtn.addEventListener('click', () => {
     clearRecentFiles();
@@ -6118,7 +6125,10 @@ clearRecentBtn.addEventListener('click', () => {
 
 // Close tools menu when clicking outside
 document.addEventListener('click', (e) => {
-    if (!toolsMenuBtn.contains(e.target) && !toolsMenuDropdown.contains(e.target)) {
+    const renameDialog = document.getElementById('rename-dialog');
+    if (!toolsMenuBtn.contains(e.target) && !toolsMenuDropdown.contains(e.target)
+        && !(favContextMenu && favContextMenu.contains(e.target))
+        && !(renameDialog && renameDialog.contains(e.target))) {
         toolsMenuDropdown.classList.add('hidden');
     }
 });
@@ -6830,10 +6840,13 @@ function hideContextMenu() {
     contextMenuTargetCard = null;
 }
 
-// Hide context menu when clicking elsewhere
+// Hide context menus when clicking elsewhere
 document.addEventListener('click', (e) => {
     if (!contextMenu.contains(e.target)) {
         hideContextMenu();
+    }
+    if (favContextMenu && !favContextMenu.contains(e.target)) {
+        hideFavContextMenu();
     }
 });
 

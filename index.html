@@ -34,7 +34,10 @@
                         <div class="tools-menu-section">
                             <div class="tools-menu-section-label">Favorites</div>
                             <div id="favorites-list" class="tools-menu-list"></div>
-                            <button id="add-favorite-btn" class="tools-menu-action-btn">+ Add Current Folder</button>
+                            <div class="tools-menu-action-row">
+                                <button id="add-favorite-btn" class="tools-menu-action-btn">+ Add Folder</button>
+                                <button id="new-fav-group-btn" class="tools-menu-action-btn">+ New Group</button>
+                            </div>
                         </div>
                         <div class="tools-menu-section">
                             <div class="tools-menu-section-label">Recent Folders</div>
@@ -271,6 +274,7 @@
             <div class="context-menu-divider"></div>
             <div class="context-menu-item context-menu-item-danger" data-action="delete"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg> Delete</div>
         </div>
+        <div id="fav-context-menu" class="context-menu hidden"></div>
         <div id="rename-dialog" class="rename-dialog hidden">
             <div class="rename-dialog-content">
                 <h3>Rename File</h3>

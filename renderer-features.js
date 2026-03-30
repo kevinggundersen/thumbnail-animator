@@ -312,14 +312,30 @@ function switchFilter(filter) {
 }
 
 // ==================== FAVORITES ====================
+function defaultFavoritesStructure() {
+    return { version: 2, groups: [{ id: 'uncategorized', name: 'Uncategorized', collapsed: false, items: [] }] };
+}
+
 function loadFavorites() {
     const saved = localStorage.getItem('favorites');
     if (saved) {
         try {
-            favorites = JSON.parse(saved);
+            const parsed = JSON.parse(saved);
+            if (Array.isArray(parsed)) {
+                // Migrate V1 flat array to V2 grouped structure
+                favorites = defaultFavoritesStructure();
+                favorites.groups[0].items = parsed;
+                saveFavorites();
+            } else if (parsed && parsed.version === 2) {
+                favorites = parsed;
+            } else {
+                favorites = defaultFavoritesStructure();
+            }
         } catch (e) {
-            favorites = [];
+            favorites = defaultFavoritesStructure();
         }
+    } else {
+        favorites = defaultFavoritesStructure();
     }
     renderFavorites();
 }
@@ -330,47 +346,367 @@ function saveFavorites() {
 
 function renderFavorites() {
     favoritesList.innerHTML = '';
-    if (favorites.length === 0) {
+    const totalItems = favorites.groups.reduce((sum, g) => sum + g.items.length, 0);
+    if (totalItems === 0 && favorites.groups.length <= 1) {
         favoritesList.innerHTML = '<div class="tools-menu-empty">No favorites yet</div>';
         return;
     }
-    favorites.forEach((fav, index) => {
-        const item = document.createElement('div');
-        item.className = 'quick-access-item';
-        item.innerHTML = `
-            <span class="quick-access-item-name" title="${fav.path}">${fav.name}</span>
-            <span class="quick-access-item-remove" data-index="${index}">${icon('x', 14)}</span>
+    favorites.groups.forEach((group) => {
+        const groupEl = document.createElement('div');
+        groupEl.className = 'fav-group';
+        groupEl.dataset.groupId = group.id;
+
+        // Group header
+        const header = document.createElement('div');
+        header.className = 'fav-group-header';
+        header.innerHTML = `
+            <span class="fav-group-toggle ${group.collapsed ? '' : 'expanded'}">${icon('chevron-right', 12)}</span>
+            <span class="fav-group-name">${group.name}</span>
+            <span class="fav-group-count">${group.items.length}</span>
         `;
-        item.addEventListener('click', (e) => {
-            if (e.target.classList.contains('quick-access-item-remove')) {
-                e.stopPropagation();
-                removeFavorite(index);
-            } else {
-                toolsMenuDropdown.classList.add('hidden');
-                // Use setTimeout to yield control back to event loop, making button responsive
-                setTimeout(() => {
-                    navigateToFolder(fav.path).catch(err => {
-                        console.error('Error navigating to favorite:', err);
-                        hideLoadingIndicator();
-                    });
-                }, 0);
+        header.addEventListener('click', (e) => {
+            e.stopPropagation(); // Prevent document handler from closing menu after DOM rebuild
+            toggleGroupCollapse(group.id);
+        });
+        header.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            showFavGroupContextMenu(e, group.id);
+        });
+
+        // Drop target on group header
+        header.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (e.dataTransfer.types.includes('application/x-fav-drag')) {
+                e.dataTransfer.dropEffect = 'move';
+                header.classList.add('fav-drag-over');
             }
         });
-        favoritesList.appendChild(item);
+        header.addEventListener('dragleave', (e) => {
+            e.stopPropagation();
+            header.classList.remove('fav-drag-over');
+        });
+        header.addEventListener('drop', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            header.classList.remove('fav-drag-over');
+            try {
+                const data = JSON.parse(e.dataTransfer.getData('application/x-fav-drag'));
+                if (data.groupId !== group.id) {
+                    moveFavoriteToGroup(data.groupId, data.index, group.id);
+                }
+            } catch (_) {}
+        });
+
+        groupEl.appendChild(header);
+
+        // Group items container
+        const itemsContainer = document.createElement('div');
+        itemsContainer.className = 'fav-group-items' + (group.collapsed ? ' collapsed' : '');
+
+        // Drop target on items container (for dropping into empty or expanded groups)
+        itemsContainer.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (e.dataTransfer.types.includes('application/x-fav-drag')) {
+                e.dataTransfer.dropEffect = 'move';
+                header.classList.add('fav-drag-over');
+            }
+        });
+        itemsContainer.addEventListener('dragleave', (e) => {
+            e.stopPropagation();
+            if (!itemsContainer.contains(e.relatedTarget)) {
+                header.classList.remove('fav-drag-over');
+            }
+        });
+        itemsContainer.addEventListener('drop', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            header.classList.remove('fav-drag-over');
+            try {
+                const data = JSON.parse(e.dataTransfer.getData('application/x-fav-drag'));
+                if (data.groupId !== group.id) {
+                    moveFavoriteToGroup(data.groupId, data.index, group.id);
+                }
+            } catch (_) {}
+        });
+
+        group.items.forEach((fav, index) => {
+            const item = document.createElement('div');
+            item.className = 'quick-access-item';
+            item.draggable = true;
+            item.innerHTML = `
+                <span class="quick-access-item-name" title="${fav.path}">${fav.name}</span>
+                <span class="quick-access-item-remove" data-group="${group.id}" data-index="${index}">${icon('x', 14)}</span>
+            `;
+
+            // Drag source
+            item.addEventListener('dragstart', (e) => {
+                e.stopPropagation();
+                e.dataTransfer.setData('application/x-fav-drag', JSON.stringify({ groupId: group.id, index }));
+                e.dataTransfer.effectAllowed = 'move';
+                item.classList.add('fav-dragging');
+            });
+            item.addEventListener('dragend', () => {
+                item.classList.remove('fav-dragging');
+            });
+
+            item.addEventListener('click', (e) => {
+                if (e.target.closest('.quick-access-item-remove')) {
+                    e.stopPropagation();
+                    removeFavorite(group.id, index);
+                } else {
+                    toolsMenuDropdown.classList.add('hidden');
+                    setTimeout(() => {
+                        navigateToFolder(fav.path).catch(err => {
+                            console.error('Error navigating to favorite:', err);
+                            hideLoadingIndicator();
+                        });
+                    }, 0);
+                }
+            });
+            item.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                showFavItemContextMenu(e, group.id, index);
+            });
+            itemsContainer.appendChild(item);
+        });
+        groupEl.appendChild(itemsContainer);
+        favoritesList.appendChild(groupEl);
     });
 }
 
-function addFavorite(path, name) {
-    if (!path || favorites.some(f => f.path === path)) return;
-    favorites.push({ path, name: name || path.split(/[/\\]/).pop() });
+function addFavorite(path, name, groupId = 'uncategorized') {
+    if (!path) return;
+    // Check for duplicates across all groups
+    const isDuplicate = favorites.groups.some(g => g.items.some(f => f.path === path));
+    if (isDuplicate) return;
+    const group = favorites.groups.find(g => g.id === groupId);
+    if (!group) return;
+    group.items.push({ path, name: name || path.split(/[/\\]/).pop() });
     saveFavorites();
     renderFavorites();
 }
 
-function removeFavorite(index) {
-    favorites.splice(index, 1);
+function removeFavorite(groupId, itemIndex) {
+    const group = favorites.groups.find(g => g.id === groupId);
+    if (!group) return;
+    group.items.splice(itemIndex, 1);
     saveFavorites();
     renderFavorites();
+}
+
+function toggleGroupCollapse(groupId) {
+    const group = favorites.groups.find(g => g.id === groupId);
+    if (!group) return;
+    group.collapsed = !group.collapsed;
+    saveFavorites();
+    renderFavorites();
+}
+
+function createFavoriteGroup(name) {
+    if (!name || !name.trim()) return;
+    favorites.groups.push({ id: 'grp_' + Date.now(), name: name.trim(), collapsed: false, items: [] });
+    saveFavorites();
+    renderFavorites();
+}
+
+function renameFavoriteGroup(groupId, newName) {
+    if (groupId === 'uncategorized' || !newName || !newName.trim()) return;
+    const group = favorites.groups.find(g => g.id === groupId);
+    if (!group) return;
+    group.name = newName.trim();
+    saveFavorites();
+    renderFavorites();
+}
+
+function deleteFavoriteGroup(groupId) {
+    if (groupId === 'uncategorized') return;
+    const groupIndex = favorites.groups.findIndex(g => g.id === groupId);
+    if (groupIndex === -1) return;
+    const uncategorized = favorites.groups.find(g => g.id === 'uncategorized');
+    // Move items to uncategorized before deleting
+    uncategorized.items.push(...favorites.groups[groupIndex].items);
+    favorites.groups.splice(groupIndex, 1);
+    saveFavorites();
+    renderFavorites();
+}
+
+function moveFavoriteToGroup(fromGroupId, itemIndex, toGroupId) {
+    const fromGroup = favorites.groups.find(g => g.id === fromGroupId);
+    const toGroup = favorites.groups.find(g => g.id === toGroupId);
+    if (!fromGroup || !toGroup || fromGroupId === toGroupId) return;
+    const [item] = fromGroup.items.splice(itemIndex, 1);
+    if (!item) return;
+    toGroup.items.push(item);
+    saveFavorites();
+    renderFavorites();
+}
+
+function hideFavContextMenu() {
+    if (favContextMenu) favContextMenu.classList.add('hidden');
+}
+
+function showFavGroupContextMenu(e, groupId) {
+    hideFavContextMenu();
+    hideContextMenu();
+    favContextMenu.innerHTML = '';
+
+    const newGroupItem = document.createElement('div');
+    newGroupItem.className = 'context-menu-item';
+    newGroupItem.textContent = 'New Group';
+    newGroupItem.addEventListener('click', () => {
+        hideFavContextMenu();
+        promptFavGroupName((name) => createFavoriteGroup(name));
+    });
+    favContextMenu.appendChild(newGroupItem);
+
+    if (groupId !== 'uncategorized') {
+        const renameItem = document.createElement('div');
+        renameItem.className = 'context-menu-item';
+        renameItem.textContent = 'Rename Group';
+        renameItem.addEventListener('click', () => {
+            hideFavContextMenu();
+            const group = favorites.groups.find(g => g.id === groupId);
+            if (group) promptFavGroupName((name) => renameFavoriteGroup(groupId, name), group.name);
+        });
+        favContextMenu.appendChild(renameItem);
+
+        const divider = document.createElement('div');
+        divider.className = 'context-menu-divider';
+        favContextMenu.appendChild(divider);
+
+        const deleteItem = document.createElement('div');
+        deleteItem.className = 'context-menu-item context-menu-item-danger';
+        deleteItem.textContent = 'Delete Group';
+        deleteItem.addEventListener('click', () => {
+            hideFavContextMenu();
+            deleteFavoriteGroup(groupId);
+        });
+        favContextMenu.appendChild(deleteItem);
+    }
+
+    positionFavContextMenu(e);
+}
+
+function showFavItemContextMenu(e, groupId, itemIndex) {
+    hideFavContextMenu();
+    hideContextMenu();
+    favContextMenu.innerHTML = '';
+
+    const group = favorites.groups.find(g => g.id === groupId);
+    if (!group || !group.items[itemIndex]) return;
+    const fav = group.items[itemIndex];
+
+    // Open
+    const openItem = document.createElement('div');
+    openItem.className = 'context-menu-item';
+    openItem.textContent = 'Open';
+    openItem.addEventListener('click', () => {
+        hideFavContextMenu();
+        toolsMenuDropdown.classList.add('hidden');
+        setTimeout(() => navigateToFolder(fav.path).catch(() => {}), 0);
+    });
+    favContextMenu.appendChild(openItem);
+
+    // Move to submenu
+    const otherGroups = favorites.groups.filter(g => g.id !== groupId);
+    if (otherGroups.length > 0) {
+        const moveContainer = document.createElement('div');
+        moveContainer.className = 'context-menu-submenu';
+        const moveLabel = document.createElement('div');
+        moveLabel.className = 'context-menu-item';
+        moveLabel.innerHTML = `Move to <span style="float:right; opacity:0.5">${icon('chevron-right', 12)}</span>`;
+        moveContainer.appendChild(moveLabel);
+
+        const submenu = document.createElement('div');
+        submenu.className = 'context-menu-submenu-items';
+        otherGroups.forEach((targetGroup) => {
+            const subItem = document.createElement('div');
+            subItem.className = 'context-menu-item';
+            subItem.textContent = targetGroup.name;
+            subItem.addEventListener('click', () => {
+                hideFavContextMenu();
+                moveFavoriteToGroup(groupId, itemIndex, targetGroup.id);
+            });
+            submenu.appendChild(subItem);
+        });
+        moveContainer.appendChild(submenu);
+        favContextMenu.appendChild(moveContainer);
+    }
+
+    // Divider + Remove
+    const divider = document.createElement('div');
+    divider.className = 'context-menu-divider';
+    favContextMenu.appendChild(divider);
+
+    const removeItem = document.createElement('div');
+    removeItem.className = 'context-menu-item context-menu-item-danger';
+    removeItem.textContent = 'Remove from Favorites';
+    removeItem.addEventListener('click', () => {
+        hideFavContextMenu();
+        removeFavorite(groupId, itemIndex);
+    });
+    favContextMenu.appendChild(removeItem);
+
+    positionFavContextMenu(e);
+}
+
+function positionFavContextMenu(e) {
+    favContextMenu.classList.remove('hidden');
+    const menuWidth = 180;
+    const menuHeight = favContextMenu.offsetHeight || 150;
+    let x = e.clientX;
+    let y = e.clientY;
+    if (x + menuWidth > window.innerWidth) x = window.innerWidth - menuWidth - 5;
+    if (y + menuHeight > window.innerHeight) y = window.innerHeight - menuHeight - 5;
+    favContextMenu.style.left = `${x}px`;
+    favContextMenu.style.top = `${y}px`;
+}
+
+function promptFavGroupName(callback, defaultValue = '') {
+    const dialog = document.getElementById('rename-dialog');
+    const input = document.getElementById('rename-input');
+    const heading = dialog.querySelector('h3');
+    const confirmBtn = document.getElementById('rename-confirm-btn');
+    const cancelBtn = document.getElementById('rename-cancel-btn');
+
+    const originalHeading = heading.textContent;
+    const originalConfirm = confirmBtn.textContent;
+    heading.textContent = defaultValue ? 'Rename Group' : 'New Group';
+    confirmBtn.textContent = defaultValue ? 'Rename' : 'Create';
+    input.value = defaultValue;
+    input.placeholder = 'Group name';
+    dialog.classList.remove('hidden');
+    input.focus();
+    input.select();
+
+    function cleanup() {
+        dialog.classList.add('hidden');
+        heading.textContent = originalHeading;
+        confirmBtn.textContent = originalConfirm;
+        input.placeholder = 'Enter new name';
+        confirmBtn.removeEventListener('click', onConfirm);
+        cancelBtn.removeEventListener('click', onCancel);
+        input.removeEventListener('keydown', onKeydown);
+    }
+    function onConfirm() {
+        const val = input.value.trim();
+        cleanup();
+        if (val) callback(val);
+    }
+    function onCancel() {
+        cleanup();
+    }
+    function onKeydown(e) {
+        if (e.key === 'Enter') onConfirm();
+        else if (e.key === 'Escape') onCancel();
+    }
+    confirmBtn.addEventListener('click', onConfirm);
+    cancelBtn.addEventListener('click', onCancel);
+    input.addEventListener('keydown', onKeydown);
 }
 
 // ==================== RECENT FILES ====================

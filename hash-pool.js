@@ -58,12 +58,18 @@ class HashWorkerPool {
                 const onMessage = (msg) => {
                     if (msg.type === 'result') {
                         worker.removeListener('message', onMessage);
+                        worker.removeListener('error', onError);
                         completed += chunk.length;
                         if (onProgress) onProgress(completed, files.length);
                         resolve(msg.results);
                     }
                 };
+                const onError = () => {
+                    worker.removeListener('message', onMessage);
+                    resolve([]); // Return empty results for crashed worker's chunk
+                };
                 worker.on('message', onMessage);
+                worker.once('error', onError);
                 worker.postMessage({ type: 'hash', files: chunk });
             });
         });

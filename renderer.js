@@ -5599,14 +5599,17 @@ function updateBreadcrumb(folderPath) {
         
         // Remove trailing separator for data-path
         const pathForData = currentPath.replace(/[/\\]$/, '');
-        breadcrumbHTML += `<span class="breadcrumb-item" data-path="${pathForData.replace(/\\/g, '\\\\')}">${part}</span>`;
+        const escapedPath = pathForData.replace(/\\/g, '\\\\').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const escapedPart = typeof escapeHtml === 'function' ? escapeHtml(part) : part.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        breadcrumbHTML += `<span class="breadcrumb-item" data-path="${escapedPath}">${escapedPart}</span>`;
         if (index < breadcrumbParts.length - 1) {
             breadcrumbHTML += '<span class="breadcrumb-separator">/</span>';
         }
     });
     
     // Add editable path input (hidden by default, shown when clicked)
-    breadcrumbHTML += `<input type="text" class="breadcrumb-input" value="${folderPath.replace(/\\/g, '\\\\')}" style="display: none;">`;
+    const escapedFolderPath = folderPath.replace(/\\/g, '\\\\').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    breadcrumbHTML += `<input type="text" class="breadcrumb-input" value="${escapedFolderPath}" style="display: none;">`;
 
     breadcrumbContainer.innerHTML = breadcrumbHTML;
     breadcrumbContainer.appendChild(itemCountEl);

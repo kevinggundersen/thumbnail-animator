@@ -2491,7 +2491,7 @@ function initNewFeatures() {
                     if (panel && details) {
                         panel.classList.remove('hidden');
                         panel.style.display = 'block';
-                        details.innerHTML = `<div class="file-info-detail-row">Error: ${error.message}</div>`;
+                        details.innerHTML = `<div class="file-info-detail-row">Error: ${escapeHtml(error.message)}</div>`;
                     }
                 }
             } else {

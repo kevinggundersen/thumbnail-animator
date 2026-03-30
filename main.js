@@ -1288,10 +1288,16 @@ ipcMain.handle('watch-folder', async (event, folderPath) => {
 
         // Stop existing watcher if any
         if (watchedFolders.has(normalizedPath)) {
-            const watcher = watchedFolders.get(normalizedPath);
-            await watcher.close();
+            const existingWatcher = watchedFolders.get(normalizedPath);
+            if (existingWatcher._debounceMap) {
+                for (const timeoutId of existingWatcher._debounceMap.values()) {
+                    clearTimeout(timeoutId);
+                }
+                existingWatcher._debounceMap.clear();
+            }
+            await existingWatcher.close();
         }
-        
+
         const watcher = chokidar.watch(normalizedPath, {
             ignored: /(^|[\/\\])\../, // ignore dotfiles
             persistent: true,
@@ -1334,6 +1340,7 @@ ipcMain.handle('watch-folder', async (event, folderPath) => {
         // Debounce/dedup watcher events to coalesce duplicate notifications
         // Windows ReadDirectoryChangesW can fire multiple events for single file changes
         const watcherDebounceMap = new Map();
+        watcher._debounceMap = watcherDebounceMap; // Store reference for cleanup on close
         const WATCHER_DEBOUNCE_MS = 500;
 
         watcher.on('all', (event, filePath) => {
@@ -1369,6 +1376,13 @@ ipcMain.handle('unwatch-folder', async (event, folderPath) => {
         const normalizedPath = path.normalize(folderPath);
         if (watchedFolders.has(normalizedPath)) {
             const watcher = watchedFolders.get(normalizedPath);
+            // Clear any pending debounce timeouts before closing
+            if (watcher._debounceMap) {
+                for (const timeoutId of watcher._debounceMap.values()) {
+                    clearTimeout(timeoutId);
+                }
+                watcher._debounceMap.clear();
+            }
             await watcher.close();
             watchedFolders.delete(normalizedPath);
         }

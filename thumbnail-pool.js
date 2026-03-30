@@ -17,7 +17,7 @@ class ThumbnailWorkerPool {
         this.workerPath = path.join(__dirname, 'thumbnail-worker.js');
         this.nextWorker = 0;
         this._requestId = 0;
-        this._pendingRequests = new Map(); // id -> { resolve }
+        this._pendingRequests = new Map(); // id -> { resolve, workerIndex }
         this._pendingJobs = new Map(); // thumbPath -> Promise (dedup)
         this._initWorkers();
     }
@@ -38,7 +38,8 @@ class ThumbnailWorkerPool {
 
         worker.on('message', (msg) => {
             if (msg.type === 'result' && this._pendingRequests.has(msg.id)) {
-                const { resolve } = this._pendingRequests.get(msg.id);
+                const { resolve, timeoutId } = this._pendingRequests.get(msg.id);
+                clearTimeout(timeoutId);
                 this._pendingRequests.delete(msg.id);
                 resolve(msg);
             }
@@ -46,7 +47,14 @@ class ThumbnailWorkerPool {
 
         worker.on('error', (err) => {
             console.error(`Thumbnail worker ${index} error:`, err);
-            // Reject all pending requests for this worker and recreate
+            // Resolve all pending requests for this worker as failures
+            for (const [id, entry] of this._pendingRequests) {
+                if (entry.workerIndex === index) {
+                    clearTimeout(entry.timeoutId);
+                    this._pendingRequests.delete(id);
+                    entry.resolve({ id, success: false, thumbPath: null });
+                }
+            }
             try {
                 this._createWorker(index);
             } catch {
@@ -74,20 +82,19 @@ class ThumbnailWorkerPool {
         }
 
         const id = ++this._requestId;
+        const workerIndex = this.nextWorker % this.workers.length;
         const worker = this._getNextWorker();
         if (!worker) return { success: false, thumbPath: null };
 
         const promise = new Promise((resolve) => {
-            this._pendingRequests.set(id, { resolve });
-            worker.postMessage({ id, type, filePath, thumbPath, maxSize });
-
-            // Safety timeout - don't hang forever
-            setTimeout(() => {
+            const timeoutId = setTimeout(() => {
                 if (this._pendingRequests.has(id)) {
                     this._pendingRequests.delete(id);
                     resolve({ id, success: false, thumbPath: null });
                 }
             }, 30000);
+            this._pendingRequests.set(id, { resolve, workerIndex, timeoutId });
+            worker.postMessage({ id, type, filePath, thumbPath, maxSize });
         });
 
         this._pendingJobs.set(thumbPath, promise);
@@ -110,14 +117,19 @@ class ThumbnailWorkerPool {
         const workerBatches = new Map(); // workerIndex -> items[]
         const resultMap = new Map(); // original index -> result
 
+        const dedupPromises = [];
+
         for (let i = 0; i < items.length; i++) {
             const item = items[i];
 
-            // Check dedup
+            // Check dedup - collect promises instead of awaiting inline
             if (this._pendingJobs.has(item.thumbPath)) {
-                // Wait for existing job
-                const result = await this._pendingJobs.get(item.thumbPath);
-                resultMap.set(i, result);
+                const idx = i;
+                dedupPromises.push(
+                    this._pendingJobs.get(item.thumbPath).then(result => {
+                        resultMap.set(idx, result);
+                    })
+                );
                 continue;
             }
 
@@ -130,13 +142,13 @@ class ThumbnailWorkerPool {
 
             // Set up promise for this item
             const promise = new Promise((resolve) => {
-                this._pendingRequests.set(id, { resolve });
-                setTimeout(() => {
+                const timeoutId = setTimeout(() => {
                     if (this._pendingRequests.has(id)) {
                         this._pendingRequests.delete(id);
                         resolve({ id, success: false, thumbPath: null });
                     }
                 }, 30000);
+                this._pendingRequests.set(id, { resolve, workerIndex: workerIdx, timeoutId });
             });
 
             this._pendingJobs.set(item.thumbPath, promise);
@@ -165,7 +177,7 @@ class ThumbnailWorkerPool {
             }
         }
 
-        await Promise.all(allPromises);
+        await Promise.all([...dedupPromises, ...allPromises]);
 
         // Return results in original order
         return items.map((_, i) => resultMap.get(i) || { success: false, thumbPath: null });
@@ -179,7 +191,8 @@ class ThumbnailWorkerPool {
         }
         this.workers = [];
         // Reject all pending requests
-        for (const [id, { resolve }] of this._pendingRequests) {
+        for (const [id, { resolve, timeoutId }] of this._pendingRequests) {
+            clearTimeout(timeoutId);
             resolve({ id, success: false, thumbPath: null });
         }
         this._pendingRequests.clear();

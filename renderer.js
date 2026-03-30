@@ -1787,6 +1787,12 @@ function initSidebarResize() {
         document.body.style.cursor = '';
         document.body.style.userSelect = '';
         deferLocalStorageWrite('sidebarWidth', sidebarWidth.toString());
+        // Recalculate grid layout after resize
+        if (layoutMode === 'masonry') {
+            scheduleMasonryLayout();
+        } else {
+            vsRecalculate();
+        }
     });
 }
 
@@ -1798,6 +1804,18 @@ function setSidebarCollapsed(collapsed) {
         folderSidebar.classList.remove('collapsed');
     }
     deferLocalStorageWrite('sidebarCollapsed', collapsed.toString());
+
+    // Recalculate grid layout after sidebar transition completes
+    folderSidebar.addEventListener('transitionend', function onEnd(e) {
+        if (e.propertyName === 'width') {
+            folderSidebar.removeEventListener('transitionend', onEnd);
+            if (layoutMode === 'masonry') {
+                scheduleMasonryLayout();
+            } else {
+                vsRecalculate();
+            }
+        }
+    });
 }
 
 async function initSidebar() {

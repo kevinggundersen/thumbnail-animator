@@ -32,7 +32,7 @@ const PROGRESSIVE_RENDER_INITIAL_CHUNK = 100; // Render first N items immediatel
 
 // Scroll & Observer Configuration
 const SCROLL_DEBOUNCE_MS = 150; // Debounce cleanup after scroll stops (ms)
-const OBSERVER_CLEANUP_THROTTLE_MS = 16; // Throttle IntersectionObserver cleanup to ~60fps (ms)
+const OBSERVER_CLEANUP_THROTTLE_MS = 300; // Throttle IntersectionObserver cleanup — safety net only, processEntries handles per-card cleanup directly
 
 // Retry Configuration
 const MAX_RETRY_ATTEMPTS = 5; // Maximum number of retry attempts per card
@@ -90,6 +90,53 @@ let vsLayoutCache = {
     colHeights: null,       // Float64Array of column heights (for incremental updates)
     columnAssignments: null  // Uint16Array: which column each item was placed in
 };
+
+// Pre-built star rating templates for fast cloning (built lazily on first use)
+let _starTemplateUnrated = null; // 0-star template
+let _starTemplateCache = new Map(); // rating -> cloneable container
+
+function getStarRatingElement(rating) {
+    // Build the unrated template once (all empty stars)
+    if (!_starTemplateUnrated) {
+        const container = document.createElement('div');
+        container.className = 'star-rating';
+        container.style.pointerEvents = 'auto';
+        const emptySvg = icon('star', 16);
+        for (let s = 1; s <= 5; s++) {
+            const star = document.createElement('span');
+            star.className = 'star';
+            star.innerHTML = emptySvg;
+            star.style.pointerEvents = 'auto';
+            star.style.cursor = 'pointer';
+            container.appendChild(star);
+        }
+        _starTemplateUnrated = container;
+    }
+
+    if (rating === 0) {
+        return _starTemplateUnrated.cloneNode(true);
+    }
+
+    // Build and cache rated templates (1-5) on first use
+    if (!_starTemplateCache.has(rating)) {
+        const container = document.createElement('div');
+        container.className = 'star-rating has-rating';
+        container.style.pointerEvents = 'auto';
+        const emptySvg = icon('star', 16);
+        const filledSvg = iconFilled('star', 16, 'var(--warning)');
+        for (let s = 1; s <= 5; s++) {
+            const star = document.createElement('span');
+            star.className = s <= rating ? 'star active' : 'star';
+            star.innerHTML = s <= rating ? filledSvg : emptySvg;
+            star.style.pointerEvents = 'auto';
+            star.style.cursor = 'pointer';
+            container.appendChild(star);
+        }
+        _starTemplateCache.set(rating, container);
+    }
+
+    return _starTemplateCache.get(rating).cloneNode(true);
+}
 
 // Build a lookup from ASPECT_RATIOS name to ratio value for fast access
 // (ASPECT_RATIOS is defined later, so we build this lazily)
@@ -413,17 +460,19 @@ function vsUpdateDOM(startIndex, endIndex) {
     // Remove cards outside visible range
     for (const [itemIdx, card] of vsActiveCards) {
         if (itemIdx < startIndex || itemIdx >= endIndex) {
-            // Destroy media on this card
-            const videos = card.querySelectorAll('video');
-            const images = card.querySelectorAll('img.media-thumbnail');
-            videos.forEach(video => {
-                destroyVideoElement(video);
-                activeVideoCount = Math.max(0, activeVideoCount - 1);
-            });
-            images.forEach(img => {
-                destroyImageElement(img);
-                activeImageCount = Math.max(0, activeImageCount - 1);
-            });
+            // Only query for media if card actually has media loaded
+            if (card.dataset.hasMedia) {
+                const videos = card.querySelectorAll('video');
+                const images = card.querySelectorAll('img.media-thumbnail');
+                videos.forEach(video => {
+                    destroyVideoElement(video);
+                    activeVideoCount = Math.max(0, activeVideoCount - 1);
+                });
+                images.forEach(img => {
+                    destroyImageElement(img);
+                    activeImageCount = Math.max(0, activeImageCount - 1);
+                });
+            }
             pendingMediaCreations.delete(card);
             mediaToRetry.delete(card);
 
@@ -611,20 +660,9 @@ function vsPopulateExistingCard(card, item) {
 
         card.appendChild(extensionLabel);
 
-        // Star rating
+        // Star rating (cloned from template for speed)
         const rating = getFileRating(item.path);
-        const starContainer = document.createElement('div');
-        starContainer.className = rating > 0 ? 'star-rating has-rating' : 'star-rating';
-        starContainer.style.pointerEvents = 'auto';
-        for (let s = 1; s <= 5; s++) {
-            const star = document.createElement('span');
-            star.className = `star ${s <= rating ? 'active' : ''}`;
-            star.innerHTML = s <= rating ? iconFilled('star', 16, 'var(--warning)') : icon('star', 16);
-            star.style.pointerEvents = 'auto';
-            star.style.cursor = 'pointer';
-            starContainer.appendChild(star);
-        }
-        card.appendChild(starContainer);
+        card.appendChild(getStarRatingElement(rating));
         card.appendChild(info);
 
         return { card, isMedia: true };
@@ -3240,22 +3278,11 @@ function createCardFromItem(item) {
         info.textContent = item.name;
 
         card.appendChild(extensionLabel);
-        
-        // Always add star rating (even if 0, so user can rate)
+
+        // Star rating (cloned from template for speed)
         const rating = getFileRating(item.path);
-        const starContainer = document.createElement('div');
-        starContainer.className = rating > 0 ? 'star-rating has-rating' : 'star-rating';
-        starContainer.style.pointerEvents = 'auto'; // Ensure stars are clickable
-        for (let i = 1; i <= 5; i++) {
-            const star = document.createElement('span');
-            star.className = `star ${i <= rating ? 'active' : ''}`;
-            star.innerHTML = i <= rating ? iconFilled('star', 16, 'var(--warning)') : icon('star', 16);
-            star.style.pointerEvents = 'auto';
-            star.style.cursor = 'pointer';
-            starContainer.appendChild(star);
-        }
-        card.appendChild(starContainer);
-        
+        card.appendChild(getStarRatingElement(rating));
+
         card.appendChild(info);
 
         return { card, isMedia: true };
@@ -4301,13 +4328,9 @@ function destroyVideoElement(video) {
         
         // 3. Clear src BEFORE removing from DOM to release decoder
         try {
-            // Set to blank video first to flush decoder
-            video.src = BLANK_VIDEO;
-            video.load();
-            // Then clear completely
             video.removeAttribute('src');
             video.src = '';
-            video.load();
+            video.load(); // Single load() call to release decoder
         } catch (e) {
             // Ignore src errors
         }

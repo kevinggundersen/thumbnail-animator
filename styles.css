@@ -2127,7 +2127,7 @@ button:hover {
 
 .lightbox-zoom-controls {
     position: fixed;
-    top: 0;
+    top: 38px;
     right: 60px;
     background-color: rgba(0, 0, 0, 0.6);
     padding: 10px 16px;
@@ -2292,7 +2292,7 @@ button:hover {
 
 #close-lightbox {
     position: fixed;
-    top: 16px;
+    top: 46px;
     right: 16px;
     background: rgba(255, 255, 255, 0.08);
     color: rgba(255, 255, 255, 0.7);

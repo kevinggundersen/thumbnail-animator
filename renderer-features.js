@@ -445,26 +445,27 @@ function renderRecentFiles() {
                 
                 document.body.appendChild(preview);
                 
-                // Position preview
+                // Position preview to the left of the item
                 const itemRect = item.getBoundingClientRect();
-                let left = itemRect.right + 10;
                 let top = itemRect.top;
-                
+
                 preview.style.top = `${top}px`;
-                preview.style.left = `${left}px`;
+                preview.style.visibility = 'hidden';
                 preview.style.display = 'block';
-                
-                // Adjust if preview goes off screen (after it renders)
+
+                // Default to left, fall back to right if no room
                 setTimeout(() => {
                     const previewRect = preview.getBoundingClientRect();
-                    if (left + previewRect.width > window.innerWidth) {
-                        left = itemRect.left - previewRect.width - 10;
-                        preview.style.left = `${left}px`;
+                    let left = itemRect.left - previewRect.width - 10;
+                    if (left < 0) {
+                        left = itemRect.right + 10;
                     }
                     if (top + previewRect.height > window.innerHeight) {
                         top = window.innerHeight - previewRect.height - 10;
                         preview.style.top = `${top}px`;
                     }
+                    preview.style.left = `${left}px`;
+                    preview.style.visibility = 'visible';
                 }, 10);
                 
                 item.dataset.previewId = 'preview-' + Date.now();

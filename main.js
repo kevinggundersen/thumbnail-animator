@@ -435,7 +435,13 @@ function createWindow() {
             contextIsolation: true
         },
         backgroundColor: '#1a1a1a', // Dark mode base
-        autoHideMenuBar: true // Hide menu bar by default, show with Alt key
+        autoHideMenuBar: true, // Hide menu bar by default, show with Alt key
+        titleBarStyle: 'hidden',
+        titleBarOverlay: {
+            color: '#161618',
+            symbolColor: '#9d9da6',
+            height: 38
+        }
     };
     
     // Only set x/y if they are valid numbers

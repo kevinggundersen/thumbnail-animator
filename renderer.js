@@ -1041,6 +1041,12 @@ const addFavoriteBtn = document.getElementById('add-favorite-btn');
 const recentFilesList = document.getElementById('recent-files-list');
 const clearRecentBtn = document.getElementById('clear-recent-btn');
 const tabsContainer = document.getElementById('tabs-container');
+tabsContainer.addEventListener('wheel', (e) => {
+    if (e.deltaY !== 0) {
+        e.preventDefault();
+        tabsContainer.scrollLeft += e.deltaY;
+    }
+}, { passive: false });
 const videoScrubber = document.getElementById('video-scrubber');
 const scrubberCanvas = document.getElementById('scrubber-canvas');
 const scrubberTime = document.getElementById('scrubber-time');

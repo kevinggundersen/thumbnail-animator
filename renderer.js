@@ -3624,8 +3624,9 @@ function createImageForCard(card, imageUrl) {
     // Calculate card size to limit image resolution based on quality setting
     const rect = getCachedCardRect(card);
     const qualityMultiplier = getThumbnailQualityMultiplier();
-    const decodeWidth = Math.max(1, Math.floor(rect.width * qualityMultiplier));
-    const decodeHeight = Math.max(1, Math.floor(rect.height * qualityMultiplier));
+    const isOriginalQuality = qualityMultiplier === 0;
+    const decodeWidth = isOriginalQuality ? 0 : Math.max(1, Math.floor(rect.width * qualityMultiplier));
+    const decodeHeight = isOriginalQuality ? 0 : Math.max(1, Math.floor(rect.height * qualityMultiplier));
     
     const img = document.createElement('img');
     img.className = 'media-thumbnail';
@@ -3647,9 +3648,11 @@ function createImageForCard(card, imageUrl) {
         }
     });
     
-    // Limit image decode resolution
-    img.width = decodeWidth;
-    img.height = decodeHeight;
+    // Limit image decode resolution (skip for original quality)
+    if (!isOriginalQuality) {
+        img.width = decodeWidth;
+        img.height = decodeHeight;
+    }
     
     // Optimize rendering
     img.style.imageRendering = 'auto';
@@ -3764,7 +3767,7 @@ function createImageForCard(card, imageUrl) {
     card.insertBefore(img, info);
     card.dataset.hasMedia = '1';
 
-    if (card.dataset.filePath && !isGif) {
+    if (card.dataset.filePath && !isGif && !isOriginalQuality) {
         requestImageThumbnailUrl(card.dataset.filePath, thumbMaxSize)
             .then(url => {
                 if (!img.isConnected) return;
@@ -3776,6 +3779,41 @@ function createImageForCard(card, imageUrl) {
             });
     } else {
         setImageSource(imageUrl, 'original');
+    }
+
+    // Upgrade to full-quality image on hover — overlay on top to avoid flash
+    if (!isGif && !isOriginalQuality) {
+        let fullImg = null;
+        let preload = null;
+        const onEnter = () => {
+            if (!img.isConnected || img.dataset.sourceMode !== 'thumb') return;
+            preload = new Image();
+            preload.decoding = 'async';
+            preload.onload = () => {
+                if (!img.isConnected || img.dataset.sourceMode !== 'thumb') return;
+                // Create a full-res overlay positioned on top of the thumbnail
+                fullImg = document.createElement('img');
+                fullImg.className = 'hover-full-res';
+                fullImg.draggable = true;
+                fullImg.src = imageUrl;
+                fullImg.style.position = 'absolute';
+                fullImg.style.inset = '0';
+                fullImg.style.width = '100%';
+                fullImg.style.height = '100%';
+                fullImg.style.objectFit = getComputedStyle(img).objectFit || 'cover';
+                fullImg.style.zIndex = '1';
+                img.dataset.sourceMode = 'full';
+                img.parentElement.insertBefore(fullImg, img.nextSibling);
+            };
+            preload.src = imageUrl;
+        };
+        const onLeave = () => {
+            if (preload) { preload.onload = null; preload.src = ''; preload = null; }
+            if (fullImg) { fullImg.remove(); fullImg = null; }
+            if (img.isConnected) img.dataset.sourceMode = 'thumb';
+        };
+        card.addEventListener('mouseenter', onEnter);
+        card.addEventListener('mouseleave', onLeave);
     }
 
     pendingMediaCreations.delete(card);

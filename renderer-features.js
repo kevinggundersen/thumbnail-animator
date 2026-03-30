@@ -933,6 +933,7 @@ function getThumbnailQualityMultiplier() {
     switch (thumbnailQuality) {
         case 'low': return 0.2;
         case 'high': return 0.5;
+        case 'original': return 0; // skip thumbnail, use original file
         default: return 0.3; // medium
     }
 }

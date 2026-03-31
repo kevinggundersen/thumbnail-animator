@@ -1099,7 +1099,7 @@ let embeddingScanAbortController = null;
 // Track current filter state
 let currentFilter = 'all'; // 'all', 'video', 'image'
 let starFilterActive = false;
-let starSortOrder = 'none'; // 'none' (use settings sort), 'desc' (high to low), 'asc' (low to high)
+let starSortOrder = 'desc'; // 'none' (use settings sort), 'desc' (high to low), 'asc' (low to high)
 
 // Track layout mode: 'masonry' (dynamic) or 'grid' (rigid row-based)
 let layoutMode = 'masonry'; // Default to masonry

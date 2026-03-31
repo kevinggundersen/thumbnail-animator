@@ -89,16 +89,23 @@ function initKeyboardShortcuts() {
             if (card && !card.classList.contains('folder-card')) {
                 const path = card.dataset.filePath;
                 const name = card.querySelector('.video-info')?.textContent || '';
-                if (path && confirm(`Are you sure you want to delete "${name}"?`)) {
+                if (path && confirm(`Move "${name}" to Recycle Bin?`)) {
                     setStatusActivity(`Deleting ${name}...`);
                     window.electronAPI.deleteFile(path).then(result => {
                         setStatusActivity('');
-                        if (result.success && currentFolderPath) {
-                            loadVideos(currentFolderPath);
+                        if (result.success) {
+                            showToast(`Moved "${name}" to Recycle Bin`, 'success');
+                            if (currentFolderPath) {
+                                invalidateFolderCache(currentFolderPath);
+                                const previousScrollTop = gridContainer.scrollTop;
+                                loadVideos(currentFolderPath, false, previousScrollTop);
+                            }
+                        } else {
+                            showToast(`Error deleting file: ${result.error}`, 'error');
                         }
                     }).catch(err => {
                         setStatusActivity('');
-                        console.error('Error deleting file:', err);
+                        showToast(`Error deleting file: ${err.message}`, 'error');
                     });
                 }
             }
@@ -2331,12 +2338,13 @@ async function createFolder(folderName) {
     try {
         const result = await window.electronAPI.createFolder(currentFolderPath, folderName);
         if (result.success) {
-            await navigateToFolder(currentFolderPath); // Refresh
+            showToast(`Created folder "${folderName}"`, 'success');
+            await navigateToFolder(currentFolderPath);
         } else {
-            alert('Error creating folder: ' + result.error);
+            showToast('Error creating folder: ' + result.error, 'error');
         }
     } catch (error) {
-        alert('Error creating folder: ' + error.message);
+        showToast('Error creating folder: ' + error.message, 'error');
     }
 }
 
@@ -2369,10 +2377,12 @@ async function moveFilesToFolder(filePaths, destFolder) {
     
     hideProgress();
     if (success > 0) {
-        await navigateToFolder(currentFolderPath); // Refresh
+        await navigateToFolder(currentFolderPath);
     }
     if (failed > 0) {
-        alert(`Failed to move ${failed} file(s)`);
+        showToast(`Failed to move ${failed} file(s)`, 'error');
+    } else if (success > 0) {
+        showToast(`Moved ${success} file(s)`, 'success');
     }
 }
 
@@ -3041,7 +3051,9 @@ function initDuplicateDetection() {
 
         const result = await window.electronAPI.deleteFilesBatch([...duplicateMarkedForDeletion]);
         if (result.failed && result.failed.length > 0) {
-            alert(`Failed to delete ${result.failed.length} file(s).`);
+            showToast(`Failed to delete ${result.failed.length} file(s)`, 'error');
+        } else {
+            showToast(`Moved ${count} file(s) to Recycle Bin`, 'success');
         }
 
         duplicateMarkedForDeletion.clear();

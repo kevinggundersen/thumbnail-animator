@@ -980,6 +980,104 @@ function setStatusActivity(msg) {
     if (statusActivity) statusActivity.textContent = msg || '';
 }
 
+// ===== Toast Notification System =====
+const toastContainer = document.getElementById('toast-container');
+const TOAST_ICONS = {
+    success: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>',
+    error: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></svg>',
+    warning: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>',
+    info: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>'
+};
+const TOAST_CLOSE_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>';
+let toastCount = 0;
+const MAX_TOASTS = 5;
+
+/**
+ * Show a toast notification.
+ * @param {string} message - Main message text
+ * @param {'success'|'error'|'warning'|'info'} type - Toast type
+ * @param {Object} [options]
+ * @param {string} [options.details] - Secondary detail text
+ * @param {number} [options.duration=4000] - Auto-dismiss ms (0 = manual only)
+ * @param {string} [options.actionLabel] - Action button label (e.g. "Undo")
+ * @param {Function} [options.actionCallback] - Action button click handler
+ * @returns {HTMLElement} The toast element
+ */
+function showToast(message, type = 'info', options = {}) {
+    if (!toastContainer) return null;
+    const { details, duration = 4000, actionLabel, actionCallback } = options;
+
+    // Limit visible toasts
+    const existing = toastContainer.querySelectorAll('.toast:not(.toast-exit)');
+    if (existing.length >= MAX_TOASTS) {
+        dismissToast(existing[existing.length - 1]);
+    }
+
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    toast.id = `toast-${++toastCount}`;
+
+    let bodyHtml = `<div class="toast-message">${escapeHtml(message)}</div>`;
+    if (details) {
+        bodyHtml += `<div class="toast-details">${escapeHtml(details)}</div>`;
+    }
+    if (actionLabel) {
+        bodyHtml += `<div class="toast-actions"><button class="toast-action-btn" data-toast-action="true">${escapeHtml(actionLabel)}</button></div>`;
+    }
+
+    toast.innerHTML = `
+        <div class="toast-icon">${TOAST_ICONS[type] || TOAST_ICONS.info}</div>
+        <div class="toast-body">${bodyHtml}</div>
+        <button class="toast-close" title="Dismiss">${TOAST_CLOSE_SVG}</button>
+    `;
+
+    // Close button
+    toast.querySelector('.toast-close').addEventListener('click', () => dismissToast(toast));
+
+    // Action button
+    if (actionLabel && actionCallback) {
+        const actionBtn = toast.querySelector('[data-toast-action]');
+        if (actionBtn) {
+            actionBtn.addEventListener('click', () => {
+                actionCallback();
+                dismissToast(toast);
+            });
+        }
+    }
+
+    toastContainer.prepend(toast);
+
+    // Auto-dismiss
+    if (duration > 0) {
+        toast._dismissTimer = setTimeout(() => dismissToast(toast), duration);
+    }
+
+    // Pause auto-dismiss on hover
+    toast.addEventListener('mouseenter', () => {
+        if (toast._dismissTimer) clearTimeout(toast._dismissTimer);
+    });
+    toast.addEventListener('mouseleave', () => {
+        if (duration > 0 && !toast.classList.contains('toast-exit')) {
+            toast._dismissTimer = setTimeout(() => dismissToast(toast), duration);
+        }
+    });
+
+    return toast;
+}
+
+function dismissToast(toast) {
+    if (!toast || toast.classList.contains('toast-exit')) return;
+    if (toast._dismissTimer) clearTimeout(toast._dismissTimer);
+    toast.classList.add('toast-exit');
+    toast.addEventListener('animationend', () => toast.remove(), { once: true });
+}
+
+function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+
 // Debounced clear for "Loading media..." — fires after media load burst settles
 let _mediaSettleTimer = null;
 
@@ -5567,7 +5665,9 @@ async function copyFilesToFolder(filePaths, destFolder) {
         }
     }
     if (failed > 0) {
-        alert(`Failed to copy ${failed} file(s)`);
+        showToast(`Failed to copy ${failed} file(s)`, 'error');
+    } else if (success > 0) {
+        showToast(`Copied ${success} file(s)`, 'success');
     }
 }
 
@@ -6227,8 +6327,7 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
         if (currentFolderPath) {
             updateBreadcrumb(currentFolderPath);
         }
-        // Could show a toast/notification here if desired
-        alert(`Path not found: ${folderPath}`);
+        showToast(`Path not found: ${folderPath}`, 'error');
     }
 }
 
@@ -7806,7 +7905,7 @@ contextMenu.addEventListener('click', async (e) => {
             try {
                 await window.electronAPI.revealInExplorer(filePath);
             } catch (error) {
-                alert(`Error: ${error.message}`);
+                showToast(`Could not reveal file: ${error.message}`, 'error');
             }
             break;
             
@@ -7826,18 +7925,18 @@ contextMenu.addEventListener('click', async (e) => {
                     const result = await window.electronAPI.deleteFile(filePath);
                     setStatusActivity('');
                     if (result.success) {
-                        // Invalidate cache and reload the current folder to reflect the change
+                        showToast(`Moved "${fileName}" to Recycle Bin`, 'success');
                         if (currentFolderPath) {
                             invalidateFolderCache(currentFolderPath);
                             const previousScrollTop = gridContainer.scrollTop;
-                            await loadVideos(currentFolderPath, false, previousScrollTop); // Force reload, don't use cache
+                            await loadVideos(currentFolderPath, false, previousScrollTop);
                         }
                     } else {
-                        alert(`Error deleting file: ${result.error}`);
+                        showToast(`Error deleting file: ${result.error}`, 'error');
                     }
                 }
             } catch (error) {
-                alert(`Error: ${error.message}`);
+                showToast(`Error deleting file: ${error.message}`, 'error');
             }
             break;
             
@@ -7845,15 +7944,15 @@ contextMenu.addEventListener('click', async (e) => {
             try {
                 await window.electronAPI.openWithDefault(filePath);
             } catch (error) {
-                alert(`Error: ${error.message}`);
+                showToast(`Could not open file: ${error.message}`, 'error');
             }
             break;
-            
+
         case 'open-with':
             try {
                 await window.electronAPI.openWith(filePath);
             } catch (error) {
-                alert(`Error: ${error.message}`);
+                showToast(`Could not open file: ${error.message}`, 'error');
             }
             break;
     }
@@ -7885,17 +7984,17 @@ async function handleRenameConfirm() {
         if (result.success) {
             renameDialog.classList.add('hidden');
             renamePendingFile = null;
-            // Invalidate cache and reload the current folder to reflect the change
+            showToast(`Renamed to "${newName}"`, 'success');
             if (currentFolderPath) {
                 invalidateFolderCache(currentFolderPath);
                 const previousScrollTop = gridContainer.scrollTop;
-                await loadVideos(currentFolderPath, false, previousScrollTop); // Force reload, don't use cache
+                await loadVideos(currentFolderPath, false, previousScrollTop);
             }
         } else {
-            alert(`Error renaming file: ${result.error}`);
+            showToast(`Error renaming file: ${result.error}`, 'error');
         }
     } catch (error) {
-        alert(`Error: ${error.message}`);
+        showToast(`Error renaming file: ${error.message}`, 'error');
     }
 }
 

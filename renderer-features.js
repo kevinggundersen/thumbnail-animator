@@ -468,6 +468,19 @@ function renderFavorites() {
                     }, 0);
                 }
             });
+            item.addEventListener('mousedown', (e) => {
+                if (e.button === 1) {
+                    e.preventDefault();
+                }
+            });
+            item.addEventListener('auxclick', (e) => {
+                if (e.button === 1) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const displayName = fav.path.split(/[/\\]/).pop();
+                    createTab(fav.path, displayName);
+                }
+            });
             item.addEventListener('contextmenu', (e) => {
                 e.preventDefault();
                 e.stopPropagation();

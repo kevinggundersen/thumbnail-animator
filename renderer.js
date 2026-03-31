@@ -1738,6 +1738,21 @@ function createTreeNode(item, depth, isDrive = false) {
         }
     });
 
+    // Middle-click opens folder in new tab
+    row.addEventListener('mousedown', (e) => {
+        if (e.button === 1) {
+            e.preventDefault();
+        }
+    });
+    row.addEventListener('auxclick', (e) => {
+        if (e.button === 1) {
+            e.preventDefault();
+            e.stopPropagation();
+            const displayName = item.path.split(/[/\\]/).pop();
+            createTab(item.path, displayName);
+        }
+    });
+
     // Double-click toggle to expand
     toggle.addEventListener('dblclick', (e) => e.stopPropagation());
 
@@ -5396,10 +5411,19 @@ gridContainer.addEventListener('mousedown', (e) => {
     }
 });
 
-// Middle-click to select a card for keyboard shortcuts
+// Middle-click to select a card or open folder in new tab
 gridContainer.addEventListener('auxclick', (e) => {
     if (e.button !== 1) return; // Only middle mouse button
     e.preventDefault();
+
+    // Middle-click folder card opens in new tab
+    const folderCard = e.target.closest('.folder-card');
+    if (folderCard) {
+        const folderPath = folderCard.dataset.folderPath;
+        const displayName = folderPath.split(/[/\\]/).pop();
+        createTab(folderPath, displayName);
+        return;
+    }
 
     const card = e.target.closest('.video-card, .folder-card');
     if (!card) return;

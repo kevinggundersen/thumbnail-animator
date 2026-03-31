@@ -7896,45 +7896,46 @@ if (copyNameBtn) {
 }
 
 // --- Context Menu Functionality ---
+const folderContextMenu = document.getElementById('folder-context-menu');
+
 function showContextMenu(event, card) {
     event.preventDefault();
     event.stopPropagation();
-    
-    // Only show context menu for media cards (not folders)
-    if (card.classList.contains('folder-card')) {
-        return;
-    }
-    
+
     contextMenuTargetCard = card;
-    
-    // Position the context menu at the cursor position
+    const isFolder = card.classList.contains('folder-card');
+    const menu = isFolder ? folderContextMenu : contextMenu;
+    // Hide the other menu
+    const otherMenu = isFolder ? contextMenu : folderContextMenu;
+    otherMenu.classList.add('hidden');
+
     const x = event.clientX;
     const y = event.clientY;
-    
-    contextMenu.style.left = `${x}px`;
-    contextMenu.style.top = `${y}px`;
-    contextMenu.classList.remove('hidden');
-    
-    // Adjust position if menu goes off screen
+
+    menu.style.left = `${x}px`;
+    menu.style.top = `${y}px`;
+    menu.classList.remove('hidden');
+
     requestAnimationFrame(() => {
-        const rect = contextMenu.getBoundingClientRect();
+        const rect = menu.getBoundingClientRect();
         if (rect.right > window.innerWidth) {
-            contextMenu.style.left = `${window.innerWidth - rect.width - 10}px`;
+            menu.style.left = `${window.innerWidth - rect.width - 10}px`;
         }
         if (rect.bottom > window.innerHeight) {
-            contextMenu.style.top = `${window.innerHeight - rect.height - 10}px`;
+            menu.style.top = `${window.innerHeight - rect.height - 10}px`;
         }
     });
 }
 
 function hideContextMenu() {
     contextMenu.classList.add('hidden');
+    folderContextMenu.classList.add('hidden');
     contextMenuTargetCard = null;
 }
 
 // Hide context menus when clicking elsewhere
 document.addEventListener('click', (e) => {
-    if (!contextMenu.contains(e.target)) {
+    if (!contextMenu.contains(e.target) && !folderContextMenu.contains(e.target)) {
         hideContextMenu();
     }
     if (favContextMenu && !favContextMenu.contains(e.target)) {
@@ -8016,9 +8017,69 @@ contextMenu.addEventListener('click', async (e) => {
 
 // Prevent default context menu on cards and show custom menu
 document.addEventListener('contextmenu', (e) => {
-    const card = e.target.closest('.video-card');
+    const card = e.target.closest('.video-card') || e.target.closest('.folder-card');
     if (card) {
         showContextMenu(e, card);
+    }
+});
+
+// Folder context menu actions
+folderContextMenu.addEventListener('click', async (e) => {
+    const action = e.target.closest('.context-menu-item')?.dataset.action;
+    if (!action || !contextMenuTargetCard) return;
+
+    const folderPath = contextMenuTargetCard.dataset.folderPath;
+    if (!folderPath) return;
+
+    const folderName = folderPath.split(/[/\\]/).pop();
+    hideContextMenu();
+
+    switch (action) {
+        case 'open-folder':
+            await navigateToFolder(folderPath);
+            break;
+
+        case 'open-folder-new-tab':
+            createTab(folderPath, folderName);
+            break;
+
+        case 'rename-folder':
+            renamePendingFile = { filePath: folderPath, fileName: folderName };
+            renameInput.value = folderName;
+            renameDialog.classList.remove('hidden');
+            renameInput.focus();
+            renameInput.select();
+            break;
+
+        case 'reveal-folder':
+            try {
+                await window.electronAPI.revealInExplorer(folderPath);
+            } catch (error) {
+                showToast(`Could not reveal folder: ${error.message}`, 'error');
+            }
+            break;
+
+        case 'delete-folder':
+            try {
+                if (await showConfirm('Delete Folder', `Move "${folderName}" to Recycle Bin?`, { confirmLabel: 'Delete', danger: true })) {
+                    setStatusActivity(`Deleting ${folderName}...`);
+                    const result = await window.electronAPI.deleteFile(folderPath);
+                    setStatusActivity('');
+                    if (result.success) {
+                        showToast(`Moved "${folderName}" to Recycle Bin`, 'success');
+                        if (currentFolderPath) {
+                            invalidateFolderCache(currentFolderPath);
+                            const previousScrollTop = gridContainer.scrollTop;
+                            await loadVideos(currentFolderPath, false, previousScrollTop);
+                        }
+                    } else {
+                        showToast(`Error deleting folder: ${result.error}`, 'error');
+                    }
+                }
+            } catch (error) {
+                showToast(`Error deleting folder: ${error.message}`, 'error');
+            }
+            break;
     }
 });
 

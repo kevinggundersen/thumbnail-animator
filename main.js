@@ -1294,12 +1294,39 @@ ipcMain.handle('move-file', async (event, sourcePath, destFolderOrPath, fileName
             await fs.promises.mkdir(destDir, { recursive: true });
         }
 
-        // Check if destination already exists
-        if (fs.existsSync(destPath)) {
-            return { success: false, error: 'Destination file already exists' };
+        let finalPath = destPath;
+        // Check if destination already exists — show conflict dialog (same as copy)
+        if (fs.existsSync(destPath) && path.normalize(sourcePath) !== path.normalize(destPath)) {
+            const baseName = path.basename(destPath);
+            const win = BrowserWindow.fromWebContents(event.sender);
+            const { response } = await dialog.showMessageBox(win, {
+                type: 'question',
+                buttons: ['Replace', 'Keep Both', 'Skip'],
+                defaultId: 2,
+                cancelId: 2,
+                title: 'File Already Exists',
+                message: `"${baseName}" already exists in this location.`,
+                detail: 'Would you like to replace the existing file, keep both files, or skip this file?'
+            });
+            if (response === 2) {
+                return { success: true, skipped: true };
+            } else if (response === 1) {
+                const ext = path.extname(destPath);
+                const base = path.basename(destPath, ext);
+                const dir = path.dirname(destPath);
+                let counter = 2;
+                while (fs.existsSync(finalPath)) {
+                    finalPath = path.join(dir, `${base} (${counter})${ext}`);
+                    counter++;
+                }
+            }
+            // response === 0: Replace — delete existing then move
+            if (response === 0) {
+                await fs.promises.unlink(destPath);
+            }
         }
 
-        await fs.promises.rename(sourcePath, destPath);
+        await fs.promises.rename(sourcePath, finalPath);
         return { success: true };
     } catch (error) {
         console.error('Error moving file:', error);

@@ -2348,34 +2348,38 @@ async function createFolder(folderName) {
     }
 }
 
-async function moveFilesToFolder(filePaths, destFolder) {
-    if (!filePaths || filePaths.length === 0) return;
-    
-    showProgress(0, filePaths.length, 'Moving files...');
+// Low-level move helper — no progress bar or toasts (for use by organize functions)
+async function _moveFilesBatch(filePaths, destFolder, progressOffset, progressTotal) {
     let success = 0;
     let failed = 0;
-    
     for (let i = 0; i < filePaths.length; i++) {
         if (currentProgress && currentProgress.cancelled) break;
-        
         const filePath = filePaths[i];
         const fileName = filePath.replace(/^.*[\\/]/, '');
-
         try {
             const result = await window.electronAPI.moveFile(filePath, destFolder, fileName);
-            if (result.success) {
+            if (result.success && !result.skipped) {
                 success++;
-            } else {
+            } else if (!result.success) {
                 failed++;
             }
         } catch (error) {
             failed++;
         }
-        
-        updateProgress(i + 1, filePaths.length);
+        if (progressTotal > 0) {
+            updateProgress(progressOffset + i + 1, progressTotal);
+        }
     }
-    
+    return { success, failed };
+}
+
+async function moveFilesToFolder(filePaths, destFolder) {
+    if (!filePaths || filePaths.length === 0) return;
+
+    showProgress(0, filePaths.length, 'Moving files...');
+    const { success, failed } = await _moveFilesBatch(filePaths, destFolder, 0, filePaths.length);
     hideProgress();
+
     if (success > 0) {
         await navigateToFolder(currentFolderPath);
     }
@@ -2388,25 +2392,24 @@ async function moveFilesToFolder(filePaths, destFolder) {
 
 async function organizeByDate() {
     if (!currentFolderPath) return;
-    
+
     const items = currentItems.filter(item => item.type !== 'folder');
     if (items.length === 0) return;
-    
+
     showProgress(0, items.length, 'Organizing by date...');
-    
+
     const dateFolders = {};
-    
+
     for (let i = 0; i < items.length; i++) {
         if (currentProgress && currentProgress.cancelled) break;
-        
+
         const item = items[i];
         try {
-            // Get file stats via IPC
             const result = await window.electronAPI.getFileInfo(item.path);
             if (result.success && result.info) {
                 const date = new Date(result.info.modified);
                 const folderName = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-                
+
                 if (!dateFolders[folderName]) {
                     dateFolders[folderName] = [];
                 }
@@ -2415,56 +2418,78 @@ async function organizeByDate() {
         } catch (error) {
             console.error('Error getting file stats:', error);
         }
-        
+
         updateProgress(i + 1, items.length);
     }
-    
-    // Create folders and move files
+
+    // Create folders and move files — use silent batch mover, single progress bar
+    let totalFiles = Object.values(dateFolders).reduce((sum, arr) => sum + arr.length, 0);
+    let processed = 0;
+    let totalSuccess = 0;
+    let totalFailed = 0;
+
+    showProgress(0, totalFiles, 'Moving files into date folders...');
     for (const [folderName, filePaths] of Object.entries(dateFolders)) {
+        if (currentProgress && currentProgress.cancelled) break;
         const separator = currentFolderPath.includes('\\') ? '\\' : '/';
         const folderPath = currentFolderPath + (currentFolderPath.endsWith('\\') || currentFolderPath.endsWith('/') ? '' : separator) + folderName;
         await window.electronAPI.createFolder(currentFolderPath, folderName);
-        await moveFilesToFolder(filePaths, folderPath);
+        const { success, failed } = await _moveFilesBatch(filePaths, folderPath, processed, totalFiles);
+        totalSuccess += success;
+        totalFailed += failed;
+        processed += filePaths.length;
     }
-    
+
     hideProgress();
     await navigateToFolder(currentFolderPath);
+    if (totalFailed > 0) {
+        showToast(`Organized files: ${totalSuccess} moved, ${totalFailed} failed`, 'warning');
+    } else if (totalSuccess > 0) {
+        showToast(`Organized ${totalSuccess} file(s) by date`, 'success');
+    }
 }
 
 async function organizeByType() {
     if (!currentFolderPath) return;
-    
+
     const items = currentItems.filter(item => item.type !== 'folder');
     if (items.length === 0) return;
-    
-    showProgress(0, items.length, 'Organizing by type...');
-    
+
     const typeFolders = {};
-    
-    for (let i = 0; i < items.length; i++) {
-        if (currentProgress && currentProgress.cancelled) break;
-        
-        const item = items[i];
+
+    for (const item of items) {
         const ext = item.name.substring(item.name.lastIndexOf('.') + 1).toLowerCase();
         const folderName = ext.toUpperCase() || 'Other';
-        
         if (!typeFolders[folderName]) {
             typeFolders[folderName] = [];
         }
         typeFolders[folderName].push(item.path);
-        
-        updateProgress(i + 1, items.length);
     }
-    
-    // Create folders and move files
+
+    // Single progress bar for all moves
+    let totalFiles = Object.values(typeFolders).reduce((sum, arr) => sum + arr.length, 0);
+    let processed = 0;
+    let totalSuccess = 0;
+    let totalFailed = 0;
+
+    showProgress(0, totalFiles, 'Moving files into type folders...');
     for (const [folderName, filePaths] of Object.entries(typeFolders)) {
+        if (currentProgress && currentProgress.cancelled) break;
         const folderPath = currentFolderPath + (currentFolderPath.endsWith('\\') || currentFolderPath.endsWith('/') ? '' : '\\') + folderName;
         await window.electronAPI.createFolder(currentFolderPath, folderName);
-        await moveFilesToFolder(filePaths, folderPath);
+        const { success, failed } = await _moveFilesBatch(filePaths, folderPath, processed, totalFiles);
+        totalSuccess += success;
+        totalFailed += failed;
+        processed += filePaths.length;
     }
-    
+
     hideProgress();
     await navigateToFolder(currentFolderPath);
+    if (totalFailed > 0) {
+        showToast(`Organized files: ${totalSuccess} moved, ${totalFailed} failed`, 'warning');
+    } else if (totalSuccess > 0) {
+        showToast(`Organized ${totalSuccess} file(s) by type`, 'success');
+    }
 }
 
 // Progress indicators

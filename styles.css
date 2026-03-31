@@ -1163,6 +1163,13 @@ header {
     color: var(--accent);
 }
 
+.breadcrumb-item.drag-over {
+    background-color: var(--accent);
+    color: var(--bg-color);
+    outline: 2px solid var(--accent);
+    outline-offset: -1px;
+}
+
 .breadcrumb-separator {
     color: var(--text-tertiary);
     user-select: none;

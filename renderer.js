@@ -6218,6 +6218,56 @@ function updateBreadcrumb(folderPath) {
         });
     });
     
+    // Add drag-drop handlers to breadcrumb items (move files to parent folders)
+    breadcrumbContainer.querySelectorAll('.breadcrumb-item').forEach(item => {
+        const targetPath = item.dataset.path;
+        if (!targetPath || targetPath === 'computer') return;
+        const normalizedTarget = targetPath.replace(/\\\\/g, '\\');
+
+        item.addEventListener('dragenter', (e) => {
+            const isInternal = e.dataTransfer.types.includes('application/x-thumbnail-animator-path');
+            if (isInternal || isDragWithFiles(e)) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+        });
+
+        item.addEventListener('dragover', (e) => {
+            const isInternal = e.dataTransfer.types.includes('application/x-thumbnail-animator-path');
+            if (isInternal || isDragWithFiles(e)) {
+                e.preventDefault();
+                e.stopPropagation();
+                e.dataTransfer.dropEffect = isInternal ? 'move' : 'copy';
+                item.classList.add('drag-over');
+                const folderName = item.textContent;
+                showDragLabel(e, isInternal ? 'Move to' : 'Copy to', folderName);
+            }
+        });
+
+        item.addEventListener('dragleave', (e) => {
+            item.classList.remove('drag-over');
+            if (!breadcrumbContainer.contains(e.relatedTarget)) {
+                hideDragLabel();
+            }
+        });
+
+        item.addEventListener('drop', async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            item.classList.remove('drag-over');
+            hideDragLabel();
+
+            const { paths, isInternal } = getDroppedFilePaths(e.dataTransfer);
+            if (paths.length === 0) return;
+
+            if (isInternal) {
+                await moveFilesToFolder(paths, normalizedTarget);
+            } else {
+                await copyFilesToFolder(paths, normalizedTarget);
+            }
+        });
+    });
+
     // Make breadcrumb editable when clicking on empty space or separators
     breadcrumbContainer.addEventListener('click', (e) => {
         // Don't trigger if clicking on an individual breadcrumb item (they navigate)

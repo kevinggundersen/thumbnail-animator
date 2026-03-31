@@ -3,7 +3,7 @@
  *
  * MediaPlaybackController — abstract interface
  * VideoPlaybackController — wraps HTMLVideoElement
- * GifPlaybackController  — decodes GIF frames to canvas via gifuct-js
+ * AnimatedImagePlaybackController — decodes GIF/WebP frames to canvas via gifuct-js / webpxmux.js
  */
 
 // ==================== BASE CONTROLLER ====================
@@ -149,14 +149,22 @@ class VideoPlaybackController extends MediaPlaybackController {
     }
 }
 
-// ==================== GIF CONTROLLER ====================
+// ==================== ANIMATED IMAGE CONTROLLER (GIF + WebP) ====================
 
-class GifPlaybackController extends MediaPlaybackController {
+// Eagerly initialize webpxmux WASM at script load so it's ready when needed
+let _webpxmuxReady = null;
+{
+    const wasmPath = 'webpxmux.wasm';
+    const inst = WebPXMux(wasmPath);
+    _webpxmuxReady = inst.waitRuntime().then(() => inst);
+}
+
+class AnimatedImagePlaybackController extends MediaPlaybackController {
     /**
      * @param {HTMLCanvasElement} canvas — canvas element to render frames to
-     * @param {ArrayBuffer} gifBuffer — raw GIF file bytes
+     * @param {ArrayBuffer} buffer — raw GIF or animated WebP file bytes
      */
-    constructor(canvas, gifBuffer) {
+    constructor(canvas, buffer) {
         super();
         this._canvas = canvas;
         this._ctx = canvas.getContext('2d');
@@ -174,11 +182,29 @@ class GifPlaybackController extends MediaPlaybackController {
         this._tempCtx = null;
         this._gifWidth = 0;
         this._gifHeight = 0;
+        this._format = 'gif'; // 'gif' or 'webp'
+        this._preRenderedUpTo = -1; // highest frame index composited into _tempCtx
 
-        this._decode(gifBuffer);
+        // ready resolves when decode is complete (sync for GIF, async for WebP)
+        this.ready = this._decode(buffer);
     }
 
-    _decode(buffer) {
+    /** Detect format from magic bytes and dispatch to the right decoder */
+    async _decode(buffer) {
+        const bytes = new Uint8Array(buffer);
+        // RIFF....WEBP magic
+        if (bytes.length >= 12 &&
+            bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
+            bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) {
+            this._format = 'webp';
+            await this._decodeWebp(bytes);
+        } else {
+            this._format = 'gif';
+            this._decodeGif(buffer);
+        }
+    }
+
+    _decodeGif(buffer) {
         try {
             const { parseGIF, decompressFrames } = gifuctJs;
             const gif = parseGIF(buffer);
@@ -206,22 +232,90 @@ class GifPlaybackController extends MediaPlaybackController {
             });
             this._totalDuration = cumulative;
 
-            // Pre-render all frames into composited snapshots for instant seeking
-            this._preRenderFrames();
-
-            // Show first frame
+            // Show first frame immediately via putImageData, then pre-render rest async
+            this._composited = new Array(this._frames.length);
+            this._preRenderRange(0, 1); // composite frame 0
             this._showFrame(0);
             this._emit('loadedmetadata', { duration: this.duration });
+
+            // Pre-render remaining frames in async batches so we don't block the UI
+            this._preRenderAsync();
         } catch (err) {
             console.error('GIF decode error:', err);
         }
     }
 
-    /** Pre-composite every frame into offscreen canvases for GPU-accelerated drawing */
-    _preRenderFrames() {
-        this._tempCtx.clearRect(0, 0, this._gifWidth, this._gifHeight);
-        this._composited = new Array(this._frames.length);
-        for (let i = 0; i < this._frames.length; i++) {
+    /**
+     * Convert a webpxmux Uint32Array (0xRRGGBBAA packing) to Uint8ClampedArray (R,G,B,A bytes).
+     * Writing each Uint32 as big-endian naturally produces R,G,B,A byte order.
+     */
+    _convertWebpPixels(rgba32, pixelCount) {
+        const buf = new ArrayBuffer(pixelCount * 4);
+        const dv = new DataView(buf);
+        for (let i = 0; i < pixelCount; i++) {
+            dv.setUint32(i * 4, rgba32[i], false); // big-endian → R,G,B,A byte order
+        }
+        return new Uint8ClampedArray(buf);
+    }
+
+    async _decodeWebp(bytes) {
+        try {
+            const mux = await _webpxmuxReady;
+            const result = await mux.decodeFrames(bytes);
+
+            if (!result.frames || result.frames.length === 0) return;
+
+            this._gifWidth = result.width;
+            this._gifHeight = result.height;
+            this._canvas.width = this._gifWidth;
+            this._canvas.height = this._gifHeight;
+            const pixelCount = this._gifWidth * this._gifHeight;
+
+            // Convert webpxmux frames to internal format
+            this._frames = result.frames.map(f => ({
+                delay: f.duration,
+                dims: { top: 0, left: 0, width: this._gifWidth, height: this._gifHeight },
+                patch: this._convertWebpPixels(f.rgba, pixelCount),
+                disposalType: 0
+            }));
+
+            // Build timeline
+            let cumulative = 0;
+            this._frameTimeline = this._frames.map(f => {
+                const delay = f.delay || 100;
+                cumulative += delay;
+                return cumulative;
+            });
+            this._totalDuration = cumulative;
+
+            // Show first frame immediately, pre-render rest async
+            this._tempCanvas = document.createElement('canvas');
+            this._tempCanvas.width = this._gifWidth;
+            this._tempCanvas.height = this._gifHeight;
+            this._tempCtx = this._tempCanvas.getContext('2d');
+
+            this._composited = new Array(this._frames.length);
+            this._preRenderRange(0, 1);
+            this._showFrame(0);
+            this._emit('loadedmetadata', { duration: this.duration });
+
+            this._preRenderAsync();
+        } catch (err) {
+            console.error('WebP decode error:', err);
+        }
+    }
+
+    /**
+     * Pre-composite frames [start, end) into offscreen canvases.
+     * Frames must be composited in order because GIF uses delta/disposal compositing —
+     * each frame builds on _tempCtx which holds the previous frame's state.
+     * Updates _preRenderedUpTo so the async loop and seek stay coordinated.
+     */
+    _preRenderRange(start, end) {
+        if (start === 0) {
+            this._tempCtx.clearRect(0, 0, this._gifWidth, this._gifHeight);
+        }
+        for (let i = start; i < end && i < this._frames.length; i++) {
             const frame = this._frames[i];
             const { dims, patch, disposalType } = frame;
 
@@ -232,18 +326,41 @@ class GifPlaybackController extends MediaPlaybackController {
             const imageData = new ImageData(patch, dims.width, dims.height);
             this._tempCtx.putImageData(imageData, dims.left, dims.top);
 
-            // Snapshot into an offscreen canvas (drawImage is GPU-accelerated, putImageData is not)
             const snap = document.createElement('canvas');
             snap.width = this._gifWidth;
             snap.height = this._gifHeight;
             snap.getContext('2d').drawImage(this._tempCanvas, 0, 0);
             this._composited[i] = snap;
         }
+        const lastDone = Math.min(end, this._frames.length) - 1;
+        if (lastDone > this._preRenderedUpTo) {
+            this._preRenderedUpTo = lastDone;
+        }
     }
 
-    /** Display a pre-composited frame instantly via GPU-accelerated drawImage */
+    /** Pre-render remaining frames in async batches, yielding to the event loop between batches */
+    _preRenderAsync() {
+        const BATCH = 8;
+        const step = () => {
+            const start = this._preRenderedUpTo + 1;
+            if (start >= this._frames.length) return;
+            const end = Math.min(start + BATCH, this._frames.length);
+            this._preRenderRange(start, end);
+            requestAnimationFrame(step);
+        };
+        requestAnimationFrame(step);
+    }
+
+    /**
+     * Display a frame. If the frame hasn't been pre-rendered yet,
+     * synchronously composite all frames from _preRenderedUpTo+1 up to it
+     * (required for correct GIF delta compositing).
+     */
     _showFrame(index) {
-        if (index < 0 || index >= this._composited.length) return;
+        if (index < 0 || index >= this._frames.length) return;
+        if (!this._composited[index]) {
+            this._preRenderRange(this._preRenderedUpTo + 1, index + 1);
+        }
         this._ctx.drawImage(this._composited[index], 0, 0);
         this._currentFrame = index;
     }
@@ -372,7 +489,7 @@ class GifPlaybackController extends MediaPlaybackController {
     get duration() { return this._totalDuration / 1000; } // return seconds
     get isPlaying() { return this._playing; }
     get hasAudio() { return false; }
-    get mediaType() { return 'gif'; }
+    get mediaType() { return this._format; } // 'gif' or 'webp'
 
     get frameCount() { return this._frames.length; }
     get currentFrameIndex() { return this._currentFrame; }

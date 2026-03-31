@@ -3518,6 +3518,14 @@ window.addEventListener('DOMContentLoaded', async () => {
         pauseOnBlurLabel.textContent = pauseOnBlur ? 'On' : 'Off';
     }
 
+    // Restore playback controls preference
+    const savedPlaybackControls = localStorage.getItem('playbackControls');
+    if (savedPlaybackControls !== null) {
+        playbackControlsEnabled = savedPlaybackControls === 'true';
+        playbackControlsToggle.checked = playbackControlsEnabled;
+        playbackControlsLabel.textContent = playbackControlsEnabled ? 'On' : 'Off';
+    }
+
     // Restore zoom to fit preference
     const savedZoomToFit = localStorage.getItem('zoomToFit');
     if (savedZoomToFit !== null) {

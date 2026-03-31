@@ -563,6 +563,16 @@
                         </div>
                         <div class="settings-item">
                             <label class="settings-label">
+                                <span>Playback Controls</span>
+                                <div class="toggle-switch">
+                                    <input type="checkbox" id="playback-controls-toggle" checked>
+                                    <span class="toggle-slider"></span>
+                                </div>
+                                <span class="toggle-label" id="playback-controls-label">On</span>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
                                 <span>Zoom to Fit</span>
                                 <div class="toggle-switch">
                                     <input type="checkbox" id="zoom-to-fit-toggle" checked>
@@ -591,6 +601,7 @@
     <script src="perf-dashboard.js"></script>
     <script src="gif-duration-parser.js"></script>
     <script src="gifuct-js-bundle.js"></script>
+    <script src="webpxmux.min.js"></script>
     <script src="playback-controller.js"></script>
     <script src="renderer.js"></script>
     <script defer src="renderer-features.js"></script>

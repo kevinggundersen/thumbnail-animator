@@ -1017,6 +1017,8 @@ const pauseOnBlurToggle = document.getElementById('pause-on-blur-toggle');
 const pauseOnBlurLabel = document.getElementById('pause-on-blur-label');
 const autoRepeatToggle = document.getElementById('auto-repeat-toggle');
 const autoRepeatLabel = document.getElementById('auto-repeat-label');
+const playbackControlsToggle = document.getElementById('playback-controls-toggle');
+const playbackControlsLabel = document.getElementById('playback-controls-label');
 const zoomToFitToggle = document.getElementById('zoom-to-fit-toggle');
 const zoomToFitLabel = document.getElementById('zoom-to-fit-label');
 const lightboxZoomToFitToggle = document.getElementById('lightbox-zoom-to-fit-toggle');
@@ -1168,6 +1170,7 @@ let videoRepeat = false;
 let activePlaybackController = null;
 let mediaControlBarInstance = null;
 let autoRepeatVideos = false;
+let playbackControlsEnabled = true;
 let zoomToFit = true;
 
 // Track progress
@@ -6180,6 +6183,12 @@ autoRepeatToggle.addEventListener('change', () => {
     }
 });
 
+playbackControlsToggle.addEventListener('change', () => {
+    playbackControlsEnabled = playbackControlsToggle.checked;
+    playbackControlsLabel.textContent = playbackControlsEnabled ? 'On' : 'Off';
+    deferLocalStorageWrite('playbackControls', playbackControlsEnabled.toString());
+});
+
 function applyZoomToFitNow() {
     if (lightbox.classList.contains('hidden')) return;
     const isImageVisible = lightboxImage.style.display === 'block';
@@ -6311,6 +6320,44 @@ function calculateFitZoomLevel(naturalWidth, naturalHeight) {
     return Math.min(Math.round(zoomLevel / 5) * 5, 500);
 }
 
+/** Helper: display a static (non-animated) image in the lightbox */
+function _showStaticImage(mediaUrl, lightboxImage, lightboxGifCanvas, lightbox, mediaControlBarInstance) {
+    lightboxGifCanvas.style.display = 'none';
+    lightboxImage.style.display = 'block';
+
+    lightbox.classList.remove('hidden');
+    lightboxImage.style.transform = 'scale(1)';
+    lightboxImage.style.maxWidth = '90vw';
+    lightboxImage.style.maxHeight = '90vh';
+    lightboxImage.style.width = 'auto';
+    lightboxImage.style.height = 'auto';
+
+    const handleImageLoad = () => {
+        requestAnimationFrame(() => {
+            const rect = lightboxImage.getBoundingClientRect();
+            lightboxImage.dataset.baseWidth = rect.width.toString();
+            lightboxImage.dataset.baseHeight = rect.height.toString();
+            const fitLevel = calculateFitZoomLevel(lightboxImage.naturalWidth, lightboxImage.naturalHeight);
+            if (zoomToFit && fitLevel > 100) {
+                applyLightboxZoom(fitLevel);
+            }
+        });
+        lightboxImage.removeEventListener('load', handleImageLoad);
+    };
+
+    if (lightboxImage.complete && lightboxImage.naturalWidth > 0) {
+        handleImageLoad();
+    } else {
+        lightboxImage.addEventListener('load', handleImageLoad);
+    }
+
+    lightboxImage.src = mediaUrl;
+    lightboxImage.dataset.src = mediaUrl;
+
+    // Static image: hide controls
+    if (mediaControlBarInstance) mediaControlBarInstance.hide();
+}
+
 function openLightbox(mediaUrl, filePath, fileName) {
     const perfStart = perfTest.start();
     const mediaType = getFileType(mediaUrl);
@@ -6389,7 +6436,7 @@ function openLightbox(mediaUrl, filePath, fileName) {
     }
 
     const urlLower = mediaUrl.toLowerCase();
-    const isAnimatedImage = urlLower.endsWith('.gif');
+    const isGif = urlLower.endsWith('.gif');
     const isWebp = urlLower.endsWith('.webp');
 
     if (mediaType === 'image') {
@@ -6397,19 +6444,45 @@ function openLightbox(mediaUrl, filePath, fileName) {
         lightboxVideo.style.display = 'none';
         stopLightboxGifProgress();
 
-        if (isAnimatedImage) {
-            // GIF: use canvas-based controller for full playback control
-            lightboxImage.style.display = 'none';
-            lightboxGifCanvas.style.display = 'block';
-            lightboxGifCanvas.style.transform = 'scale(1)';
-            lightboxGifCanvas.style.maxWidth = '90vw';
-            lightboxGifCanvas.style.maxHeight = '90vh';
-
+        if ((isGif || isWebp) && playbackControlsEnabled) {
+            // Show <img> immediately as a preview while we fetch + decode frames
+            lightboxGifCanvas.style.display = 'none';
+            lightboxImage.style.display = 'block';
+            lightboxImage.style.transform = 'scale(1)';
+            lightboxImage.style.maxWidth = '90vw';
+            lightboxImage.style.maxHeight = '90vh';
+            lightboxImage.style.width = 'auto';
+            lightboxImage.style.height = 'auto';
+            lightboxImage.dataset.src = mediaUrl;
             lightbox.classList.remove('hidden');
+            // Track when the <img> actually starts animating (on load, not on src set)
+            let imgAnimStart = 0;
+            const onImgLoad = () => { imgAnimStart = performance.now(); };
+            lightboxImage.addEventListener('load', onImgLoad, { once: true });
+            lightboxImage.src = mediaUrl;
 
-            // Fetch GIF binary and create controller
-            fetch(mediaUrl).then(r => r.arrayBuffer()).then(buffer => {
-                const controller = new GifPlaybackController(lightboxGifCanvas, buffer);
+            // Fetch binary and swap to canvas controller once decoded
+            fetch(mediaUrl).then(r => r.arrayBuffer()).then(async buffer => {
+                // For WebP, check if it's actually animated before using canvas controller
+                if (isWebp) {
+                    const parsed = parseWebpDuration(buffer);
+                    if (!parsed || parsed.frameCount <= 1) {
+                        // Static WebP — already showing as <img>, just hide controls
+                        if (mediaControlBarInstance) mediaControlBarInstance.hide();
+                        return;
+                    }
+                }
+
+                // Decode frames into canvas controller
+                const controller = new AnimatedImagePlaybackController(lightboxGifCanvas, buffer);
+                await controller.ready;
+
+                // Swap from <img> preview to canvas
+                lightboxImage.style.display = 'none';
+                lightboxGifCanvas.style.display = 'block';
+                lightboxGifCanvas.style.transform = 'scale(1)';
+                lightboxGifCanvas.style.maxWidth = '90vw';
+                lightboxGifCanvas.style.maxHeight = '90vh';
                 activePlaybackController = controller;
 
                 // Bind control bar
@@ -6429,57 +6502,22 @@ function openLightbox(mediaUrl, filePath, fileName) {
                     }
                 });
 
+                // Seek to match where the <img> animation was to avoid a visible restart
+                lightboxImage.removeEventListener('load', onImgLoad);
+                if (imgAnimStart > 0 && controller.duration > 0) {
+                    const elapsed = (performance.now() - imgAnimStart) / 1000;
+                    controller.seek(elapsed % controller.duration);
+                }
                 controller.play();
             }).catch(err => {
-                console.error('Failed to load GIF for playback:', err);
-                // Fallback: show as regular image
-                lightboxGifCanvas.style.display = 'none';
-                lightboxImage.style.display = 'block';
-                lightboxImage.src = mediaUrl;
+                console.error('Failed to load animated image for playback:', err);
+                // Already showing <img> as fallback, nothing else needed
             });
 
             lightboxGifCanvas.dataset.src = mediaUrl;
         } else {
-            // Static image or WebP — show as regular image
-            lightboxGifCanvas.style.display = 'none';
-            lightboxImage.style.display = 'block';
-
-            lightbox.classList.remove('hidden');
-            lightboxImage.style.transform = 'scale(1)';
-            lightboxImage.style.maxWidth = '90vw';
-            lightboxImage.style.maxHeight = '90vh';
-            lightboxImage.style.width = 'auto';
-            lightboxImage.style.height = 'auto';
-
-            const handleImageLoad = () => {
-                requestAnimationFrame(() => {
-                    const rect = lightboxImage.getBoundingClientRect();
-                    lightboxImage.dataset.baseWidth = rect.width.toString();
-                    lightboxImage.dataset.baseHeight = rect.height.toString();
-                    const fitLevel = calculateFitZoomLevel(lightboxImage.naturalWidth, lightboxImage.naturalHeight);
-                    if (zoomToFit && fitLevel > 100) {
-                        applyLightboxZoom(fitLevel);
-                    }
-                });
-                lightboxImage.removeEventListener('load', handleImageLoad);
-            };
-
-            if (lightboxImage.complete && lightboxImage.naturalWidth > 0) {
-                handleImageLoad();
-            } else {
-                lightboxImage.addEventListener('load', handleImageLoad);
-            }
-
-            lightboxImage.src = mediaUrl;
-            lightboxImage.dataset.src = mediaUrl;
-
-            // WebP animated: show estimation-based progress via control bar with WebP controller
-            if (isWebp) {
-                startLightboxGifProgress(mediaUrl);
-            } else {
-                // Static image: hide controls
-                if (mediaControlBarInstance) mediaControlBarInstance.hide();
-            }
+            // Static image (non-GIF, non-WebP)
+            _showStaticImage(mediaUrl, lightboxImage, lightboxGifCanvas, lightbox, mediaControlBarInstance);
         }
     } else {
         stopLightboxGifProgress();

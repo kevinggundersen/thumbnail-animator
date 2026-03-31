@@ -4586,6 +4586,34 @@ button:hover {
     text-align: right;
 }
 
+/* ===== Drag-and-Drop Label ===== */
+.drag-drop-label {
+    position: fixed;
+    z-index: 9999;
+    pointer-events: none;
+    padding: 6px 12px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--accent);
+    box-shadow: var(--shadow-md);
+    color: var(--text-primary);
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition: opacity 0.1s ease;
+}
+
+.drag-drop-label.hidden {
+    display: none;
+}
+
+.drag-drop-label .drag-op {
+    color: var(--accent);
+}
+
 /* ===== Confirm Dialog ===== */
 .confirm-dialog {
     position: fixed;

@@ -5666,6 +5666,27 @@ gridContainer.addEventListener('mouseout', (e) => {
 
 // --- Drag & Drop Support ---
 
+// Floating drag label
+const dragDropLabel = document.getElementById('drag-drop-label');
+let _dragLabelVisible = false;
+
+function showDragLabel(e, operation, destName) {
+    if (!dragDropLabel) return;
+    dragDropLabel.innerHTML = `<span class="drag-op">${escapeHtml(operation)}</span> ${escapeHtml(destName)}`;
+    dragDropLabel.style.left = `${e.clientX + 16}px`;
+    dragDropLabel.style.top = `${e.clientY + 16}px`;
+    if (!_dragLabelVisible) {
+        dragDropLabel.classList.remove('hidden');
+        _dragLabelVisible = true;
+    }
+}
+
+function hideDragLabel() {
+    if (!dragDropLabel) return;
+    dragDropLabel.classList.add('hidden');
+    _dragLabelVisible = false;
+}
+
 // Supported media extensions for filtering dropped files
 const SUPPORTED_DROP_EXTENSIONS = new Set([
     '.mp4', '.webm', '.ogg', '.mov',
@@ -5764,9 +5785,17 @@ gridContainer.addEventListener('dragover', (e) => {
     const isInternal = e.dataTransfer.types.includes('application/x-thumbnail-animator-path');
     if (folderCard || isInternal || (isDragWithFiles(e) && currentFolderPath)) {
         e.preventDefault();
-        e.dataTransfer.dropEffect = (folderCard && isInternal) ? 'move' : 'copy';
+        const isMove = folderCard && isInternal;
+        e.dataTransfer.dropEffect = isMove ? 'move' : 'copy';
         if (folderCard) {
             folderCard.classList.add('drag-over');
+            const folderName = folderCard.querySelector('.folder-name')?.textContent || 'folder';
+            showDragLabel(e, isMove ? 'Move to' : 'Copy to', folderName);
+        } else if (!isInternal && currentFolderPath) {
+            const currentName = currentFolderPath.split(/[/\\]/).pop();
+            showDragLabel(e, 'Copy to', currentName);
+        } else {
+            hideDragLabel();
         }
     }
 });
@@ -5776,10 +5805,15 @@ gridContainer.addEventListener('dragleave', (e) => {
     if (folderCard) {
         folderCard.classList.remove('drag-over');
     }
+    // Hide label when leaving grid entirely
+    if (e.target === gridContainer || !gridContainer.contains(e.relatedTarget)) {
+        hideDragLabel();
+    }
 });
 
 gridContainer.addEventListener('drop', async (e) => {
     e.preventDefault();
+    hideDragLabel();
 
     // Remove drag-over styling
     gridContainer.querySelectorAll('.folder-card.drag-over').forEach(c => c.classList.remove('drag-over'));
@@ -5819,8 +5853,12 @@ sidebarTree.addEventListener('dragover', (e) => {
     const row = e.target.closest('.tree-node-row');
     if (row) {
         e.preventDefault();
-        e.dataTransfer.dropEffect = e.dataTransfer.types.includes('application/x-thumbnail-animator-path') ? 'move' : 'copy';
+        const isInternal = e.dataTransfer.types.includes('application/x-thumbnail-animator-path');
+        e.dataTransfer.dropEffect = isInternal ? 'move' : 'copy';
         row.classList.add('drag-over');
+        const node = row.closest('.tree-node');
+        const folderName = row.querySelector('.tree-node-label')?.textContent || 'folder';
+        showDragLabel(e, isInternal ? 'Move to' : 'Copy to', folderName);
     }
 });
 
@@ -5829,10 +5867,14 @@ sidebarTree.addEventListener('dragleave', (e) => {
     if (row) {
         row.classList.remove('drag-over');
     }
+    if (!sidebarTree.contains(e.relatedTarget)) {
+        hideDragLabel();
+    }
 });
 
 sidebarTree.addEventListener('drop', async (e) => {
     e.preventDefault();
+    hideDragLabel();
 
     // Remove drag-over styling
     sidebarTree.querySelectorAll('.tree-node-row.drag-over').forEach(r => r.classList.remove('drag-over'));
@@ -5868,6 +5910,10 @@ document.addEventListener('dragover', (e) => {
 });
 document.addEventListener('drop', (e) => {
     e.preventDefault();
+    hideDragLabel();
+});
+document.addEventListener('dragend', () => {
+    hideDragLabel();
 });
 
 window.addEventListener('beforeunload', () => {

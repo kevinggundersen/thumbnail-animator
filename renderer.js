@@ -1078,6 +1078,62 @@ function escapeHtml(str) {
     return div.innerHTML;
 }
 
+// ===== Custom Confirmation Dialog =====
+const confirmDialog = document.getElementById('confirm-dialog');
+const confirmDialogTitle = document.getElementById('confirm-dialog-title');
+const confirmDialogMessage = document.getElementById('confirm-dialog-message');
+const confirmDialogOk = document.getElementById('confirm-dialog-ok');
+const confirmDialogCancel = document.getElementById('confirm-dialog-cancel');
+let _confirmResolve = null;
+
+/**
+ * Show a styled confirmation dialog (replaces native confirm()).
+ * @param {string} title - Dialog title
+ * @param {string} message - Dialog message
+ * @param {Object} [options]
+ * @param {string} [options.confirmLabel='OK'] - Confirm button text
+ * @param {string} [options.cancelLabel='Cancel'] - Cancel button text
+ * @param {boolean} [options.danger=false] - Use red confirm button
+ * @returns {Promise<boolean>} true if confirmed
+ */
+function showConfirm(title, message, options = {}) {
+    const { confirmLabel = 'OK', cancelLabel = 'Cancel', danger = false } = options;
+    confirmDialogTitle.textContent = title;
+    confirmDialogMessage.textContent = message;
+    confirmDialogOk.textContent = confirmLabel;
+    confirmDialogCancel.textContent = cancelLabel;
+    confirmDialogOk.classList.toggle('confirm-danger', danger);
+    confirmDialog.classList.remove('hidden');
+    confirmDialogOk.focus();
+
+    return new Promise(resolve => {
+        // Clean up any prior listener
+        if (_confirmResolve) _confirmResolve(false);
+        _confirmResolve = resolve;
+    });
+}
+
+function _closeConfirmDialog(result) {
+    confirmDialog.classList.add('hidden');
+    if (_confirmResolve) {
+        const resolve = _confirmResolve;
+        _confirmResolve = null;
+        resolve(result);
+    }
+}
+
+confirmDialogOk.addEventListener('click', () => _closeConfirmDialog(true));
+confirmDialogCancel.addEventListener('click', () => _closeConfirmDialog(false));
+confirmDialog.addEventListener('click', (e) => {
+    if (e.target === confirmDialog) _closeConfirmDialog(false);
+});
+document.addEventListener('keydown', (e) => {
+    if (!confirmDialog.classList.contains('hidden')) {
+        if (e.key === 'Escape') { e.preventDefault(); _closeConfirmDialog(false); }
+        if (e.key === 'Enter') { e.preventDefault(); _closeConfirmDialog(true); }
+    }
+});
+
 // Debounced clear for "Loading media..." — fires after media load burst settles
 let _mediaSettleTimer = null;
 
@@ -7920,7 +7976,7 @@ contextMenu.addEventListener('click', async (e) => {
             
         case 'delete':
             try {
-                if (confirm(`Move "${fileName}" to Recycle Bin?`)) {
+                if (await showConfirm('Delete File', `Move "${fileName}" to Recycle Bin?`, { confirmLabel: 'Delete', danger: true })) {
                     setStatusActivity(`Deleting ${fileName}...`);
                     const result = await window.electronAPI.deleteFile(filePath);
                     setStatusActivity('');

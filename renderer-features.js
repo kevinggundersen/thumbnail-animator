@@ -1,6 +1,6 @@
 // ==================== KEYBOARD SHORTCUTS ====================
 function initKeyboardShortcuts() {
-    document.addEventListener('keydown', (e) => {
+    document.addEventListener('keydown', async (e) => {
         // Don't trigger shortcuts when typing in inputs
         if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) {
             // Allow Escape to close dialogs even when in inputs
@@ -89,7 +89,7 @@ function initKeyboardShortcuts() {
             if (card && !card.classList.contains('folder-card')) {
                 const path = card.dataset.filePath;
                 const name = card.querySelector('.video-info')?.textContent || '';
-                if (path && confirm(`Move "${name}" to Recycle Bin?`)) {
+                if (path && await showConfirm('Delete File', `Move "${name}" to Recycle Bin?`, { confirmLabel: 'Delete', danger: true })) {
                     setStatusActivity(`Deleting ${name}...`);
                     window.electronAPI.deleteFile(path).then(result => {
                         setStatusActivity('');
@@ -3044,7 +3044,7 @@ function initDuplicateDetection() {
     deleteBtn.addEventListener('click', async () => {
         if (duplicateMarkedForDeletion.size === 0) return;
         const count = duplicateMarkedForDeletion.size;
-        if (!confirm(`Move ${count} file(s) to trash?`)) return;
+        if (!await showConfirm('Delete Files', `Move ${count} file(s) to Recycle Bin?`, { confirmLabel: 'Delete', danger: true })) return;
 
         deleteBtn.disabled = true;
         deleteBtn.textContent = 'Deleting...';

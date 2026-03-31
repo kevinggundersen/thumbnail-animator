@@ -2543,37 +2543,7 @@ function initNewFeatures() {
     if (prevBtn) prevBtn.addEventListener('click', () => navigateLightbox('prev'));
     if (nextBtn) nextBtn.addEventListener('click', () => navigateLightbox('next'));
     
-    // Video menu
-    const videoMenuBtn = document.getElementById('lightbox-video-menu-btn');
-    const videoMenu = document.getElementById('lightbox-video-menu');
-    if (videoMenuBtn && videoMenu) {
-        videoMenuBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            videoMenu.classList.toggle('hidden');
-        });
-        
-        // Close menu when clicking outside
-        document.addEventListener('click', (e) => {
-            if (!videoMenuBtn.contains(e.target) && !videoMenu.contains(e.target)) {
-                videoMenu.classList.add('hidden');
-            }
-        });
-    }
-    
-    const speedBtn = document.getElementById('lightbox-speed-btn');
-    if (speedBtn) {
-        speedBtn.addEventListener('click', () => {
-            const speeds = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
-            const currentIndex = speeds.indexOf(videoPlaybackSpeed);
-            const nextIndex = (currentIndex + 1) % speeds.length;
-            setVideoPlaybackSpeed(speeds[nextIndex]);
-        });
-    }
-    
-    const loopBtn = document.getElementById('lightbox-loop-btn');
-    const repeatBtn = document.getElementById('lightbox-repeat-btn');
-    if (loopBtn) loopBtn.addEventListener('click', toggleVideoLoop);
-    if (repeatBtn) repeatBtn.addEventListener('click', toggleVideoRepeat);
+    // Custom media control bar is initialized lazily in openLightbox()
     
     // File info button - attach listener directly to button
     const infoBtn = document.getElementById('lightbox-info-btn');
@@ -2948,14 +2918,13 @@ function initNewFeatures() {
         }
     });
     
-    // Update keyboard shortcuts to include arrow keys and frame controls for lightbox
+    // Keyboard shortcuts for lightbox (arrow nav, frame step, play/pause, speed)
     document.addEventListener('keydown', (e) => {
         if (!lightbox.classList.contains('hidden')) {
-            // Don't trigger if typing in an input
             if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) {
                 return;
             }
-            
+
             if (e.key === 'ArrowLeft') {
                 e.preventDefault();
                 navigateLightbox('prev');
@@ -2963,16 +2932,40 @@ function initNewFeatures() {
                 e.preventDefault();
                 navigateLightbox('next');
             } else if (e.key === ',' || e.key === '<') {
-                // Previous frame (comma key)
+                // Previous frame
                 e.preventDefault();
-                if (lightboxVideo && lightboxVideo.style.display !== 'none') {
-                    stepVideoFrame('prev');
-                }
+                if (activePlaybackController) activePlaybackController.stepFrame('prev');
             } else if (e.key === '.' || e.key === '>') {
-                // Next frame (period key)
+                // Next frame
                 e.preventDefault();
-                if (lightboxVideo && lightboxVideo.style.display !== 'none') {
-                    stepVideoFrame('next');
+                if (activePlaybackController) activePlaybackController.stepFrame('next');
+            } else if (e.key === ' ') {
+                // Space: toggle play/pause
+                e.preventDefault();
+                if (activePlaybackController) activePlaybackController.togglePlay();
+            } else if (e.key === '[') {
+                // Speed down
+                e.preventDefault();
+                if (activePlaybackController && mediaControlBarInstance) {
+                    const speeds = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2];
+                    const cur = activePlaybackController.getSpeed();
+                    const idx = speeds.indexOf(cur);
+                    if (idx > 0) {
+                        activePlaybackController.setSpeed(speeds[idx - 1]);
+                        mediaControlBarInstance.syncState({ speed: speeds[idx - 1] });
+                    }
+                }
+            } else if (e.key === ']') {
+                // Speed up
+                e.preventDefault();
+                if (activePlaybackController && mediaControlBarInstance) {
+                    const speeds = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2];
+                    const cur = activePlaybackController.getSpeed();
+                    const idx = speeds.indexOf(cur);
+                    if (idx < speeds.length - 1) {
+                        activePlaybackController.setSpeed(speeds[idx + 1]);
+                        mediaControlBarInstance.syncState({ speed: speeds[idx + 1] });
+                    }
                 }
             }
         }

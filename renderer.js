@@ -1163,6 +1163,10 @@ let advancedSearchFilters = {
 let videoPlaybackSpeed = 1.0;
 let videoLoop = false;
 let videoRepeat = false;
+
+// Custom playback controller instances
+let activePlaybackController = null;
+let mediaControlBarInstance = null;
 let autoRepeatVideos = false;
 let zoomToFit = true;
 
@@ -2014,6 +2018,7 @@ const navigationHistory = {
 const lightbox = document.getElementById('lightbox');
 const lightboxVideo = document.getElementById('lightbox-video');
 const lightboxImage = document.getElementById('lightbox-image');
+const lightboxGifCanvas = document.getElementById('lightbox-gif-canvas');
 const closeLightboxBtn = document.getElementById('close-lightbox');
 const lightboxZoomSlider = document.getElementById('lightbox-zoom-slider');
 const lightboxZoomValue = document.getElementById('lightbox-zoom-value');
@@ -6165,22 +6170,13 @@ autoRepeatToggle.addEventListener('change', () => {
     autoRepeatVideos = autoRepeatToggle.checked;
     autoRepeatLabel.textContent = autoRepeatVideos ? 'On' : 'Off';
     deferLocalStorageWrite('autoRepeatVideos', autoRepeatVideos.toString());
-    // Sync to current video - use native loop for seamless playback
-    if (autoRepeatVideos) {
-        videoLoop = true;
-        if (lightboxVideo) {
-            lightboxVideo.loop = true;
-        }
-    } else {
-        videoLoop = false;
-        if (lightboxVideo) {
-            lightboxVideo.loop = false;
-        }
+    // Sync to current controller
+    videoLoop = autoRepeatVideos;
+    if (activePlaybackController) {
+        activePlaybackController.setLoop(videoLoop);
     }
-    const loopBtn = document.getElementById('lightbox-loop-btn');
-    if (loopBtn) {
-        loopBtn.textContent = videoLoop ? 'On' : 'Off';
-        loopBtn.classList.toggle('active', videoLoop);
+    if (mediaControlBarInstance) {
+        mediaControlBarInstance.syncState({ loop: videoLoop });
     }
 });
 
@@ -6188,9 +6184,12 @@ function applyZoomToFitNow() {
     if (lightbox.classList.contains('hidden')) return;
     const isImageVisible = lightboxImage.style.display === 'block';
     const isVideoVisible = lightboxVideo.style.display === 'block';
+    const isCanvasVisible = lightboxGifCanvas.style.display === 'block';
     if (zoomToFit) {
         let fitLevel = 100;
-        if (isImageVisible && lightboxImage.naturalWidth > 0) {
+        if (isCanvasVisible && activePlaybackController && activePlaybackController.gifWidth > 0) {
+            fitLevel = calculateFitZoomLevel(activePlaybackController.gifWidth, activePlaybackController.gifHeight);
+        } else if (isImageVisible && lightboxImage.naturalWidth > 0) {
             fitLevel = calculateFitZoomLevel(lightboxImage.naturalWidth, lightboxImage.naturalHeight);
         } else if (isVideoVisible && lightboxVideo.videoWidth > 0) {
             fitLevel = calculateFitZoomLevel(lightboxVideo.videoWidth, lightboxVideo.videoHeight);
@@ -6374,97 +6373,142 @@ function openLightbox(mediaUrl, filePath, fileName) {
         console.error('lightboxZoomValue not found when opening lightbox!');
     }
     
-    if (mediaType === 'image') {
-        // Hide video, show image
-        lightboxVideo.style.display = 'none';
-        lightboxImage.style.display = 'block';
-        
-        // Hide video menu button for images
-        const videoMenuContainer = document.getElementById('lightbox-video-menu-container');
-        if (videoMenuContainer) videoMenuContainer.style.display = 'none';
-        
-        lightbox.classList.remove('hidden');
-        // Ensure initial transform is set and constraints are consistent
-        lightboxImage.style.transform = 'scale(1)';
-        lightboxImage.style.maxWidth = '90vw';
-        lightboxImage.style.maxHeight = '90vh';
-        lightboxImage.style.width = 'auto';
-        lightboxImage.style.height = 'auto';
-        
-        // Wait for image to load, then capture its displayed size and zoom to fit
-        const handleImageLoad = () => {
-            requestAnimationFrame(() => {
-                const rect = lightboxImage.getBoundingClientRect();
-                lightboxImage.dataset.baseWidth = rect.width.toString();
-                lightboxImage.dataset.baseHeight = rect.height.toString();
-                // Zoom to fit: if image is smaller than viewport, scale it up
-                const fitLevel = calculateFitZoomLevel(lightboxImage.naturalWidth, lightboxImage.naturalHeight);
-                if (zoomToFit && fitLevel > 100) {
-                    applyLightboxZoom(fitLevel);
-                }
-            });
-            lightboxImage.removeEventListener('load', handleImageLoad);
-        };
-        
-        // If image is already loaded, capture size immediately
-        if (lightboxImage.complete && lightboxImage.naturalWidth > 0) {
-            handleImageLoad();
-        } else {
-            lightboxImage.addEventListener('load', handleImageLoad);
-        }
-        
-        lightboxImage.src = mediaUrl;
-        lightboxImage.dataset.src = mediaUrl; // Store for restoration after minimize
+    // Destroy any previous playback controller
+    if (activePlaybackController) {
+        activePlaybackController.destroy();
+        activePlaybackController = null;
+    }
 
-        // Start GIF progress bar in lightbox if animated
-        const urlLower = mediaUrl.toLowerCase();
-        if (urlLower.endsWith('.gif') || urlLower.endsWith('.webp')) {
-            startLightboxGifProgress(mediaUrl);
+    // Initialize the control bar if not yet created
+    if (!mediaControlBarInstance) {
+        const controlsEl = document.getElementById('media-controls');
+        if (controlsEl) {
+            mediaControlBarInstance = new MediaControlBar(controlsEl);
+            mediaControlBarInstance.attachAutoHide(lightbox);
+        }
+    }
+
+    const urlLower = mediaUrl.toLowerCase();
+    const isAnimatedImage = urlLower.endsWith('.gif');
+    const isWebp = urlLower.endsWith('.webp');
+
+    if (mediaType === 'image') {
+        // Hide video
+        lightboxVideo.style.display = 'none';
+        stopLightboxGifProgress();
+
+        if (isAnimatedImage) {
+            // GIF: use canvas-based controller for full playback control
+            lightboxImage.style.display = 'none';
+            lightboxGifCanvas.style.display = 'block';
+            lightboxGifCanvas.style.transform = 'scale(1)';
+            lightboxGifCanvas.style.maxWidth = '90vw';
+            lightboxGifCanvas.style.maxHeight = '90vh';
+
+            lightbox.classList.remove('hidden');
+
+            // Fetch GIF binary and create controller
+            fetch(mediaUrl).then(r => r.arrayBuffer()).then(buffer => {
+                const controller = new GifPlaybackController(lightboxGifCanvas, buffer);
+                activePlaybackController = controller;
+
+                // Bind control bar
+                if (mediaControlBarInstance) {
+                    mediaControlBarInstance.bind(controller);
+                    mediaControlBarInstance.syncState({ speed: videoPlaybackSpeed, loop: videoLoop, repeat: videoRepeat });
+                }
+
+                // Zoom to fit using decoded dimensions
+                requestAnimationFrame(() => {
+                    const rect = lightboxGifCanvas.getBoundingClientRect();
+                    lightboxGifCanvas.dataset.baseWidth = rect.width.toString();
+                    lightboxGifCanvas.dataset.baseHeight = rect.height.toString();
+                    const fitLevel = calculateFitZoomLevel(controller.gifWidth, controller.gifHeight);
+                    if (zoomToFit && fitLevel > 100) {
+                        applyLightboxZoom(fitLevel);
+                    }
+                });
+
+                controller.play();
+            }).catch(err => {
+                console.error('Failed to load GIF for playback:', err);
+                // Fallback: show as regular image
+                lightboxGifCanvas.style.display = 'none';
+                lightboxImage.style.display = 'block';
+                lightboxImage.src = mediaUrl;
+            });
+
+            lightboxGifCanvas.dataset.src = mediaUrl;
         } else {
-            stopLightboxGifProgress();
+            // Static image or WebP — show as regular image
+            lightboxGifCanvas.style.display = 'none';
+            lightboxImage.style.display = 'block';
+
+            lightbox.classList.remove('hidden');
+            lightboxImage.style.transform = 'scale(1)';
+            lightboxImage.style.maxWidth = '90vw';
+            lightboxImage.style.maxHeight = '90vh';
+            lightboxImage.style.width = 'auto';
+            lightboxImage.style.height = 'auto';
+
+            const handleImageLoad = () => {
+                requestAnimationFrame(() => {
+                    const rect = lightboxImage.getBoundingClientRect();
+                    lightboxImage.dataset.baseWidth = rect.width.toString();
+                    lightboxImage.dataset.baseHeight = rect.height.toString();
+                    const fitLevel = calculateFitZoomLevel(lightboxImage.naturalWidth, lightboxImage.naturalHeight);
+                    if (zoomToFit && fitLevel > 100) {
+                        applyLightboxZoom(fitLevel);
+                    }
+                });
+                lightboxImage.removeEventListener('load', handleImageLoad);
+            };
+
+            if (lightboxImage.complete && lightboxImage.naturalWidth > 0) {
+                handleImageLoad();
+            } else {
+                lightboxImage.addEventListener('load', handleImageLoad);
+            }
+
+            lightboxImage.src = mediaUrl;
+            lightboxImage.dataset.src = mediaUrl;
+
+            // WebP animated: show estimation-based progress via control bar with WebP controller
+            if (isWebp) {
+                startLightboxGifProgress(mediaUrl);
+            } else {
+                // Static image: hide controls
+                if (mediaControlBarInstance) mediaControlBarInstance.hide();
+            }
         }
     } else {
         stopLightboxGifProgress();
-        // Hide image, show video
+        // Hide image and canvas, show video
         lightboxImage.style.display = 'none';
+        lightboxGifCanvas.style.display = 'none';
         lightboxVideo.style.display = 'block';
         lightboxVideo.src = mediaUrl;
-        lightboxVideo.dataset.src = mediaUrl; // Store for restoration after minimize
+        lightboxVideo.dataset.src = mediaUrl;
         lightbox.classList.remove('hidden');
-        // Ensure initial transform is set and constraints are consistent
         lightboxVideo.style.transform = 'scale(1)';
         lightboxVideo.style.maxWidth = '90vw';
         lightboxVideo.style.maxHeight = '90vh';
-        
-        // Set video playback controls
-        lightboxVideo.playbackRate = videoPlaybackSpeed;
-        lightboxVideo.loop = videoLoop;
-        
-        // Show video menu button
-        const videoMenuContainer = document.getElementById('lightbox-video-menu-container');
-        if (videoMenuContainer) videoMenuContainer.style.display = 'block';
-        
-        // Update UI buttons
-        const speedBtn = document.getElementById('lightbox-speed-btn');
-        if (speedBtn) speedBtn.textContent = `${videoPlaybackSpeed}x`;
-        const loopBtn = document.getElementById('lightbox-loop-btn');
-        if (loopBtn) {
-            loopBtn.textContent = videoLoop ? 'On' : 'Off';
-            loopBtn.classList.toggle('active', videoLoop);
+
+        // Create video playback controller
+        const controller = new VideoPlaybackController(lightboxVideo);
+        activePlaybackController = controller;
+
+        // Apply persisted settings
+        controller.setSpeed(videoPlaybackSpeed);
+        controller.setLoop(videoLoop);
+        controller.setRepeat(videoRepeat);
+
+        // Bind control bar
+        if (mediaControlBarInstance) {
+            mediaControlBarInstance.bind(controller);
         }
-        const repeatBtn = document.getElementById('lightbox-repeat-btn');
-        if (repeatBtn) {
-            repeatBtn.textContent = videoRepeat ? 'On' : 'Off';
-            repeatBtn.classList.toggle('active', videoRepeat);
-        }
-        
-        // Set up repeat handler (remove first to prevent duplicates from previous lightbox opens)
-        lightboxVideo.removeEventListener('ended', handleVideoRepeat);
-        if (videoRepeat) {
-            lightboxVideo.addEventListener('ended', handleVideoRepeat);
-        }
-        
-        // Zoom to fit: if video is smaller than viewport, scale it up
+
+        // Zoom to fit
         const handleVideoMeta = () => {
             requestAnimationFrame(() => {
                 const fitLevel = calculateFitZoomLevel(lightboxVideo.videoWidth, lightboxVideo.videoHeight);
@@ -6530,11 +6574,14 @@ function applyLightboxZoom(zoomLevel, mouseX = null, mouseY = null) {
     // Check which media is currently visible
     const imageInlineDisplay = lightboxImage.style.display;
     const videoInlineDisplay = lightboxVideo.style.display;
-    const isImageVisible = imageInlineDisplay === 'block' || 
+    const canvasInlineDisplay = lightboxGifCanvas.style.display;
+    const isImageVisible = imageInlineDisplay === 'block' ||
                           (imageInlineDisplay === '' && window.getComputedStyle(lightboxImage).display !== 'none');
-    const isVideoVisible = videoInlineDisplay === 'block' || 
+    const isVideoVisible = videoInlineDisplay === 'block' ||
                           (videoInlineDisplay === '' && window.getComputedStyle(lightboxVideo).display !== 'none');
-    
+    const isCanvasVisible = canvasInlineDisplay === 'block' ||
+                          (canvasInlineDisplay === '' && window.getComputedStyle(lightboxGifCanvas).display !== 'none');
+
     // Reset translation when zooming back to 100% or below
     if (zoomLevel <= 100) {
         currentTranslateX = 0;
@@ -6542,7 +6589,7 @@ function applyLightboxZoom(zoomLevel, mouseX = null, mouseY = null) {
     } else if (mouseX !== null && mouseY !== null && zoomLevel > 100) {
         // Zoom at pointer position: adjust translate to keep the point under cursor fixed
         // Get the visible element
-        const visibleElement = isImageVisible ? lightboxImage : (isVideoVisible ? lightboxVideo : null);
+        const visibleElement = isCanvasVisible ? lightboxGifCanvas : (isImageVisible ? lightboxImage : (isVideoVisible ? lightboxVideo : null));
         if (visibleElement) {
             // Get the viewport center (where the element is naturally centered)
             const viewportCenterX = window.innerWidth / 2;
@@ -6563,56 +6610,52 @@ function applyLightboxZoom(zoomLevel, mouseX = null, mouseY = null) {
         }
     }
     
-    // Special handling for the transition from 100% to >100% on images
+    // Special handling for the transition from 100% to >100% on images/canvas
     // Capture the current displayed size before removing constraints
-    if (isImageVisible && previousZoomLevel === 100 && zoomLevel > 100) {
-        const rect = lightboxImage.getBoundingClientRect();
-        // Store the current displayed dimensions
-        lightboxImage.dataset.baseWidth = rect.width.toString();
-        lightboxImage.dataset.baseHeight = rect.height.toString();
-        console.log('Captured base size at 100%:', rect.width, 'x', rect.height);
+    const zoomableImageEl = isCanvasVisible ? lightboxGifCanvas : lightboxImage;
+    if ((isImageVisible || isCanvasVisible) && previousZoomLevel === 100 && zoomLevel > 100) {
+        const rect = zoomableImageEl.getBoundingClientRect();
+        zoomableImageEl.dataset.baseWidth = rect.width.toString();
+        zoomableImageEl.dataset.baseHeight = rect.height.toString();
     }
-    
+
     // Build transform string
-    // Use translate() scale() order so translate happens in screen space
-    // CSS applies right-to-left: translate() scale() means scale first, then translate
     let transformString;
     if (zoomLevel <= 100) {
         transformString = `scale(${zoomValue})`;
     } else {
-        // Order: translate first (applied last), scale second (applied first)
-        // This makes translate happen in screen space (1:1 with mouse)
         transformString = `translate(${currentTranslateX}px, ${currentTranslateY}px) scale(${zoomValue})`;
     }
-    
-    // Always apply to both - let CSS handle visibility
+
+    // Apply to all media elements
     lightboxImage.style.transform = transformString;
     lightboxVideo.style.transform = transformString;
-    
+    lightboxGifCanvas.style.transform = transformString;
+
     if (zoomLevel > 100) {
         lightboxImage.classList.add('zoomed');
         lightboxVideo.classList.add('zoomed');
-        
-        // For images, set explicit dimensions to prevent size jump when removing constraints
-        if (isImageVisible && lightboxImage.dataset.baseWidth) {
-            const baseWidth = parseFloat(lightboxImage.dataset.baseWidth);
-            const baseHeight = parseFloat(lightboxImage.dataset.baseHeight);
-            // Set explicit dimensions to maintain the base size
-            lightboxImage.style.width = `${baseWidth}px`;
-            lightboxImage.style.height = `${baseHeight}px`;
-            lightboxImage.style.maxWidth = 'none';
-            lightboxImage.style.maxHeight = 'none';
+        lightboxGifCanvas.classList.add('zoomed');
+
+        if ((isImageVisible || isCanvasVisible) && zoomableImageEl.dataset.baseWidth) {
+            const baseWidth = parseFloat(zoomableImageEl.dataset.baseWidth);
+            const baseHeight = parseFloat(zoomableImageEl.dataset.baseHeight);
+            zoomableImageEl.style.width = `${baseWidth}px`;
+            zoomableImageEl.style.height = `${baseHeight}px`;
+            zoomableImageEl.style.maxWidth = 'none';
+            zoomableImageEl.style.maxHeight = 'none';
         } else {
-            // For videos or if base size not captured, just remove constraints
             lightboxImage.style.maxWidth = 'none';
             lightboxImage.style.maxHeight = 'none';
             lightboxVideo.style.maxWidth = 'none';
             lightboxVideo.style.maxHeight = 'none';
+            lightboxGifCanvas.style.maxWidth = 'none';
+            lightboxGifCanvas.style.maxHeight = 'none';
         }
     } else {
         lightboxImage.classList.remove('zoomed');
         lightboxVideo.classList.remove('zoomed');
-        // Restore max constraints when at or below 100%
+        lightboxGifCanvas.classList.remove('zoomed');
         lightboxImage.style.maxWidth = '90vw';
         lightboxImage.style.maxHeight = '90vh';
         lightboxImage.style.width = 'auto';
@@ -6621,6 +6664,12 @@ function applyLightboxZoom(zoomLevel, mouseX = null, mouseY = null) {
         delete lightboxImage.dataset.baseHeight;
         lightboxVideo.style.maxWidth = '90vw';
         lightboxVideo.style.maxHeight = '90vh';
+        lightboxGifCanvas.style.maxWidth = '90vw';
+        lightboxGifCanvas.style.maxHeight = '90vh';
+        lightboxGifCanvas.style.width = '';
+        lightboxGifCanvas.style.height = '';
+        delete lightboxGifCanvas.dataset.baseWidth;
+        delete lightboxGifCanvas.dataset.baseHeight;
     }
     
     // Update slider and value display
@@ -6649,18 +6698,17 @@ function applyPan(deltaX, deltaY) {
     // Apply to visible element only
     const imageDisplay = lightboxImage.style.display;
     const videoDisplay = lightboxVideo.style.display;
-    const isImageVisible = imageDisplay === 'block' || 
+    const canvasDisplay = lightboxGifCanvas.style.display;
+    const isImageVisible = imageDisplay === 'block' ||
                           (imageDisplay === '' && window.getComputedStyle(lightboxImage).display !== 'none');
-    const isVideoVisible = videoDisplay === 'block' || 
+    const isVideoVisible = videoDisplay === 'block' ||
                           (videoDisplay === '' && window.getComputedStyle(lightboxVideo).display !== 'none');
-    
-    if (isImageVisible) {
-        lightboxImage.style.transform = transformString;
-    }
-    
-    if (isVideoVisible) {
-        lightboxVideo.style.transform = transformString;
-    }
+    const isCanvasVisible = canvasDisplay === 'block' ||
+                          (canvasDisplay === '' && window.getComputedStyle(lightboxGifCanvas).display !== 'none');
+
+    if (isImageVisible) lightboxImage.style.transform = transformString;
+    if (isVideoVisible) lightboxVideo.style.transform = transformString;
+    if (isCanvasVisible) lightboxGifCanvas.style.transform = transformString;
 }
 
 function resetZoom() {
@@ -6669,8 +6717,10 @@ function resetZoom() {
     currentTranslateY = 0;
     lightboxImage.style.transform = 'scale(1)';
     lightboxVideo.style.transform = 'scale(1)';
+    lightboxGifCanvas.style.transform = 'scale(1)';
     lightboxImage.classList.remove('zoomed');
     lightboxVideo.classList.remove('zoomed');
+    lightboxGifCanvas.classList.remove('zoomed');
     // Reset max constraints and explicit dimensions
     lightboxImage.style.maxWidth = '90vw';
     lightboxImage.style.maxHeight = '90vh';
@@ -6678,9 +6728,15 @@ function resetZoom() {
     lightboxImage.style.height = 'auto';
     lightboxVideo.style.maxWidth = '90vw';
     lightboxVideo.style.maxHeight = '90vh';
+    lightboxGifCanvas.style.maxWidth = '90vw';
+    lightboxGifCanvas.style.maxHeight = '90vh';
+    lightboxGifCanvas.style.width = '';
+    lightboxGifCanvas.style.height = '';
     // Clear stored base dimensions
     delete lightboxImage.dataset.baseWidth;
     delete lightboxImage.dataset.baseHeight;
+    delete lightboxGifCanvas.dataset.baseWidth;
+    delete lightboxGifCanvas.dataset.baseHeight;
     if (lightboxZoomSlider) {
         lightboxZoomSlider.value = 100;
     }
@@ -6690,17 +6746,35 @@ function resetZoom() {
 }
 
 function closeLightbox() {
-    // Clean up video event listeners
-    lightboxVideo.removeEventListener('ended', handleVideoRepeat);
+    // Persist playback settings from controller before destroying
+    if (activePlaybackController) {
+        videoPlaybackSpeed = activePlaybackController.getSpeed();
+        videoLoop = activePlaybackController.getLoop();
+        videoRepeat = activePlaybackController.getRepeat();
+        activePlaybackController.destroy();
+        activePlaybackController = null;
+    }
+
+    // Hide control bar
+    if (mediaControlBarInstance) {
+        mediaControlBarInstance.unbind();
+        mediaControlBarInstance.hide();
+    }
 
     // Clean up video
+    lightboxVideo.removeEventListener('ended', handleVideoRepeat);
     lightboxVideo.pause();
     lightboxVideo.src = "";
     lightboxVideo.removeAttribute('src');
-    
+
     // Clean up image
     lightboxImage.src = "";
     lightboxImage.removeAttribute('src');
+
+    // Clean up GIF canvas
+    lightboxGifCanvas.style.display = 'none';
+    const gifCtx = lightboxGifCanvas.getContext('2d');
+    if (gifCtx) gifCtx.clearRect(0, 0, lightboxGifCanvas.width, lightboxGifCanvas.height);
 
     // Stop lightbox GIF progress bar
     stopLightboxGifProgress();
@@ -6813,6 +6887,9 @@ if (lightboxVideo) {
     lightboxVideo.addEventListener('wheel', handleLightboxWheel, { passive: false });
     console.log('Wheel listener attached to lightboxVideo');
 }
+if (lightboxGifCanvas) {
+    lightboxGifCanvas.addEventListener('wheel', handleLightboxWheel, { passive: false });
+}
 
 // Pan/drag functionality when zoomed
 // Panning functionality - optimized with requestAnimationFrame
@@ -6839,18 +6916,17 @@ function applyPanTransform() {
     
     const imageDisplay = lightboxImage.style.display;
     const videoDisplay = lightboxVideo.style.display;
-    const isImageVisible = imageDisplay === 'block' || 
+    const canvasDisplay = lightboxGifCanvas.style.display;
+    const isImageVisible = imageDisplay === 'block' ||
                           (imageDisplay === '' && window.getComputedStyle(lightboxImage).display !== 'none');
-    const isVideoVisible = videoDisplay === 'block' || 
+    const isVideoVisible = videoDisplay === 'block' ||
                           (videoDisplay === '' && window.getComputedStyle(lightboxVideo).display !== 'none');
-    
-    if (isImageVisible) {
-        lightboxImage.style.transform = transformString;
-    }
-    
-    if (isVideoVisible) {
-        lightboxVideo.style.transform = transformString;
-    }
+    const isCanvasVisible = canvasDisplay === 'block' ||
+                          (canvasDisplay === '' && window.getComputedStyle(lightboxGifCanvas).display !== 'none');
+
+    if (isImageVisible) lightboxImage.style.transform = transformString;
+    if (isVideoVisible) lightboxVideo.style.transform = transformString;
+    if (isCanvasVisible) lightboxGifCanvas.style.transform = transformString;
     
     panRAF = null;
     pendingPanUpdate = false;
@@ -6875,8 +6951,22 @@ lightboxImage.addEventListener('mousedown', (e) => {
 lightboxVideo.addEventListener('mousedown', (e) => {
     if (currentZoomLevel > 100 && e.button === 0) {
         isDragging = true;
-        hasDragged = false; // Reset drag flag
-        // Store initial positions
+        hasDragged = false;
+        initialMouseX = e.clientX;
+        initialMouseY = e.clientY;
+        initialTranslateX = currentTranslateX;
+        initialTranslateY = currentTranslateY;
+        lastPanX = e.clientX;
+        lastPanY = e.clientY;
+        e.preventDefault();
+        e.stopPropagation();
+    }
+});
+
+lightboxGifCanvas.addEventListener('mousedown', (e) => {
+    if (currentZoomLevel > 100 && e.button === 0) {
+        isDragging = true;
+        hasDragged = false;
         initialMouseX = e.clientX;
         initialMouseY = e.clientY;
         initialTranslateX = currentTranslateX;
@@ -6942,14 +7032,30 @@ document.addEventListener('mouseup', (e) => {
     }
 });
 
-// Prevent click events on video when we've just finished dragging
+// Click on video or canvas to toggle play/pause (but not after dragging)
 lightboxVideo.addEventListener('click', (e) => {
     if (hasDragged && currentZoomLevel > 100) {
         e.preventDefault();
         e.stopPropagation();
-        hasDragged = false; // Reset after handling
+        hasDragged = false;
+        return;
     }
-}, true); // Use capture phase to catch it early
+    if (activePlaybackController) {
+        activePlaybackController.togglePlay();
+    }
+}, true);
+
+lightboxGifCanvas.addEventListener('click', (e) => {
+    if (hasDragged && currentZoomLevel > 100) {
+        e.preventDefault();
+        e.stopPropagation();
+        hasDragged = false;
+        return;
+    }
+    if (activePlaybackController) {
+        activePlaybackController.togglePlay();
+    }
+});
 
 // Copy button functionality
 const copyPathBtn = document.getElementById('copy-path-btn');

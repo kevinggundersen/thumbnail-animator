@@ -623,6 +623,7 @@ function vsPopulateExistingCard(card, item) {
 
         card.appendChild(folderIcon);
         card.appendChild(info);
+        syncPinIndicator(card, item.path);
 
         return { card, isMedia: false };
     } else {
@@ -667,6 +668,7 @@ function vsPopulateExistingCard(card, item) {
         card.appendChild(extensionLabel);
 
         syncStarRatingOnCard(card, item.path);
+        syncPinIndicator(card, item.path);
         syncCardMetaRow(card, item, null);
         if (!cardInfoSettings.filename) info.style.display = 'none';
         card.appendChild(info);
@@ -3222,6 +3224,20 @@ function applyCardInfoStarRatingVisibility(card) {
     el.style.display = cardInfoSettings.starRating ? '' : 'none';
 }
 
+function syncPinIndicator(card, filePath) {
+    let pinEl = card.querySelector('.pin-indicator');
+    if (isFilePinned(filePath)) {
+        if (!pinEl) {
+            pinEl = document.createElement('div');
+            pinEl.className = 'pin-indicator';
+            card.appendChild(pinEl);
+        }
+        pinEl.style.display = '';
+    } else if (pinEl) {
+        pinEl.style.display = 'none';
+    }
+}
+
 function syncStarRatingOnCard(card, filePath) {
     let starEl = card.querySelector('.star-rating');
     if (cardInfoSettings.starRating) {
@@ -3826,8 +3842,13 @@ function sortItems(items) {
         return sortOrder === 'ascending' ? comparison : -comparison;
     });
 
-    // Return folders first, then files
-    return [...folders, ...files];
+    // Partition pinned items to top of each group
+    const pinnedFolders = folders.filter(f => isFilePinned(f.path));
+    const unpinnedFolders = folders.filter(f => !isFilePinned(f.path));
+    const pinnedFiles = files.filter(f => isFilePinned(f.path));
+    const unpinnedFiles = files.filter(f => !isFilePinned(f.path));
+
+    return [...pinnedFolders, ...unpinnedFolders, ...pinnedFiles, ...unpinnedFiles];
 }
 
 // Function to apply sorting and reload current folder
@@ -3878,6 +3899,7 @@ function createCardFromItem(item) {
 
         card.appendChild(folderIcon);
         card.appendChild(info);
+        syncPinIndicator(card, item.path);
 
         return { card, isMedia: false };
     } else {
@@ -3946,6 +3968,7 @@ function createCardFromItem(item) {
         card.appendChild(extensionLabel);
 
         syncStarRatingOnCard(card, item.path);
+        syncPinIndicator(card, item.path);
         syncCardMetaRow(card, item, null);
 
         if (!cardInfoSettings.filename) info.style.display = 'none';
@@ -7973,6 +7996,12 @@ function showContextMenu(event, card) {
     const otherMenu = isFolder ? contextMenu : folderContextMenu;
     otherMenu.classList.add('hidden');
 
+    // Update pin/unpin label dynamically
+    const itemPath = isFolder ? card.dataset.folderPath : card.dataset.filePath;
+    const pinned = isFilePinned(itemPath);
+    const pinLabel = menu.querySelector('.pin-label');
+    if (pinLabel) pinLabel.textContent = pinned ? 'Unpin' : 'Pin to Top';
+
     const x = event.clientX;
     const y = event.clientY;
 
@@ -8009,19 +8038,26 @@ document.addEventListener('click', (e) => {
 
 // Handle context menu item clicks
 contextMenu.addEventListener('click', async (e) => {
-    const action = e.target.dataset.action;
+    const action = e.target.closest('.context-menu-item')?.dataset.action || e.target.dataset.action;
     if (!action || !contextMenuTargetCard) return;
-    
+
     const filePath = contextMenuTargetCard.dataset.filePath;
     if (!filePath) return;
-    
+
     // Store the file name before hiding the menu (since we clear contextMenuTargetCard)
     const fileNameElement = contextMenuTargetCard.querySelector('.video-info');
     const fileName = fileNameElement ? fileNameElement.textContent : '';
-    
+
     hideContextMenu();
-    
+
     switch (action) {
+        case 'pin': {
+            const pinned = isFilePinned(filePath);
+            setFilePinned(filePath, !pinned);
+            applySorting();
+            showToast(pinned ? `Unpinned "${fileName}"` : `Pinned "${fileName}" to top`, 'success');
+            break;
+        }
         case 'reveal':
             try {
                 await window.electronAPI.revealInExplorer(filePath);
@@ -8099,6 +8135,13 @@ folderContextMenu.addEventListener('click', async (e) => {
     hideContextMenu();
 
     switch (action) {
+        case 'pin-folder': {
+            const pinned = isFilePinned(folderPath);
+            setFilePinned(folderPath, !pinned);
+            applySorting();
+            showToast(pinned ? `Unpinned "${folderName}"` : `Pinned "${folderName}" to top`, 'success');
+            break;
+        }
         case 'open-folder':
             await navigateToFolder(folderPath);
             break;

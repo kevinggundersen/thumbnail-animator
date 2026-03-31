@@ -2215,6 +2215,44 @@ function loadRatings() {
     }
 }
 
+// --- Pin/Unpin functionality ---
+let pinnedFiles = {}; // Map<normalizedPath, true>
+
+function isFilePinned(filePath) {
+    if (!filePath) return false;
+    const normalizedPath = normalizePath(filePath);
+    return !!pinnedFiles[filePath] || !!pinnedFiles[normalizedPath];
+}
+
+function setFilePinned(filePath, pinned) {
+    if (!filePath) return;
+    const normalizedPath = normalizePath(filePath);
+    if (pinned) {
+        pinnedFiles[filePath] = true;
+        if (normalizedPath !== filePath) pinnedFiles[normalizedPath] = true;
+    } else {
+        delete pinnedFiles[filePath];
+        if (normalizedPath !== filePath) delete pinnedFiles[normalizedPath];
+    }
+    savePins();
+}
+
+function savePins() {
+    deferLocalStorageWrite('pinnedFiles', JSON.stringify(pinnedFiles));
+}
+
+function loadPins() {
+    try {
+        const saved = localStorage.getItem('pinnedFiles');
+        if (saved) {
+            pinnedFiles = JSON.parse(saved);
+        }
+    } catch (error) {
+        console.error('Error loading pins:', error);
+        pinnedFiles = {};
+    }
+}
+
 function updateCardRating(filePath, rating) {
     // Normalize path for matching
     const normalizedPath = filePath.replace(/\\/g, '/');
@@ -3700,6 +3738,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     loadFavorites();
     loadRecentFiles();
     loadRatings();
+    loadPins();
     await initSidebar(); // Must be before loadTabs so sidebar is ready for highlight/expand
     loadTabs(); // This will handle tab restoration and navigation
     initVideoScrubber();

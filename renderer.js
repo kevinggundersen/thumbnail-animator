@@ -1078,6 +1078,22 @@ function escapeHtml(str) {
     return div.innerHTML;
 }
 
+// ===== Friendly Error Messages =====
+function friendlyError(err) {
+    const msg = typeof err === 'string' ? err : (err && err.message) || 'Unknown error';
+    if (/EPERM|EACCES/i.test(msg)) return 'Permission denied \u2014 the file may be read-only or in use';
+    if (/ENOENT/i.test(msg)) return 'File not found \u2014 it may have been moved or deleted';
+    if (/ENOSPC/i.test(msg)) return 'Not enough disk space';
+    if (/EBUSY/i.test(msg)) return 'File is in use by another program';
+    if (/EEXIST/i.test(msg)) return 'A file with that name already exists';
+    if (/ENAMETOOLONG/i.test(msg)) return 'File name is too long';
+    if (/EISDIR/i.test(msg)) return 'Expected a file but found a folder';
+    if (/ENOTDIR/i.test(msg)) return 'Expected a folder but found a file';
+    if (/ENOTEMPTY/i.test(msg)) return 'Folder is not empty';
+    if (/Destination file already exists/i.test(msg)) return 'A file with that name already exists in the destination';
+    return msg;
+}
+
 // ===== Custom Confirmation Dialog =====
 const confirmDialog = document.getElementById('confirm-dialog');
 const confirmDialogTitle = document.getElementById('confirm-dialog-title');
@@ -5720,7 +5736,9 @@ async function copyFilesToFolder(filePaths, destFolder) {
             await loadVideos(currentFolderPath, false, previousScrollTop);
         }
     }
-    if (failed > 0) {
+    if (failed > 0 && success > 0) {
+        showToast(`Copied ${success} file(s), ${failed} failed`, 'warning');
+    } else if (failed > 0) {
         showToast(`Failed to copy ${failed} file(s)`, 'error');
     } else if (success > 0) {
         showToast(`Copied ${success} file(s)`, 'success');
@@ -7962,7 +7980,7 @@ contextMenu.addEventListener('click', async (e) => {
             try {
                 await window.electronAPI.revealInExplorer(filePath);
             } catch (error) {
-                showToast(`Could not reveal file: ${error.message}`, 'error');
+                showToast(`Could not reveal file: ${friendlyError(error)}`, 'error');
             }
             break;
             
@@ -7989,11 +8007,11 @@ contextMenu.addEventListener('click', async (e) => {
                             await loadVideos(currentFolderPath, false, previousScrollTop);
                         }
                     } else {
-                        showToast(`Error deleting file: ${result.error}`, 'error');
+                        showToast(`Could not delete file: ${friendlyError(result.error)}`, 'error');
                     }
                 }
             } catch (error) {
-                showToast(`Error deleting file: ${error.message}`, 'error');
+                showToast(`Could not delete file: ${friendlyError(error)}`, 'error');
             }
             break;
             
@@ -8001,7 +8019,7 @@ contextMenu.addEventListener('click', async (e) => {
             try {
                 await window.electronAPI.openWithDefault(filePath);
             } catch (error) {
-                showToast(`Could not open file: ${error.message}`, 'error');
+                showToast(`Could not open file: ${friendlyError(error)}`, 'error');
             }
             break;
 
@@ -8009,7 +8027,7 @@ contextMenu.addEventListener('click', async (e) => {
             try {
                 await window.electronAPI.openWith(filePath);
             } catch (error) {
-                showToast(`Could not open file: ${error.message}`, 'error');
+                showToast(`Could not open file: ${friendlyError(error)}`, 'error');
             }
             break;
     }
@@ -8055,7 +8073,7 @@ folderContextMenu.addEventListener('click', async (e) => {
             try {
                 await window.electronAPI.revealInExplorer(folderPath);
             } catch (error) {
-                showToast(`Could not reveal folder: ${error.message}`, 'error');
+                showToast(`Could not reveal folder: ${friendlyError(error)}`, 'error');
             }
             break;
 
@@ -8073,11 +8091,11 @@ folderContextMenu.addEventListener('click', async (e) => {
                             await loadVideos(currentFolderPath, false, previousScrollTop);
                         }
                     } else {
-                        showToast(`Error deleting folder: ${result.error}`, 'error');
+                        showToast(`Could not delete folder: ${friendlyError(result.error)}`, 'error');
                     }
                 }
             } catch (error) {
-                showToast(`Error deleting folder: ${error.message}`, 'error');
+                showToast(`Could not delete folder: ${friendlyError(error)}`, 'error');
             }
             break;
     }
@@ -8108,10 +8126,10 @@ async function handleRenameConfirm() {
                 await loadVideos(currentFolderPath, false, previousScrollTop);
             }
         } else {
-            showToast(`Error renaming file: ${result.error}`, 'error');
+            showToast(`Could not rename: ${friendlyError(result.error)}`, 'error');
         }
     } catch (error) {
-        showToast(`Error renaming file: ${error.message}`, 'error');
+        showToast(`Could not rename: ${friendlyError(error)}`, 'error');
     }
 }
 

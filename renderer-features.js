@@ -101,11 +101,11 @@ function initKeyboardShortcuts() {
                                 loadVideos(currentFolderPath, false, previousScrollTop);
                             }
                         } else {
-                            showToast(`Error deleting file: ${result.error}`, 'error');
+                            showToast(`Could not delete file: ${friendlyError(result.error)}`, 'error');
                         }
                     }).catch(err => {
                         setStatusActivity('');
-                        showToast(`Error deleting file: ${err.message}`, 'error');
+                        showToast(`Could not delete file: ${friendlyError(err)}`, 'error');
                     });
                 }
             }
@@ -2341,10 +2341,10 @@ async function createFolder(folderName) {
             showToast(`Created folder "${folderName}"`, 'success');
             await navigateToFolder(currentFolderPath);
         } else {
-            showToast('Error creating folder: ' + result.error, 'error');
+            showToast('Could not create folder: ' + friendlyError(result.error), 'error');
         }
     } catch (error) {
-        showToast('Error creating folder: ' + error.message, 'error');
+        showToast('Could not create folder: ' + friendlyError(error), 'error');
     }
 }
 
@@ -2383,7 +2383,9 @@ async function moveFilesToFolder(filePaths, destFolder) {
     if (success > 0) {
         await navigateToFolder(currentFolderPath);
     }
-    if (failed > 0) {
+    if (failed > 0 && success > 0) {
+        showToast(`Moved ${success} file(s), ${failed} failed`, 'warning');
+    } else if (failed > 0) {
         showToast(`Failed to move ${failed} file(s)`, 'error');
     } else if (success > 0) {
         showToast(`Moved ${success} file(s)`, 'success');
@@ -3075,8 +3077,12 @@ function initDuplicateDetection() {
         deleteBtn.textContent = 'Deleting...';
 
         const result = await window.electronAPI.deleteFilesBatch([...duplicateMarkedForDeletion]);
-        if (result.failed && result.failed.length > 0) {
-            showToast(`Failed to delete ${result.failed.length} file(s)`, 'error');
+        const failCount = result.failed ? result.failed.length : 0;
+        const successCount = count - failCount;
+        if (failCount > 0 && successCount > 0) {
+            showToast(`Deleted ${successCount} file(s), ${failCount} failed`, 'warning');
+        } else if (failCount > 0) {
+            showToast(`Failed to delete ${failCount} file(s)`, 'error');
         } else {
             showToast(`Moved ${count} file(s) to Recycle Bin`, 'success');
         }

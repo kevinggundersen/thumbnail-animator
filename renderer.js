@@ -47,10 +47,11 @@ const INDEXEDDB_CACHE_TTL = 3600000; // IndexedDB persistent cache TTL (1 hour)
 
 // IndexedDB Configuration
 const DB_NAME = 'ThumbnailAnimatorCache';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const STORE_NAME = 'folderCache';
 const DIMENSIONS_STORE = 'dimensionCache';
 const GIF_DURATION_STORE = 'gifDurationCache';
+const EMBEDDING_STORE = 'embeddingCache';
 
 // ============================================================================
 // END CONFIGURATION CONSTANTS
@@ -1084,6 +1085,17 @@ let activeDimensionHydrationToken = 0;
 // Store current items for re-sorting without re-fetching
 let currentItems = [];
 
+// --- AI Visual Search state ---
+let aiVisualSearchEnabled = localStorage.getItem('aiVisualSearchEnabled') === 'true';
+let aiModelDownloadConfirmed = localStorage.getItem('aiModelDownloadConfirmed') === 'true';
+let aiAutoScan = localStorage.getItem('aiAutoScan') === 'true';
+let aiSimilarityThreshold = parseFloat(localStorage.getItem('aiSimilarityThreshold')) || 0.15;
+let aiClusteringMode = localStorage.getItem('aiClusteringMode') || 'off';
+let aiSearchActive = false;      // Whether the AI search toggle is currently on
+let currentTextEmbedding = null; // Float32Array of current query embedding
+const currentEmbeddings = new Map(); // path -> Float32Array, for current folder
+let embeddingScanAbortController = null;
+
 // Track current filter state
 let currentFilter = 'all'; // 'all', 'video', 'image'
 let starFilterActive = false;
@@ -1214,6 +1226,9 @@ async function initIndexedDB() {
             }
             if (!database.objectStoreNames.contains(GIF_DURATION_STORE)) {
                 database.createObjectStore(GIF_DURATION_STORE, { keyPath: 'key' });
+            }
+            if (!database.objectStoreNames.contains(EMBEDDING_STORE)) {
+                database.createObjectStore(EMBEDDING_STORE, { keyPath: 'key' });
             }
         };
     });
@@ -1394,6 +1409,72 @@ async function cacheDimensions(entries) {
         }
     } catch {
         // Ignore errors — caching is best-effort
+    }
+}
+
+/**
+ * Look up cached embeddings for a batch of files.
+ * @param {Array<{path: string, mtime: number}>} files
+ * @returns {Promise<Map<string, Float32Array>>}
+ */
+async function getCachedEmbeddings(files) {
+    const result = new Map();
+    if (!db || files.length === 0) return result;
+    try {
+        const transaction = db.transaction([EMBEDDING_STORE], 'readonly');
+        const store = transaction.objectStore(EMBEDDING_STORE);
+        const promises = files.map(f => {
+            const key = `${f.path}|${f.mtime || 0}`;
+            return new Promise(resolve => {
+                const req = store.get(key);
+                req.onsuccess = () => {
+                    if (req.result && req.result.embedding) {
+                        result.set(f.path, new Float32Array(req.result.embedding));
+                    }
+                    resolve();
+                };
+                req.onerror = () => resolve();
+            });
+        });
+        await Promise.all(promises);
+    } catch {
+        // Ignore — embeddings will just be re-computed
+    }
+    return result;
+}
+
+/**
+ * Store embeddings for a batch of files.
+ * @param {Array<{path: string, mtime: number, embedding: number[]}>} entries
+ */
+async function cacheEmbeddings(entries) {
+    if (!db || entries.length === 0) return;
+    try {
+        const transaction = db.transaction([EMBEDDING_STORE], 'readwrite');
+        const store = transaction.objectStore(EMBEDDING_STORE);
+        for (const e of entries) {
+            if (e.embedding) {
+                store.put({
+                    key: `${e.path}|${e.mtime || 0}`,
+                    embedding: Array.from(e.embedding)
+                });
+            }
+        }
+    } catch {
+        // Ignore — caching is best-effort
+    }
+}
+
+/**
+ * Clear all stored embeddings (e.g. when user changes settings or clears cache).
+ */
+async function clearEmbeddingCache() {
+    if (!db) return;
+    try {
+        const transaction = db.transaction([EMBEDDING_STORE], 'readwrite');
+        transaction.objectStore(EMBEDDING_STORE).clear();
+    } catch {
+        // Ignore
     }
 }
 
@@ -5083,6 +5164,57 @@ function updateStatusBarSelection(card) {
     statusSelectionInfo.textContent = parts.join(' \u2014 ');
 }
 
+function cosineSimilarity(a, b) {
+    let dot = 0, magA = 0, magB = 0;
+    const len = Math.min(a.length, b.length);
+    for (let i = 0; i < len; i++) {
+        dot  += a[i] * b[i];
+        magA += a[i] * a[i];
+        magB += b[i] * b[i];
+    }
+    const denom = Math.sqrt(magA) * Math.sqrt(magB);
+    return denom === 0 ? 0 : dot / denom;
+}
+
+/**
+ * Reorder items by visual similarity using a greedy nearest-neighbor traversal.
+ * Folders are kept at the top; media is reordered so visually similar items are adjacent.
+ */
+function applyVisualClustering(items) {
+    const folders = items.filter(i => i.type === 'folder');
+    const media   = items.filter(i => i.type !== 'folder');
+    const withEmb = media.filter(i => currentEmbeddings.has(i.path));
+    const noEmb   = media.filter(i => !currentEmbeddings.has(i.path));
+
+    if (withEmb.length < 2) return items;
+
+    // Greedy nearest-neighbor: start from first item, repeatedly pick closest unvisited
+    const visited = new Set();
+    const ordered = [];
+    let current = withEmb[0];
+    visited.add(current.path);
+    ordered.push(current);
+
+    while (ordered.length < withEmb.length) {
+        const curEmb = currentEmbeddings.get(current.path);
+        let bestSim = -Infinity;
+        let bestItem = null;
+        for (const item of withEmb) {
+            if (visited.has(item.path)) continue;
+            const emb = currentEmbeddings.get(item.path);
+            if (!emb) continue;
+            const sim = cosineSimilarity(curEmb, emb);
+            if (sim > bestSim) { bestSim = sim; bestItem = item; }
+        }
+        if (!bestItem) break;
+        visited.add(bestItem.path);
+        ordered.push(bestItem);
+        current = bestItem;
+    }
+
+    return [...folders, ...ordered, ...noEmb];
+}
+
 function applyFilters() {
     const perfStart = perfTest.start();
     if (currentItems.length === 0) return;
@@ -5093,8 +5225,23 @@ function applyFilters() {
     const filteredItems = currentItems.filter(item => {
         const fileName = item.name.toLowerCase();
 
-        // Search query
-        const matchesSearch = query === '' || fileName.includes(query);
+        // Search query — use AI cosine similarity when active, else filename match
+        let matchesSearch;
+        if (query === '') {
+            matchesSearch = true;
+        } else if (aiVisualSearchEnabled && aiSearchActive && currentTextEmbedding && item.type !== 'folder') {
+            const embedding = currentEmbeddings.get(item.path);
+            if (embedding) {
+                const sim = cosineSimilarity(currentTextEmbedding, embedding);
+                item._aiScore = sim;
+                matchesSearch = sim >= aiSimilarityThreshold;
+            } else {
+                item._aiScore = 0;
+                matchesSearch = fileName.includes(query); // Fallback for unembedded items
+            }
+        } else {
+            matchesSearch = fileName.includes(query);
+        }
         if (!matchesSearch) return false;
 
         // Type filter
@@ -5160,6 +5307,20 @@ function applyFilters() {
         });
     }
 
+    // When AI search is active, sort results by relevance score (highest similarity first)
+    if (aiVisualSearchEnabled && aiSearchActive && currentTextEmbedding && query !== '') {
+        sortedFiltered = [...sortedFiltered].sort((a, b) => {
+            if (a.type === 'folder') return 1;
+            if (b.type === 'folder') return -1;
+            return (b._aiScore || 0) - (a._aiScore || 0);
+        });
+    }
+
+    // Apply visual similarity clustering (group by nearest neighbors)
+    if (aiVisualSearchEnabled && aiClusteringMode === 'similarity' && currentEmbeddings.size > 0 && query === '') {
+        sortedFiltered = applyVisualClustering(sortedFiltered);
+    }
+
     // Update virtual scrolling with filtered items
     if (vsEnabled) {
         vsUpdateItems(sortedFiltered);
@@ -5171,9 +5332,20 @@ function applyFilters() {
 function performSearch(searchQuery) {
     // Debounce search to avoid excessive filtering while typing
     clearTimeout(filterDebounceTimer);
-    filterDebounceTimer = setTimeout(() => {
+    const delay = (aiVisualSearchEnabled && aiSearchActive) ? 300 : 150;
+    filterDebounceTimer = setTimeout(async () => {
+        if (aiVisualSearchEnabled && aiSearchActive && searchQuery.trim()) {
+            try {
+                const embedding = await window.electronAPI.clipEmbedText(searchQuery.trim());
+                currentTextEmbedding = embedding ? new Float32Array(embedding) : null;
+            } catch {
+                currentTextEmbedding = null;
+            }
+        } else {
+            currentTextEmbedding = null;
+        }
         applyFilters();
-    }, 150); // Wait 150ms after user stops typing
+    }, delay);
 }
 
 // --- Delegated Event Handlers for Grid Cards ---
@@ -6251,6 +6423,390 @@ thumbnailQualitySelect.addEventListener('change', () => {
         loadVideos(currentFolderPath, true, gridContainer.scrollTop);
     }
 });
+
+// --- AI Visual Search settings event handlers ---
+
+(function initAiSearchSettings() {
+    const enabledToggle = document.getElementById('ai-search-enabled-toggle');
+    const enabledLabel  = document.getElementById('ai-search-enabled-label');
+    const autoScanToggle = document.getElementById('ai-auto-scan-toggle');
+    const autoScanLabel  = document.getElementById('ai-auto-scan-label');
+    const thresholdSlider = document.getElementById('ai-threshold-slider');
+    const thresholdValue  = document.getElementById('ai-threshold-value');
+    const clusteringSelect = document.getElementById('ai-clustering-select');
+    const scanNowBtn   = document.getElementById('ai-scan-now-btn');
+    const clearCacheBtn = document.getElementById('ai-clear-cache-btn');
+    const aiToggleBtn  = document.getElementById('ai-search-toggle-btn');
+    const searchBoxContainer = document.querySelector('.search-box-container');
+    const searchBoxInput = document.getElementById('search-box');
+    const statusDot  = document.getElementById('ai-status-dot');
+    const statusText = document.getElementById('ai-status-text');
+
+    // Apply persisted state to controls
+    if (enabledToggle) enabledToggle.checked = aiVisualSearchEnabled;
+    if (enabledLabel)  enabledLabel.textContent = aiVisualSearchEnabled ? 'On' : 'Off';
+    if (autoScanToggle) autoScanToggle.checked = aiAutoScan;
+    if (autoScanLabel)  autoScanLabel.textContent = aiAutoScan ? 'On' : 'Off';
+    if (thresholdSlider) thresholdSlider.value = Math.round(aiSimilarityThreshold * 100);
+    if (thresholdValue)  thresholdValue.textContent = aiSimilarityThreshold.toFixed(2);
+    if (clusteringSelect) clusteringSelect.value = aiClusteringMode;
+
+    function setAiStatusDot(state) {
+        if (!statusDot) return;
+        statusDot.classList.remove('loaded', 'loading', 'error');
+        if (state) statusDot.classList.add(state);
+    }
+
+    function setAiStatus(state, text) {
+        setAiStatusDot(state);
+        if (statusText) statusText.textContent = text;
+    }
+
+    function showAiToggleBtn(visible) {
+        if (!aiToggleBtn) return;
+        aiToggleBtn.style.display = visible ? '' : 'none';
+        if (searchBoxContainer) {
+            searchBoxContainer.classList.toggle('has-ai-toggle', visible);
+        }
+    }
+
+    function updateAiToggleBtnState() {
+        if (!aiToggleBtn) return;
+        aiToggleBtn.classList.toggle('active', aiSearchActive);
+        aiToggleBtn.title = aiSearchActive ? 'AI Search: On (click to disable)' : 'AI Search: Off (click to enable)';
+        if (searchBoxInput) {
+            searchBoxInput.placeholder = aiSearchActive ? 'Search by content (e.g. "dog", "ocean")...' : 'Search files...';
+        }
+    }
+
+    // --- Confirmation dialog elements ---
+    const confirmOverlay   = document.getElementById('ai-model-confirm-overlay');
+    const confirmCancelBtn = document.getElementById('ai-confirm-cancel-btn');
+    const confirmDlBtn     = document.getElementById('ai-confirm-download-btn');
+    const confirmDlProgress = document.getElementById('ai-confirm-download-progress');
+    const confirmProgressFill = document.getElementById('ai-confirm-progress-fill');
+    const confirmProgressFile = document.getElementById('ai-confirm-progress-file');
+    const confirmProgressPct  = document.getElementById('ai-confirm-progress-pct');
+    const confirmLink = document.getElementById('ai-confirm-link');
+
+    // Open HuggingFace link in the system browser when clicked
+    if (confirmLink) {
+        confirmLink.addEventListener('click', (e) => {
+            e.preventDefault();
+            window.electronAPI.openUrl('https://huggingface.co/Xenova/clip-vit-base-patch32').catch(() => {});
+        });
+    }
+
+    function showConfirmDialog() {
+        if (!confirmOverlay) return;
+        if (confirmDlProgress) confirmDlProgress.style.display = 'none';
+        if (confirmDlBtn) { confirmDlBtn.disabled = false; confirmDlBtn.textContent = 'Download & Enable'; }
+        if (confirmCancelBtn) confirmCancelBtn.disabled = false;
+        confirmOverlay.style.display = 'flex';
+    }
+
+    function hideConfirmDialog() {
+        if (confirmOverlay) confirmOverlay.style.display = 'none';
+    }
+
+    function revertToggleOff() {
+        aiVisualSearchEnabled = false;
+        if (enabledToggle) enabledToggle.checked = false;
+        if (enabledLabel) enabledLabel.textContent = 'Off';
+        showAiToggleBtn(false);
+        if (scanNowBtn) scanNowBtn.disabled = true;
+    }
+
+    async function doLoadModel() {
+        setAiStatus('loading', 'Loading model...');
+        try {
+            const result = await window.electronAPI.clipInit();
+            if (result.success) {
+                setAiStatus('loaded', 'Model loaded');
+                if (aiAutoScan && currentFolderPath) {
+                    scheduleBackgroundEmbedding(currentItems);
+                }
+            } else {
+                setAiStatus('error', 'Failed: ' + (result.error || 'unknown error'));
+                revertToggleOff();
+            }
+        } catch (err) {
+            setAiStatus('error', 'Error: ' + err.message);
+            revertToggleOff();
+        }
+    }
+
+    // Download progress from main process → update dialog bar
+    window.electronAPI.onClipDownloadProgress((event, progress) => {
+        if (!confirmDlProgress || confirmDlProgress.style.display === 'none') return;
+        if (progress.status === 'downloading' && progress.total > 0) {
+            const pct = Math.round((progress.loaded / progress.total) * 100);
+            if (confirmProgressFill) confirmProgressFill.style.width = pct + '%';
+            if (confirmProgressFile) confirmProgressFile.textContent = progress.file || '';
+            if (confirmProgressPct)  confirmProgressPct.textContent  = pct + '%';
+        } else if (progress.status === 'done') {
+            if (confirmProgressFill) confirmProgressFill.style.width = '100%';
+            if (confirmProgressPct)  confirmProgressPct.textContent  = '100%';
+        }
+    });
+
+    // Confirm: Download & Enable
+    if (confirmDlBtn) {
+        confirmDlBtn.addEventListener('click', async () => {
+            confirmDlBtn.disabled = true;
+            confirmDlBtn.textContent = 'Downloading...';
+            if (confirmCancelBtn) confirmCancelBtn.disabled = true;
+            if (confirmDlProgress) confirmDlProgress.style.display = 'block';
+            if (confirmProgressFill) confirmProgressFill.style.width = '0%';
+            if (confirmProgressFile) confirmProgressFile.textContent = 'Preparing...';
+            if (confirmProgressPct)  confirmProgressPct.textContent  = '';
+
+            await doLoadModel();
+            if (aiVisualSearchEnabled) {
+                // Only mark confirmed if the load actually succeeded
+                aiModelDownloadConfirmed = true;
+                localStorage.setItem('aiModelDownloadConfirmed', 'true');
+            }
+            hideConfirmDialog();
+        });
+    }
+
+    // Confirm: Cancel
+    if (confirmCancelBtn) {
+        confirmCancelBtn.addEventListener('click', () => {
+            hideConfirmDialog();
+            revertToggleOff();
+        });
+    }
+
+    // Restore state from previous session
+    if (aiVisualSearchEnabled) {
+        if (!aiModelDownloadConfirmed) {
+            // Toggle was saved as enabled but user never confirmed the download dialog
+            // (e.g. a previous bug prevented the dialog from showing). Reset to off.
+            aiVisualSearchEnabled = false;
+            localStorage.removeItem('aiVisualSearchEnabled');
+            if (enabledToggle) enabledToggle.checked = false;
+            if (enabledLabel) enabledLabel.textContent = 'Off';
+        } else {
+            // User previously confirmed — restore the enabled state and reload model silently
+            showAiToggleBtn(true);
+            updateAiToggleBtnState();
+            if (scanNowBtn) scanNowBtn.disabled = false;
+            window.electronAPI.clipStatus().then(s => {
+                if (s.loaded) {
+                    setAiStatus('loaded', 'Model loaded');
+                } else {
+                    doLoadModel(); // Safe: user already confirmed the download
+                }
+            }).catch(() => {});
+        }
+    }
+
+    // Enable/disable toggle
+    if (enabledToggle) {
+        enabledToggle.addEventListener('change', async () => {
+            aiVisualSearchEnabled = enabledToggle.checked;
+            enabledLabel.textContent = aiVisualSearchEnabled ? 'On' : 'Off';
+            deferLocalStorageWrite('aiVisualSearchEnabled', aiVisualSearchEnabled.toString());
+
+            if (aiVisualSearchEnabled) {
+                showAiToggleBtn(true);
+                updateAiToggleBtnState();
+                if (scanNowBtn) scanNowBtn.disabled = false;
+
+                // Always show confirmation dialog if user hasn't accepted it before
+                if (!aiModelDownloadConfirmed) {
+                    showConfirmDialog();
+                } else {
+                    await doLoadModel();
+                }
+            } else {
+                // Turn off
+                aiSearchActive = false;
+                currentTextEmbedding = null;
+                currentEmbeddings.clear();
+                cancelEmbeddingScan();
+                showAiToggleBtn(false);
+                updateAiToggleBtnState();
+                if (scanNowBtn) scanNowBtn.disabled = true;
+                setAiStatus(null, 'Model not loaded');
+                applyFilters();
+                window.electronAPI.clipTerminate().catch(() => {});
+            }
+        });
+    }
+
+    // Auto-scan toggle
+    if (autoScanToggle) {
+        autoScanToggle.addEventListener('change', () => {
+            aiAutoScan = autoScanToggle.checked;
+            autoScanLabel.textContent = aiAutoScan ? 'On' : 'Off';
+            deferLocalStorageWrite('aiAutoScan', aiAutoScan.toString());
+        });
+    }
+
+    // Threshold slider
+    if (thresholdSlider) {
+        thresholdSlider.addEventListener('input', () => {
+            aiSimilarityThreshold = parseInt(thresholdSlider.value, 10) / 100;
+            thresholdValue.textContent = aiSimilarityThreshold.toFixed(2);
+            deferLocalStorageWrite('aiSimilarityThreshold', aiSimilarityThreshold.toString());
+            if (aiSearchActive && currentTextEmbedding) applyFilters();
+        });
+    }
+
+    // Clustering select
+    if (clusteringSelect) {
+        clusteringSelect.addEventListener('change', () => {
+            aiClusteringMode = clusteringSelect.value;
+            deferLocalStorageWrite('aiClusteringMode', aiClusteringMode);
+            if (currentItems.length > 0) applyFilters();
+        });
+    }
+
+    // Scan now button
+    if (scanNowBtn) {
+        scanNowBtn.addEventListener('click', () => {
+            if (!aiVisualSearchEnabled || !currentFolderPath) return;
+            scheduleBackgroundEmbedding(currentItems);
+        });
+    }
+
+    // Clear cache button
+    if (clearCacheBtn) {
+        clearCacheBtn.addEventListener('click', async () => {
+            cancelEmbeddingScan();
+            currentEmbeddings.clear();
+            await clearEmbeddingCache();
+            setAiStatus(aiVisualSearchEnabled ? 'loaded' : null, aiVisualSearchEnabled ? 'Cache cleared — rescan to rebuild' : 'Model not loaded');
+        });
+    }
+
+    // AI search toggle button in toolbar
+    if (aiToggleBtn) {
+        aiToggleBtn.addEventListener('click', () => {
+            if (!aiVisualSearchEnabled) return;
+            aiSearchActive = !aiSearchActive;
+            if (!aiSearchActive) {
+                currentTextEmbedding = null;
+            }
+            updateAiToggleBtnState();
+            applyFilters();
+        });
+    }
+
+    // Progress listener from main process
+    window.electronAPI.onClipProgress((event, { current, total, phase }) => {
+        updateEmbedProgressUI(current, total);
+    });
+})();
+
+// --- Background embedding pipeline ---
+
+function cancelEmbeddingScan() {
+    if (embeddingScanAbortController) {
+        embeddingScanAbortController.abort();
+        embeddingScanAbortController = null;
+    }
+    hideEmbedProgressUI();
+}
+
+function showEmbedProgressUI(current, total) {
+    const el = document.getElementById('ai-embed-progress');
+    const fill = document.getElementById('ai-embed-progress-fill');
+    const text = document.getElementById('ai-embed-progress-text');
+    if (!el) return;
+    el.style.display = 'flex';
+    if (fill) fill.style.width = total > 0 ? `${Math.round((current / total) * 100)}%` : '0%';
+    if (text) text.textContent = `${current} / ${total}`;
+}
+
+function updateEmbedProgressUI(current, total) {
+    showEmbedProgressUI(current, total);
+}
+
+function hideEmbedProgressUI() {
+    const el = document.getElementById('ai-embed-progress');
+    if (el) el.style.display = 'none';
+}
+
+async function scheduleBackgroundEmbedding(items) {
+    cancelEmbeddingScan();
+    embeddingScanAbortController = new AbortController();
+    const signal = embeddingScanAbortController.signal;
+
+    const mediaItems = (items || []).filter(i => i.type !== 'folder');
+    if (mediaItems.length === 0) return;
+
+    // Load cached embeddings from IndexedDB
+    try {
+        const cached = await getCachedEmbeddings(mediaItems.map(i => ({ path: i.path, mtime: i.mtime || 0 })));
+        for (const [p, emb] of cached) currentEmbeddings.set(p, emb);
+    } catch { /* ignore cache errors */ }
+
+    const uncached = mediaItems.filter(i => !currentEmbeddings.has(i.path));
+    if (uncached.length === 0) {
+        hideEmbedProgressUI();
+        return;
+    }
+
+    // Ensure model is loaded
+    try {
+        const status = await window.electronAPI.clipStatus();
+        if (!status.loaded) {
+            const init = await window.electronAPI.clipInit();
+            if (!init.success) { hideEmbedProgressUI(); return; }
+        }
+    } catch { hideEmbedProgressUI(); return; }
+
+    showEmbedProgressUI(0, uncached.length);
+
+    // Wire cancel button
+    const cancelBtn = document.getElementById('ai-embed-cancel-btn');
+    if (cancelBtn) {
+        cancelBtn._onclickAi = () => cancelEmbeddingScan();
+        cancelBtn.onclick = cancelBtn._onclickAi;
+    }
+
+    const BATCH_SIZE = 20;
+    let done = 0;
+    for (let i = 0; i < uncached.length; i += BATCH_SIZE) {
+        if (signal.aborted) { hideEmbedProgressUI(); return; }
+
+        const batch = uncached.slice(i, i + BATCH_SIZE);
+        try {
+            const results = await window.electronAPI.clipEmbedImages(
+                batch.map(item => ({ path: item.path, thumbPath: null }))
+            );
+            const toCache = [];
+            for (const r of results) {
+                if (r && r.embedding) {
+                    const emb = new Float32Array(r.embedding);
+                    currentEmbeddings.set(r.path, emb);
+                    const item = mediaItems.find(m => m.path === r.path);
+                    toCache.push({ path: r.path, mtime: item ? (item.mtime || 0) : 0, embedding: r.embedding });
+                }
+            }
+            if (toCache.length > 0) cacheEmbeddings(toCache).catch(() => {});
+            done += batch.length;
+            updateEmbedProgressUI(done, uncached.length);
+        } catch { /* skip failed batch */ }
+
+        // Yield between batches to keep UI responsive
+        if (i + BATCH_SIZE < uncached.length) {
+            await new Promise(r => requestIdleCallback ? requestIdleCallback(r, { timeout: 200 }) : setTimeout(r, 50));
+        }
+    }
+
+    if (!signal.aborted) {
+        hideEmbedProgressUI();
+        // If AI search is active with a query, re-filter now that embeddings are ready
+        if (aiSearchActive && currentTextEmbedding && document.getElementById('search-box').value.trim()) {
+            applyFilters();
+        }
+    }
+}
 
 // Zoom slider event listener (throttled layout, instant visual feedback)
 let zoomLayoutTimer = null;
@@ -7544,6 +8100,11 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
         await yieldToEventLoop();
         
         // Render the filtered and sorted items
+        // Clear embeddings from previous folder so stale data doesn't affect new folder
+        currentEmbeddings.clear();
+        currentTextEmbedding = null;
+        cancelEmbeddingScan();
+
         renderItems(sortedItems, preservedScrollTop);
 
         // Show "Loading media..." while IntersectionObserver lazy-loads images/videos into cards
@@ -7558,6 +8119,11 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
         const canHydrateDimensionsInBackground = layoutMode === 'masonry' || hasDimensionDependentFilters();
         if (canHydrateDimensionsInBackground) {
             hydrateMissingDimensionsInBackground(folderPath, items).catch(() => {});
+        }
+
+        // Trigger AI embedding scan in background if enabled
+        if (aiVisualSearchEnabled && aiAutoScan) {
+            scheduleBackgroundEmbedding(items);
         }
 
         // Start watching folder for changes

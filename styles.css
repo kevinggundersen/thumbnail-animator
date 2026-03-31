@@ -4264,3 +4264,324 @@ button:hover {
     background: var(--border-default);
     margin-right: 4px;
 }
+
+/* =============================================
+   AI Model Download Confirmation Dialog
+   ============================================= */
+
+.ai-confirm-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    backdrop-filter: blur(2px);
+}
+
+.ai-confirm-dialog {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-lg, 10px);
+    width: 420px;
+    max-width: calc(100vw - 48px);
+    padding: 24px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+.ai-confirm-title {
+    margin: 0 0 10px;
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-color);
+}
+
+.ai-confirm-body {
+    margin: 0 0 16px;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--text-secondary);
+}
+
+.ai-confirm-body em {
+    font-style: normal;
+    color: var(--text-color);
+    font-weight: 500;
+}
+
+.ai-confirm-meta {
+    background: var(--bg-primary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm, 6px);
+    padding: 10px 14px;
+    margin-bottom: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.ai-confirm-row {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    font-size: 12px;
+    color: var(--text-color);
+}
+
+.ai-confirm-label {
+    min-width: 52px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+}
+
+.ai-confirm-link {
+    color: var(--accent);
+    text-decoration: none;
+    word-break: break-all;
+}
+
+.ai-confirm-link:hover {
+    text-decoration: underline;
+}
+
+/* Download progress inside the dialog */
+.ai-confirm-progress-wrap {
+    margin-bottom: 16px;
+}
+
+.ai-confirm-progress-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-bottom: 5px;
+}
+
+.ai-confirm-progress-bar {
+    height: 5px;
+    background: var(--border-default);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.ai-confirm-progress-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 3px;
+    width: 0%;
+    transition: width 0.2s ease;
+}
+
+.ai-confirm-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+}
+
+.ai-confirm-btn {
+    padding: 7px 16px;
+    border-radius: var(--radius-sm, 6px);
+    font-size: 13px;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+}
+
+.ai-confirm-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.ai-confirm-btn-cancel {
+    background: var(--bg-tertiary, var(--bg-primary));
+    border-color: var(--border-default);
+    color: var(--text-color);
+}
+
+.ai-confirm-btn-cancel:hover:not(:disabled) {
+    border-color: var(--text-secondary);
+}
+
+.ai-confirm-btn-download {
+    background: var(--accent);
+    color: #fff;
+}
+
+.ai-confirm-btn-download:hover:not(:disabled) {
+    filter: brightness(1.1);
+}
+
+/* =============================================
+   AI Visual Search
+   ============================================= */
+
+/* AI search toggle button in toolbar — positioned left of advanced search */
+.ai-search-toggle-btn {
+    position: absolute;
+    right: 32px;
+    background: none;
+    border: none;
+    color: var(--text-color);
+    cursor: pointer;
+    padding: 4px;
+    font-size: 16px;
+    opacity: 0.6;
+    transition: opacity 0.2s, color 0.2s;
+}
+
+.ai-search-toggle-btn:hover {
+    opacity: 1;
+}
+
+.ai-search-toggle-btn.active {
+    color: var(--accent);
+    opacity: 1;
+}
+
+/* When AI toggle is visible, widen search input and shift clear button */
+.search-box-container.has-ai-toggle #search-box {
+    padding-right: 80px;
+}
+
+.search-box-container.has-ai-toggle .search-clear-btn {
+    right: 56px;
+}
+
+/* Settings: hint text under a settings item */
+.settings-hint {
+    margin: 4px 0 0 0;
+    font-size: 11px;
+    color: var(--text-muted, var(--text-secondary));
+    line-height: 1.4;
+}
+
+/* Settings: action button row */
+.ai-actions-row {
+    display: flex;
+    gap: 8px;
+}
+
+.settings-action-btn {
+    flex: 1;
+    padding: 6px 12px;
+    background: var(--bg-tertiary, var(--bg-secondary));
+    color: var(--text-color);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm, 4px);
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.settings-action-btn:hover:not(:disabled) {
+    background: var(--bg-hover, var(--bg-secondary));
+    border-color: var(--accent);
+}
+
+.settings-action-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+/* AI status row */
+.ai-status-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.ai-status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-muted, #888);
+    flex-shrink: 0;
+    transition: background 0.3s;
+}
+
+.ai-status-dot.loaded {
+    background: #4caf50;
+}
+
+.ai-status-dot.loading {
+    background: #ff9800;
+    animation: ai-pulse 1s ease-in-out infinite;
+}
+
+.ai-status-dot.error {
+    background: #f44336;
+}
+
+@keyframes ai-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+}
+
+/* Embedding progress bar */
+.ai-embed-progress {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.ai-embed-progress-bar {
+    flex: 1;
+    height: 4px;
+    background: var(--border-default);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.ai-embed-progress-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 2px;
+    width: 0%;
+    transition: width 0.3s ease;
+}
+
+#ai-embed-progress-text {
+    font-size: 11px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.ai-cancel-btn {
+    background: none;
+    border: 1px solid var(--border-default);
+    color: var(--text-secondary);
+    border-radius: var(--radius-sm, 4px);
+    font-size: 11px;
+    padding: 2px 6px;
+    cursor: pointer;
+    transition: border-color 0.15s, color 0.15s;
+}
+
+.ai-cancel-btn:hover {
+    border-color: var(--accent);
+    color: var(--text-color);
+}
+
+/* Slider group in settings */
+.ai-slider-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.ai-slider-group input[type="range"] {
+    width: 100px;
+    accent-color: var(--accent);
+}
+
+.ai-slider-group span {
+    font-size: 12px;
+    color: var(--text-secondary);
+    width: 30px;
+    text-align: right;
+}

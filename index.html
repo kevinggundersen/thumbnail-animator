@@ -21,6 +21,7 @@
             <div class="search-box-container">
                 <input type="text" id="search-box" placeholder="Search files..." autocomplete="off">
                 <button id="search-clear-btn" class="search-clear-btn" title="Clear search" style="display:none"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+                <button id="ai-search-toggle-btn" class="search-box-icon-btn ai-search-toggle-btn" title="AI Visual Search" style="display:none"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L9.5 9.5 2 12l7.5 2.5L12 22l2.5-7.5L22 12l-7.5-2.5z"/></svg></button>
                 <button id="advanced-search-btn" class="search-box-icon-btn" title="Advanced Search"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg></button>
             </div>
             <div class="tools-menu-container">
@@ -391,6 +392,7 @@
                     <button class="settings-tab active" data-tab="general">General</button>
                     <button class="settings-tab" data-tab="card-info">Card Info</button>
                     <button class="settings-tab" data-tab="playback">Playback</button>
+                    <button class="settings-tab" data-tab="ai-search">AI Search</button>
                 </div>
                 <div class="settings-panel">
                     <!-- General Tab -->
@@ -529,6 +531,68 @@
                             </label>
                         </div>
                     </div>
+                    <!-- AI Search Tab -->
+                    <div class="settings-tab-content" data-tab="ai-search">
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <span>Enable AI Visual Search</span>
+                                <div class="toggle-switch">
+                                    <input type="checkbox" id="ai-search-enabled-toggle">
+                                    <span class="toggle-slider"></span>
+                                </div>
+                                <span class="toggle-label" id="ai-search-enabled-label">Off</span>
+                            </label>
+                            <p class="settings-hint">Uses a local ML model (~65 MB) to enable semantic search. Requires ~300 MB RAM when active.</p>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <span>Auto-Scan New Folders</span>
+                                <div class="toggle-switch">
+                                    <input type="checkbox" id="ai-auto-scan-toggle">
+                                    <span class="toggle-slider"></span>
+                                </div>
+                                <span class="toggle-label" id="ai-auto-scan-label">Off</span>
+                            </label>
+                            <p class="settings-hint">Automatically generate embeddings when a folder is opened.</p>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <span>Search Sensitivity</span>
+                                <div class="ai-slider-group">
+                                    <input type="range" id="ai-threshold-slider" min="10" max="40" step="1" value="15">
+                                    <span id="ai-threshold-value">0.25</span>
+                                </div>
+                            </label>
+                            <p class="settings-hint">Lower = more results (less precise). Higher = fewer results (more precise).</p>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <span>Clustering Mode</span>
+                                <select id="ai-clustering-select" class="settings-select">
+                                    <option value="off">Off</option>
+                                    <option value="similarity">Group by Visual Similarity</option>
+                                </select>
+                            </label>
+                            <p class="settings-hint">Reorders the gallery to group visually similar media together.</p>
+                        </div>
+                        <div class="settings-item ai-actions-row">
+                            <button id="ai-scan-now-btn" class="settings-action-btn" disabled>Scan Current Folder</button>
+                            <button id="ai-clear-cache-btn" class="settings-action-btn">Clear Embedding Cache</button>
+                        </div>
+                        <div class="settings-item">
+                            <div class="ai-status-row">
+                                <span class="ai-status-dot" id="ai-status-dot"></span>
+                                <span id="ai-status-text">Model not loaded</span>
+                            </div>
+                            <div id="ai-embed-progress" class="ai-embed-progress" style="display:none">
+                                <div class="ai-embed-progress-bar">
+                                    <div class="ai-embed-progress-fill" id="ai-embed-progress-fill"></div>
+                                </div>
+                                <span id="ai-embed-progress-text">0 / 0</span>
+                                <button id="ai-embed-cancel-btn" class="ai-cancel-btn">Cancel</button>
+                            </div>
+                        </div>
+                    </div>
                     <!-- Playback Tab -->
                     <div class="settings-tab-content" data-tab="playback">
                         <div class="settings-item">
@@ -596,6 +660,46 @@
             </div>
         </div>
         <div id="perf-dashboard-body" class="perf-dashboard-body"></div>
+    </div>
+    <!-- AI Model Download Confirmation Dialog — must be before renderer.js -->
+    <div id="ai-model-confirm-overlay" class="ai-confirm-overlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="ai-confirm-title">
+        <div class="ai-confirm-dialog">
+            <h3 class="ai-confirm-title" id="ai-confirm-title">Download AI Model?</h3>
+            <p class="ai-confirm-body">
+                AI Visual Search uses a local ML model to understand image content, letting you search by typing things like <em>"dog"</em> or <em>"sunset"</em>.
+            </p>
+            <div class="ai-confirm-meta">
+                <div class="ai-confirm-row">
+                    <span class="ai-confirm-label">Model</span>
+                    <span>CLIP ViT-B/32 (quantized)</span>
+                </div>
+                <div class="ai-confirm-row">
+                    <span class="ai-confirm-label">Size</span>
+                    <span>~170 MB</span>
+                </div>
+                <div class="ai-confirm-row">
+                    <span class="ai-confirm-label">Source</span>
+                    <a id="ai-confirm-link" href="#" class="ai-confirm-link">huggingface.co/Xenova/clip-vit-base-patch32</a>
+                </div>
+                <div class="ai-confirm-row">
+                    <span class="ai-confirm-label">Runs</span>
+                    <span>Fully offline — no data ever leaves your device</span>
+                </div>
+            </div>
+            <div id="ai-confirm-download-progress" class="ai-confirm-progress-wrap" style="display:none">
+                <div class="ai-confirm-progress-label">
+                    <span id="ai-confirm-progress-file"></span>
+                    <span id="ai-confirm-progress-pct"></span>
+                </div>
+                <div class="ai-confirm-progress-bar">
+                    <div class="ai-confirm-progress-fill" id="ai-confirm-progress-fill"></div>
+                </div>
+            </div>
+            <div class="ai-confirm-actions">
+                <button id="ai-confirm-cancel-btn" class="ai-confirm-btn ai-confirm-btn-cancel">Cancel</button>
+                <button id="ai-confirm-download-btn" class="ai-confirm-btn ai-confirm-btn-download">Download &amp; Enable</button>
+            </div>
+        </div>
     </div>
     <script src="icons.js"></script>
     <script src="perf-dashboard.js"></script>

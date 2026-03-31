@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     revealInExplorer: (filePath) => ipcRenderer.invoke('reveal-in-explorer', filePath),
     renameFile: (filePath, newName) => ipcRenderer.invoke('rename-file', filePath, newName),
     deleteFile: (filePath) => ipcRenderer.invoke('delete-file', filePath),
+    openUrl: (url) => ipcRenderer.invoke('open-url', url),
     openWithDefault: (filePath) => ipcRenderer.invoke('open-with-default', filePath),
     openWith: (filePath) => ipcRenderer.invoke('open-with', filePath),
     getDrives: () => ipcRenderer.invoke('get-drives'),
@@ -35,5 +36,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     deleteFilesBatch: (filePaths) => ipcRenderer.invoke('delete-files-batch', filePaths),
     onDuplicateScanProgress: (callback) => ipcRenderer.on('duplicate-scan-progress', callback),
     removeDuplicateScanProgressListener: () => ipcRenderer.removeAllListeners('duplicate-scan-progress'),
-    toggleMenuBar: () => ipcRenderer.send('toggle-menu-bar')
+    toggleMenuBar: () => ipcRenderer.send('toggle-menu-bar'),
+    // AI Visual Search (CLIP)
+    clipCheckCache: () => ipcRenderer.invoke('clip-check-cache'),
+    clipInit: () => ipcRenderer.invoke('clip-init'),
+    clipEmbedImages: (files) => ipcRenderer.invoke('clip-embed-images', files),
+    clipEmbedText: (text) => ipcRenderer.invoke('clip-embed-text', text),
+    clipStatus: () => ipcRenderer.invoke('clip-status'),
+    clipTerminate: () => ipcRenderer.invoke('clip-terminate'),
+    onClipProgress: (callback) => ipcRenderer.on('clip-progress', callback),
+    removeClipProgressListener: () => ipcRenderer.removeAllListeners('clip-progress'),
+    onClipDownloadProgress: (callback) => ipcRenderer.on('clip-download-progress', callback),
+    removeClipDownloadProgressListener: () => ipcRenderer.removeAllListeners('clip-download-progress')
 });

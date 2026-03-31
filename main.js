@@ -1,12 +1,21 @@
 // Increase libuv threadpool for parallel stat() calls (must be before any async I/O)
 process.env.UV_THREADPOOL_SIZE = '16';
 
+process.on('uncaughtException', (err) => {
+    console.error('UNCAUGHT EXCEPTION:', err);
+});
+process.on('unhandledRejection', (err) => {
+    console.error('UNHANDLED REJECTION:', err);
+});
+
 const { app, BrowserWindow, Menu, ipcMain, dialog, shell, screen, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const DimensionWorkerPool = require('./worker-pool');
 const ThumbnailWorkerPool = require('./thumbnail-pool');
 const HashWorkerPool = require('./hash-pool');
+// ClipWorkerPool removed — inference runs directly in the main process
+// to avoid native module ABI issues in Electron worker threads.
 let sizeOf;
 try {
     const imageSizeModule = require('image-size');
@@ -91,6 +100,8 @@ let dimensionPool = new DimensionWorkerPool(ffprobePath);
 // Worker pool for thumbnail generation (off main process)
 let thumbnailPool = new ThumbnailWorkerPool({ ffmpegPath, ffprobePath });
 let hashPool = new HashWorkerPool();
+// CLIP model state — loaded directly in main process (no worker threads)
+let clipModel = null; // { visionModel, textModel, processor, tokenizer, RawImage, sharp }
 
 // Thumbnail cache directories (initialized after userDataPath is set)
 const crypto = require('crypto');
@@ -738,6 +749,15 @@ ipcMain.handle('delete-file', async (event, filePath) => {
         return { success: true };
     } catch (error) {
         console.error('Error deleting file:', error);
+        return { success: false, error: error.message };
+    }
+});
+
+ipcMain.handle('open-url', async (event, url) => {
+    try {
+        await shell.openExternal(url);
+        return { success: true };
+    } catch (error) {
         return { success: false, error: error.message };
     }
 });
@@ -1691,6 +1711,197 @@ ipcMain.handle('has-ffmpeg', async () => {
     return { ffmpeg: !!ffmpegPath, ffprobe: !!ffprobePath };
 });
 
+// --- AI Visual Search (CLIP) IPC handlers ---
+// Inference runs directly in the main process (no worker threads)
+// to avoid Electron ABI incompatibility with onnxruntime-node in workers.
+
+const MODEL_NAME = 'Xenova/clip-vit-base-patch32';
+
+function getClipCacheDir() {
+    return path.join(app.getPath('userData'), 'clip-models');
+}
+
+ipcMain.handle('clip-check-cache', async () => {
+    try {
+        const cacheDir = getClipCacheDir();
+        // Check for an actual model file, not just the directory (which may be empty)
+        const onnxFile = path.join(cacheDir, 'Xenova', 'clip-vit-base-patch32', 'onnx', 'model.onnx');
+        const onnxQuantized = path.join(cacheDir, 'Xenova', 'clip-vit-base-patch32', 'onnx', 'model_quantized.onnx');
+        const cached = fs.existsSync(onnxFile) || fs.existsSync(onnxQuantized);
+        return { cached };
+    } catch {
+        return { cached: false };
+    }
+});
+
+ipcMain.handle('clip-init', async (event) => {
+    try {
+        if (clipModel) return { success: true };
+
+        const savedReleaseName = process.release.name;
+        process.release = { ...process.release, name: 'electron' };
+
+        const transformers = require('@xenova/transformers');
+
+        process.release = { ...process.release, name: savedReleaseName };
+
+        const { env, CLIPVisionModelWithProjection, CLIPTextModelWithProjection,
+                AutoProcessor, AutoTokenizer, RawImage } = transformers;
+
+        env.cacheDir = getClipCacheDir();
+        env.allowLocalModels = true;
+        env.allowRemoteModels = true;
+
+        const progressCb = (progress) => {
+            try { event.sender.send('clip-download-progress', progress); } catch { /* window closed */ }
+        };
+        const opts = { progress_callback: progressCb };
+
+        // Explicitly specify which ONNX file to use for each model.
+        // Without this, the library caches by repo name and both models
+        // end up sharing the same (vision) ONNX session.
+        const visionOpts = { ...opts, model_file_name: 'vision_model' };
+        const textOpts   = { ...opts, model_file_name: 'text_model' };
+
+        const [processor, visionModel] = await Promise.all([
+            AutoProcessor.from_pretrained(MODEL_NAME, opts),
+            CLIPVisionModelWithProjection.from_pretrained(MODEL_NAME, visionOpts),
+        ]);
+        const [tokenizer, textModel] = await Promise.all([
+            AutoTokenizer.from_pretrained(MODEL_NAME, opts),
+            CLIPTextModelWithProjection.from_pretrained(MODEL_NAME, textOpts),
+        ]);
+
+        clipModel = { visionModel, textModel, processor, tokenizer, RawImage };
+        return { success: true };
+    } catch (err) {
+        clipModel = null;
+        console.error('clip-init error:', err);
+        return { success: false, error: err.message };
+    }
+});
+
+// Helper: embed a single image file
+// Uses Electron's nativeImage for preprocessing (sharp can't load in the main process).
+// CLIP ViT-B/32 normalization constants (ImageNet)
+const CLIP_MEAN = [0.48145466, 0.4578275, 0.40821073];
+const CLIP_STD  = [0.26862954, 0.26130258, 0.27577711];
+const CLIP_SIZE = 224;
+
+async function clipEmbedOneImage(filePath) {
+    const { visionModel } = clipModel;
+
+    // 1. Load with Electron's nativeImage (supports JPG, PNG, BMP, GIF, WebP)
+    let img = nativeImage.createFromPath(filePath);
+    if (img.isEmpty()) return null;
+
+    const { width, height } = img.getSize();
+
+    // 2. Resize (cover) + centre-crop to 224x224
+    const scale = Math.max(CLIP_SIZE / width, CLIP_SIZE / height);
+    const scaledW = Math.ceil(width * scale);
+    const scaledH = Math.ceil(height * scale);
+    img = img.resize({ width: scaledW, height: scaledH, quality: 'good' });
+
+    const cropX = Math.max(0, Math.floor((scaledW - CLIP_SIZE) / 2));
+    const cropY = Math.max(0, Math.floor((scaledH - CLIP_SIZE) / 2));
+    img = img.crop({ x: cropX, y: cropY, width: CLIP_SIZE, height: CLIP_SIZE });
+
+    // 3. Get BGRA bitmap → build normalised float32 CHW tensor (no processor needed)
+    const bitmap = img.toBitmap(); // BGRA, 4 bytes/pixel
+    const pixels = CLIP_SIZE * CLIP_SIZE;
+    const tensor = new Float32Array(3 * pixels);
+
+    for (let i = 0; i < pixels; i++) {
+        const r = bitmap[i * 4 + 2] / 255; // BGRA → R
+        const g = bitmap[i * 4 + 1] / 255; // BGRA → G
+        const b = bitmap[i * 4]     / 255; // BGRA → B
+        tensor[i]               = (r - CLIP_MEAN[0]) / CLIP_STD[0]; // R plane
+        tensor[pixels + i]      = (g - CLIP_MEAN[1]) / CLIP_STD[1]; // G plane
+        tensor[2 * pixels + i]  = (b - CLIP_MEAN[2]) / CLIP_STD[2]; // B plane
+    }
+
+    // 4. Run vision model directly — bypass processor (which uses OffscreenCanvas and crashes)
+    const ort = require('onnxruntime-web');
+    const inputTensor = new ort.Tensor('float32', tensor, [1, 3, CLIP_SIZE, CLIP_SIZE]);
+    const inputName = visionModel.session.inputNames[0];
+    const output = await visionModel.session.run({ [inputName]: inputTensor });
+    const outputName = visionModel.session.outputNames[0];
+    const raw = output[outputName].data;
+
+    // 5. L2-normalise
+    let mag = 0;
+    for (let i = 0; i < raw.length; i++) mag += raw[i] * raw[i];
+    mag = Math.sqrt(mag) || 1;
+    const out = new Array(raw.length);
+    for (let i = 0; i < raw.length; i++) out[i] = raw[i] / mag;
+
+    return out;
+}
+
+ipcMain.handle('clip-embed-images', async (event, files) => {
+    if (!clipModel) return [];
+    const results = [];
+    for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const result = { path: file.path, embedding: null };
+        try {
+            const source = (file.thumbPath && fs.existsSync(file.thumbPath))
+                ? file.thumbPath : file.path;
+            result.embedding = await clipEmbedOneImage(source);
+        } catch (err) {
+            console.error('clip-embed image error:', file.path, err.message);
+        }
+        results.push(result);
+        try {
+            event.sender.send('clip-progress', { current: i + 1, total: files.length, phase: 'embedding' });
+        } catch { /* window closed */ }
+    }
+    return results;
+});
+
+ipcMain.handle('clip-embed-text', async (event, text) => {
+    if (!clipModel) return null;
+    try {
+        const { tokenizer, textModel } = clipModel;
+
+        // Tokenize
+        const inputs = tokenizer(text, { padding: true, truncation: true });
+
+        // Bypass textModel._call() — use session.run() directly (same fix as images)
+        const ort = require('onnxruntime-web');
+        const feeds = {};
+        for (const name of textModel.session.inputNames) {
+            const t = inputs[name];
+            if (t) feeds[name] = new ort.Tensor('int64', t.data, t.dims);
+        }
+
+        const output = await textModel.session.run(feeds);
+        const raw = output.text_embeds.data;
+
+        // L2-normalise
+        let mag = 0;
+        for (let i = 0; i < raw.length; i++) mag += raw[i] * raw[i];
+        mag = Math.sqrt(mag) || 1;
+        const out = new Array(raw.length);
+        for (let i = 0; i < raw.length; i++) out[i] = raw[i] / mag;
+
+        return out;
+    } catch (err) {
+        console.error('clip-embed-text error:', err);
+        return null;
+    }
+});
+
+ipcMain.handle('clip-status', async () => {
+    return { loaded: !!clipModel };
+});
+
+ipcMain.handle('clip-terminate', async () => {
+    clipModel = null;
+    return { success: true };
+});
+
 // Cleanup watchers on app quit
 app.on('before-quit', async () => {
     if (thumbnailPool) {
@@ -1705,6 +1916,7 @@ app.on('before-quit', async () => {
         hashPool.terminate();
         hashPool = null;
     }
+    clipModel = null;
     for (const [folderPath, watcher] of watchedFolders) {
         try {
             await watcher.close();

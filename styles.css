@@ -1085,6 +1085,31 @@ header {
     will-change: width;
 }
 
+/* Video Scrub Progress Bar */
+.scrub-progress-bar {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: rgba(0, 0, 0, 0.3);
+    z-index: 4;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+}
+
+.scrub-progress-bar.show {
+    opacity: 1;
+}
+
+.scrub-progress-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--accent-color, #4d96ff);
+    will-change: width;
+}
+
 .nav-buttons {
     display: flex;
     gap: 4px;

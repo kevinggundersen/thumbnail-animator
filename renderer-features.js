@@ -1149,7 +1149,7 @@ function showScrubber(card, video) {
         hideScrubber(card);
         return;
     }
-    
+
     // Get or create the time label element
     let timeLabel = card.querySelector('.video-time-label');
     if (!timeLabel) {
@@ -1157,47 +1157,71 @@ function showScrubber(card, video) {
         timeLabel.className = 'video-time-label';
         card.appendChild(timeLabel);
     }
-    
-    // Update the label with current time vs total duration
+
+    // Get or create the scrub progress bar
+    let progressBar = card.querySelector('.scrub-progress-bar');
+    if (!progressBar) {
+        progressBar = document.createElement('div');
+        progressBar.className = 'scrub-progress-bar';
+        const fill = document.createElement('div');
+        fill.className = 'scrub-progress-fill';
+        progressBar.appendChild(fill);
+        card.appendChild(progressBar);
+    }
+    const progressFill = progressBar.querySelector('.scrub-progress-fill');
+
+    // Update the label and progress bar with current time vs total duration
     const updateTimeDisplay = () => {
         if (!timeLabel || !card.contains(timeLabel)) return;
-        
+
         const currentTime = video.currentTime || 0;
         const duration = (video.duration && !isNaN(video.duration) && video.duration > 0) ? video.duration : 0;
         const currentTimeFormatted = formatTime(currentTime);
         const durationFormatted = duration > 0 ? formatTime(duration) : '--:--';
         timeLabel.textContent = `${currentTimeFormatted} / ${durationFormatted}`;
+
+        // Update progress bar fill
+        if (progressFill && duration > 0) {
+            progressFill.style.width = ((currentTime / duration) * 100) + '%';
+        }
     };
-    
+
     // Initial update
     updateTimeDisplay();
-    
+
     // Update when video time changes (if video is playing)
     const timeUpdateHandler = updateTimeDisplay;
     video.addEventListener('timeupdate', timeUpdateHandler);
-    
+
     // Also update when metadata loads (duration becomes available)
     const metadataHandler = () => {
         updateTimeDisplay();
     };
     video.addEventListener('loadedmetadata', metadataHandler);
-    
+
     // Store the handlers so we can remove them later
     card._timeUpdateHandler = timeUpdateHandler;
     card._metadataHandler = metadataHandler;
-    
-    // Show the label
+    card._updateTimeDisplay = updateTimeDisplay;
+
+    // Show the label and progress bar
     timeLabel.classList.add('show');
+    progressBar.classList.add('show');
 }
 
 function hideScrubber(card) {
     if (!card) return;
-    
+
     const timeLabel = card.querySelector('.video-time-label');
     if (timeLabel) {
         timeLabel.classList.remove('show');
     }
-    
+
+    const progressBar = card.querySelector('.scrub-progress-bar');
+    if (progressBar) {
+        progressBar.classList.remove('show');
+    }
+
     // Remove listeners if they exist
     const video = card.querySelector('video');
     if (video) {
@@ -1210,6 +1234,7 @@ function hideScrubber(card) {
             delete card._metadataHandler;
         }
     }
+    delete card._updateTimeDisplay;
 }
 
 function formatTime(seconds) {
@@ -3618,6 +3643,14 @@ window.addEventListener('DOMContentLoaded', async () => {
         playbackControlsEnabled = savedPlaybackControls === 'true';
         playbackControlsToggle.checked = playbackControlsEnabled;
         playbackControlsLabel.textContent = playbackControlsEnabled ? 'On' : 'Off';
+    }
+
+    // Restore hover scrub preference
+    const savedHoverScrub = localStorage.getItem('hoverScrub');
+    if (savedHoverScrub !== null) {
+        hoverScrubEnabled = savedHoverScrub === 'true';
+        if (hoverScrubToggle) hoverScrubToggle.checked = hoverScrubEnabled;
+        if (hoverScrubLabel) hoverScrubLabel.textContent = hoverScrubEnabled ? 'On' : 'Off';
     }
 
     // Restore zoom to fit preference

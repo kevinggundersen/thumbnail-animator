@@ -1194,6 +1194,8 @@ const playbackControlsToggle = document.getElementById('playback-controls-toggle
 const playbackControlsLabel = document.getElementById('playback-controls-label');
 const zoomToFitToggle = document.getElementById('zoom-to-fit-toggle');
 const zoomToFitLabel = document.getElementById('zoom-to-fit-label');
+const hoverScrubToggle = document.getElementById('hover-scrub-toggle');
+const hoverScrubLabel = document.getElementById('hover-scrub-label');
 const lightboxZoomToFitToggle = document.getElementById('lightbox-zoom-to-fit-toggle');
 const zoomSlider = document.getElementById('zoom-slider');
 const zoomValue = document.getElementById('zoom-value');
@@ -1356,6 +1358,7 @@ let mediaControlBarInstance = null;
 let autoRepeatVideos = false;
 let playbackControlsEnabled = true;
 let zoomToFit = true;
+let hoverScrubEnabled = true;
 
 // Track progress
 let currentProgress = null; // { current: number, total: number, cancelled: boolean }
@@ -5649,6 +5652,11 @@ gridContainer.addEventListener('mouseover', (e) => {
             const video = card.querySelector('video');
             if (video) {
                 showScrubber(card, video);
+                // Pause video for scrub mode if hover scrub is enabled
+                if (hoverScrubEnabled) {
+                    video.pause();
+                    card._scrubbing = true;
+                }
             }
         } else if (card.dataset.gifDuration && Number(card.dataset.gifDuration) > 0) {
             currentHoveredCard = card;
@@ -5677,10 +5685,40 @@ gridContainer.addEventListener('mouseover', (e) => {
     }
 });
 
+// --- Video Scrub on Mousemove ---
+let _scrubRafPending = false;
+
+gridContainer.addEventListener('mousemove', (e) => {
+    if (!currentHoveredCard || !currentHoveredCard._scrubbing) return;
+    const card = currentHoveredCard;
+    const video = card.querySelector('video');
+    if (!video || video.readyState < 2 || !video.duration || isNaN(video.duration)) return;
+
+    if (!_scrubRafPending) {
+        _scrubRafPending = true;
+        const clientX = e.clientX;
+        requestAnimationFrame(() => {
+            _scrubRafPending = false;
+            if (!card._scrubbing) return;
+            const rect = card.getBoundingClientRect();
+            const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+            video.currentTime = pct * video.duration;
+            // Update the time label and progress bar
+            if (card._updateTimeDisplay) card._updateTimeDisplay();
+        });
+    }
+});
+
 gridContainer.addEventListener('mouseout', (e) => {
     if (!currentHoveredCard) return;
     const relatedCard = e.relatedTarget ? e.relatedTarget.closest('.video-card') : null;
     if (relatedCard !== currentHoveredCard) {
+        // Resume video playback when leaving a scrubbed card
+        if (currentHoveredCard._scrubbing) {
+            const video = currentHoveredCard.querySelector('video');
+            if (video) video.play().catch(() => {});
+            currentHoveredCard._scrubbing = false;
+        }
         hideScrubber(currentHoveredCard);
         hideGifProgress(currentHoveredCard);
         currentHoveredCard = null;
@@ -6705,6 +6743,12 @@ zoomToFitToggle.addEventListener('change', () => {
     if (lightboxZoomToFitToggle) lightboxZoomToFitToggle.checked = zoomToFit;
     deferLocalStorageWrite('zoomToFit', zoomToFit.toString());
     applyZoomToFitNow();
+});
+
+hoverScrubToggle.addEventListener('change', () => {
+    hoverScrubEnabled = hoverScrubToggle.checked;
+    hoverScrubLabel.textContent = hoverScrubEnabled ? 'On' : 'Off';
+    deferLocalStorageWrite('hoverScrub', hoverScrubEnabled.toString());
 });
 
 lightboxZoomToFitToggle.addEventListener('change', () => {

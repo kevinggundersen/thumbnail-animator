@@ -1094,6 +1094,7 @@ function escapeHtml(str) {
             actionLabel: 'Download',
             actionCallback: () => {
                 window.electronAPI.downloadUpdate();
+                if (updateToast) dismissToast(updateToast);
                 updateToast = showToast('Downloading update...', 'info', {
                     details: '0%',
                     duration: 0
@@ -1103,6 +1104,15 @@ function escapeHtml(str) {
     });
 
     window.electronAPI.onUpdateDownloadProgress((progress) => {
+        // Update the existing toast's details text in place instead of recreating
+        if (updateToast) {
+            const detailsEl = updateToast.querySelector('.toast-details');
+            if (detailsEl) {
+                detailsEl.textContent = `${progress.percent}%`;
+                return;
+            }
+        }
+        // Fallback: create a new toast if the existing one is gone
         if (updateToast) dismissToast(updateToast);
         updateToast = showToast('Downloading update...', 'info', {
             details: `${progress.percent}%`,
@@ -1122,6 +1132,11 @@ function escapeHtml(str) {
 
     window.electronAPI.onUpdateError((message) => {
         console.error('Auto-update error:', message);
+        if (updateToast) dismissToast(updateToast);
+        updateToast = showToast('Update failed', 'error', {
+            details: message,
+            duration: 8000
+        });
     });
 })();
 

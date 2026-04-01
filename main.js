@@ -596,7 +596,9 @@ app.whenReady().then(() => {
     }, 5000);
 
     ipcMain.handle('download-update', () => {
-        return autoUpdater.downloadUpdate();
+        return autoUpdater.downloadUpdate().catch((err) => {
+            console.error('Download update failed:', err.message);
+        });
     });
 
     ipcMain.handle('install-update', () => {

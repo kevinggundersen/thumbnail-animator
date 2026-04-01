@@ -1,6 +1,6 @@
 {
   "name": "thumbnail-animator",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "main": "main.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
@@ -68,7 +68,8 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
+      "createStartMenuShortcut": true,
+      "artifactName": "Thumbnail-Animator-Setup-${version}.${ext}"
     }
   }
 }

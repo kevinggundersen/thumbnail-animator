@@ -5754,7 +5754,7 @@ gridContainer.addEventListener('mouseout', (e) => {
         // Resume video playback when leaving a scrubbed card
         if (currentHoveredCard._scrubbing) {
             const video = currentHoveredCard.querySelector('video');
-            if (video) video.play().catch(() => {});
+            if (video && !(isWindowBlurred && pauseOnBlur) && !(isLightboxOpen && pauseOnLightbox)) video.play().catch(() => {});
             currentHoveredCard._scrubbing = false;
         }
         hideScrubber(currentHoveredCard);

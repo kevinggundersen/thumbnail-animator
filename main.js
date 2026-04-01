@@ -2170,6 +2170,8 @@ ipcMain.handle('clip-init', async (event) => {
 const CLIP_MEAN = [0.48145466, 0.4578275, 0.40821073];
 const CLIP_STD  = [0.26862954, 0.26130258, 0.27577711];
 const CLIP_SIZE = 224;
+const CLIP_VIDEO_EXTS = new Set(['.mp4', '.webm', '.ogg', '.mov']);
+const CLIP_ANIM_EXTS  = new Set(['.gif', '.webp']);
 
 async function clipEmbedOneImage(filePath) {
     const { visionModel } = clipModel;
@@ -2222,6 +2224,65 @@ async function clipEmbedOneImage(filePath) {
     return out;
 }
 
+// Extract N representative frames from a video or animated image using FFmpeg.
+// Samples evenly across the duration. Returns array of temp file paths, or null on failure.
+async function extractMediaKeyframes(filePath, n = 4) {
+    if (!ffmpegPath || !videoThumbDir) return null;
+    const duration = await getVideoDuration(filePath);
+    if (!duration || duration <= 0) return null;
+
+    const framesDir = path.join(videoThumbDir, 'clip-frames');
+    await fs.promises.mkdir(framesDir, { recursive: true });
+
+    const hash = crypto.createHash('md5').update(filePath).digest('hex').slice(0, 12);
+    const framePaths = [];
+    const positions = Array.from({ length: n }, (_, i) => duration * (i + 1) / (n + 1));
+
+    for (let i = 0; i < positions.length; i++) {
+        const outPath = path.join(framesDir, `${hash}-${i}.jpg`);
+        const ok = await new Promise((resolve) => {
+            execFile(ffmpegPath, [
+                '-ss', String(positions[i]),
+                '-i', filePath,
+                '-vframes', '1',
+                '-q:v', '4',
+                '-vf', 'scale=320:-2',
+                '-y',
+                outPath
+            ], { timeout: 10000 }, (err) => resolve(!err));
+        });
+        if (ok) framePaths.push(outPath);
+    }
+
+    return framePaths.length > 0 ? framePaths : null;
+}
+
+// Average multiple frame embeddings into a single L2-normalised vector.
+async function clipEmbedMultiFrame(framePaths) {
+    const embeddings = [];
+    for (const fp of framePaths) {
+        const emb = await clipEmbedOneImage(fp);
+        if (emb) embeddings.push(emb);
+    }
+    if (embeddings.length === 0) return null;
+    if (embeddings.length === 1) return embeddings[0];
+
+    const len = embeddings[0].length;
+    const avg = new Array(len).fill(0);
+    for (const emb of embeddings) {
+        for (let i = 0; i < len; i++) avg[i] += emb[i];
+    }
+    for (let i = 0; i < len; i++) avg[i] /= embeddings.length;
+
+    // L2-normalise the averaged vector
+    let mag = 0;
+    for (let i = 0; i < len; i++) mag += avg[i] * avg[i];
+    mag = Math.sqrt(mag) || 1;
+    for (let i = 0; i < len; i++) avg[i] /= mag;
+
+    return avg;
+}
+
 ipcMain.handle('clip-embed-images', async (event, files) => {
     if (!clipModel) return [];
     const results = [];
@@ -2229,20 +2290,56 @@ ipcMain.handle('clip-embed-images', async (event, files) => {
         const file = files[i];
         const result = { path: file.path, embedding: null };
         try {
-            // Prefer cached thumbnail (much smaller file → faster load + resize)
-            let source = file.path;
-            if (file.thumbPath && fs.existsSync(file.thumbPath)) {
-                source = file.thumbPath;
-            } else if (imageThumbDir && file.mtime != null) {
-                const imgThumb = getImageThumbCachePath(file.path, file.mtime, 512);
-                if (fs.existsSync(imgThumb)) {
-                    source = imgThumb;
-                } else if (videoThumbDir) {
-                    const vidThumb = getThumbCachePath(file.path, file.mtime);
-                    if (fs.existsSync(vidThumb)) source = vidThumb;
+            const ext = path.extname(file.path).toLowerCase();
+            const isVideo   = CLIP_VIDEO_EXTS.has(ext);
+            const isAnimated = CLIP_ANIM_EXTS.has(ext);
+
+            if (isVideo || isAnimated) {
+                // Multi-frame mean-pooled embedding: sample frames across the media duration
+                const framePaths = await extractMediaKeyframes(file.path, isVideo ? 4 : 3);
+                if (framePaths) {
+                    try {
+                        result.embedding = await clipEmbedMultiFrame(framePaths);
+                    } finally {
+                        for (const fp of framePaths) fs.promises.unlink(fp).catch(() => {});
+                    }
                 }
+
+                // Fallback to single-frame if multi-frame extraction failed
+                if (!result.embedding) {
+                    let source = file.path;
+                    if (file.thumbPath && fs.existsSync(file.thumbPath)) {
+                        source = file.thumbPath;
+                    } else if (videoThumbDir && file.mtime != null) {
+                        const vidThumb = getThumbCachePath(file.path, file.mtime);
+                        if (fs.existsSync(vidThumb)) source = vidThumb;
+                    }
+                    // For videos with no cached thumbnail, generate one on-the-fly
+                    if (isVideo && source === file.path) {
+                        const vidThumb = await generateVideoThumbnail(file.path);
+                        if (vidThumb) source = vidThumb;
+                    }
+                    // nativeImage supports GIF/WebP (first frame) and video thumbnails
+                    if (source !== file.path || isAnimated) {
+                        result.embedding = await clipEmbedOneImage(source);
+                    }
+                }
+            } else {
+                // Static image: prefer cached thumbnail for faster load + resize
+                let source = file.path;
+                if (file.thumbPath && fs.existsSync(file.thumbPath)) {
+                    source = file.thumbPath;
+                } else if (imageThumbDir && file.mtime != null) {
+                    const imgThumb = getImageThumbCachePath(file.path, file.mtime, 512);
+                    if (fs.existsSync(imgThumb)) {
+                        source = imgThumb;
+                    } else if (videoThumbDir) {
+                        const vidThumb = getThumbCachePath(file.path, file.mtime);
+                        if (fs.existsSync(vidThumb)) source = vidThumb;
+                    }
+                }
+                result.embedding = await clipEmbedOneImage(source);
             }
-            result.embedding = await clipEmbedOneImage(source);
         } catch (err) {
             console.error('clip-embed image error:', file.path, err.message);
         }

@@ -52,6 +52,7 @@ const STORE_NAME = 'folderCache';
 const DIMENSIONS_STORE = 'dimensionCache';
 const GIF_DURATION_STORE = 'gifDurationCache';
 const EMBEDDING_STORE = 'embeddingCache';
+const EMBEDDING_VERSION = 'v2'; // bump when embedding method changes (invalidates cached embeddings)
 const COLLECTIONS_STORE = 'collections';
 const COLLECTION_FILES_STORE = 'collectionFiles';
 
@@ -2339,7 +2340,7 @@ async function getCachedEmbeddings(files) {
         if (files.length > 500) {
             const keyToPath = new Map();
             for (const f of files) {
-                keyToPath.set(`${f.path}|${f.mtime || 0}`, f.path);
+                keyToPath.set(`${f.path}|${f.mtime || 0}|${EMBEDDING_VERSION}`, f.path);
             }
             const transaction = db.transaction([EMBEDDING_STORE], 'readonly');
             const store = transaction.objectStore(EMBEDDING_STORE);
@@ -2360,7 +2361,7 @@ async function getCachedEmbeddings(files) {
             const transaction = db.transaction([EMBEDDING_STORE], 'readonly');
             const store = transaction.objectStore(EMBEDDING_STORE);
             const promises = files.map(f => {
-                const key = `${f.path}|${f.mtime || 0}`;
+                const key = `${f.path}|${f.mtime || 0}|${EMBEDDING_VERSION}`;
                 return new Promise(resolve => {
                     const req = store.get(key);
                     req.onsuccess = () => {
@@ -2392,7 +2393,7 @@ async function cacheEmbeddings(entries) {
         for (const e of entries) {
             if (e.embedding) {
                 store.put({
-                    key: `${e.path}|${e.mtime || 0}`,
+                    key: `${e.path}|${e.mtime || 0}|${EMBEDDING_VERSION}`,
                     embedding: Array.from(e.embedding)
                 });
             }

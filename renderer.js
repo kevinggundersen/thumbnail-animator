@@ -2951,6 +2951,10 @@ function setSidebarCollapsed(collapsed) {
 async function initSidebar() {
     if (!folderSidebar || !sidebarTree) return;
 
+    // Don't restore previous expanded state — start fresh, only the active folder will be expanded
+    sidebarExpandedNodes.clear();
+    saveSidebarExpandedNodes();
+
     // Restore width and collapsed state
     folderSidebar.style.width = sidebarWidth + 'px';
     if (sidebarCollapsed) {

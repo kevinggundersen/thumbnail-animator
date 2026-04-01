@@ -2133,8 +2133,19 @@ ipcMain.handle('clip-embed-images', async (event, files) => {
         const file = files[i];
         const result = { path: file.path, embedding: null };
         try {
-            const source = (file.thumbPath && fs.existsSync(file.thumbPath))
-                ? file.thumbPath : file.path;
+            // Prefer cached thumbnail (much smaller file → faster load + resize)
+            let source = file.path;
+            if (file.thumbPath && fs.existsSync(file.thumbPath)) {
+                source = file.thumbPath;
+            } else if (imageThumbDir && file.mtime != null) {
+                const imgThumb = getImageThumbCachePath(file.path, file.mtime, 512);
+                if (fs.existsSync(imgThumb)) {
+                    source = imgThumb;
+                } else if (videoThumbDir) {
+                    const vidThumb = getThumbCachePath(file.path, file.mtime);
+                    if (fs.existsSync(vidThumb)) source = vidThumb;
+                }
+            }
             result.embedding = await clipEmbedOneImage(source);
         } catch (err) {
             console.error('clip-embed image error:', file.path, err.message);

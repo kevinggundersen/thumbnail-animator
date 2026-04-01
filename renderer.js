@@ -1888,8 +1888,9 @@ async function loadCollectionIntoGrid(collectionId) {
                     setStatusActivity(`Scanning folders... ${progress.foldersScanned}/${progress.totalFolders} | ${progressFileCount} ${itemLabel}`);
                 }
 
-                // Progressive rendering only when no cache was shown
-                if (!hadCache && progress.items && progress.items.length > 0) {
+                // Progressive rendering only when no cache was shown and no AI query
+                // (AI query requires embeddings which aren't available during streaming)
+                if (!hadCache && !collection.rules?.aiQuery && progress.items && progress.items.length > 0) {
                     for (const item of progress.items) {
                         if (matchesSmartRules(item, collection.rules)) {
                             progressiveItems.push(item);
@@ -1951,6 +1952,182 @@ async function loadCollectionIntoGrid(collectionId) {
             }
         }
 
+        // --- AI Content Search filtering ---
+        const aiQuery = collection.rules?.aiQuery;
+        if (aiQuery && collection.type === 'smart') {
+            const aiThreshold = collection.rules.aiThreshold || 0.28;
+            const mediaItems = items.filter(i => i.type !== 'folder' && !i.missing);
+            // Keep a reference to all metadata-filtered items for background processing
+            const allMetadataItems = items;
+
+            if (mediaItems.length > 0) {
+                // Ensure CLIP model is loaded
+                let modelReady = false;
+                try {
+                    const status = await window.electronAPI.clipStatus();
+                    if (status.loaded) {
+                        modelReady = true;
+                    } else if (aiVisualSearchEnabled && aiModelDownloadConfirmed) {
+                        setStatusActivity('Loading AI model...');
+                        const init = await window.electronAPI.clipInit();
+                        modelReady = init.success;
+                    }
+                } catch { /* model unavailable */ }
+
+                if (loadToken !== _collectionLoadToken) return;
+
+                if (modelReady) {
+                    // Generate text embedding for the AI query
+                    setStatusActivity('AI search: loading cached results...');
+                    let textEmb = null;
+                    try {
+                        const raw = await window.electronAPI.clipEmbedText(aiQuery);
+                        textEmb = raw ? new Float32Array(raw) : null;
+                    } catch { /* skip */ }
+
+                    if (loadToken !== _collectionLoadToken) return;
+
+                    if (textEmb) {
+                        // --- Phase 1: Show results from cached embeddings immediately ---
+                        const embeddingMap = new Map();
+                        try {
+                            const cached = await getCachedEmbeddings(mediaItems.map(i => ({ path: i.path, mtime: i.mtime || 0 })));
+                            for (const [p, emb] of cached) embeddingMap.set(p, emb);
+                        } catch { /* ignore */ }
+
+                        if (loadToken !== _collectionLoadToken) return;
+
+                        // Score cached items and show matches immediately
+                        const uncached = mediaItems.filter(i => !embeddingMap.has(i.path));
+
+                        if (embeddingMap.size > 0) {
+                            const cachedScored = [];
+                            for (const item of mediaItems) {
+                                const emb = embeddingMap.get(item.path);
+                                if (emb) {
+                                    const sim = cosineSimilarity(textEmb, emb);
+                                    if (sim >= aiThreshold) {
+                                        item._aiScore = sim;
+                                        cachedScored.push(item);
+                                    }
+                                }
+                            }
+                            cachedScored.sort((a, b) => (b._aiScore || 0) - (a._aiScore || 0));
+
+                            // Render cached results right away
+                            items = cachedScored;
+                            currentItems = items;
+                            renderItems(sortItems(filterItems(items)), null);
+                            updateBreadcrumbForCollection(collection);
+                            const badge = document.querySelector(`[data-col-count="${collectionId}"]`);
+                            if (badge) badge.textContent = items.length;
+                            setCollectionLoading(collectionId, false);
+
+                            if (uncached.length > 0) {
+                                setStatusActivity(`AI search: ${embeddingMap.size} cached | scanning ${uncached.length} new...`);
+                            }
+                        }
+
+                        // --- Phase 2: Process uncached images in background ---
+                        if (uncached.length > 0) {
+                            const BATCH_SIZE = 20;
+                            let done = 0;
+                            let newMatchCount = 0;
+                            let updateTimer = null;
+
+                            const scheduleResultUpdate = () => {
+                                if (updateTimer) return;
+                                updateTimer = setTimeout(() => {
+                                    updateTimer = null;
+                                    if (loadToken !== _collectionLoadToken) return;
+                                    // Re-score all items with updated embeddings
+                                    const allScored = [];
+                                    for (const item of allMetadataItems) {
+                                        if (item.type === 'folder' || item.missing) continue;
+                                        const emb = embeddingMap.get(item.path);
+                                        if (emb) {
+                                            const sim = cosineSimilarity(textEmb, emb);
+                                            if (sim >= aiThreshold) {
+                                                item._aiScore = sim;
+                                                allScored.push(item);
+                                            }
+                                        }
+                                    }
+                                    allScored.sort((a, b) => (b._aiScore || 0) - (a._aiScore || 0));
+                                    items = allScored;
+                                    currentItems = items;
+                                    renderItems(sortItems(filterItems(items)), null);
+                                    const badge2 = document.querySelector(`[data-col-count="${collectionId}"]`);
+                                    if (badge2) badge2.textContent = items.length;
+                                }, 500);
+                            };
+
+                            for (let i = 0; i < uncached.length; i += BATCH_SIZE) {
+                                if (loadToken !== _collectionLoadToken) {
+                                    if (updateTimer) clearTimeout(updateTimer);
+                                    return;
+                                }
+                                setStatusActivity(`AI search: scanning ${done}/${uncached.length} new images...`);
+                                const batch = uncached.slice(i, i + BATCH_SIZE);
+                                try {
+                                    const results = await window.electronAPI.clipEmbedImages(
+                                        batch.map(item => ({ path: item.path, mtime: item.mtime || 0, thumbPath: null }))
+                                    );
+                                    const toCache = [];
+                                    for (const r of results) {
+                                        if (r && r.embedding) {
+                                            const emb = new Float32Array(r.embedding);
+                                            embeddingMap.set(r.path, emb);
+                                            const item = mediaItems.find(m => m.path === r.path);
+                                            toCache.push({ path: r.path, mtime: item ? (item.mtime || 0) : 0, embedding: r.embedding });
+                                            // Check if this new embedding is a match
+                                            const sim = cosineSimilarity(textEmb, emb);
+                                            if (sim >= aiThreshold) newMatchCount++;
+                                        }
+                                    }
+                                    if (toCache.length > 0) cacheEmbeddings(toCache).catch(() => {});
+                                    done += batch.length;
+                                } catch { done += batch.length; }
+
+                                // Periodically update the grid with new matches
+                                if (newMatchCount > 0) {
+                                    scheduleResultUpdate();
+                                    newMatchCount = 0;
+                                }
+
+                                if (i + BATCH_SIZE < uncached.length) {
+                                    await new Promise(r => requestIdleCallback ? requestIdleCallback(r, { timeout: 200 }) : setTimeout(r, 50));
+                                }
+                            }
+
+                            if (updateTimer) clearTimeout(updateTimer);
+                            if (loadToken !== _collectionLoadToken) return;
+
+                            // Final render with all embeddings
+                            const finalScored = [];
+                            for (const item of allMetadataItems) {
+                                if (item.type === 'folder' || item.missing) continue;
+                                const emb = embeddingMap.get(item.path);
+                                if (emb) {
+                                    const sim = cosineSimilarity(textEmb, emb);
+                                    if (sim >= aiThreshold) {
+                                        item._aiScore = sim;
+                                        finalScored.push(item);
+                                    }
+                                }
+                            }
+                            finalScored.sort((a, b) => (b._aiScore || 0) - (a._aiScore || 0));
+                            items = finalScored;
+                        }
+
+                        setStatusActivity('');
+                    }
+                } else if (aiQuery) {
+                    showToast('AI Visual Search is not enabled — showing metadata-filtered results only', 'warning');
+                }
+            }
+        }
+
         await yieldToEventLoop();
         if (loadToken !== _collectionLoadToken) return;
 
@@ -1990,7 +2167,8 @@ async function loadCollectionIntoGrid(collectionId) {
 }
 
 function updateBreadcrumbForCollection(collection) {
-    const icon = collection.type === 'smart' ? '\u2606' : '\u25A6'; // star or square icon
+    const hasAi = collection.type === 'smart' && collection.rules?.aiQuery;
+    const icon = hasAi ? '\u2726' : collection.type === 'smart' ? '\u2606' : '\u25A6'; // sparkle, star, or square
     const breadcrumbContainer = document.getElementById('breadcrumb-container');
     breadcrumbContainer.innerHTML = '';
     const pathSpan = document.createElement('span');
@@ -2088,22 +2266,45 @@ async function getCachedEmbeddings(files) {
     const result = new Map();
     if (!db || files.length === 0) return result;
     try {
-        const transaction = db.transaction([EMBEDDING_STORE], 'readonly');
-        const store = transaction.objectStore(EMBEDDING_STORE);
-        const promises = files.map(f => {
-            const key = `${f.path}|${f.mtime || 0}`;
-            return new Promise(resolve => {
-                const req = store.get(key);
-                req.onsuccess = () => {
-                    if (req.result && req.result.embedding) {
-                        result.set(f.path, new Float32Array(req.result.embedding));
+        // For large sets, use cursor scan (one pass) instead of N individual gets
+        if (files.length > 500) {
+            const keyToPath = new Map();
+            for (const f of files) {
+                keyToPath.set(`${f.path}|${f.mtime || 0}`, f.path);
+            }
+            const transaction = db.transaction([EMBEDDING_STORE], 'readonly');
+            const store = transaction.objectStore(EMBEDDING_STORE);
+            await new Promise((resolve, reject) => {
+                const req = store.openCursor();
+                req.onsuccess = (e) => {
+                    const cursor = e.target.result;
+                    if (!cursor) { resolve(); return; }
+                    const record = cursor.value;
+                    if (record && record.embedding && keyToPath.has(record.key)) {
+                        result.set(keyToPath.get(record.key), new Float32Array(record.embedding));
                     }
-                    resolve();
+                    cursor.continue();
                 };
                 req.onerror = () => resolve();
             });
-        });
-        await Promise.all(promises);
+        } else {
+            const transaction = db.transaction([EMBEDDING_STORE], 'readonly');
+            const store = transaction.objectStore(EMBEDDING_STORE);
+            const promises = files.map(f => {
+                const key = `${f.path}|${f.mtime || 0}`;
+                return new Promise(resolve => {
+                    const req = store.get(key);
+                    req.onsuccess = () => {
+                        if (req.result && req.result.embedding) {
+                            result.set(f.path, new Float32Array(req.result.embedding));
+                        }
+                        resolve();
+                    };
+                    req.onerror = () => resolve();
+                });
+            });
+            await Promise.all(promises);
+        }
     } catch {
         // Ignore — embeddings will just be re-computed
     }
@@ -7859,7 +8060,7 @@ async function scheduleBackgroundEmbedding(items) {
         const batch = uncached.slice(i, i + BATCH_SIZE);
         try {
             const results = await window.electronAPI.clipEmbedImages(
-                batch.map(item => ({ path: item.path, thumbPath: null }))
+                batch.map(item => ({ path: item.path, mtime: item.mtime || 0, thumbPath: null }))
             );
             const toCache = [];
             for (const r of results) {
@@ -9420,7 +9621,10 @@ async function renderCollectionsSidebar() {
         item.className = 'collection-item' + (currentCollectionId === col.id ? ' active' : '');
         item.dataset.collectionId = col.id;
 
-        const iconSvg = col.type === 'smart'
+        const hasAiQuery = col.type === 'smart' && col.rules?.aiQuery;
+        const iconSvg = hasAiQuery
+            ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a4 4 0 0 0-4 4c0 1.1.45 2.1 1.17 2.83L12 12l2.83-3.17A4 4 0 0 0 12 2z"/><path d="M5 10c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/><path d="M19 10c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/><path d="M12 16c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/><line x1="7" y1="12" x2="12" y2="16"/><line x1="17" y1="12" x2="12" y2="16"/><line x1="12" y1="12" x2="12" y2="16"/></svg>'
+            : col.type === 'smart'
             ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>'
             : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><line x1="3" x2="21" y1="9" y2="9"/><line x1="9" x2="9" y1="21" y2="9"/></svg>';
 
@@ -9599,6 +9803,16 @@ function openCollectionDialog(existingCollection = null) {
                         <option value="5" ${rules.minStarRating == 5 ? 'selected' : ''}>5</option>
                     </select>
                 </div>
+                <div class="collection-dialog-field collection-dialog-ai-section" style="${aiVisualSearchEnabled ? '' : 'display:none'}">
+                    <label>AI Content Search</label>
+                    <input type="text" id="col-dialog-ai-query" value="${escapeHtml(rules.aiQuery || '')}" placeholder="e.g. Blue dress with gray sneakers">
+                    <div class="collection-dialog-row" style="align-items:center;margin-top:6px">
+                        <label style="white-space:nowrap;margin-right:8px;font-size:12px;opacity:0.7">Threshold</label>
+                        <input type="range" id="col-dialog-ai-threshold" min="15" max="40" step="1" value="${Math.round((rules.aiThreshold || 0.28) * 100)}" style="flex:1">
+                        <span id="col-dialog-ai-threshold-val" style="min-width:36px;text-align:right;font-size:12px;opacity:0.7">${(rules.aiThreshold || 0.28).toFixed(2)}</span>
+                    </div>
+                    <div style="font-size:11px;opacity:0.5;margin-top:4px">Matches images by visual content using AI. Requires AI Visual Search enabled.</div>
+                </div>
             </div>
             <div class="collection-dialog-actions">
                 <button class="collection-dialog-cancel" id="col-dialog-cancel">Cancel</button>
@@ -9608,6 +9822,15 @@ function openCollectionDialog(existingCollection = null) {
     `;
 
     document.body.appendChild(overlay);
+
+    // AI threshold slider live update
+    const aiThresholdSlider = document.getElementById('col-dialog-ai-threshold');
+    const aiThresholdVal = document.getElementById('col-dialog-ai-threshold-val');
+    if (aiThresholdSlider && aiThresholdVal) {
+        aiThresholdSlider.addEventListener('input', () => {
+            aiThresholdVal.textContent = (parseInt(aiThresholdSlider.value) / 100).toFixed(2);
+        });
+    }
 
     // Source folders state — each entry is { path, recursive }
     // Backward compat: old string entries are normalized to objects
@@ -9708,6 +9931,9 @@ function openCollectionDialog(existingCollection = null) {
             const dateToStr = document.getElementById('col-dialog-date-to').value;
             const starsVal = parseInt(document.getElementById('col-dialog-stars').value) || null;
 
+            const aiQueryVal = (document.getElementById('col-dialog-ai-query')?.value || '').trim();
+            const aiThresholdVal2 = parseInt(document.getElementById('col-dialog-ai-threshold')?.value || '28') / 100;
+
             collectionData.rules = {
                 sourceFolders,
                 fileType: document.getElementById('col-dialog-filetype').value,
@@ -9719,7 +9945,9 @@ function openCollectionDialog(existingCollection = null) {
                 sizeValue: sizeVal,
                 dateFrom: dateFromStr ? new Date(dateFromStr).getTime() : null,
                 dateTo: dateToStr ? new Date(dateToStr + 'T23:59:59').getTime() : null,
-                minStarRating: starsVal
+                minStarRating: starsVal,
+                aiQuery: aiQueryVal || '',
+                aiThreshold: aiThresholdVal2
             };
         } else {
             collectionData.rules = null;

@@ -19,9 +19,6 @@ jobs:
           node-version: 20
 
       - run: npm ci
-      - run: npm run dist
-
-      - name: Upload to Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*.exe
+      - run: npm run release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

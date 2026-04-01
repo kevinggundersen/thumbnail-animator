@@ -70,5 +70,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     pluginGenerateThumbnail: (filePath, ext) =>
         ipcRenderer.invoke('plugin-generate-thumbnail', filePath, ext),
     getPluginStates: () => ipcRenderer.invoke('get-plugin-states'),
-    setPluginEnabled: (pluginId, enabled) => ipcRenderer.invoke('set-plugin-enabled', pluginId, enabled)
+    setPluginEnabled: (pluginId, enabled) => ipcRenderer.invoke('set-plugin-enabled', pluginId, enabled),
+    // Auto-updater
+    onUpdateAvailable: (callback) => ipcRenderer.on('update-available', (_e, info) => callback(info)),
+    onUpdateDownloadProgress: (callback) => ipcRenderer.on('update-download-progress', (_e, progress) => callback(progress)),
+    onUpdateDownloaded: (callback) => ipcRenderer.on('update-downloaded', callback),
+    removeUpdateListeners: () => {
+        ipcRenderer.removeAllListeners('update-available');
+        ipcRenderer.removeAllListeners('update-download-progress');
+        ipcRenderer.removeAllListeners('update-downloaded');
+    },
+    downloadUpdate: () => ipcRenderer.invoke('download-update'),
+    installUpdate: () => ipcRenderer.invoke('install-update')
 });

@@ -37,6 +37,7 @@ try {
 // const mime = require('mime-types'); // Removed unused dependency
 const { execFile } = require('child_process');
 const { performance } = require('perf_hooks');
+const { autoUpdater } = require('electron-updater');
 
 const PERF_TEST_ENABLED = process.env.PERF_TEST === '1';
 
@@ -552,6 +553,52 @@ pluginRegistry.discover(path.join(app.getPath('userData'), 'plugins'));
 
 app.whenReady().then(() => {
     const win = createWindow();
+
+    // --- Auto-updater (notify only) ---
+    autoUpdater.autoDownload = false;
+    autoUpdater.autoInstallOnAppQuit = false;
+
+    autoUpdater.on('update-available', (info) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('update-available', {
+                version: info.version,
+                releaseNotes: info.releaseNotes || ''
+            });
+        }
+    });
+
+    autoUpdater.on('download-progress', (progress) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('update-download-progress', {
+                percent: Math.round(progress.percent)
+            });
+        }
+    });
+
+    autoUpdater.on('update-downloaded', () => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('update-downloaded');
+        }
+    });
+
+    autoUpdater.on('error', (err) => {
+        console.error('Auto-updater error:', err.message);
+    });
+
+    // Check for updates after a short delay to not slow down startup
+    setTimeout(() => {
+        autoUpdater.checkForUpdates().catch((err) => {
+            console.error('Update check failed:', err.message);
+        });
+    }, 5000);
+
+    ipcMain.handle('download-update', () => {
+        return autoUpdater.downloadUpdate();
+    });
+
+    ipcMain.handle('install-update', () => {
+        autoUpdater.quitAndInstall(false, true);
+    });
 
     app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) {

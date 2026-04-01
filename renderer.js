@@ -1082,6 +1082,45 @@ function escapeHtml(str) {
     return div.innerHTML;
 }
 
+// ===== Auto-Update Notifications =====
+(function initAutoUpdateListeners() {
+    let updateToast = null;
+
+    window.electronAPI.onUpdateAvailable((info) => {
+        if (updateToast) dismissToast(updateToast);
+        updateToast = showToast(`Update v${info.version} available`, 'info', {
+            details: 'A new version is ready to download.',
+            duration: 0,
+            actionLabel: 'Download',
+            actionCallback: () => {
+                window.electronAPI.downloadUpdate();
+                updateToast = showToast('Downloading update...', 'info', {
+                    details: '0%',
+                    duration: 0
+                });
+            }
+        });
+    });
+
+    window.electronAPI.onUpdateDownloadProgress((progress) => {
+        if (updateToast) dismissToast(updateToast);
+        updateToast = showToast('Downloading update...', 'info', {
+            details: `${progress.percent}%`,
+            duration: 0
+        });
+    });
+
+    window.electronAPI.onUpdateDownloaded(() => {
+        if (updateToast) dismissToast(updateToast);
+        updateToast = showToast('Update ready to install', 'success', {
+            details: 'Restart the app to apply the update.',
+            duration: 0,
+            actionLabel: 'Restart Now',
+            actionCallback: () => window.electronAPI.installUpdate()
+        });
+    });
+})();
+
 // ===== Friendly Error Messages =====
 function friendlyError(err) {
     const msg = typeof err === 'string' ? err : (err && err.message) || 'Unknown error';

@@ -1,5 +1,13 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
+// Track the current listener per IPC channel to allow precise removal
+let _windowMinimizedCb = null;
+let _windowRestoredCb = null;
+let _folderChangedCb = null;
+let _duplicateScanProgressCb = null;
+let _clipProgressCb = null;
+let _clipDownloadProgressCb = null;
+
 contextBridge.exposeInMainWorld('electronAPI', {
     getPathForFile: (file) => webUtils.getPathForFile(file),
     selectFolder: (defaultPath) => ipcRenderer.invoke('select-folder', defaultPath),
@@ -13,10 +21,26 @@ contextBridge.exposeInMainWorld('electronAPI', {
     openWith: (filePath) => ipcRenderer.invoke('open-with', filePath),
     getDrives: () => ipcRenderer.invoke('get-drives'),
     listSubdirectories: (folderPath) => ipcRenderer.invoke('list-subdirectories', folderPath),
-    onWindowMinimized: (callback) => ipcRenderer.on('window-minimized', callback),
-    onWindowRestored: (callback) => ipcRenderer.on('window-restored', callback),
-    removeWindowMinimizedListener: () => ipcRenderer.removeAllListeners('window-minimized'),
-    removeWindowRestoredListener: () => ipcRenderer.removeAllListeners('window-restored'),
+    onWindowMinimized: (callback) => {
+        _windowMinimizedCb = callback;
+        ipcRenderer.on('window-minimized', callback);
+    },
+    onWindowRestored: (callback) => {
+        _windowRestoredCb = callback;
+        ipcRenderer.on('window-restored', callback);
+    },
+    removeWindowMinimizedListener: () => {
+        if (_windowMinimizedCb) {
+            ipcRenderer.removeListener('window-minimized', _windowMinimizedCb);
+            _windowMinimizedCb = null;
+        }
+    },
+    removeWindowRestoredListener: () => {
+        if (_windowRestoredCb) {
+            ipcRenderer.removeListener('window-restored', _windowRestoredCb);
+            _windowRestoredCb = null;
+        }
+    },
     // New IPC handlers
     getFileInfo: (filePath) => ipcRenderer.invoke('get-file-info', filePath),
     createFolder: (folderPath, folderName) => ipcRenderer.invoke('create-folder', folderPath, folderName),
@@ -24,8 +48,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     copyFile: (sourcePath, destFolder, fileName) => ipcRenderer.invoke('copy-file', sourcePath, destFolder, fileName),
     watchFolder: (folderPath) => ipcRenderer.invoke('watch-folder', folderPath),
     unwatchFolder: (folderPath) => ipcRenderer.invoke('unwatch-folder', folderPath),
-    onFolderChanged: (callback) => ipcRenderer.on('folder-changed', callback),
-    removeFolderChangedListener: () => ipcRenderer.removeAllListeners('folder-changed'),
+    onFolderChanged: (callback) => {
+        _folderChangedCb = callback;
+        ipcRenderer.on('folder-changed', callback);
+    },
+    removeFolderChangedListener: () => {
+        if (_folderChangedCb) {
+            ipcRenderer.removeListener('folder-changed', _folderChangedCb);
+            _folderChangedCb = null;
+        }
+    },
     generateVideoThumbnail: (filePath) => ipcRenderer.invoke('generate-video-thumbnail', filePath),
     generateImageThumbnail: (filePath, maxSize) => ipcRenderer.invoke('generate-image-thumbnail', filePath, maxSize),
     scanFileDimensions: (files) => ipcRenderer.invoke('scan-file-dimensions', files),
@@ -34,8 +66,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Duplicate detection
     scanDuplicates: (folderPath, options) => ipcRenderer.invoke('scan-duplicates', folderPath, options),
     deleteFilesBatch: (filePaths) => ipcRenderer.invoke('delete-files-batch', filePaths),
-    onDuplicateScanProgress: (callback) => ipcRenderer.on('duplicate-scan-progress', callback),
-    removeDuplicateScanProgressListener: () => ipcRenderer.removeAllListeners('duplicate-scan-progress'),
+    onDuplicateScanProgress: (callback) => {
+        _duplicateScanProgressCb = callback;
+        ipcRenderer.on('duplicate-scan-progress', callback);
+    },
+    removeDuplicateScanProgressListener: () => {
+        if (_duplicateScanProgressCb) {
+            ipcRenderer.removeListener('duplicate-scan-progress', _duplicateScanProgressCb);
+            _duplicateScanProgressCb = null;
+        }
+    },
     toggleMenuBar: () => ipcRenderer.send('toggle-menu-bar'),
     updateTitleBarOverlay: (overlay) => ipcRenderer.send('update-titlebar-overlay', overlay),
     // AI Visual Search (CLIP)
@@ -45,8 +85,24 @@ contextBridge.exposeInMainWorld('electronAPI', {
     clipEmbedText: (text) => ipcRenderer.invoke('clip-embed-text', text),
     clipStatus: () => ipcRenderer.invoke('clip-status'),
     clipTerminate: () => ipcRenderer.invoke('clip-terminate'),
-    onClipProgress: (callback) => ipcRenderer.on('clip-progress', callback),
-    removeClipProgressListener: () => ipcRenderer.removeAllListeners('clip-progress'),
-    onClipDownloadProgress: (callback) => ipcRenderer.on('clip-download-progress', callback),
-    removeClipDownloadProgressListener: () => ipcRenderer.removeAllListeners('clip-download-progress')
+    onClipProgress: (callback) => {
+        _clipProgressCb = callback;
+        ipcRenderer.on('clip-progress', callback);
+    },
+    removeClipProgressListener: () => {
+        if (_clipProgressCb) {
+            ipcRenderer.removeListener('clip-progress', _clipProgressCb);
+            _clipProgressCb = null;
+        }
+    },
+    onClipDownloadProgress: (callback) => {
+        _clipDownloadProgressCb = callback;
+        ipcRenderer.on('clip-download-progress', callback);
+    },
+    removeClipDownloadProgressListener: () => {
+        if (_clipDownloadProgressCb) {
+            ipcRenderer.removeListener('clip-download-progress', _clipDownloadProgressCb);
+            _clipDownloadProgressCb = null;
+        }
+    }
 });

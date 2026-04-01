@@ -11,6 +11,7 @@ class HashWorkerPool {
         this.workerCount = Math.min(Math.max(os.cpus().length, 2), 8);
         this.workers = [];
         this.workerPath = path.join(__dirname, 'hash-worker.js');
+        this._requestId = 0;
         this._initWorkers();
     }
 
@@ -54,9 +55,10 @@ class HashWorkerPool {
             const worker = this.workers[workerIndex];
             if (!worker) return Promise.resolve([]);
 
+            const requestId = ++this._requestId;
             return new Promise((resolve) => {
                 const onMessage = (msg) => {
-                    if (msg.type === 'result') {
+                    if (msg.type === 'result' && msg.requestId === requestId) {
                         worker.removeListener('message', onMessage);
                         worker.removeListener('error', onError);
                         completed += chunk.length;
@@ -70,7 +72,7 @@ class HashWorkerPool {
                 };
                 worker.on('message', onMessage);
                 worker.once('error', onError);
-                worker.postMessage({ type: 'hash', files: chunk });
+                worker.postMessage({ type: 'hash', files: chunk, requestId });
             });
         });
 

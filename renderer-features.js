@@ -3781,3 +3781,354 @@ window.addEventListener('DOMContentLoaded', async () => {
     // Initialize status bar with current state
     updateStatusBar();
 });
+
+// ============================================================================
+// BATCH OPERATIONS
+// ============================================================================
+
+// --- Batch Star Rating ---
+
+function batchSetStarRating(filePaths, rating) {
+    if (!filePaths || filePaths.length === 0) return;
+    for (const fp of filePaths) {
+        setFileRating(fp, rating);
+    }
+    if (rating === 0) {
+        showToast(`Cleared rating for ${filePaths.length} file${filePaths.length !== 1 ? 's' : ''}`, 'success');
+    } else {
+        showToast(`Set ${filePaths.length} file${filePaths.length !== 1 ? 's' : ''} to ${rating} star${rating !== 1 ? 's' : ''}`, 'success');
+    }
+}
+
+function showBatchStarPicker(x, y) {
+    const picker = document.getElementById('batch-star-picker');
+    if (!picker) return;
+
+    // Position near cursor
+    picker.style.left = `${x}px`;
+    picker.style.top = `${y - 40}px`;
+    picker.classList.remove('hidden');
+
+    // Ensure it stays in viewport
+    requestAnimationFrame(() => {
+        const rect = picker.getBoundingClientRect();
+        if (rect.right > window.innerWidth) picker.style.left = `${window.innerWidth - rect.width - 8}px`;
+        if (rect.top < 0) picker.style.top = '8px';
+    });
+
+    // Remove old listeners and add fresh ones
+    const newPicker = picker.cloneNode(true);
+    picker.parentNode.replaceChild(newPicker, picker);
+    newPicker.classList.remove('hidden');
+
+    // Hover preview
+    const stars = newPicker.querySelectorAll('.batch-star');
+    stars.forEach(star => {
+        star.addEventListener('mouseenter', () => {
+            const val = parseInt(star.dataset.star);
+            stars.forEach(s => {
+                s.classList.toggle('preview', parseInt(s.dataset.star) <= val);
+            });
+        });
+        star.addEventListener('mouseleave', () => {
+            stars.forEach(s => s.classList.remove('preview'));
+        });
+        star.addEventListener('click', () => {
+            const rating = parseInt(star.dataset.star);
+            batchSetStarRating(getSelectedFilePaths(), rating);
+            newPicker.classList.add('hidden');
+        });
+    });
+
+    // Clear button
+    const clearBtn = newPicker.querySelector('.clear-rating-btn');
+    if (clearBtn) {
+        clearBtn.addEventListener('click', () => {
+            batchSetStarRating(getSelectedFilePaths(), 0);
+            newPicker.classList.add('hidden');
+        });
+    }
+
+    // Close on outside click
+    const closeHandler = (e) => {
+        if (!newPicker.contains(e.target)) {
+            newPicker.classList.add('hidden');
+            document.removeEventListener('click', closeHandler);
+        }
+    };
+    setTimeout(() => document.addEventListener('click', closeHandler), 0);
+}
+
+// --- Batch Move/Copy ---
+
+async function batchMoveSelected() {
+    const paths = getSelectedFilePaths();
+    if (paths.length === 0) return;
+    const dest = await window.electronAPI.selectFolder();
+    if (!dest) return;
+    const policy = await showConflictPolicyDialog();
+    if (!policy) return;
+    try {
+        showProgress(0, paths.length, `Moving ${paths.length} files...`);
+        const progressHandler = (data) => updateProgress(data.current, data.total);
+        window.electronAPI.onBatchProgress(progressHandler);
+        const result = await window.electronAPI.batchMoveFiles(paths, dest, policy);
+        window.electronAPI.removeBatchProgressListener();
+        hideProgress();
+        const ok = result.succeeded ? result.succeeded.length : 0;
+        const fail = result.failed ? result.failed.length : 0;
+        const skip = result.skipped ? result.skipped.length : 0;
+        let msg = `Moved ${ok} file${ok !== 1 ? 's' : ''}`;
+        if (skip > 0) msg += `, ${skip} skipped`;
+        if (fail > 0) msg += `, ${fail} failed`;
+        showToast(msg, fail > 0 ? 'warning' : 'success');
+        clearSelection();
+        loadVideos(currentFolderPath, false);
+    } catch (err) {
+        window.electronAPI.removeBatchProgressListener();
+        hideProgress();
+        showToast(`Move failed: ${err.message}`, 'error');
+    }
+}
+
+async function batchCopySelected() {
+    const paths = getSelectedFilePaths();
+    if (paths.length === 0) return;
+    const dest = await window.electronAPI.selectFolder();
+    if (!dest) return;
+    const policy = await showConflictPolicyDialog();
+    if (!policy) return;
+    try {
+        showProgress(0, paths.length, `Copying ${paths.length} files...`);
+        const progressHandler = (data) => updateProgress(data.current, data.total);
+        window.electronAPI.onBatchProgress(progressHandler);
+        const result = await window.electronAPI.batchCopyFiles(paths, dest, policy);
+        window.electronAPI.removeBatchProgressListener();
+        hideProgress();
+        const ok = result.succeeded ? result.succeeded.length : 0;
+        const fail = result.failed ? result.failed.length : 0;
+        const skip = result.skipped ? result.skipped.length : 0;
+        let msg = `Copied ${ok} file${ok !== 1 ? 's' : ''}`;
+        if (skip > 0) msg += `, ${skip} skipped`;
+        if (fail > 0) msg += `, ${fail} failed`;
+        showToast(msg, fail > 0 ? 'warning' : 'success');
+        clearSelection();
+    } catch (err) {
+        window.electronAPI.removeBatchProgressListener();
+        hideProgress();
+        showToast(`Copy failed: ${err.message}`, 'error');
+    }
+}
+
+function showConflictPolicyDialog() {
+    return new Promise((resolve) => {
+        const overlay = document.getElementById('batch-conflict-overlay');
+        if (!overlay) { resolve('skip'); return; }
+        overlay.classList.remove('hidden');
+
+        const handler = (e) => {
+            const btn = e.target.closest('button[data-policy]');
+            if (!btn) return;
+            const policy = btn.dataset.policy;
+            overlay.classList.add('hidden');
+            overlay.querySelector('.batch-conflict-options').removeEventListener('click', handler);
+            resolve(policy === 'cancel' ? null : policy);
+        };
+        overlay.querySelector('.batch-conflict-options').addEventListener('click', handler);
+    });
+}
+
+// --- Batch Rename ---
+
+function computeBatchRename(filePaths, mode, options) {
+    const results = [];
+    const seenNames = new Set();
+
+    // Simple path helpers (no Node require needed)
+    function basename(fp) {
+        const parts = fp.replace(/\\/g, '/').split('/');
+        return parts[parts.length - 1] || '';
+    }
+    function extname(fp) {
+        const name = basename(fp);
+        const dotIdx = name.lastIndexOf('.');
+        return dotIdx > 0 ? name.slice(dotIdx) : '';
+    }
+    function dirname(fp) {
+        const normalized = fp.replace(/\\/g, '/');
+        const lastSlash = normalized.lastIndexOf('/');
+        return lastSlash >= 0 ? fp.slice(0, lastSlash) : '.';
+    }
+    function joinPath(dir, file) {
+        const sep = dir.includes('\\') ? '\\' : '/';
+        return dir + sep + file;
+    }
+
+    for (let i = 0; i < filePaths.length; i++) {
+        const fp = filePaths[i];
+        const dir = dirname(fp);
+        const ext = extname(fp);
+        const name = basename(fp);
+        const base = ext ? name.slice(0, name.length - ext.length) : name;
+        let newBase = base;
+
+        switch (mode) {
+            case 'prefix':
+                newBase = (options.prefix || '') + base;
+                break;
+            case 'suffix':
+                newBase = base + (options.suffix || '');
+                break;
+            case 'find-replace':
+                if (options.find) {
+                    newBase = base.split(options.find).join(options.replace || '');
+                }
+                break;
+            case 'sequence': {
+                const pattern = options.pattern || 'file_###';
+                const startNum = options.startNum || 1;
+                const num = startNum + i;
+                const hashCount = (pattern.match(/#+/) || ['###'])[0].length;
+                const padded = String(num).padStart(hashCount, '0');
+                newBase = pattern.replace(/#+/, padded);
+                break;
+            }
+        }
+
+        const newName = newBase + ext;
+        const collision = seenNames.has(newName.toLowerCase());
+        seenNames.add(newName.toLowerCase());
+
+        results.push({
+            oldPath: fp,
+            oldName: basename(fp),
+            newName,
+            newPath: joinPath(dir, newName),
+            collision,
+            unchanged: newName === path.basename(fp),
+        });
+    }
+    return results;
+}
+
+function showBatchRenameDialog(filePaths) {
+    if (!filePaths || filePaths.length === 0) return;
+    const overlay = document.getElementById('batch-rename-overlay');
+    if (!overlay) return;
+    overlay.classList.remove('hidden');
+
+    const modeRadios = overlay.querySelectorAll('input[name="rename-mode"]');
+    const fieldRows = overlay.querySelectorAll('.field-row');
+    const previewEl = document.getElementById('rename-preview');
+    const confirmBtn = document.getElementById('rename-confirm-btn');
+    const cancelBtn = document.getElementById('rename-cancel-btn');
+
+    // Reset inputs
+    overlay.querySelectorAll('input[type="text"]').forEach(i => i.value = '');
+    const startNumInput = document.getElementById('rename-start-num');
+    if (startNumInput) startNumInput.value = '1';
+
+    function getMode() {
+        return overlay.querySelector('input[name="rename-mode"]:checked')?.value || 'prefix';
+    }
+
+    function getOptions() {
+        return {
+            prefix: document.getElementById('rename-prefix')?.value || '',
+            suffix: document.getElementById('rename-suffix')?.value || '',
+            find: document.getElementById('rename-find')?.value || '',
+            replace: document.getElementById('rename-replace')?.value || '',
+            pattern: document.getElementById('rename-pattern')?.value || 'file_###',
+            startNum: parseInt(document.getElementById('rename-start-num')?.value) || 1,
+        };
+    }
+
+    function updatePreview() {
+        const mode = getMode();
+        const options = getOptions();
+        const results = computeBatchRename(filePaths, mode, options);
+        const previewItems = results.slice(0, 5);
+        let html = '';
+        let hasErrors = false;
+        for (const r of previewItems) {
+            if (r.collision) {
+                html += `<div class="preview-row"><span class="preview-old">${r.oldName}</span><span class="preview-arrow">&rarr;</span><span class="preview-new preview-error">${r.newName} (collision!)</span></div>`;
+                hasErrors = true;
+            } else if (r.unchanged) {
+                html += `<div class="preview-row"><span class="preview-old" style="text-decoration:none">${r.oldName}</span><span class="preview-arrow">&rarr;</span><span class="preview-new" style="color:var(--text-muted)">${r.newName} (unchanged)</span></div>`;
+            } else {
+                html += `<div class="preview-row"><span class="preview-old">${r.oldName}</span><span class="preview-arrow">&rarr;</span><span class="preview-new">${r.newName}</span></div>`;
+            }
+        }
+        if (results.length > 5) {
+            html += `<div class="preview-row" style="color:var(--text-muted)">... and ${results.length - 5} more</div>`;
+        }
+        previewEl.innerHTML = html;
+        confirmBtn.disabled = hasErrors;
+    }
+
+    function updateFieldVisibility() {
+        const mode = getMode();
+        fieldRows.forEach(row => {
+            row.classList.toggle('active', row.dataset.mode === mode);
+        });
+        updatePreview();
+    }
+
+    // Event listeners
+    modeRadios.forEach(r => r.addEventListener('change', updateFieldVisibility));
+    overlay.querySelectorAll('input[type="text"], input[type="number"]').forEach(input => {
+        input.addEventListener('input', updatePreview);
+    });
+
+    updateFieldVisibility();
+
+    // Cancel
+    const onCancel = () => {
+        overlay.classList.add('hidden');
+        cleanup();
+    };
+    cancelBtn.addEventListener('click', onCancel);
+
+    // Confirm
+    const onConfirm = async () => {
+        const mode = getMode();
+        const options = getOptions();
+        const results = computeBatchRename(filePaths, mode, options);
+        const operations = results
+            .filter(r => !r.unchanged && !r.collision)
+            .map(r => ({ oldPath: r.oldPath, newName: r.newName }));
+
+        if (operations.length === 0) {
+            showToast('No files to rename', 'warning');
+            overlay.classList.add('hidden');
+            cleanup();
+            return;
+        }
+
+        overlay.classList.add('hidden');
+        cleanup();
+
+        try {
+            showProgress(0, operations.length, `Renaming ${operations.length} files...`);
+            const result = await window.electronAPI.batchRenameFiles(operations);
+            hideProgress();
+            const ok = result.renamed ? result.renamed.length : 0;
+            const fail = result.failed ? result.failed.length : 0;
+            let msg = `Renamed ${ok} file${ok !== 1 ? 's' : ''}`;
+            if (fail > 0) msg += `, ${fail} failed`;
+            showToast(msg, fail > 0 ? 'warning' : 'success');
+            clearSelection();
+            loadVideos(currentFolderPath, false);
+        } catch (err) {
+            hideProgress();
+            showToast(`Rename failed: ${err.message}`, 'error');
+        }
+    };
+    confirmBtn.addEventListener('click', onConfirm);
+
+    function cleanup() {
+        cancelBtn.removeEventListener('click', onCancel);
+        confirmBtn.removeEventListener('click', onConfirm);
+    }
+}

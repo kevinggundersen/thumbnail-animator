@@ -1690,6 +1690,114 @@ ipcMain.handle('move-file', async (event, sourcePath, destFolderOrPath, fileName
     }
 });
 
+// Batch move files with predetermined conflict policy
+ipcMain.handle('batch-move-files', async (event, filePaths, destFolder, conflictPolicy) => {
+    const succeeded = [];
+    const skipped = [];
+    const failed = [];
+    for (let i = 0; i < filePaths.length; i++) {
+        try {
+            const sourcePath = filePaths[i];
+            const baseName = path.basename(sourcePath);
+            let destPath = path.join(destFolder, baseName);
+
+            if (fs.existsSync(destPath) && path.normalize(sourcePath) !== path.normalize(destPath)) {
+                if (conflictPolicy === 'skip') {
+                    skipped.push(sourcePath);
+                    event.sender.send('batch-progress', { current: i + 1, total: filePaths.length });
+                    continue;
+                } else if (conflictPolicy === 'keep-both') {
+                    const ext = path.extname(baseName);
+                    const base = path.basename(baseName, ext);
+                    let counter = 2;
+                    while (fs.existsSync(destPath)) {
+                        destPath = path.join(destFolder, `${base} (${counter})${ext}`);
+                        counter++;
+                    }
+                } else if (conflictPolicy === 'replace') {
+                    await fs.promises.unlink(destPath);
+                }
+            }
+
+            await fs.promises.rename(sourcePath, destPath);
+            succeeded.push({ oldPath: sourcePath, newPath: destPath });
+        } catch (err) {
+            failed.push({ path: filePaths[i], error: err.message });
+        }
+        event.sender.send('batch-progress', { current: i + 1, total: filePaths.length });
+    }
+    return { succeeded, skipped, failed };
+});
+
+// Batch copy files with predetermined conflict policy
+ipcMain.handle('batch-copy-files', async (event, filePaths, destFolder, conflictPolicy) => {
+    const succeeded = [];
+    const skipped = [];
+    const failed = [];
+    for (let i = 0; i < filePaths.length; i++) {
+        try {
+            const sourcePath = filePaths[i];
+            const baseName = path.basename(sourcePath);
+            let destPath = path.join(destFolder, baseName);
+
+            if (fs.existsSync(destPath)) {
+                if (conflictPolicy === 'skip') {
+                    skipped.push(sourcePath);
+                    event.sender.send('batch-progress', { current: i + 1, total: filePaths.length });
+                    continue;
+                } else if (conflictPolicy === 'keep-both') {
+                    const ext = path.extname(baseName);
+                    const base = path.basename(baseName, ext);
+                    let counter = 2;
+                    while (fs.existsSync(destPath)) {
+                        destPath = path.join(destFolder, `${base} (${counter})${ext}`);
+                        counter++;
+                    }
+                }
+                // 'replace' just overwrites via copyFile
+            }
+
+            await fs.promises.copyFile(sourcePath, destPath);
+            succeeded.push({ oldPath: sourcePath, newPath: destPath });
+        } catch (err) {
+            failed.push({ path: filePaths[i], error: err.message });
+        }
+        event.sender.send('batch-progress', { current: i + 1, total: filePaths.length });
+    }
+    return { succeeded, skipped, failed };
+});
+
+// Batch rename files
+ipcMain.handle('batch-rename-files', async (event, operations) => {
+    const renamed = [];
+    const failed = [];
+    for (let i = 0; i < operations.length; i++) {
+        try {
+            const { oldPath, newName } = operations[i];
+            // Validate new name
+            if (!newName || newName.includes('/') || newName.includes('\\') || newName.includes('..')) {
+                failed.push({ path: oldPath, error: 'Invalid file name' });
+                continue;
+            }
+            const dir = path.dirname(oldPath);
+            const newPath = path.join(dir, newName);
+
+            // Don't overwrite existing files
+            if (fs.existsSync(newPath) && path.normalize(oldPath) !== path.normalize(newPath)) {
+                failed.push({ path: oldPath, error: `"${newName}" already exists` });
+                continue;
+            }
+
+            await fs.promises.rename(oldPath, newPath);
+            renamed.push({ oldPath, newPath });
+        } catch (err) {
+            failed.push({ path: operations[i].oldPath, error: err.message });
+        }
+        event.sender.send('batch-progress', { current: i + 1, total: operations.length });
+    }
+    return { renamed, failed };
+});
+
 // Watch folder for changes
 ipcMain.handle('watch-folder', async (event, folderPath) => {
     try {

@@ -272,6 +272,85 @@
                 <button id="cancel-progress" class="progress-cancel-btn">Cancel</button>
             </div>
         </div>
+        <!-- Multi-Select Selection Bar -->
+        <div id="selection-bar" class="selection-bar hidden">
+            <span class="selection-count">0 items selected</span>
+            <span class="sel-divider"></span>
+            <button id="sel-rename-btn" title="Batch Rename">Rename</button>
+            <button id="sel-move-btn" title="Move selected files">Move</button>
+            <button id="sel-copy-btn" title="Copy selected files">Copy</button>
+            <button id="sel-rate-btn" title="Set star rating">Rate</button>
+            <button id="sel-delete-btn" title="Delete selected files">Delete</button>
+            <span class="sel-divider"></span>
+            <button id="sel-clear-btn" class="sel-clear-btn" title="Clear selection">Clear</button>
+        </div>
+
+        <!-- Batch Star Picker (shown near cursor) -->
+        <div id="batch-star-picker" class="batch-star-picker hidden">
+            <span class="batch-star" data-star="1">&#9733;</span>
+            <span class="batch-star" data-star="2">&#9733;</span>
+            <span class="batch-star" data-star="3">&#9733;</span>
+            <span class="batch-star" data-star="4">&#9733;</span>
+            <span class="batch-star" data-star="5">&#9733;</span>
+            <button class="clear-rating-btn" data-star="0">Clear</button>
+        </div>
+
+        <!-- Batch Rename Dialog -->
+        <div id="batch-rename-overlay" class="batch-rename-overlay hidden">
+            <div class="batch-rename-dialog">
+                <h3>Batch Rename</h3>
+                <div class="batch-rename-modes">
+                    <label><input type="radio" name="rename-mode" value="prefix" checked> Prefix</label>
+                    <label><input type="radio" name="rename-mode" value="suffix"> Suffix</label>
+                    <label><input type="radio" name="rename-mode" value="find-replace"> Find & Replace</label>
+                    <label><input type="radio" name="rename-mode" value="sequence"> Numbering</label>
+                </div>
+                <div class="batch-rename-fields">
+                    <div class="field-row active" data-mode="prefix">
+                        <label>Prefix text</label>
+                        <input type="text" id="rename-prefix" placeholder="e.g. vacation_">
+                    </div>
+                    <div class="field-row" data-mode="suffix">
+                        <label>Suffix text (before extension)</label>
+                        <input type="text" id="rename-suffix" placeholder="e.g. _final">
+                    </div>
+                    <div class="field-row" data-mode="find-replace">
+                        <label>Find</label>
+                        <input type="text" id="rename-find" placeholder="Text to find">
+                        <label>Replace with</label>
+                        <input type="text" id="rename-replace" placeholder="Replacement text">
+                    </div>
+                    <div class="field-row" data-mode="sequence">
+                        <label>Pattern (use ### for number)</label>
+                        <input type="text" id="rename-pattern" placeholder="e.g. photo_###">
+                        <label>Start number</label>
+                        <input type="number" id="rename-start-num" value="1" min="0">
+                    </div>
+                </div>
+                <div class="batch-rename-preview" id="rename-preview">
+                    <div style="color: var(--text-muted)">Preview will appear here...</div>
+                </div>
+                <div class="batch-rename-buttons">
+                    <button class="btn-cancel" id="rename-cancel-btn">Cancel</button>
+                    <button class="btn-rename" id="rename-confirm-btn">Rename All</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Batch Move/Copy Conflict Policy Dialog -->
+        <div id="batch-conflict-overlay" class="batch-conflict-overlay hidden">
+            <div class="batch-conflict-dialog">
+                <h3>File conflicts found</h3>
+                <p>Some files already exist in the destination. How should conflicts be handled?</p>
+                <div class="batch-conflict-options">
+                    <button data-policy="skip">Skip existing files</button>
+                    <button data-policy="replace">Replace existing files</button>
+                    <button data-policy="keep-both">Keep both (auto-rename)</button>
+                    <button data-policy="cancel">Cancel</button>
+                </div>
+            </div>
+        </div>
+
         <div id="organize-dialog" class="organize-dialog hidden">
             <div class="organize-dialog-content">
                 <h3>Organize Files</h3>

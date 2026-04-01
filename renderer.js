@@ -561,6 +561,7 @@ function vsUpdateDOM(startIndex, endIndex) {
         card._vsItemIndex = i;
 
         vsActiveCards.set(i, card);
+        syncCardSelectionVisual(i);
         fragment.appendChild(card);
 
         if (isMedia) {
@@ -929,6 +930,153 @@ function vsGetCardForIndex(index) {
 
 // ============================================================================
 // END VIRTUAL SCROLLING ENGINE
+// ============================================================================
+
+// ============================================================================
+// MULTI-SELECT ENGINE
+// Selection state lives in a Set<filePath>, synced to DOM as cards scroll in/out.
+// ============================================================================
+
+const selectedPaths = new Set();
+let selectionAnchorIndex = -1;
+
+function selectItem(index) {
+    const item = vsSortedItems[index];
+    if (!item || item.folderPath) return;
+    selectedPaths.add(item.path);
+    syncCardSelectionVisual(index);
+}
+
+function deselectItem(index) {
+    const item = vsSortedItems[index];
+    if (!item) return;
+    selectedPaths.delete(item.path);
+    syncCardSelectionVisual(index);
+}
+
+function toggleItemSelection(index) {
+    const item = vsSortedItems[index];
+    if (!item || item.folderPath) return;
+    if (selectedPaths.has(item.path)) {
+        selectedPaths.delete(item.path);
+    } else {
+        selectedPaths.add(item.path);
+    }
+    syncCardSelectionVisual(index);
+}
+
+function selectRange(fromIndex, toIndex) {
+    const lo = Math.min(fromIndex, toIndex);
+    const hi = Math.max(fromIndex, toIndex);
+    for (let i = lo; i <= hi; i++) {
+        const item = vsSortedItems[i];
+        if (item && !item.folderPath) {
+            selectedPaths.add(item.path);
+        }
+    }
+    // Sync all visible cards
+    for (const [idx, card] of vsActiveCards) {
+        syncCardSelectionVisual(idx);
+    }
+}
+
+function clearSelection() {
+    if (selectedPaths.size === 0) return;
+    selectedPaths.clear();
+    selectionAnchorIndex = -1;
+    for (const [idx, card] of vsActiveCards) {
+        card.classList.remove('selected');
+    }
+    updateSelectionUI();
+}
+
+function selectAll() {
+    for (let i = 0; i < vsSortedItems.length; i++) {
+        const item = vsSortedItems[i];
+        if (item && !item.folderPath) {
+            selectedPaths.add(item.path);
+        }
+    }
+    for (const [idx, card] of vsActiveCards) {
+        syncCardSelectionVisual(idx);
+    }
+}
+
+function getSelectedFilePaths() {
+    return Array.from(selectedPaths);
+}
+
+function syncCardSelectionVisual(index) {
+    const card = vsActiveCards.get(index);
+    if (!card) return;
+    const item = vsSortedItems[index];
+    if (item && selectedPaths.has(item.path)) {
+        card.classList.add('selected');
+    } else {
+        card.classList.remove('selected');
+    }
+}
+
+function updateSelectionUI() {
+    const bar = document.getElementById('selection-bar');
+    if (!bar) return;
+    const count = selectedPaths.size;
+    if (count === 0) {
+        bar.classList.add('hidden');
+    } else {
+        bar.classList.remove('hidden');
+        const countEl = bar.querySelector('.selection-count');
+        if (countEl) countEl.textContent = `${count} item${count !== 1 ? 's' : ''} selected`;
+    }
+}
+
+async function batchDeleteSelected() {
+    const paths = getSelectedFilePaths();
+    if (paths.length === 0) return;
+    const confirmMsg = `Delete ${paths.length} selected file${paths.length !== 1 ? 's' : ''}? They will be moved to the trash.`;
+    if (!confirm(confirmMsg)) return;
+    try {
+        showProgress(0, paths.length, `Deleting ${paths.length} files...`);
+        const result = await window.electronAPI.deleteFilesBatch(paths);
+        hideProgress();
+        const successCount = result.success ? result.success.length : 0;
+        const failCount = result.failed ? result.failed.length : 0;
+        if (failCount > 0) {
+            showToast(`Deleted ${successCount} files, ${failCount} failed`, 'warning');
+        } else {
+            showToast(`Deleted ${successCount} file${successCount !== 1 ? 's' : ''}`, 'success');
+        }
+        clearSelection();
+        loadVideos(currentFolderPath, false);
+    } catch (err) {
+        hideProgress();
+        showToast(`Delete failed: ${err.message}`, 'error');
+    }
+}
+
+// Wire up selection bar buttons
+document.addEventListener('DOMContentLoaded', () => {
+    const selClearBtn = document.getElementById('sel-clear-btn');
+    if (selClearBtn) selClearBtn.addEventListener('click', () => clearSelection());
+
+    const selDeleteBtn = document.getElementById('sel-delete-btn');
+    if (selDeleteBtn) selDeleteBtn.addEventListener('click', () => batchDeleteSelected());
+
+    const selRenameBtn = document.getElementById('sel-rename-btn');
+    if (selRenameBtn) selRenameBtn.addEventListener('click', () => showBatchRenameDialog(getSelectedFilePaths()));
+
+    const selMoveBtn = document.getElementById('sel-move-btn');
+    if (selMoveBtn) selMoveBtn.addEventListener('click', () => batchMoveSelected());
+
+    const selCopyBtn = document.getElementById('sel-copy-btn');
+    if (selCopyBtn) selCopyBtn.addEventListener('click', () => batchCopySelected());
+
+    const selRateBtn = document.getElementById('sel-rate-btn');
+    if (selRateBtn) selRateBtn.addEventListener('click', (e) => showBatchStarPicker(e.clientX, e.clientY));
+});
+
+// ============================================================================
+// END MULTI-SELECT ENGINE
 // ============================================================================
 
 // --- Batched localStorage writes ---
@@ -6395,9 +6543,32 @@ gridContainer.addEventListener('click', (e) => {
         return;
     }
 
-    // Media card click
+    // Media card click (with multi-select support)
     const mediaCard = e.target.closest('.video-card');
     if (mediaCard) {
+        const itemIndex = mediaCard._vsItemIndex;
+
+        // Ctrl/Meta+click: toggle selection
+        if (e.ctrlKey || e.metaKey) {
+            toggleItemSelection(itemIndex);
+            selectionAnchorIndex = itemIndex;
+            updateSelectionUI();
+            return;
+        }
+
+        // Shift+click: range select
+        if (e.shiftKey && selectionAnchorIndex >= 0) {
+            // Don't clear - add to existing selection
+            selectRange(selectionAnchorIndex, itemIndex);
+            updateSelectionUI();
+            return;
+        }
+
+        // Plain click with active selection: clear selection and open lightbox
+        if (selectedPaths.size > 0) {
+            clearSelection();
+        }
+
         openLightbox(mediaCard.dataset.src, mediaCard.dataset.path, mediaCard.dataset.name);
         return;
     }
@@ -6405,6 +6576,7 @@ gridContainer.addEventListener('click', (e) => {
     // Folder card click
     const folderCard = e.target.closest('.folder-card');
     if (folderCard) {
+        clearSelection();
         setTimeout(() => {
             navigateToFolder(folderCard.dataset.folderPath).catch(err => {
                 console.error('Error navigating to folder:', err);
@@ -9285,6 +9457,44 @@ function showContextMenu(event, card) {
         }
     }
 
+    // Multi-select aware right-click: if right-clicked card is not in selection, select only it
+    if (!isFolder) {
+        const cardPath = card.dataset.filePath;
+        if (selectedPaths.size > 0 && !selectedPaths.has(cardPath)) {
+            clearSelection();
+            if (card._vsItemIndex !== undefined) {
+                selectItem(card._vsItemIndex);
+                selectionAnchorIndex = card._vsItemIndex;
+                updateSelectionUI();
+            }
+        }
+    }
+
+    // Inject / refresh batch operation items (multi-select only)
+    if (!isFolder) {
+        menu.querySelectorAll('.batch-menu-item, .batch-menu-separator').forEach(el => el.remove());
+        if (selectedPaths.size > 1) {
+            const n = selectedPaths.size;
+            const batchSep = document.createElement('div');
+            batchSep.className = 'context-menu-separator batch-menu-separator';
+            menu.insertBefore(batchSep, menu.firstChild);
+            const batchItems = [
+                { action: 'batch-rename', label: `Batch Rename (${n})...` },
+                { action: 'batch-move', label: `Move ${n} files to...` },
+                { action: 'batch-copy', label: `Copy ${n} files to...` },
+                { action: 'batch-rate', label: `Set Rating (${n})...` },
+                { action: 'batch-delete', label: `Delete ${n} files` },
+            ];
+            for (let i = batchItems.length - 1; i >= 0; i--) {
+                const el = document.createElement('div');
+                el.className = 'context-menu-item batch-menu-item';
+                el.dataset.action = batchItems[i].action;
+                el.textContent = batchItems[i].label;
+                menu.insertBefore(el, menu.firstChild);
+            }
+        }
+    }
+
     // Inject / refresh plugin menu items (file menus only)
     if (!isFolder) {
         // Remove any previously injected plugin items and their separator
@@ -9333,8 +9543,54 @@ function hideContextMenu() {
 // Hide context menus on Escape
 document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
+        // Close batch star picker if open
+        const starPicker = document.getElementById('batch-star-picker');
+        if (starPicker && !starPicker.classList.contains('hidden')) {
+            starPicker.classList.add('hidden');
+            return;
+        }
+        // Close batch rename dialog if open
+        const renameOverlay = document.getElementById('batch-rename-overlay');
+        if (renameOverlay && !renameOverlay.classList.contains('hidden')) {
+            renameOverlay.classList.add('hidden');
+            return;
+        }
+        // Close batch conflict dialog if open
+        const conflictOverlay = document.getElementById('batch-conflict-overlay');
+        if (conflictOverlay && !conflictOverlay.classList.contains('hidden')) {
+            conflictOverlay.classList.add('hidden');
+            return;
+        }
+        // Clear multi-selection if active
+        if (selectedPaths.size > 0) {
+            clearSelection();
+            return;
+        }
         hideContextMenu();
         if (favContextMenu) hideFavContextMenu();
+    }
+
+    // Ctrl+A / Cmd+A: select all media items
+    if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+        // Only when no input/textarea is focused and no modal is open
+        const active = document.activeElement;
+        const isInput = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable);
+        const modalOpen = document.querySelector('.batch-rename-overlay:not(.hidden), .settings-modal:not(.hidden), .advanced-search-overlay:not(.hidden)');
+        if (!isInput && !modalOpen) {
+            e.preventDefault();
+            selectAll();
+            updateSelectionUI();
+        }
+    }
+
+    // Delete key: delete selected files
+    if (e.key === 'Delete' && selectedPaths.size > 0) {
+        const active = document.activeElement;
+        const isInput = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable);
+        if (!isInput) {
+            e.preventDefault();
+            batchDeleteSelected();
+        }
     }
 });
 
@@ -9426,14 +9682,32 @@ contextMenu.addEventListener('click', async (e) => {
             break;
 
         case 'add-to-collection': {
-            // Gather selected files (multi-select support)
-            const selectedCards = document.querySelectorAll('.video-card.selected');
-            const paths = selectedCards.length > 1
-                ? Array.from(selectedCards).map(c => c.dataset.filePath).filter(Boolean)
-                : [filePath];
+            // Use multi-select paths if available, else single file
+            const paths = selectedPaths.size > 0 ? getSelectedFilePaths() : [filePath];
             showAddToCollectionSubmenu(paths, e.clientX || e.pageX || 200, e.clientY || e.pageY || 200);
             break;
         }
+
+        // Batch operations from context menu
+        case 'batch-rename':
+            showBatchRenameDialog(getSelectedFilePaths());
+            break;
+
+        case 'batch-move':
+            batchMoveSelected();
+            break;
+
+        case 'batch-copy':
+            batchCopySelected();
+            break;
+
+        case 'batch-rate':
+            showBatchStarPicker(e.clientX || 200, e.clientY || 200);
+            break;
+
+        case 'batch-delete':
+            batchDeleteSelected();
+            break;
 
         case 'remove-from-collection': {
             if (currentCollectionId) {
@@ -9600,6 +9874,8 @@ renameDialog.addEventListener('click', (e) => {
 });
 
 async function loadVideos(folderPath, useCache = true, preservedScrollTop = null) {
+    // Clear multi-selection on folder navigation
+    clearSelection();
     // Stop periodic cleanup during folder switch
     stopPeriodicCleanup();
     activeDimensionHydrationToken++;

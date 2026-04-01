@@ -9717,7 +9717,7 @@ function showCollectionContextMenu(e, collection) {
 }
 
 // Create/Edit Collection Dialog
-function openCollectionDialog(existingCollection = null) {
+function openCollectionDialog(existingCollection = null, onCreated = null) {
     // Remove any existing dialog
     document.querySelectorAll('.collection-dialog-overlay').forEach(el => el.remove());
 
@@ -9959,6 +9959,11 @@ function openCollectionDialog(existingCollection = null) {
         renderCollectionsSidebar();
         showToast(`Collection "${name}" ${isEdit ? 'updated' : 'created'}`, 'success');
 
+        // If a callback was provided (e.g. to add files), invoke it
+        if (!isEdit && onCreated) {
+            await onCreated(collectionData);
+        }
+
         // Auto-open the new collection (loads in background with sidebar spinner)
         if (!isEdit) loadCollectionIntoGrid(collectionData.id);
         // If editing the currently-viewed collection, refresh it
@@ -9982,22 +9987,12 @@ function showAddToCollectionSubmenu(filePaths, anchorX, anchorY) {
     newItem.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg> New Collection...';
     newItem.addEventListener('click', async () => {
         closeSubmenu();
-        // Create a new static collection, then add files
-        const name = prompt('New collection name:');
-        if (!name || !name.trim()) return;
-        const col = {
-            id: generateCollectionId(),
-            name: name.trim(),
-            type: 'static',
-            rules: null,
-            createdAt: Date.now(),
-            updatedAt: Date.now(),
-            sortOrder: collectionsCache.length
-        };
-        await saveCollection(col);
-        const count = await addFilesToCollection(col.id, filePaths);
-        renderCollectionsSidebar();
-        showToast(`Added ${count} file(s) to "${col.name}"`, 'success');
+        // Open the full collection dialog; after creation, add the files
+        openCollectionDialog(null, async (col) => {
+            const count = await addFilesToCollection(col.id, filePaths);
+            renderCollectionsSidebar();
+            if (count > 0) showToast(`Added ${count} file(s) to "${col.name}"`, 'success');
+        });
     });
     menu.appendChild(newItem);
 

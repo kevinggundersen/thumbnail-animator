@@ -965,7 +965,7 @@ function restoreTabDomSnapshot(tabId) {
     return true;
 }
 
-function createTab(path, name) {
+function createTab(path, name, collectionId = null) {
     const tab = {
         id: tabIdCounter++,
         path: path || null,
@@ -973,7 +973,8 @@ function createTab(path, name) {
         sortType: sortType || 'name', // Use current sorting or default
         sortOrder: sortOrder || 'ascending', // Use current order or default
         historyPaths: [],
-        historyIndex: -1
+        historyIndex: -1,
+        collectionId: collectionId || null
     };
     tabs.push(tab);
     saveTabs();
@@ -1030,6 +1031,21 @@ function switchToTab(tabId) {
         // Update UI to reflect tab's sorting preferences
         if (sortTypeSelect) sortTypeSelect.value = sortType;
         if (sortOrderSelect) sortOrderSelect.value = sortOrder;
+
+        // Handle collection tabs
+        if (tab.collectionId) {
+            currentCollectionId = tab.collectionId;
+            currentFolderPath = null;
+            setTimeout(() => {
+                loadCollectionIntoGrid(tab.collectionId).catch(err => {
+                    console.error('Error loading collection tab:', err);
+                    hideLoadingIndicator();
+                });
+            }, 0);
+            saveTabs();
+            renderTabs();
+            return;
+        }
 
         if (tab.path) {
             // Look up saved per-folder scroll position for this tab
@@ -1098,6 +1114,8 @@ function updateCurrentTab(path, name) {
     if (tab) {
         tab.path = path;
         tab.name = name || (path ? path.split(/[/\\]/).pop() : 'Home');
+        // Track collection state on tab
+        tab.collectionId = currentCollectionId || null;
         // Preserve sorting preferences when updating tab
         tab.sortType = tab.sortType || sortType;
         tab.sortOrder = tab.sortOrder || sortOrder;

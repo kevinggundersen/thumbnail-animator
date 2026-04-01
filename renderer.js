@@ -47,11 +47,13 @@ const INDEXEDDB_CACHE_TTL = 3600000; // IndexedDB persistent cache TTL (1 hour)
 
 // IndexedDB Configuration
 const DB_NAME = 'ThumbnailAnimatorCache';
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 const STORE_NAME = 'folderCache';
 const DIMENSIONS_STORE = 'dimensionCache';
 const GIF_DURATION_STORE = 'gifDurationCache';
 const EMBEDDING_STORE = 'embeddingCache';
+const COLLECTIONS_STORE = 'collections';
+const COLLECTION_FILES_STORE = 'collectionFiles';
 
 // ============================================================================
 // END CONFIGURATION CONSTANTS
@@ -1401,6 +1403,13 @@ async function initIndexedDB() {
             if (!database.objectStoreNames.contains(EMBEDDING_STORE)) {
                 database.createObjectStore(EMBEDDING_STORE, { keyPath: 'key' });
             }
+            if (!database.objectStoreNames.contains(COLLECTIONS_STORE)) {
+                database.createObjectStore(COLLECTIONS_STORE, { keyPath: 'id' });
+            }
+            if (!database.objectStoreNames.contains(COLLECTION_FILES_STORE)) {
+                const cfStore = database.createObjectStore(COLLECTION_FILES_STORE, { keyPath: 'id' });
+                cfStore.createIndex('collectionId', 'collectionId', { unique: false });
+            }
         };
     });
 }
@@ -1516,6 +1525,389 @@ async function cleanupIndexedDBCache() {
         };
     } catch (error) {
         console.warn('Failed to cleanup IndexedDB cache:', error);
+    }
+}
+
+// ============================================================================
+// COLLECTIONS / ALBUMS
+// Virtual file-level groupings stored in IndexedDB.
+// ============================================================================
+
+let currentCollectionId = null;   // When set, grid shows collection contents
+let collectionsCache = [];        // In-memory array of all collection metadata
+
+function generateCollectionId() {
+    return 'col_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
+}
+
+function generateCollectionFileId() {
+    return 'cf_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
+}
+
+async function getAllCollections() {
+    if (!db) { try { await initIndexedDB(); } catch { return []; } }
+    return new Promise((resolve) => {
+        try {
+            const tx = db.transaction([COLLECTIONS_STORE], 'readonly');
+            const store = tx.objectStore(COLLECTIONS_STORE);
+            const request = store.getAll();
+            request.onsuccess = () => {
+                collectionsCache = (request.result || []).sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+                resolve(collectionsCache);
+            };
+            request.onerror = () => resolve([]);
+        } catch { resolve([]); }
+    });
+}
+
+async function getCollection(id) {
+    if (!db) { try { await initIndexedDB(); } catch { return null; } }
+    return new Promise((resolve) => {
+        try {
+            const tx = db.transaction([COLLECTIONS_STORE], 'readonly');
+            const request = tx.objectStore(COLLECTIONS_STORE).get(id);
+            request.onsuccess = () => resolve(request.result || null);
+            request.onerror = () => resolve(null);
+        } catch { resolve(null); }
+    });
+}
+
+async function saveCollection(collection) {
+    if (!db) { try { await initIndexedDB(); } catch { return; } }
+    collection.updatedAt = Date.now();
+    return new Promise((resolve, reject) => {
+        try {
+            const tx = db.transaction([COLLECTIONS_STORE], 'readwrite');
+            tx.objectStore(COLLECTIONS_STORE).put(collection);
+            tx.oncomplete = () => {
+                // Update in-memory cache
+                const idx = collectionsCache.findIndex(c => c.id === collection.id);
+                if (idx >= 0) collectionsCache[idx] = collection;
+                else collectionsCache.push(collection);
+                resolve();
+            };
+            tx.onerror = () => reject(tx.error);
+        } catch (e) { reject(e); }
+    });
+}
+
+async function deleteCollection(id) {
+    if (!db) return;
+    return new Promise((resolve) => {
+        try {
+            const tx = db.transaction([COLLECTIONS_STORE, COLLECTION_FILES_STORE], 'readwrite');
+            tx.objectStore(COLLECTIONS_STORE).delete(id);
+            // Delete all associated files
+            const cfStore = tx.objectStore(COLLECTION_FILES_STORE);
+            const index = cfStore.index('collectionId');
+            const request = index.openCursor(IDBKeyRange.only(id));
+            request.onsuccess = (event) => {
+                const cursor = event.target.result;
+                if (cursor) { cursor.delete(); cursor.continue(); }
+            };
+            tx.oncomplete = () => {
+                collectionsCache = collectionsCache.filter(c => c.id !== id);
+                resolve();
+            };
+            tx.onerror = () => resolve();
+        } catch { resolve(); }
+    });
+}
+
+async function getCollectionFiles(collectionId) {
+    if (!db) { try { await initIndexedDB(); } catch { return []; } }
+    return new Promise((resolve) => {
+        try {
+            const tx = db.transaction([COLLECTION_FILES_STORE], 'readonly');
+            const index = tx.objectStore(COLLECTION_FILES_STORE).index('collectionId');
+            const request = index.getAll(IDBKeyRange.only(collectionId));
+            request.onsuccess = () => {
+                const results = (request.result || []).sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+                resolve(results);
+            };
+            request.onerror = () => resolve([]);
+        } catch { resolve([]); }
+    });
+}
+
+async function addFilesToCollection(collectionId, filePaths) {
+    if (!db || filePaths.length === 0) return;
+    // Get existing file paths to deduplicate
+    const existing = await getCollectionFiles(collectionId);
+    const existingPaths = new Set(existing.map(f => normalizePath(f.filePath)));
+    const maxOrder = existing.reduce((max, f) => Math.max(max, f.sortOrder || 0), 0);
+
+    const newEntries = [];
+    let order = maxOrder;
+    for (const fp of filePaths) {
+        if (existingPaths.has(normalizePath(fp))) continue;
+        order++;
+        newEntries.push({
+            id: generateCollectionFileId(),
+            collectionId,
+            filePath: fp,
+            addedAt: Date.now(),
+            sortOrder: order
+        });
+    }
+    if (newEntries.length === 0) return;
+
+    return new Promise((resolve) => {
+        try {
+            const tx = db.transaction([COLLECTION_FILES_STORE], 'readwrite');
+            const store = tx.objectStore(COLLECTION_FILES_STORE);
+            for (const entry of newEntries) store.put(entry);
+            tx.oncomplete = () => resolve(newEntries.length);
+            tx.onerror = () => resolve(0);
+        } catch { resolve(0); }
+    });
+}
+
+async function removeFileFromCollection(collectionId, filePath) {
+    if (!db) return;
+    const files = await getCollectionFiles(collectionId);
+    const normalizedTarget = normalizePath(filePath);
+    const toDelete = files.filter(f => normalizePath(f.filePath) === normalizedTarget);
+    if (toDelete.length === 0) return;
+
+    return new Promise((resolve) => {
+        try {
+            const tx = db.transaction([COLLECTION_FILES_STORE], 'readwrite');
+            const store = tx.objectStore(COLLECTION_FILES_STORE);
+            for (const f of toDelete) store.delete(f.id);
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => resolve();
+        } catch { resolve(); }
+    });
+}
+
+async function removeAllMissingFromCollection(collectionId, missingPaths) {
+    if (!db || missingPaths.length === 0) return;
+    const normalizedMissing = new Set(missingPaths.map(p => normalizePath(p)));
+    const files = await getCollectionFiles(collectionId);
+    const toDelete = files.filter(f => normalizedMissing.has(normalizePath(f.filePath)));
+    if (toDelete.length === 0) return;
+
+    return new Promise((resolve) => {
+        try {
+            const tx = db.transaction([COLLECTION_FILES_STORE], 'readwrite');
+            const store = tx.objectStore(COLLECTION_FILES_STORE);
+            for (const f of toDelete) store.delete(f.id);
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => resolve();
+        } catch { resolve(); }
+    });
+}
+
+// Match an item against smart collection filter rules
+function matchesSmartRules(item, rules) {
+    if (!rules) return true;
+
+    // File type filter
+    if (rules.fileType && rules.fileType !== 'all') {
+        if (item.type !== rules.fileType) return false;
+    }
+
+    // Size filter
+    if (rules.sizeValue != null && rules.sizeOperator) {
+        const sizeBytes = item.size || 0;
+        const targetBytes = rules.sizeValue * 1024 * 1024; // rules.sizeValue is in MB
+        switch (rules.sizeOperator) {
+            case '>': if (sizeBytes <= targetBytes) return false; break;
+            case '<': if (sizeBytes >= targetBytes) return false; break;
+            case '=': if (Math.abs(sizeBytes - targetBytes) > targetBytes * 0.1) return false; break;
+        }
+    }
+
+    // Date range filter
+    if (rules.dateFrom != null) {
+        if ((item.mtime || 0) < rules.dateFrom) return false;
+    }
+    if (rules.dateTo != null) {
+        if ((item.mtime || 0) > rules.dateTo) return false;
+    }
+
+    // Dimension filters
+    if (rules.width != null) {
+        if (item.width !== rules.width) return false;
+    }
+    if (rules.height != null) {
+        if (item.height !== rules.height) return false;
+    }
+
+    // Aspect ratio
+    if (rules.aspectRatio) {
+        const w = item.width, h = item.height;
+        if (w && h) {
+            const ratio = w / h;
+            const targetRatio = parseAspectRatio(rules.aspectRatio);
+            if (Math.abs(ratio - targetRatio) > 0.1) return false;
+        } else {
+            return false;
+        }
+    }
+
+    // Star rating
+    if (rules.minStarRating != null && rules.minStarRating > 0) {
+        const rating = getFileRating(item.path);
+        if (rating < rules.minStarRating) return false;
+    }
+
+    // Name contains
+    if (rules.nameContains) {
+        if (!item.name.toLowerCase().includes(rules.nameContains.toLowerCase())) return false;
+    }
+
+    return true;
+}
+
+// Load a collection's contents into the grid (parallel to loadVideos for folders)
+async function loadCollectionIntoGrid(collectionId) {
+    stopPeriodicCleanup();
+    activeDimensionHydrationToken++;
+
+    showLoadingIndicator();
+    setStatusActivity('Loading collection...');
+
+    try {
+        await yieldToEventLoop();
+        window.electronAPI.triggerGC();
+
+        const collection = await getCollection(collectionId);
+        if (!collection) {
+            showToast('Collection not found', 'error');
+            hideLoadingIndicator();
+            setStatusActivity('');
+            return;
+        }
+
+        currentCollectionId = collectionId;
+        currentFolderPath = null; // Not in a folder
+
+        let items = [];
+        let missingPaths = [];
+
+        if (collection.type === 'smart') {
+            // Smart collection: scan source folders and filter
+            const sourceFolders = collection.rules?.sourceFolders || [];
+            if (sourceFolders.length === 0) {
+                showToast('Smart collection has no source folders', 'warning');
+                hideLoadingIndicator();
+                setStatusActivity('');
+                return;
+            }
+
+            setStatusActivity('Scanning source folders...');
+            const result = await window.electronAPI.scanFoldersForSmartCollection(sourceFolders, {
+                scanImageDimensions: true,
+                scanVideoDimensions: true
+            });
+
+            items = (result.items || []).filter(item => matchesSmartRules(item, collection.rules));
+        } else {
+            // Static collection: resolve stored file paths
+            const collectionFiles = await getCollectionFiles(collectionId);
+            const filePaths = collectionFiles.map(cf => cf.filePath);
+
+            if (filePaths.length === 0) {
+                currentItems = [];
+                renderItems([], null);
+                updateBreadcrumbForCollection(collection);
+                hideLoadingIndicator();
+                setStatusActivity('');
+                return;
+            }
+
+            setStatusActivity('Resolving files...');
+            const result = await window.electronAPI.resolveFilePaths(filePaths, {
+                scanImageDimensions: true,
+                scanVideoDimensions: true
+            });
+
+            items = result.items || [];
+            missingPaths = result.missing || [];
+
+            // Add missing items as placeholders so user can see/remove them
+            for (const mp of missingPaths) {
+                const name = mp.split(/[/\\]/).pop() || mp;
+                items.push({
+                    name,
+                    path: mp,
+                    url: '',
+                    type: 'image', // placeholder type
+                    mtime: 0,
+                    size: 0,
+                    width: undefined,
+                    height: undefined,
+                    missing: true
+                });
+            }
+        }
+
+        await yieldToEventLoop();
+
+        currentItems = items;
+        const filteredItems = filterItems(items);
+        const sortedItems = sortItems(filteredItems);
+
+        await yieldToEventLoop();
+
+        currentEmbeddings.clear();
+        currentTextEmbedding = null;
+        cancelEmbeddingScan();
+
+        renderItems(sortedItems, null);
+
+        updateBreadcrumbForCollection(collection);
+        updateCurrentTab(null, collection.name);
+
+        if (missingPaths.length > 0) {
+            showToast(`${missingPaths.length} file(s) no longer exist`, 'warning');
+        }
+
+        const mediaItemCount = sortedItems.filter(i => i.type !== 'folder' && !i.missing).length;
+        if (mediaItemCount > 0) {
+            setStatusActivity('Loading media...');
+            scheduleMediaLoadSettle();
+        } else {
+            setStatusActivity('');
+        }
+
+        // Highlight active collection in sidebar
+        highlightActiveCollection(collectionId);
+
+    } finally {
+        hideLoadingIndicator();
+        const act = statusActivity ? statusActivity.textContent : '';
+        if (act === 'Loading collection...' || act === 'Resolving files...' || act === 'Scanning source folders...') {
+            setStatusActivity('');
+        }
+    }
+}
+
+function updateBreadcrumbForCollection(collection) {
+    const icon = collection.type === 'smart' ? '\u2606' : '\u25A6'; // star or square icon
+    const breadcrumbContainer = document.getElementById('breadcrumb-container');
+    breadcrumbContainer.innerHTML = '';
+    const pathSpan = document.createElement('span');
+    pathSpan.id = 'current-path';
+    pathSpan.className = 'breadcrumb-editable';
+    pathSpan.textContent = icon + ' ' + collection.name;
+    breadcrumbContainer.appendChild(pathSpan);
+    currentPathSpan = pathSpan;
+    breadcrumbContainer.appendChild(itemCountEl);
+    const validCount = currentItems.filter(i => !i.missing).length;
+    const missingCount = currentItems.filter(i => i.missing).length;
+    itemCountEl.textContent = `${validCount} items` + (missingCount > 0 ? ` (${missingCount} missing)` : '');
+}
+
+function highlightActiveCollection(collectionId) {
+    // Remove active class from all collection items and sidebar tree items
+    document.querySelectorAll('.collection-item.active').forEach(el => el.classList.remove('active'));
+    document.querySelectorAll('.sidebar-tree .tree-item.active').forEach(el => el.classList.remove('active'));
+    if (collectionId) {
+        const el = document.querySelector(`.collection-item[data-collection-id="${collectionId}"]`);
+        if (el) el.classList.add('active');
     }
 }
 
@@ -4014,7 +4406,12 @@ function createCardFromItem(item) {
 
         applyCardInfoLayoutClasses(card);
 
-        return { card, isMedia: true };
+        // Mark missing files (dead links in collections)
+        if (item.missing) {
+            card.classList.add('missing-file');
+        }
+
+        return { card, isMedia: !item.missing };
     }
 }
 
@@ -6454,6 +6851,11 @@ function restoreGridScrollPosition(targetScrollTop) {
 
 // Function to navigate to a folder
 async function navigateToFolder(folderPath, addToHistory = true, forceReload = false) {
+    // Exit collection mode when navigating to a folder
+    if (currentCollectionId) {
+        currentCollectionId = null;
+        highlightActiveCollection(null);
+    }
     const perfStart = perfTest.start();
     const folderName = folderPath.split(/[/\\]/).filter(Boolean).pop() || folderPath;
     setStatusActivity(`Navigating to ${folderName}...`);
@@ -8311,6 +8713,34 @@ function showContextMenu(event, card) {
     const pinLabel = menu.querySelector('.pin-label');
     if (pinLabel) pinLabel.textContent = pinned ? 'Unpin' : 'Pin to Top';
 
+    // Show/hide collection-specific context menu items
+    if (!isFolder) {
+        const addToColItem = menu.querySelector('[data-action="add-to-collection"]');
+        let removeFromColItem = menu.querySelector('[data-action="remove-from-collection"]');
+
+        // Always show "Add to Collection"
+        if (addToColItem) addToColItem.style.display = '';
+
+        // Show/create "Remove from Collection" only when viewing a static collection
+        if (currentCollectionId) {
+            const col = collectionsCache.find(c => c.id === currentCollectionId);
+            if (col && col.type === 'static') {
+                if (!removeFromColItem) {
+                    removeFromColItem = document.createElement('div');
+                    removeFromColItem.className = 'context-menu-item';
+                    removeFromColItem.dataset.action = 'remove-from-collection';
+                    removeFromColItem.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><line x1="8" x2="16" y1="12" y2="12"/></svg> Remove from Collection';
+                    addToColItem.insertAdjacentElement('afterend', removeFromColItem);
+                }
+                removeFromColItem.style.display = '';
+            } else if (removeFromColItem) {
+                removeFromColItem.style.display = 'none';
+            }
+        } else if (removeFromColItem) {
+            removeFromColItem.style.display = 'none';
+        }
+    }
+
     // Inject / refresh plugin menu items (file menus only)
     if (!isFolder) {
         // Remove any previously injected plugin items and their separator
@@ -8450,6 +8880,26 @@ contextMenu.addEventListener('click', async (e) => {
                 showToast(`Could not open file: ${friendlyError(error)}`, 'error');
             }
             break;
+
+        case 'add-to-collection': {
+            // Gather selected files (multi-select support)
+            const selectedCards = document.querySelectorAll('.video-card.selected');
+            const paths = selectedCards.length > 1
+                ? Array.from(selectedCards).map(c => c.dataset.filePath).filter(Boolean)
+                : [filePath];
+            showAddToCollectionSubmenu(paths, e.clientX || e.pageX || 200, e.clientY || e.pageY || 200);
+            break;
+        }
+
+        case 'remove-from-collection': {
+            if (currentCollectionId) {
+                await removeFileFromCollection(currentCollectionId, filePath);
+                showToast(`Removed "${fileName}" from collection`, 'success');
+                loadCollectionIntoGrid(currentCollectionId);
+                renderCollectionsSidebar();
+            }
+            break;
+        }
 
         default:
             if (action.startsWith('plugin:')) {
@@ -8842,6 +9292,412 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
         }
     }
 }
+
+// ============================================================================
+// COLLECTIONS UI
+// ============================================================================
+
+const collectionsListEl = document.getElementById('collections-list');
+const newCollectionBtn = document.getElementById('new-collection-btn');
+
+async function renderCollectionsSidebar() {
+    await getAllCollections();
+    if (!collectionsListEl) return;
+
+    if (collectionsCache.length === 0) {
+        collectionsListEl.innerHTML = '<div class="collections-list-empty">No collections yet</div>';
+        return;
+    }
+
+    collectionsListEl.innerHTML = '';
+    for (const col of collectionsCache) {
+        const item = document.createElement('div');
+        item.className = 'collection-item' + (currentCollectionId === col.id ? ' active' : '');
+        item.dataset.collectionId = col.id;
+
+        const iconSvg = col.type === 'smart'
+            ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>'
+            : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><line x1="3" x2="21" y1="9" y2="9"/><line x1="9" x2="9" y1="21" y2="9"/></svg>';
+
+        item.innerHTML = `<span class="collection-item-icon">${iconSvg}</span>` +
+            `<span class="collection-item-name">${escapeHtml(col.name)}</span>` +
+            `<span class="collection-item-count" data-col-count="${col.id}"></span>`;
+
+        item.addEventListener('click', () => loadCollectionIntoGrid(col.id));
+        item.addEventListener('contextmenu', (e) => showCollectionContextMenu(e, col));
+
+        collectionsListEl.appendChild(item);
+
+        // Async: update count badge
+        if (col.type === 'static') {
+            getCollectionFiles(col.id).then(files => {
+                const badge = item.querySelector(`[data-col-count="${col.id}"]`);
+                if (badge) badge.textContent = files.length;
+            });
+        }
+    }
+}
+
+function showCollectionContextMenu(e, collection) {
+    e.preventDefault();
+    e.stopPropagation();
+
+    // Remove any existing collection context menu
+    document.querySelectorAll('.collection-context-menu').forEach(el => el.remove());
+
+    const menu = document.createElement('div');
+    menu.className = 'collection-context-menu';
+    menu.innerHTML = `
+        <div class="context-menu-item" data-action="rename-collection">Rename</div>
+        ${collection.type === 'smart' ? '<div class="context-menu-item" data-action="edit-collection-rules">Edit Rules</div>' : ''}
+        ${collection.type === 'smart' ? '<div class="context-menu-item" data-action="refresh-collection">Refresh</div>' : ''}
+        <div class="context-menu-divider"></div>
+        <div class="context-menu-item context-menu-item-danger" data-action="delete-collection">Delete</div>
+    `;
+
+    menu.style.left = e.clientX + 'px';
+    menu.style.top = e.clientY + 'px';
+    document.body.appendChild(menu);
+
+    // Keep menu in viewport
+    const rect = menu.getBoundingClientRect();
+    if (rect.right > window.innerWidth) menu.style.left = (window.innerWidth - rect.width - 4) + 'px';
+    if (rect.bottom > window.innerHeight) menu.style.top = (window.innerHeight - rect.height - 4) + 'px';
+
+    const closeMenu = () => { menu.remove(); document.removeEventListener('click', closeMenu); };
+    setTimeout(() => document.addEventListener('click', closeMenu), 0);
+
+    menu.addEventListener('click', async (ev) => {
+        const action = ev.target.closest('[data-action]')?.dataset.action;
+        if (!action) return;
+        closeMenu();
+
+        switch (action) {
+            case 'rename-collection': {
+                const newName = prompt('Rename collection:', collection.name);
+                if (newName && newName.trim() && newName.trim() !== collection.name) {
+                    collection.name = newName.trim();
+                    await saveCollection(collection);
+                    renderCollectionsSidebar();
+                    if (currentCollectionId === collection.id) updateBreadcrumbForCollection(collection);
+                }
+                break;
+            }
+            case 'edit-collection-rules':
+                openCollectionDialog(collection);
+                break;
+            case 'refresh-collection':
+                if (currentCollectionId === collection.id) loadCollectionIntoGrid(collection.id);
+                break;
+            case 'delete-collection': {
+                if (confirm(`Delete collection "${collection.name}"?`)) {
+                    await deleteCollection(collection.id);
+                    if (currentCollectionId === collection.id) {
+                        currentCollectionId = null;
+                        currentItems = [];
+                        renderItems([], null);
+                        currentPathSpan.textContent = 'No folder selected';
+                        itemCountEl.textContent = '';
+                    }
+                    renderCollectionsSidebar();
+                }
+                break;
+            }
+        }
+    });
+}
+
+// Create/Edit Collection Dialog
+function openCollectionDialog(existingCollection = null) {
+    // Remove any existing dialog
+    document.querySelectorAll('.collection-dialog-overlay').forEach(el => el.remove());
+
+    const isEdit = !!existingCollection;
+    const col = existingCollection || { type: 'static', rules: null };
+    const rules = col.rules || {};
+
+    const overlay = document.createElement('div');
+    overlay.className = 'collection-dialog-overlay';
+    overlay.innerHTML = `
+        <div class="collection-dialog">
+            <h3>${isEdit ? 'Edit Collection' : 'New Collection'}</h3>
+            <div class="collection-dialog-field">
+                <label>Name</label>
+                <input type="text" id="col-dialog-name" value="${escapeHtml(col.name || '')}" placeholder="My Collection" autofocus>
+            </div>
+            <div class="collection-dialog-type-toggle">
+                <button class="collection-dialog-type-btn ${col.type !== 'smart' ? 'active' : ''}" data-type="static">Standard</button>
+                <button class="collection-dialog-type-btn ${col.type === 'smart' ? 'active' : ''}" data-type="smart">Smart</button>
+            </div>
+            <div class="collection-dialog-smart-rules ${col.type === 'smart' ? 'visible' : ''}">
+                <div class="collection-dialog-field">
+                    <label>Source Folders</label>
+                    <div class="collection-dialog-folders-list" id="col-dialog-folders"></div>
+                    <button class="collection-dialog-cancel" id="col-dialog-add-folder" style="width:100%">+ Add Folder</button>
+                </div>
+                <div class="collection-dialog-field">
+                    <label>File Type</label>
+                    <select id="col-dialog-filetype">
+                        <option value="all" ${(rules.fileType || 'all') === 'all' ? 'selected' : ''}>All</option>
+                        <option value="video" ${rules.fileType === 'video' ? 'selected' : ''}>Videos</option>
+                        <option value="image" ${rules.fileType === 'image' ? 'selected' : ''}>Images</option>
+                    </select>
+                </div>
+                <div class="collection-dialog-field">
+                    <label>Name Contains</label>
+                    <input type="text" id="col-dialog-name-contains" value="${escapeHtml(rules.nameContains || '')}" placeholder="e.g. sunset">
+                </div>
+                <div class="collection-dialog-field">
+                    <label>Minimum Dimensions (width x height)</label>
+                    <div class="collection-dialog-row">
+                        <input type="text" id="col-dialog-width" value="${rules.width || ''}" placeholder="Width (e.g. 3840)">
+                        <input type="text" id="col-dialog-height" value="${rules.height || ''}" placeholder="Height (e.g. 2160)">
+                    </div>
+                </div>
+                <div class="collection-dialog-field">
+                    <label>Aspect Ratio</label>
+                    <select id="col-dialog-aspect">
+                        <option value="">Any</option>
+                        <option value="16:9" ${rules.aspectRatio === '16:9' ? 'selected' : ''}>16:9</option>
+                        <option value="4:3" ${rules.aspectRatio === '4:3' ? 'selected' : ''}>4:3</option>
+                        <option value="1:1" ${rules.aspectRatio === '1:1' ? 'selected' : ''}>1:1</option>
+                        <option value="9:16" ${rules.aspectRatio === '9:16' ? 'selected' : ''}>9:16</option>
+                        <option value="21:9" ${rules.aspectRatio === '21:9' ? 'selected' : ''}>21:9</option>
+                    </select>
+                </div>
+                <div class="collection-dialog-field">
+                    <label>Size Filter (MB)</label>
+                    <div class="collection-dialog-row">
+                        <select id="col-dialog-size-op" style="max-width:80px">
+                            <option value="">None</option>
+                            <option value=">" ${rules.sizeOperator === '>' ? 'selected' : ''}>Larger than</option>
+                            <option value="<" ${rules.sizeOperator === '<' ? 'selected' : ''}>Smaller than</option>
+                        </select>
+                        <input type="text" id="col-dialog-size-val" value="${rules.sizeValue || ''}" placeholder="e.g. 100">
+                    </div>
+                </div>
+                <div class="collection-dialog-field">
+                    <label>Date Range</label>
+                    <div class="collection-dialog-row">
+                        <input type="date" id="col-dialog-date-from" value="${rules.dateFrom ? new Date(rules.dateFrom).toISOString().split('T')[0] : ''}">
+                        <input type="date" id="col-dialog-date-to" value="${rules.dateTo ? new Date(rules.dateTo).toISOString().split('T')[0] : ''}">
+                    </div>
+                </div>
+                <div class="collection-dialog-field">
+                    <label>Minimum Star Rating</label>
+                    <select id="col-dialog-stars">
+                        <option value="">Any</option>
+                        <option value="1" ${rules.minStarRating == 1 ? 'selected' : ''}>1+</option>
+                        <option value="2" ${rules.minStarRating == 2 ? 'selected' : ''}>2+</option>
+                        <option value="3" ${rules.minStarRating == 3 ? 'selected' : ''}>3+</option>
+                        <option value="4" ${rules.minStarRating == 4 ? 'selected' : ''}>4+</option>
+                        <option value="5" ${rules.minStarRating == 5 ? 'selected' : ''}>5</option>
+                    </select>
+                </div>
+            </div>
+            <div class="collection-dialog-actions">
+                <button class="collection-dialog-cancel" id="col-dialog-cancel">Cancel</button>
+                <button class="collection-dialog-save" id="col-dialog-save">${isEdit ? 'Save' : 'Create'}</button>
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(overlay);
+
+    // Source folders state
+    let sourceFolders = [...(rules.sourceFolders || [])];
+
+    function renderFoldersList() {
+        const container = document.getElementById('col-dialog-folders');
+        container.innerHTML = '';
+        for (let i = 0; i < sourceFolders.length; i++) {
+            const div = document.createElement('div');
+            div.className = 'collection-dialog-folder-item';
+            const folderName = sourceFolders[i].split(/[/\\]/).pop() || sourceFolders[i];
+            div.innerHTML = `<span title="${escapeHtml(sourceFolders[i])}">${escapeHtml(folderName)}</span>` +
+                `<button class="collection-dialog-folder-remove" data-idx="${i}">&times;</button>`;
+            container.appendChild(div);
+        }
+        container.querySelectorAll('.collection-dialog-folder-remove').forEach(btn => {
+            btn.addEventListener('click', () => {
+                sourceFolders.splice(parseInt(btn.dataset.idx), 1);
+                renderFoldersList();
+            });
+        });
+    }
+    renderFoldersList();
+
+    // Type toggle
+    const typeBtns = overlay.querySelectorAll('.collection-dialog-type-btn');
+    const smartRulesPanel = overlay.querySelector('.collection-dialog-smart-rules');
+    let selectedType = col.type || 'static';
+
+    // Don't allow changing type when editing
+    if (!isEdit) {
+        typeBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                typeBtns.forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                selectedType = btn.dataset.type;
+                smartRulesPanel.classList.toggle('visible', selectedType === 'smart');
+            });
+        });
+    } else {
+        typeBtns.forEach(btn => { btn.style.pointerEvents = 'none'; btn.style.opacity = '0.6'; });
+    }
+
+    // Add folder button
+    document.getElementById('col-dialog-add-folder').addEventListener('click', async () => {
+        const result = await window.electronAPI.selectFolder();
+        if (result && !sourceFolders.includes(result)) {
+            sourceFolders.push(result);
+            renderFoldersList();
+        }
+    });
+
+    // Close on overlay click
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+
+    // Cancel
+    document.getElementById('col-dialog-cancel').addEventListener('click', () => overlay.remove());
+
+    // Escape key
+    const escHandler = (e) => { if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', escHandler); } };
+    document.addEventListener('keydown', escHandler);
+
+    // Save
+    document.getElementById('col-dialog-save').addEventListener('click', async () => {
+        const name = document.getElementById('col-dialog-name').value.trim();
+        if (!name) { document.getElementById('col-dialog-name').focus(); return; }
+
+        const collectionData = isEdit ? { ...existingCollection } : {
+            id: generateCollectionId(),
+            createdAt: Date.now(),
+            sortOrder: collectionsCache.length
+        };
+
+        collectionData.name = name;
+        collectionData.type = selectedType;
+
+        if (selectedType === 'smart') {
+            if (sourceFolders.length === 0) {
+                showToast('Smart collections need at least one source folder', 'warning');
+                return;
+            }
+            const widthVal = parseInt(document.getElementById('col-dialog-width').value) || null;
+            const heightVal = parseInt(document.getElementById('col-dialog-height').value) || null;
+            const sizeOp = document.getElementById('col-dialog-size-op').value || '';
+            const sizeVal = parseFloat(document.getElementById('col-dialog-size-val').value) || null;
+            const dateFromStr = document.getElementById('col-dialog-date-from').value;
+            const dateToStr = document.getElementById('col-dialog-date-to').value;
+            const starsVal = parseInt(document.getElementById('col-dialog-stars').value) || null;
+
+            collectionData.rules = {
+                sourceFolders,
+                fileType: document.getElementById('col-dialog-filetype').value,
+                nameContains: document.getElementById('col-dialog-name-contains').value.trim() || '',
+                width: widthVal,
+                height: heightVal,
+                aspectRatio: document.getElementById('col-dialog-aspect').value || '',
+                sizeOperator: sizeOp,
+                sizeValue: sizeVal,
+                dateFrom: dateFromStr ? new Date(dateFromStr).getTime() : null,
+                dateTo: dateToStr ? new Date(dateToStr + 'T23:59:59').getTime() : null,
+                minStarRating: starsVal
+            };
+        } else {
+            collectionData.rules = null;
+        }
+
+        await saveCollection(collectionData);
+        overlay.remove();
+        document.removeEventListener('keydown', escHandler);
+        renderCollectionsSidebar();
+        showToast(`Collection "${name}" ${isEdit ? 'updated' : 'created'}`, 'success');
+
+        // Auto-open the new collection
+        if (!isEdit) loadCollectionIntoGrid(collectionData.id);
+    });
+
+    // Focus name input
+    setTimeout(() => document.getElementById('col-dialog-name').focus(), 50);
+}
+
+// "Add to Collection" submenu for file context menu
+function showAddToCollectionSubmenu(filePaths, anchorX, anchorY) {
+    document.querySelectorAll('.add-to-collection-submenu').forEach(el => el.remove());
+
+    const menu = document.createElement('div');
+    menu.className = 'add-to-collection-submenu';
+
+    // "New Collection..." option
+    const newItem = document.createElement('div');
+    newItem.className = 'context-menu-item';
+    newItem.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg> New Collection...';
+    newItem.addEventListener('click', async () => {
+        closeSubmenu();
+        // Create a new static collection, then add files
+        const name = prompt('New collection name:');
+        if (!name || !name.trim()) return;
+        const col = {
+            id: generateCollectionId(),
+            name: name.trim(),
+            type: 'static',
+            rules: null,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            sortOrder: collectionsCache.length
+        };
+        await saveCollection(col);
+        const count = await addFilesToCollection(col.id, filePaths);
+        renderCollectionsSidebar();
+        showToast(`Added ${count} file(s) to "${col.name}"`, 'success');
+    });
+    menu.appendChild(newItem);
+
+    // Existing static collections
+    const staticCols = collectionsCache.filter(c => c.type === 'static');
+    if (staticCols.length > 0) {
+        const divider = document.createElement('div');
+        divider.className = 'context-menu-divider';
+        divider.style.cssText = 'height:1px;background:var(--border-subtle);margin:4px 0;';
+        menu.appendChild(divider);
+
+        for (const col of staticCols) {
+            const item = document.createElement('div');
+            item.className = 'context-menu-item';
+            item.textContent = col.name;
+            item.addEventListener('click', async () => {
+                closeSubmenu();
+                const count = await addFilesToCollection(col.id, filePaths);
+                renderCollectionsSidebar();
+                if (count > 0) showToast(`Added ${count} file(s) to "${col.name}"`, 'success');
+                else showToast('Files already in collection', 'info');
+            });
+            menu.appendChild(item);
+        }
+    }
+
+    menu.style.left = anchorX + 'px';
+    menu.style.top = anchorY + 'px';
+    document.body.appendChild(menu);
+
+    // Keep in viewport
+    const rect = menu.getBoundingClientRect();
+    if (rect.right > window.innerWidth) menu.style.left = (window.innerWidth - rect.width - 4) + 'px';
+    if (rect.bottom > window.innerHeight) menu.style.top = (window.innerHeight - rect.height - 4) + 'px';
+
+    const closeSubmenu = () => { menu.remove(); document.removeEventListener('click', closeSubmenu); };
+    setTimeout(() => document.addEventListener('click', closeSubmenu), 0);
+}
+
+// Wire up the "+" button
+if (newCollectionBtn) {
+    newCollectionBtn.addEventListener('click', () => openCollectionDialog());
+}
+
+// Load collections on startup
+initIndexedDB().then(() => renderCollectionsSidebar()).catch(() => {});
 
 // Initialize theme system (must be after all let/const declarations to avoid TDZ errors)
 ThemeManager.init();

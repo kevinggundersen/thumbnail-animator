@@ -601,128 +601,217 @@ async function asyncPool(limit, items, fn) {
 
 const IO_CONCURRENCY_LIMIT = 20;
 
-ipcMain.handle('scan-folder', async (event, folderPath, options = {}) => {
+// Core folder scan logic extracted for reuse by collections
+async function scanFolderInternal(folderPath, options = {}) {
     const scanStart = performance.now();
+    const { skipStats = false, scanImageDimensions = false, scanVideoDimensions = false } = options;
+    const readdirStart = performance.now();
+    const items = await fs.promises.readdir(folderPath, { withFileTypes: true });
+    logPerf('scan-folder.readdir', readdirStart, { entries: items.length });
+
+    // Use Sets for O(1) lookup — merged with any plugin-registered extensions
+    const videoExtensions = pluginRegistry.getVideoExtensions();
+    const imageExtensions = pluginRegistry.getImageExtensions();
+    const supportedExtensions = pluginRegistry.getSupportedExtensions();
+
+    const isWindows = process.platform === 'win32';
+
+    // === Phase A: Build base objects (sync, fast) ===
+    const folderItems = [];
+    const fileObjs = [];
+
+    for (const item of items) {
+        if (item.isDirectory()) {
+            folderItems.push(item);
+        } else if (item.isFile()) {
+            const name = item.name;
+            const lastDot = name.lastIndexOf('.');
+            if (lastDot === -1) continue;
+
+            const ext = name.substring(lastDot).toLowerCase();
+            if (!supportedExtensions.has(ext)) continue;
+
+            const itemPath = path.join(folderPath, name);
+            const isImage = imageExtensions.has(ext);
+            fileObjs.push({
+                name: name,
+                path: itemPath,
+                url: isWindows ? `file:///${itemPath.replace(/\\/g, '/')}` : `file://${itemPath}`,
+                type: isImage ? 'image' : 'video',
+                isImage: isImage,
+                mtime: 0,
+                size: 0,
+                width: undefined,
+                height: undefined
+            });
+        }
+    }
+
+    // === Phase B: Dimension scanning via worker pool (parallel across workers) ===
+    const needsDimensionScan = (scanImageDimensions && sizeOf) || (scanVideoDimensions && ffprobePath);
+    if (needsDimensionScan && dimensionPool) {
+        const filesToScan = fileObjs.filter(f =>
+            (f.isImage && scanImageDimensions) || (!f.isImage && scanVideoDimensions && ffprobePath)
+        ).map(f => ({ path: f.path, isImage: f.isImage }));
+
+        if (filesToScan.length > 0) {
+            const dimensionStart = performance.now();
+            const dimensionMap = await dimensionPool.scanDimensions(filesToScan);
+            logPerf('scan-folder.dimensions', dimensionStart, { files: filesToScan.length, hits: dimensionMap.size });
+            for (const fileObj of fileObjs) {
+                const dims = dimensionMap.get(fileObj.path);
+                if (dims) {
+                    fileObj.width = dims.width;
+                    fileObj.height = dims.height;
+                }
+            }
+        }
+    }
+
+    // === Phase C: Batch stat() calls using Promise.all (libuv handles parallelism) ===
+    const folders = [];
+
+    if (skipStats) {
+        // Fast path: no stat calls needed
+        for (const item of folderItems) {
+            folders.push({ name: item.name, path: path.join(folderPath, item.name), type: 'folder', mtime: 0 });
+        }
+    } else {
+        const folderStatStart = performance.now();
+        const folderResults = await asyncPool(IO_CONCURRENCY_LIMIT, folderItems, async (item) => {
+            const itemPath = path.join(folderPath, item.name);
+            try {
+                const stats = await fs.promises.stat(itemPath);
+                return { name: item.name, path: itemPath, type: 'folder', mtime: stats.mtime.getTime() };
+            } catch {
+                return { name: item.name, path: itemPath, type: 'folder', mtime: 0 };
+            }
+        });
+        folders.push(...folderResults);
+        logPerf('scan-folder.folder-stats', folderStatStart, { count: folderItems.length, limit: IO_CONCURRENCY_LIMIT });
+
+        const fileStatStart = performance.now();
+        await asyncPool(IO_CONCURRENCY_LIMIT, fileObjs, async (fileObj) => {
+            try {
+                const stats = await fs.promises.stat(fileObj.path);
+                fileObj.mtime = stats.mtime.getTime();
+                fileObj.size = stats.size;
+            } catch {
+                // mtime stays 0
+            }
+        });
+        logPerf('scan-folder.file-stats', fileStatStart, { count: fileObjs.length, limit: IO_CONCURRENCY_LIMIT });
+    }
+
+    // Clean up internal field before sending to renderer
+    const mediaFiles = fileObjs.map(({ isImage, ...rest }) => rest);
+
+    // Default alphabetical sorting for backward compatibility
+    if (folders.length > 1) {
+        folders.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+    }
+    if (mediaFiles.length > 1) {
+        mediaFiles.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+    }
+
+    logPerf('scan-folder.total', scanStart, { folders: folders.length, files: mediaFiles.length, skipStats: skipStats ? 1 : 0 });
+    return { folders, mediaFiles };
+}
+
+ipcMain.handle('scan-folder', async (event, folderPath, options = {}) => {
     try {
-        const { skipStats = false, scanImageDimensions = false, scanVideoDimensions = false } = options;
-        const readdirStart = performance.now();
-        const items = await fs.promises.readdir(folderPath, { withFileTypes: true });
-        logPerf('scan-folder.readdir', readdirStart, { entries: items.length });
-
-        // Use Sets for O(1) lookup — merged with any plugin-registered extensions
-        const videoExtensions = pluginRegistry.getVideoExtensions();
-        const imageExtensions = pluginRegistry.getImageExtensions();
-        const supportedExtensions = pluginRegistry.getSupportedExtensions();
-
-        const isWindows = process.platform === 'win32';
-
-        // === Phase A: Build base objects (sync, fast) ===
-        const folderItems = [];
-        const fileObjs = [];
-
-        for (const item of items) {
-            if (item.isDirectory()) {
-                folderItems.push(item);
-            } else if (item.isFile()) {
-                const name = item.name;
-                const lastDot = name.lastIndexOf('.');
-                if (lastDot === -1) continue;
-
-                const ext = name.substring(lastDot).toLowerCase();
-                if (!supportedExtensions.has(ext)) continue;
-
-                const itemPath = path.join(folderPath, name);
-                const isImage = imageExtensions.has(ext);
-                fileObjs.push({
-                    name: name,
-                    path: itemPath,
-                    url: isWindows ? `file:///${itemPath.replace(/\\/g, '/')}` : `file://${itemPath}`,
-                    type: isImage ? 'image' : 'video',
-                    isImage: isImage,
-                    mtime: 0,
-                    size: 0,
-                    width: undefined,
-                    height: undefined
-                });
-            }
-        }
-
-        // === Phase B: Dimension scanning via worker pool (parallel across workers) ===
-        const needsDimensionScan = (scanImageDimensions && sizeOf) || (scanVideoDimensions && ffprobePath);
-        if (needsDimensionScan && dimensionPool) {
-            const filesToScan = fileObjs.filter(f =>
-                (f.isImage && scanImageDimensions) || (!f.isImage && scanVideoDimensions && ffprobePath)
-            ).map(f => ({ path: f.path, isImage: f.isImage }));
-
-            if (filesToScan.length > 0) {
-                const dimensionStart = performance.now();
-                const dimensionMap = await dimensionPool.scanDimensions(filesToScan);
-                logPerf('scan-folder.dimensions', dimensionStart, { files: filesToScan.length, hits: dimensionMap.size });
-                for (const fileObj of fileObjs) {
-                    const dims = dimensionMap.get(fileObj.path);
-                    if (dims) {
-                        fileObj.width = dims.width;
-                        fileObj.height = dims.height;
-                    }
-                }
-            }
-        }
-
-        // === Phase C: Batch stat() calls using Promise.all (libuv handles parallelism) ===
-        const folders = [];
-
-        if (skipStats) {
-            // Fast path: no stat calls needed
-            for (const item of folderItems) {
-                folders.push({ name: item.name, path: path.join(folderPath, item.name), type: 'folder', mtime: 0 });
-            }
-        } else {
-            const folderStatStart = performance.now();
-            const folderResults = await asyncPool(IO_CONCURRENCY_LIMIT, folderItems, async (item) => {
-                const itemPath = path.join(folderPath, item.name);
-                try {
-                    const stats = await fs.promises.stat(itemPath);
-                    return { name: item.name, path: itemPath, type: 'folder', mtime: stats.mtime.getTime() };
-                } catch {
-                    return { name: item.name, path: itemPath, type: 'folder', mtime: 0 };
-                }
-            });
-            folders.push(...folderResults);
-            logPerf('scan-folder.folder-stats', folderStatStart, { count: folderItems.length, limit: IO_CONCURRENCY_LIMIT });
-
-            const fileStatStart = performance.now();
-            await asyncPool(IO_CONCURRENCY_LIMIT, fileObjs, async (fileObj) => {
-                try {
-                    const stats = await fs.promises.stat(fileObj.path);
-                    fileObj.mtime = stats.mtime.getTime();
-                    fileObj.size = stats.size;
-                } catch {
-                    // mtime stays 0
-                }
-            });
-            logPerf('scan-folder.file-stats', fileStatStart, { count: fileObjs.length, limit: IO_CONCURRENCY_LIMIT });
-        }
-
-        // Clean up internal field before sending to renderer
-        const mediaFiles = fileObjs.map(({ isImage, ...rest }) => rest);
-
-        // Default alphabetical sorting for backward compatibility
-        if (folders.length > 1) {
-            folders.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
-        }
-        if (mediaFiles.length > 1) {
-            mediaFiles.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
-        }
-
-        // Return folders first, then media files
-        const result = folders.length + mediaFiles.length > 0 ? [...folders, ...mediaFiles] : [];
-        logPerf('scan-folder.total', scanStart, { folders: folders.length, files: mediaFiles.length, skipStats: skipStats ? 1 : 0 });
-        return result;
+        const { folders, mediaFiles } = await scanFolderInternal(folderPath, options);
+        return folders.length + mediaFiles.length > 0 ? [...folders, ...mediaFiles] : [];
     } catch (error) {
-        logPerf('scan-folder.total', scanStart, { error: 1 });
         console.error('Error scanning folder:', error);
         return [];
     }
+});
+
+// Resolve an array of absolute file paths into item objects (same shape as scan-folder results).
+// Returns { items: [...], missing: string[] } where missing contains paths that no longer exist.
+ipcMain.handle('resolve-file-paths', async (event, filePaths, options = {}) => {
+    const { scanImageDimensions = false, scanVideoDimensions = false } = options;
+    const videoExtensions = pluginRegistry.getVideoExtensions();
+    const imageExtensions = pluginRegistry.getImageExtensions();
+    const supportedExtensions = pluginRegistry.getSupportedExtensions();
+    const isWindows = process.platform === 'win32';
+
+    const items = [];
+    const missing = [];
+    const fileObjs = [];
+
+    await asyncPool(IO_CONCURRENCY_LIMIT, filePaths, async (filePath) => {
+        try {
+            const stats = await fs.promises.stat(filePath);
+            const name = path.basename(filePath);
+            const lastDot = name.lastIndexOf('.');
+            if (lastDot === -1) { missing.push(filePath); return; }
+
+            const ext = name.substring(lastDot).toLowerCase();
+            if (!supportedExtensions.has(ext)) { missing.push(filePath); return; }
+
+            const isImage = imageExtensions.has(ext);
+            const fileObj = {
+                name,
+                path: filePath,
+                url: isWindows ? `file:///${filePath.replace(/\\/g, '/')}` : `file://${filePath}`,
+                type: isImage ? 'image' : 'video',
+                isImage,
+                mtime: stats.mtime.getTime(),
+                size: stats.size,
+                width: undefined,
+                height: undefined
+            };
+            fileObjs.push(fileObj);
+        } catch {
+            missing.push(filePath);
+        }
+    });
+
+    // Dimension scanning
+    const needsDimensionScan = (scanImageDimensions && sizeOf) || (scanVideoDimensions && ffprobePath);
+    if (needsDimensionScan && dimensionPool) {
+        const filesToScan = fileObjs.filter(f =>
+            (f.isImage && scanImageDimensions) || (!f.isImage && scanVideoDimensions && ffprobePath)
+        ).map(f => ({ path: f.path, isImage: f.isImage }));
+
+        if (filesToScan.length > 0) {
+            const dimensionMap = await dimensionPool.scanDimensions(filesToScan);
+            for (const fileObj of fileObjs) {
+                const dims = dimensionMap.get(fileObj.path);
+                if (dims) {
+                    fileObj.width = dims.width;
+                    fileObj.height = dims.height;
+                }
+            }
+        }
+    }
+
+    // Clean up internal field
+    for (const obj of fileObjs) {
+        delete obj.isImage;
+        items.push(obj);
+    }
+
+    return { items, missing };
+});
+
+// Scan multiple folders and return combined file items (no folders) for smart collections
+ipcMain.handle('scan-folders-for-smart-collection', async (event, folderPaths, options = {}) => {
+    const allFiles = [];
+    const errors = [];
+
+    for (const folderPath of folderPaths) {
+        try {
+            const { mediaFiles } = await scanFolderInternal(folderPath, options);
+            allFiles.push(...mediaFiles);
+        } catch (error) {
+            errors.push({ folder: folderPath, error: error.message });
+        }
+    }
+
+    return { items: allFiles, errors };
 });
 
 // Context menu IPC handlers

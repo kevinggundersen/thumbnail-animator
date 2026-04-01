@@ -49,6 +49,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     removeClipProgressListener: () => ipcRenderer.removeAllListeners('clip-progress'),
     onClipDownloadProgress: (callback) => ipcRenderer.on('clip-download-progress', callback),
     removeClipDownloadProgressListener: () => ipcRenderer.removeAllListeners('clip-download-progress'),
+    // Collections
+    resolveFilePaths: (filePaths, options) => ipcRenderer.invoke('resolve-file-paths', filePaths, options),
+    scanFoldersForSmartCollection: (folderPaths, options) => ipcRenderer.invoke('scan-folders-for-smart-collection', folderPaths, options),
     // Plugin system
     getPluginManifests: () => ipcRenderer.invoke('get-plugin-manifests'),
     executePluginAction: (pluginId, actionId, filePath, metadata) =>

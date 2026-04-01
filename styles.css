@@ -411,6 +411,389 @@ button:active:not(:disabled) {
     background: var(--text-tertiary);
 }
 
+/* --- Collections sidebar section --- */
+.sidebar-collections {
+    flex-shrink: 0;
+    border-top: 1px solid var(--border-subtle);
+    max-height: 40%;
+    display: flex;
+    flex-direction: column;
+}
+
+.sidebar-collections-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--space-1) var(--space-3);
+    min-height: 30px;
+    flex-shrink: 0;
+}
+
+.sidebar-collections-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.sidebar-collections-add-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-tertiary);
+    width: 22px;
+    height: 22px;
+    border-radius: var(--radius-sm);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    padding: 0;
+    font-size: 16px;
+    font-weight: 500;
+    line-height: 1;
+    transition: background-color var(--duration-normal), color var(--duration-normal);
+}
+
+.sidebar-collections-add-btn:hover {
+    background-color: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.collections-list {
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 0 0 var(--space-1) 0;
+}
+
+.collections-list::-webkit-scrollbar {
+    width: 6px;
+}
+
+.collections-list::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.collections-list::-webkit-scrollbar-thumb {
+    background: var(--border-strong);
+    border-radius: 3px;
+}
+
+.collections-list-empty {
+    padding: var(--space-2) var(--space-3);
+    color: var(--text-tertiary);
+    font-size: 12px;
+    font-style: italic;
+}
+
+.collection-item {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: 4px var(--space-3);
+    cursor: pointer;
+    color: var(--text-primary);
+    font-size: 13px;
+    transition: background-color var(--duration-fast);
+    user-select: none;
+}
+
+.collection-item:hover {
+    background-color: var(--bg-hover);
+}
+
+.collection-item.active {
+    background-color: var(--accent-muted);
+    color: var(--accent);
+}
+
+.collection-item-icon {
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-tertiary);
+}
+
+.collection-item.active .collection-item-icon {
+    color: var(--accent);
+}
+
+.collection-item-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.collection-item-count {
+    flex-shrink: 0;
+    font-size: 11px;
+    color: var(--text-tertiary);
+    background: var(--bg-tertiary);
+    padding: 1px 6px;
+    border-radius: var(--radius-full);
+}
+
+.collection-item.active .collection-item-count {
+    background: var(--accent-strong);
+    color: var(--accent);
+}
+
+/* Missing file overlay on cards */
+.video-card.missing-file {
+    opacity: 0.4;
+    pointer-events: auto;
+}
+
+.video-card.missing-file .thumbnail-wrapper::after {
+    content: 'File not found';
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.6);
+    color: var(--danger);
+    font-size: 11px;
+    font-weight: 600;
+}
+
+/* Collection context menu */
+.collection-context-menu {
+    position: fixed;
+    z-index: 10001;
+    min-width: 160px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    padding: var(--space-1) 0;
+    box-shadow: var(--shadow-lg);
+}
+
+/* Create/Edit Collection Modal */
+.collection-dialog-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 10000;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.collection-dialog {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-lg);
+    padding: var(--space-5);
+    width: 440px;
+    max-height: 80vh;
+    overflow-y: auto;
+    box-shadow: var(--shadow-xl);
+}
+
+.collection-dialog h3 {
+    margin: 0 0 var(--space-4) 0;
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.collection-dialog label {
+    display: block;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    margin-bottom: var(--space-1);
+}
+
+.collection-dialog input[type="text"],
+.collection-dialog select {
+    width: 100%;
+    padding: var(--space-2);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-size: 13px;
+    outline: none;
+    box-sizing: border-box;
+}
+
+.collection-dialog input[type="text"]:focus,
+.collection-dialog select:focus {
+    border-color: var(--accent);
+}
+
+.collection-dialog-field {
+    margin-bottom: var(--space-3);
+}
+
+.collection-dialog-type-toggle {
+    display: flex;
+    gap: var(--space-2);
+    margin-bottom: var(--space-4);
+}
+
+.collection-dialog-type-btn {
+    flex: 1;
+    padding: var(--space-2) var(--space-3);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    font-size: 13px;
+    cursor: pointer;
+    text-align: center;
+    transition: all var(--duration-fast);
+}
+
+.collection-dialog-type-btn.active {
+    background: var(--accent-muted);
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.collection-dialog-type-btn:hover:not(.active) {
+    background: var(--bg-hover);
+}
+
+.collection-dialog-smart-rules {
+    display: none;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    padding: var(--space-3);
+    margin-bottom: var(--space-3);
+}
+
+.collection-dialog-smart-rules.visible {
+    display: block;
+}
+
+.collection-dialog-smart-rules .collection-dialog-field:last-child {
+    margin-bottom: 0;
+}
+
+.collection-dialog-row {
+    display: flex;
+    gap: var(--space-2);
+    align-items: end;
+}
+
+.collection-dialog-row > * {
+    flex: 1;
+}
+
+.collection-dialog-folders-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    margin-bottom: var(--space-2);
+}
+
+.collection-dialog-folder-item {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-1) var(--space-2);
+    background: var(--bg-tertiary);
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.collection-dialog-folder-item span {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.collection-dialog-folder-remove {
+    background: none;
+    border: none;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    padding: 2px;
+    font-size: 14px;
+    line-height: 1;
+}
+
+.collection-dialog-folder-remove:hover {
+    color: var(--danger);
+}
+
+.collection-dialog-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-2);
+    margin-top: var(--space-4);
+}
+
+.collection-dialog-actions button {
+    padding: var(--space-2) var(--space-4);
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    cursor: pointer;
+    border: 1px solid var(--border-default);
+    transition: all var(--duration-fast);
+}
+
+.collection-dialog-cancel {
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+}
+
+.collection-dialog-cancel:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.collection-dialog-save {
+    background: var(--accent);
+    color: var(--bg-primary);
+    border-color: var(--accent);
+    font-weight: 500;
+}
+
+.collection-dialog-save:hover {
+    background: var(--accent-hover);
+}
+
+/* Add-to-collection submenu */
+.add-to-collection-submenu {
+    position: fixed;
+    z-index: 10002;
+    min-width: 180px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    padding: var(--space-1) 0;
+    box-shadow: var(--shadow-lg);
+}
+
+.add-to-collection-submenu .context-menu-item {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: 6px var(--space-3);
+    cursor: pointer;
+    color: var(--text-primary);
+    font-size: 13px;
+    transition: background-color var(--duration-fast);
+}
+
+.add-to-collection-submenu .context-menu-item:hover {
+    background-color: var(--bg-hover);
+}
+
+.add-to-collection-submenu .context-menu-item svg {
+    flex-shrink: 0;
+}
+
 .tree-node-row {
     display: flex;
     align-items: center;

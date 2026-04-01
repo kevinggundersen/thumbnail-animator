@@ -2074,6 +2074,109 @@ button:hover {
     top: 36px;
 }
 
+/* ==================== ZOOM-TIER PROGRESSIVE CONTENT HIDING ==================== */
+
+/* --- zoom-md (75-99%): Slight shrink of all labels --- */
+:root.zoom-md .video-card .extension-label {
+    font-size: 9px;
+    padding: 2px 5px;
+}
+:root.zoom-md .video-card .sound-label {
+    font-size: 10px;
+    padding: 3px 6px;
+}
+:root.zoom-md .video-card .video-time-label.show {
+    font-size: 10px;
+    padding: 3px 6px;
+}
+:root.zoom-md .video-card .star-rating {
+    padding: 3px 4px;
+}
+:root.zoom-md .video-card .star-rating .star {
+    font-size: 13px;
+}
+:root.zoom-md .video-card .card-meta-chip {
+    font-size: 9px;
+    padding: 1px 5px;
+}
+:root.zoom-md .video-card .resolution-label {
+    font-size: 10px;
+    padding: 3px 6px;
+}
+:root.zoom-md .video-card .video-info {
+    font-size: 11px;
+    padding: 4px 8px;
+}
+
+/* --- zoom-sm (60-74%): Hide secondary info, shrink remaining --- */
+:root.zoom-sm .video-card .card-meta-row {
+    display: none !important;
+}
+:root.zoom-sm .video-card .star-rating {
+    display: none !important;
+}
+:root.zoom-sm .video-card .extension-label {
+    font-size: 8px;
+    padding: 2px 4px;
+    letter-spacing: 0.3px;
+}
+:root.zoom-sm .video-card .sound-label {
+    font-size: 9px;
+    padding: 2px 5px;
+}
+:root.zoom-sm .video-card .video-time-label.show {
+    font-size: 9px;
+    padding: 2px 5px;
+}
+:root.zoom-sm .video-card .resolution-label {
+    font-size: 9px;
+    padding: 2px 5px;
+}
+:root.zoom-sm .video-card .video-info {
+    font-size: 10px;
+    padding: 3px 6px;
+}
+
+/* --- zoom-xs (<60%): Minimal overlay --- */
+:root.zoom-xs .video-card .card-meta-row {
+    display: none !important;
+}
+:root.zoom-xs .video-card .star-rating {
+    display: none !important;
+}
+:root.zoom-xs .video-card .sound-label {
+    display: none !important;
+}
+:root.zoom-xs .video-card .video-time-label.show {
+    display: none !important;
+}
+:root.zoom-xs .video-card .resolution-label {
+    display: none !important;
+}
+:root.zoom-xs .video-card .extension-label {
+    font-size: 7px;
+    padding: 1px 3px;
+    letter-spacing: 0.2px;
+}
+:root.zoom-xs .video-card .video-info {
+    font-size: 9px;
+    padding: 2px 5px;
+}
+
+/* Hover restoration at zoom-xs: bring back key labels on hover */
+:root.zoom-xs .video-card:not(.ci-no-audio):hover .sound-label {
+    display: block !important;
+    font-size: 9px;
+    padding: 2px 5px;
+}
+:root.zoom-xs .video-card:hover .video-time-label.show {
+    display: block !important;
+    font-size: 9px;
+    padding: 2px 5px;
+}
+
+/* ==================== END ZOOM-TIER ==================== */
+
 .card-meta-chip {
     background: rgba(0, 0, 0, 0.75);
     color: #ffffff;

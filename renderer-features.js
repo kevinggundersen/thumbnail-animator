@@ -1413,7 +1413,14 @@ function applyZoom() {
     const scale = zoomLevel / 100;
     // Update CSS variable for zoom
     document.documentElement.style.setProperty('--zoom-level', zoomLevel);
-    
+
+    // Apply zoom-tier classes for progressive card content hiding
+    const root = document.documentElement;
+    root.classList.toggle('zoom-lg', zoomLevel >= 100);
+    root.classList.toggle('zoom-md', zoomLevel >= 75 && zoomLevel < 100);
+    root.classList.toggle('zoom-sm', zoomLevel >= 60 && zoomLevel < 75);
+    root.classList.toggle('zoom-xs', zoomLevel < 60);
+
     // Adjust grid container gap and card sizes
     const baseGap = 16;
     const scaledGap = baseGap * scale;

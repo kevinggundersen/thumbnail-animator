@@ -1119,6 +1119,10 @@ function escapeHtml(str) {
             actionCallback: () => window.electronAPI.installUpdate()
         });
     });
+
+    window.electronAPI.onUpdateError((message) => {
+        console.error('Auto-update error:', message);
+    });
 })();
 
 // ===== Friendly Error Messages =====

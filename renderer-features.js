@@ -897,6 +897,8 @@ function loadTabs() {
         createTab(null, 'Home');
     }
     renderTabs();
+    const savedActiveTabId = localStorage.getItem('activeTabId');
+    if (savedActiveTabId) activeTabId = parseInt(savedActiveTabId, 10);
     if (activeTabId && tabs.find(t => t.id === activeTabId)) {
         switchToTab(activeTabId);
     } else if (tabs.length > 0) {

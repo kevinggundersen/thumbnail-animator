@@ -1923,6 +1923,7 @@ function createTreeNode(item, depth, isDrive = false) {
     // Click on row navigates to folder
     row.addEventListener('click', (e) => {
         e.stopPropagation();
+        hideContextMenu();
         if (e.target.closest('.tree-toggle') && (item.hasChildren !== false || isDrive)) {
             toggleTreeNode(node, depth, isDrive);
         } else {
@@ -1944,6 +1945,19 @@ function createTreeNode(item, depth, isDrive = false) {
             createTab(item.path, displayName);
         }
     });
+
+    // Right-click context menu (reuse folder context menu)
+    if (!isDrive) {
+        row.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            // Create a lightweight proxy element so the existing folder context menu handler works
+            const proxy = document.createElement('div');
+            proxy.classList.add('folder-card');
+            proxy.dataset.folderPath = item.path;
+            showContextMenu(e, proxy);
+        });
+    }
 
     // Double-click toggle to expand
     toggle.addEventListener('dblclick', (e) => e.stopPropagation());
@@ -8348,6 +8362,14 @@ function hideContextMenu() {
     folderContextMenu.classList.add('hidden');
     contextMenuTargetCard = null;
 }
+
+// Hide context menus on Escape
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+        hideContextMenu();
+        if (favContextMenu) hideFavContextMenu();
+    }
+});
 
 // Hide context menus when clicking elsewhere
 document.addEventListener('click', (e) => {

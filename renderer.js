@@ -5528,6 +5528,13 @@ function applyFilters() {
         sortedFiltered = applyVisualClustering(sortedFiltered);
     }
 
+    // Partition pinned items to top (mirrors sortItems logic)
+    const pinnedFolders = sortedFiltered.filter(f => f.type === 'folder' && isFilePinned(f.path));
+    const unpinnedFolders = sortedFiltered.filter(f => f.type === 'folder' && !isFilePinned(f.path));
+    const pinnedFiles = sortedFiltered.filter(f => f.type !== 'folder' && isFilePinned(f.path));
+    const unpinnedFiles = sortedFiltered.filter(f => f.type !== 'folder' && !isFilePinned(f.path));
+    sortedFiltered = [...pinnedFolders, ...unpinnedFolders, ...pinnedFiles, ...unpinnedFiles];
+
     // Update virtual scrolling with filtered items
     if (vsEnabled) {
         vsUpdateItems(sortedFiltered);

@@ -1,0 +1,35 @@
+{
+  "id": "exif-metadata",
+  "name": "EXIF Metadata Viewer",
+  "version": "2.0.0",
+  "description": "Displays EXIF, IPTC, XMP and GPS metadata from images (JPEG, PNG, WebP, TIFF, HEIC, AVIF). Powered by ExifReader.",
+  "main": "index.js",
+  "capabilities": {
+    "metadataExtractors": [
+      {
+        "id": "exif-metadata",
+        "name": "EXIF / IPTC / XMP Metadata",
+        "extensions": [".jpg", ".jpeg", ".tiff", ".tif", ".png", ".webp", ".heic", ".heif", ".avif"],
+        "method": "extractEXIF"
+      }
+    ],
+    "infoSections": [
+      {
+        "id": "exif-info",
+        "title": "EXIF / Metadata",
+        "appliesTo": { "hasMetadata": "exif-metadata" },
+        "method": "renderEXIFSection"
+      }
+    ],
+    "contextMenuItems": [
+      {
+        "id": "copy-exif-json",
+        "label": "Copy EXIF Data",
+        "appliesTo": { "hasMetadata": "exif-metadata" },
+        "method": "copyEXIFJSON",
+        "position": "after:reveal"
+      }
+    ],
+    "fileTypes": []
+  }
+}

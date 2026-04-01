@@ -21,8 +21,9 @@ async function callWithTimeout(fn, timeoutMs = PLUGIN_TIMEOUT_MS) {
 }
 
 class PluginRegistry {
-    constructor(cacheBaseDir) {
+    constructor(cacheBaseDir, statesFilePath = null) {
         this._cacheBaseDir = cacheBaseDir;
+        this._statesFilePath = statesFilePath;
         // Map<pluginId, manifest>
         this._manifests = new Map();
         // Map<pluginId, pluginInstance> — lazy loaded
@@ -34,6 +35,65 @@ class PluginRegistry {
         // Extra extensions contributed by plugins
         this._extraVideoExtensions = new Set();
         this._extraImageExtensions = new Set();
+        // Map<pluginId, Array<infoSection>>
+        this._infoSectionsByPlugin = new Map();
+        // Map<ext, Array<{pluginId, generatorId, method}>>
+        this._thumbGeneratorsByExt = new Map();
+        // Map<pluginId, Array<batchOperation>>
+        this._batchOpsByPlugin = new Map();
+        // Map<pluginId, settingsPanel>
+        this._settingsPanelsByPlugin = new Map();
+        // Set of disabled plugin IDs — loaded from statesFilePath on startup
+        this._disabledPlugins = new Set();
+        if (statesFilePath && fs.existsSync(statesFilePath)) {
+            try {
+                const states = JSON.parse(fs.readFileSync(statesFilePath, 'utf8'));
+                for (const [id, enabled] of Object.entries(states)) {
+                    if (enabled === false) this._disabledPlugins.add(id);
+                }
+            } catch (err) {
+                console.warn('[PluginRegistry] Could not load plugin states:', err.message);
+            }
+        }
+    }
+
+    // --- Plugin Enable/Disable ---
+
+    /**
+     * Enable or disable a plugin at runtime. Persists to statesFilePath.
+     */
+    setPluginEnabled(pluginId, enabled) {
+        if (enabled) {
+            this._disabledPlugins.delete(pluginId);
+        } else {
+            this._disabledPlugins.add(pluginId);
+        }
+        this._saveStates();
+    }
+
+    /**
+     * Returns { pluginId: boolean } for all registered plugins.
+     */
+    getPluginStates() {
+        const result = {};
+        for (const [id] of this._manifests) {
+            result[id] = !this._disabledPlugins.has(id);
+        }
+        return result;
+    }
+
+    _saveStates() {
+        if (!this._statesFilePath) return;
+        try {
+            const states = {};
+            for (const [id] of this._manifests) {
+                states[id] = !this._disabledPlugins.has(id);
+            }
+            fs.mkdirSync(path.dirname(this._statesFilePath), { recursive: true });
+            fs.writeFileSync(this._statesFilePath, JSON.stringify(states, null, 2));
+        } catch (err) {
+            console.warn('[PluginRegistry] Could not save plugin states:', err.message);
+        }
     }
 
     /**
@@ -106,6 +166,32 @@ class PluginRegistry {
             }
         }
 
+        // Index info sections (plugin-contributed file info panel sections)
+        if (Array.isArray(capabilities.infoSections) && capabilities.infoSections.length > 0) {
+            this._infoSectionsByPlugin.set(id, capabilities.infoSections);
+        }
+
+        // Index thumbnail generators
+        if (Array.isArray(capabilities.thumbnailGenerators)) {
+            for (const gen of capabilities.thumbnailGenerators) {
+                for (const ext of (gen.extensions || [])) {
+                    const key = ext.toLowerCase();
+                    if (!this._thumbGeneratorsByExt.has(key)) this._thumbGeneratorsByExt.set(key, []);
+                    this._thumbGeneratorsByExt.get(key).push({ pluginId: id, generatorId: gen.id, method: gen.method });
+                }
+            }
+        }
+
+        // Index batch operations
+        if (Array.isArray(capabilities.batchOperations) && capabilities.batchOperations.length > 0) {
+            this._batchOpsByPlugin.set(id, capabilities.batchOperations);
+        }
+
+        // Index settings panels
+        if (capabilities.settingsPanel) {
+            this._settingsPanelsByPlugin.set(id, capabilities.settingsPanel);
+        }
+
         console.log(`[PluginRegistry] Registered plugin: ${id}`);
     }
 
@@ -148,6 +234,7 @@ class PluginRegistry {
         const extractors = this._extractorsByExt.get(ext.toLowerCase()) || [];
 
         for (const { pluginId, extractorId, method } of extractors) {
+            if (this._disabledPlugins.has(pluginId)) continue;
             try {
                 const instance = await this._loadPlugin(pluginId);
                 if (typeof instance[method] !== 'function') continue;
@@ -170,6 +257,7 @@ class PluginRegistry {
     getAllContextMenuItems() {
         const items = [];
         for (const [pluginId, menuItems] of this._contextMenuItemsByPlugin) {
+            if (this._disabledPlugins.has(pluginId)) continue;
             for (const item of menuItems) {
                 items.push({ ...item, pluginId });
             }
@@ -200,7 +288,147 @@ class PluginRegistry {
      * Get all manifests (renderer uses these to know about plugin contributions).
      */
     getManifests() {
-        return Array.from(this._manifests.values()).map(({ _dir, _mainPath, ...rest }) => rest);
+        return Array.from(this._manifests.values()).map(({ _dir, _mainPath, id, ...rest }) => ({
+            ...rest,
+            id,
+            enabled: !this._disabledPlugins.has(id),
+        }));
+    }
+
+    // --- Info Sections ---
+
+    /**
+     * Returns all plugin-contributed info sections as a flat array.
+     * Renderer uses these to render extra sections in the file info panel.
+     */
+    getAllInfoSections() {
+        const sections = [];
+        for (const [pluginId, infoSections] of this._infoSectionsByPlugin) {
+            if (this._disabledPlugins.has(pluginId)) continue;
+            for (const section of infoSections) {
+                sections.push({ ...section, pluginId });
+            }
+        }
+        return sections;
+    }
+
+    /**
+     * Execute a plugin info section renderer method.
+     * Returns { html, actions } or null.
+     */
+    async renderInfoSection(pluginId, sectionId, filePath, pluginMetadata) {
+        const manifest = this._manifests.get(pluginId);
+        if (!manifest) throw new Error(`Unknown plugin: ${pluginId}`);
+
+        const caps = manifest.capabilities || {};
+        const sectionDef = (caps.infoSections || []).find(s => s.id === sectionId);
+        if (!sectionDef) throw new Error(`Unknown info section "${sectionId}" in plugin "${pluginId}"`);
+
+        const instance = await this._loadPlugin(pluginId);
+        if (typeof instance[sectionDef.method] !== 'function') {
+            throw new Error(`Plugin "${pluginId}" does not export method "${sectionDef.method}"`);
+        }
+
+        return callWithTimeout(() => instance[sectionDef.method](filePath, pluginMetadata));
+    }
+
+    // --- Thumbnail Generators ---
+
+    /**
+     * Run the first registered thumbnail generator for the given file extension.
+     * Returns a base64 data URL string or null if no generator handles this ext.
+     */
+    async generateThumbnail(filePath, ext, options = {}) {
+        const generators = this._thumbGeneratorsByExt.get(ext.toLowerCase()) || [];
+        for (const { pluginId, generatorId, method } of generators) {
+            if (this._disabledPlugins.has(pluginId)) continue;
+            try {
+                const instance = await this._loadPlugin(pluginId);
+                if (typeof instance[method] !== 'function') continue;
+                const result = await callWithTimeout(() => instance[method](filePath, options));
+                if (result != null) return result;
+            } catch (err) {
+                console.warn(`[PluginRegistry] Thumbnail generator "${generatorId}" (plugin "${pluginId}") failed:`, err.message);
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Returns true if any plugin has registered a thumbnail generator for this extension.
+     */
+    hasCustomThumbnailGenerator(ext) {
+        return this._thumbGeneratorsByExt.has(ext.toLowerCase());
+    }
+
+    // --- Batch Operations ---
+
+    /**
+     * Returns all plugin-contributed batch operations as a flat array.
+     */
+    getAllBatchOperations() {
+        const ops = [];
+        for (const [pluginId, batchOps] of this._batchOpsByPlugin) {
+            if (this._disabledPlugins.has(pluginId)) continue;
+            for (const op of batchOps) {
+                ops.push({ ...op, pluginId });
+            }
+        }
+        return ops;
+    }
+
+    /**
+     * Execute a plugin batch operation on an array of file paths.
+     */
+    async executeBatchOperation(pluginId, operationId, filePaths, options = {}) {
+        const manifest = this._manifests.get(pluginId);
+        if (!manifest) throw new Error(`Unknown plugin: ${pluginId}`);
+
+        const caps = manifest.capabilities || {};
+        const opDef = (caps.batchOperations || []).find(op => op.id === operationId);
+        if (!opDef) throw new Error(`Unknown batch operation "${operationId}" in plugin "${pluginId}"`);
+
+        const instance = await this._loadPlugin(pluginId);
+        if (typeof instance[opDef.method] !== 'function') {
+            throw new Error(`Plugin "${pluginId}" does not export method "${opDef.method}"`);
+        }
+
+        // Batch ops can take longer — use 5 minutes timeout
+        return callWithTimeout(() => instance[opDef.method](filePaths, options), 300000);
+    }
+
+    // --- Settings Panels ---
+
+    /**
+     * Returns all plugin-contributed settings panels as a flat array.
+     */
+    getAllSettingsPanels() {
+        const panels = [];
+        for (const [pluginId, panel] of this._settingsPanelsByPlugin) {
+            if (this._disabledPlugins.has(pluginId)) continue;
+            panels.push({ ...panel, pluginId });
+        }
+        return panels;
+    }
+
+    /**
+     * Execute a plugin settings action (load or save).
+     */
+    async executeSettingsAction(pluginId, action, data) {
+        const manifest = this._manifests.get(pluginId);
+        if (!manifest) throw new Error(`Unknown plugin: ${pluginId}`);
+
+        const caps = manifest.capabilities || {};
+        const panel = caps.settingsPanel;
+        if (!panel) throw new Error(`Plugin "${pluginId}" has no settingsPanel capability`);
+
+        const instance = await this._loadPlugin(pluginId);
+        const method = action === 'save' ? panel.saveMethod : panel.loadMethod;
+        if (!method || typeof instance[method] !== 'function') {
+            throw new Error(`Plugin "${pluginId}" does not export settings method "${method}"`);
+        }
+
+        return callWithTimeout(() => instance[method](data));
     }
 
     // --- Teardown ---

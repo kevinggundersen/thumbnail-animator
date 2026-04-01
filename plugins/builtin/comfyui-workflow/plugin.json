@@ -13,6 +13,14 @@
         "method": "extractWorkflow"
       }
     ],
+    "infoSections": [
+      {
+        "id": "comfyui-info",
+        "title": "ComfyUI Workflow",
+        "appliesTo": { "hasMetadata": "comfyui-workflow" },
+        "method": "renderInfoSection"
+      }
+    ],
     "contextMenuItems": [
       {
         "id": "copy-workflow-json",

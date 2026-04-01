@@ -1841,6 +1841,7 @@ async function getPluginMenuItems() {
         const manifests = await window.electronAPI.getPluginManifests();
         _pluginMenuItems = [];
         for (const manifest of manifests) {
+            if (!isPluginEnabled(manifest.id)) continue;
             const items = manifest.capabilities?.contextMenuItems || [];
             for (const item of items) {
                 _pluginMenuItems.push({ ...item, pluginId: manifest.id });
@@ -6514,6 +6515,9 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
         
         // Only validate path if we don't have cached content (faster)
         if (!hasCachedContent) {
+            // No in-memory cache — force a fresh scan in loadVideos so we don't
+            // serve stale IndexedDB data that may be missing newly added files.
+            forceReload = true;
             // Show loading indicator
             showLoadingIndicator();
             try {
@@ -6674,14 +6678,201 @@ document.getElementById('settings-modal-close').addEventListener('click', () => 
 });
 
 // Settings tab switching
-document.querySelectorAll('.settings-tab').forEach(tab => {
-    tab.addEventListener('click', () => {
-        document.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
-        document.querySelectorAll('.settings-tab-content').forEach(c => c.classList.remove('active'));
-        tab.classList.add('active');
-        document.querySelector(`.settings-tab-content[data-tab="${tab.dataset.tab}"]`).classList.add('active');
+function bindSettingsTabListeners() {
+    document.querySelectorAll('.settings-tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            document.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.settings-tab-content').forEach(c => c.classList.remove('active'));
+            tab.classList.add('active');
+            const content = document.querySelector(`.settings-tab-content[data-tab="${tab.dataset.tab}"]`);
+            if (content) content.classList.add('active');
+        });
     });
-});
+}
+bindSettingsTabListeners();
+
+// Inject plugin settings panels into the settings modal
+async function injectPluginSettingsPanels() {
+    let panels;
+    try {
+        panels = await window.electronAPI.getPluginSettingsPanels();
+    } catch {
+        return;
+    }
+    if (!panels || panels.length === 0) return;
+
+    const tabsEl = document.querySelector('.settings-tabs');
+    const panelEl = document.querySelector('.settings-panel');
+    if (!tabsEl || !panelEl) return;
+
+    for (const panel of panels) {
+        const tabId = `plugin-${panel.pluginId}`;
+        if (document.querySelector(`.settings-tab[data-tab="${tabId}"]`)) continue; // already injected
+
+        // Add tab button
+        const tabBtn = document.createElement('button');
+        tabBtn.className = 'settings-tab';
+        tabBtn.dataset.tab = tabId;
+        tabBtn.textContent = panel.label || panel.pluginId;
+        tabsEl.appendChild(tabBtn);
+
+        // Add tab content
+        const contentEl = document.createElement('div');
+        contentEl.className = 'settings-tab-content';
+        contentEl.dataset.tab = tabId;
+        contentEl.innerHTML = panel.html || `<p class="settings-label">No settings available for ${panel.pluginId}.</p>`;
+        panelEl.appendChild(contentEl);
+
+        // Wire save button if present
+        contentEl.querySelectorAll('[data-plugin-settings-save]').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const formData = {};
+                contentEl.querySelectorAll('[data-plugin-setting-key]').forEach(input => {
+                    formData[input.dataset.pluginSettingKey] = input.type === 'checkbox' ? input.checked : input.value;
+                });
+                try {
+                    await window.electronAPI.executePluginSettingsAction(panel.pluginId, 'save', formData);
+                    showToast('Settings saved', 'success');
+                } catch (err) {
+                    showToast(`Settings error: ${err.message}`, 'error');
+                }
+            });
+        });
+
+        // Load existing settings into inputs
+        try {
+            const loaded = await window.electronAPI.executePluginSettingsAction(panel.pluginId, 'load', null);
+            if (loaded && loaded.success && loaded.result) {
+                Object.entries(loaded.result).forEach(([key, val]) => {
+                    const input = contentEl.querySelector(`[data-plugin-setting-key="${key}"]`);
+                    if (!input) return;
+                    if (input.type === 'checkbox') input.checked = Boolean(val);
+                    else input.value = String(val);
+                });
+            }
+        } catch { /* settings load is optional */ }
+    }
+
+    // Re-bind tab listeners to include new plugin tabs
+    bindSettingsTabListeners();
+}
+
+// --- Plugin enable/disable helper (renderer-side cache) ---
+function isPluginEnabled(pluginId) {
+    try {
+        const states = JSON.parse(localStorage.getItem('pluginStates') || '{}');
+        // Default is enabled (true) if not explicitly set to false
+        return states[pluginId] !== false;
+    } catch {
+        return true;
+    }
+}
+
+function _setLocalPluginState(pluginId, enabled) {
+    try {
+        const states = JSON.parse(localStorage.getItem('pluginStates') || '{}');
+        states[pluginId] = enabled;
+        localStorage.setItem('pluginStates', JSON.stringify(states));
+    } catch { /* ignore */ }
+}
+
+// --- Plugins settings tab ---
+async function initPluginsTab() {
+    const container = document.getElementById('plugins-tab-content');
+    if (!container) return;
+
+    let manifests, states;
+    try {
+        [manifests, states] = await Promise.all([
+            window.electronAPI.getPluginManifests(),
+            window.electronAPI.getPluginStates(),
+        ]);
+    } catch (err) {
+        container.innerHTML = `<div class="settings-item"><span class="settings-label" style="color:var(--color-danger)">Failed to load plugins: ${err.message}</span></div>`;
+        return;
+    }
+
+    if (!manifests || manifests.length === 0) {
+        container.innerHTML = `<div class="settings-item"><span class="settings-label" style="opacity:0.6">No plugins installed.</span></div>`;
+        return;
+    }
+
+    // Sync localStorage with authoritative state from main process
+    manifests.forEach(m => _setLocalPluginState(m.id, states[m.id] !== false));
+
+    container.innerHTML = manifests.map(m => {
+        const enabled = states[m.id] !== false;
+        const caps = m.capabilities || {};
+        const capLabels = [
+            caps.metadataExtractors?.length ? `${caps.metadataExtractors.length} extractor${caps.metadataExtractors.length > 1 ? 's' : ''}` : null,
+            caps.infoSections?.length ? `${caps.infoSections.length} info section${caps.infoSections.length > 1 ? 's' : ''}` : null,
+            caps.contextMenuItems?.length ? `${caps.contextMenuItems.length} menu item${caps.contextMenuItems.length > 1 ? 's' : ''}` : null,
+            caps.batchOperations?.length ? `${caps.batchOperations.length} batch op${caps.batchOperations.length > 1 ? 's' : ''}` : null,
+            caps.thumbnailGenerators?.length ? `${caps.thumbnailGenerators.length} thumbnail generator${caps.thumbnailGenerators.length > 1 ? 's' : ''}` : null,
+        ].filter(Boolean);
+
+        return `
+        <div class="settings-item plugin-settings-row" data-plugin-id="${m.id}">
+            <div class="plugin-settings-info">
+                <div class="plugin-settings-name">${m.name || m.id}</div>
+                ${m.description ? `<div class="plugin-settings-desc">${m.description}</div>` : ''}
+                <div class="plugin-settings-meta">
+                    <span class="plugin-settings-version">v${m.version || '?'}</span>
+                    ${capLabels.length ? `<span class="plugin-settings-caps">${capLabels.join(' · ')}</span>` : ''}
+                </div>
+            </div>
+            <label class="settings-label plugin-settings-toggle-label">
+                <div class="toggle-switch">
+                    <input type="checkbox" class="plugin-enable-toggle" data-plugin-id="${m.id}" ${enabled ? 'checked' : ''}>
+                    <span class="toggle-slider"></span>
+                </div>
+                <span class="toggle-label plugin-toggle-state-label">${enabled ? 'On' : 'Off'}</span>
+            </label>
+        </div>`;
+    }).join('');
+
+    // Wire toggle handlers
+    container.querySelectorAll('.plugin-enable-toggle').forEach(checkbox => {
+        checkbox.addEventListener('change', async function() {
+            const pluginId = this.dataset.pluginId;
+            const enabled = this.checked;
+            const label = this.closest('.settings-label').querySelector('.plugin-toggle-state-label');
+            if (label) label.textContent = enabled ? 'On' : 'Off';
+
+            _setLocalPluginState(pluginId, enabled);
+            try {
+                await window.electronAPI.setPluginEnabled(pluginId, enabled);
+                // Invalidate lazy-loaded plugin menu items cache so it refreshes
+                _pluginMenuItems = null;
+                // Invalidate info sections cache
+                if (typeof _pluginInfoSections !== 'undefined') _pluginInfoSections = null;
+                showToast(`Plugin "${pluginId}" ${enabled ? 'enabled' : 'disabled'}`, 'info');
+            } catch (err) {
+                showToast(`Failed to toggle plugin: ${err.message}`, 'error');
+            }
+        });
+    });
+}
+
+// Inject plugin panels + plugins tab when the settings modal is first opened
+settingsModal.addEventListener('click', () => {}, { once: false }); // ensure settingsModal is referenced
+(function() {
+    let settingsOnceInit = false;
+    const _onFirstOpen = () => {
+        if (settingsOnceInit) return;
+        settingsOnceInit = true;
+        injectPluginSettingsPanels();
+        initPluginsTab();
+    };
+    // Listen for the modal becoming visible
+    const observer = new MutationObserver(() => {
+        if (!settingsModal.classList.contains('hidden')) {
+            _onFirstOpen();
+            observer.disconnect();
+        }
+    });
+    observer.observe(settingsModal, { attributes: true, attributeFilter: ['class'] });
+})();
 
 // Layout mode toggle event listener
 layoutModeToggle.addEventListener('change', () => {

@@ -2969,7 +2969,8 @@ button:hover {
 }
 
 /* ComfyUI Workflow Section */
-.file-info-comfyui-section {
+.file-info-comfyui-section,
+.file-info-plugin-section {
     flex-direction: column;
     align-items: stretch;
     border-top: 2px solid var(--accent-muted);
@@ -3011,6 +3012,13 @@ button:hover {
 .file-info-workflow-json {
     width: 100%;
     margin-top: 8px;
+}
+
+/* Stack the label above the JSON block instead of side-by-side */
+.file-info-detail-row:has(.file-info-workflow-json) {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
 }
 
 .file-info-json-pre {
@@ -3088,6 +3096,74 @@ button:hover {
     line-height: 1.4;
 }
 
+
+/* ── Plugins Settings Tab ───────────────────────────────────────────────────── */
+
+.plugins-tab-loading {
+    padding: 24px 0;
+    text-align: center;
+    opacity: 0.5;
+    font-size: 13px;
+}
+
+.plugin-settings-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border-subtle, rgba(255,255,255,0.08));
+}
+
+.plugin-settings-row:last-child {
+    border-bottom: none;
+}
+
+.plugin-settings-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.plugin-settings-name {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-color);
+    margin-bottom: 2px;
+}
+
+.plugin-settings-desc {
+    font-size: 12px;
+    color: var(--text-secondary, rgba(255,255,255,0.55));
+    margin-bottom: 4px;
+    line-height: 1.4;
+}
+
+.plugin-settings-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    color: var(--text-secondary, rgba(255,255,255,0.4));
+}
+
+.plugin-settings-version {
+    background: var(--surface-raised, rgba(255,255,255,0.07));
+    border-radius: 4px;
+    padding: 1px 6px;
+}
+
+.plugin-settings-caps {
+    opacity: 0.75;
+}
+
+.plugin-settings-toggle-label {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    user-select: none;
+}
 
 /* Advanced Search Panel */
 .advanced-search-panel {

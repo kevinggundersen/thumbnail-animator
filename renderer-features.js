@@ -1897,6 +1897,78 @@ function extractComfyUIParameters(workflow) {
     return params;
 }
 
+// Plugin info sections — lazily loaded list of section descriptors
+let _pluginInfoSections = null;
+async function getPluginInfoSections() {
+    if (_pluginInfoSections !== null) return _pluginInfoSections;
+    try {
+        _pluginInfoSections = await window.electronAPI.getPluginInfoSections();
+    } catch {
+        _pluginInfoSections = [];
+    }
+    return _pluginInfoSections;
+}
+
+/**
+ * Calls each registered plugin info section and appends rendered HTML to the details container.
+ * Plugins return { title, html, actions? } where actions is [{label, copyText}].
+ */
+async function appendPluginInfoSections(detailsEl, filePath, pluginMetadata) {
+    const sections = await getPluginInfoSections();
+    for (const section of sections) {
+        try {
+            const res = await window.electronAPI.renderPluginInfoSection(
+                section.pluginId, section.id, filePath, pluginMetadata
+            );
+            if (!res || !res.success || !res.result) continue;
+            const { title, html, actions } = res.result;
+            if (!html) continue;
+
+            const wrapper = document.createElement('div');
+            wrapper.className = 'file-info-detail-row file-info-comfyui-section file-info-plugin-section';
+            wrapper.dataset.pluginSection = `${section.pluginId}:${section.id}`;
+
+            const headerEl = document.createElement('div');
+            headerEl.className = 'file-info-comfyui-header';
+            headerEl.innerHTML = `<span class="file-info-detail-label">${escapeHtml(title || section.title || 'Plugin Info')}:</span>
+                <button class="file-info-toggle-btn" data-toggle-plugin-section>▼</button>`;
+
+            const contentEl = document.createElement('div');
+            contentEl.className = 'file-info-comfyui-content';
+            contentEl.innerHTML = html;
+
+            if (Array.isArray(actions)) {
+                for (const action of actions) {
+                    if (!action.label || !action.copyText) continue;
+                    const btn = document.createElement('button');
+                    btn.className = 'file-info-copy-json-btn';
+                    btn.textContent = action.label;
+                    const textToCopy = action.copyText;
+                    btn.addEventListener('click', function() {
+                        navigator.clipboard.writeText(textToCopy).then(() => {
+                            const orig = this.textContent;
+                            this.textContent = 'Copied!';
+                            setTimeout(() => { this.textContent = orig; }, 2000);
+                        });
+                    });
+                    contentEl.appendChild(btn);
+                }
+            }
+
+            headerEl.querySelector('[data-toggle-plugin-section]').addEventListener('click', function() {
+                contentEl.classList.toggle('hidden');
+                this.textContent = this.textContent === '▼' ? '▶' : '▼';
+            });
+
+            wrapper.appendChild(headerEl);
+            wrapper.appendChild(contentEl);
+            detailsEl.appendChild(wrapper);
+        } catch (err) {
+            console.warn(`[Plugin info section] ${section.pluginId}/${section.id} failed:`, err.message);
+        }
+    }
+}
+
 // File info panel (popover)
 async function showFileInfo(filePath) {
     console.log('showFileInfo called with filePath:', filePath);
@@ -2009,145 +2081,10 @@ async function showFileInfo(filePath) {
                     <span class="file-info-detail-value">Image</span>
                 </div>
                 ` : ''}
-                ${info.comfyUIWorkflow ? (() => {
-                    let workflow = info.comfyUIWorkflow.workflow;
-                    if (!workflow && info.comfyUIWorkflow.raw) {
-                        try {
-                            workflow = typeof info.comfyUIWorkflow.raw === 'string' 
-                                ? JSON.parse(info.comfyUIWorkflow.raw) 
-                                : info.comfyUIWorkflow.raw;
-                        } catch (e) {
-                            console.warn('Failed to parse workflow raw data:', e);
-                            workflow = null;
-                        }
-                    }
-                    const params = workflow ? extractComfyUIParameters(workflow) : null;
-                    return `
-                <div class="file-info-detail-row file-info-comfyui-section">
-                    <div class="file-info-comfyui-header">
-                        <span class="file-info-detail-label">ComfyUI Workflow:</span>
-                        <button class="file-info-toggle-btn" data-toggle-workflow>▼</button>
-                    </div>
-                    <div class="file-info-comfyui-content">
-                        ${params && (params.prompt || params.cfgScale !== null || params.steps !== null || params.seed !== null) ? `
-                        <div class="file-info-comfyui-params">
-                            <div class="file-info-comfyui-params-header">Generation Parameters</div>
-                            ${params.prompt ? `
-                            <div class="file-info-detail-row file-info-prompt-row">
-                                <span class="file-info-detail-label">Prompt:</span>
-                                <div class="file-info-prompt-value">${escapeHtml(params.prompt)}</div>
-                            </div>
-                            ` : ''}
-                            ${params.negativePrompt ? `
-                            <div class="file-info-detail-row file-info-prompt-row">
-                                <span class="file-info-detail-label">Negative Prompt:</span>
-                                <div class="file-info-prompt-value">${escapeHtml(params.negativePrompt)}</div>
-                            </div>
-                            ` : ''}
-                            <div class="file-info-comfyui-params-grid">
-                                ${params.cfgScale !== null ? `
-                                <div class="file-info-detail-row">
-                                    <span class="file-info-detail-label">CFG Scale:</span>
-                                    <span class="file-info-detail-value">${params.cfgScale}</span>
-                                </div>
-                                ` : ''}
-                                ${params.steps !== null ? `
-                                <div class="file-info-detail-row">
-                                    <span class="file-info-detail-label">Steps:</span>
-                                    <span class="file-info-detail-value">${params.steps}</span>
-                                </div>
-                                ` : ''}
-                                ${params.sampler ? `
-                                <div class="file-info-detail-row">
-                                    <span class="file-info-detail-label">Sampler:</span>
-                                    <span class="file-info-detail-value">${escapeHtml(params.sampler)}</span>
-                                </div>
-                                ` : ''}
-                                ${params.seed !== null ? `
-                                <div class="file-info-detail-row">
-                                    <span class="file-info-detail-label">Seed:</span>
-                                    <span class="file-info-detail-value">${params.seed}</span>
-                                </div>
-                                ` : ''}
-                                ${params.model ? `
-                                <div class="file-info-detail-row">
-                                    <span class="file-info-detail-label">Model:</span>
-                                    <span class="file-info-detail-value">${escapeHtml(params.model)}</span>
-                                </div>
-                                ` : ''}
-                                ${params.width && params.height ? `
-                                <div class="file-info-detail-row">
-                                    <span class="file-info-detail-label">Resolution:</span>
-                                    <span class="file-info-detail-value">${params.width} x ${params.height}</span>
-                                </div>
-                                ` : ''}
-                            </div>
-                        </div>
-                        ` : ''}
-                        <div class="file-info-detail-row">
-                            <span class="file-info-detail-label">Metadata Key:</span>
-                            <span class="file-info-detail-value">${escapeHtml(info.comfyUIWorkflow.key)}</span>
-                        </div>
-                        ${info.comfyUIWorkflow.workflow ? `
-                        <div class="file-info-detail-row">
-                            <span class="file-info-detail-label">Workflow Data:</span>
-                            <div class="file-info-workflow-json">
-                                <pre class="file-info-json-pre">${escapeHtml(JSON.stringify(info.comfyUIWorkflow.workflow, null, 2))}</pre>
-                                <button class="file-info-copy-json-btn" data-copy-workflow-json>Copy JSON</button>
-                            </div>
-                        </div>
-                        ` : `
-                        <div class="file-info-detail-row">
-                            <span class="file-info-detail-label">Raw Data:</span>
-                            <div class="file-info-workflow-json">
-                                <pre class="file-info-json-pre">${escapeHtml(info.comfyUIWorkflow.raw.substring(0, 500))}${info.comfyUIWorkflow.raw.length > 500 ? '...' : ''}</pre>
-                                <button class="file-info-copy-json-btn" data-copy-workflow-raw>Copy Raw</button>
-                            </div>
-                        </div>
-                        `}
-                    </div>
-                </div>
-                `;
-                })() : ''}
             `;
-            
-            // Set up event listeners for ComfyUI workflow buttons (inside the success block where info is in scope)
-            const toggleBtn = details.querySelector('[data-toggle-workflow]');
-            if (toggleBtn) {
-                toggleBtn.addEventListener('click', function() {
-                    const content = this.parentElement.nextElementSibling;
-                    content.classList.toggle('hidden');
-                    this.textContent = this.textContent === '▼' ? '▶' : '▼';
-                });
-            }
 
-            const copyJsonBtn = details.querySelector('[data-copy-workflow-json]');
-            if (copyJsonBtn && info.comfyUIWorkflow && info.comfyUIWorkflow.workflow) {
-                const workflowJson = JSON.stringify(info.comfyUIWorkflow.workflow, null, 2);
-                copyJsonBtn.addEventListener('click', function() {
-                    navigator.clipboard.writeText(workflowJson).then(() => {
-                        const originalText = this.textContent;
-                        this.textContent = 'Copied!';
-                        setTimeout(() => {
-                            this.textContent = originalText;
-                        }, 2000);
-                    });
-                });
-            }
-
-            const copyRawBtn = details.querySelector('[data-copy-workflow-raw]');
-            if (copyRawBtn && info.comfyUIWorkflow && info.comfyUIWorkflow.raw) {
-                const rawData = info.comfyUIWorkflow.raw;
-                copyRawBtn.addEventListener('click', function() {
-                    navigator.clipboard.writeText(rawData).then(() => {
-                        const originalText = this.textContent;
-                        this.textContent = 'Copied!';
-                        setTimeout(() => {
-                            this.textContent = originalText;
-                        }, 2000);
-                    });
-                });
-            }
+            // Plugin info sections handle all additional metadata rendering (ComfyUI, EXIF, etc.)
+            await appendPluginInfoSections(details, filePath, info.pluginMetadata || {});
         } else {
             details.innerHTML = `<div class="file-info-detail-row">Error: ${result.error || 'Unknown error'}</div>`;
         }
@@ -2751,10 +2688,17 @@ function initNewFeatures() {
         });
     }
     
-    // Prevent clicks inside panel from closing it
+    // Prevent clicks inside panel from closing it; handle GPS map links
     if (fileInfoPanel) {
         fileInfoPanel.addEventListener('click', (e) => {
             e.stopPropagation();
+            // GPS coordinate link → open in browser
+            const gpsLink = e.target.closest('.exif-gps-link');
+            if (gpsLink) {
+                e.preventDefault();
+                const url = gpsLink.dataset.url;
+                if (url) window.electronAPI.openUrl(url);
+            }
         });
         
         // Close when clicking outside the lightbox (but keep open when clicking inside lightbox)

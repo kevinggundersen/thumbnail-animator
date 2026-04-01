@@ -13,6 +13,7 @@ function activate(api) {
     return {
         extractWorkflow,
         copyWorkflowJSON,
+        renderInfoSection,
     };
 }
 
@@ -171,6 +172,88 @@ function _decodeChunk(chunk) {
     } catch (_) {
         return null;
     }
+}
+
+/**
+ * infoSection renderer: returns { title, html, actions } for the file info panel.
+ */
+function renderInfoSection(filePath, pluginMetadata) {
+    const data = pluginMetadata && pluginMetadata['comfyui-workflow'];
+    if (!data) return null;
+
+    let workflow = data.workflow;
+    if (!workflow && data.raw) {
+        try { workflow = JSON.parse(data.raw); } catch (_) { /* raw is not valid JSON */ }
+    }
+
+    const params = workflow ? _extractParams(workflow) : null;
+    const e = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+    const rows = [];
+    if (params) {
+        if (params.prompt) rows.push(`<div class="file-info-detail-row file-info-prompt-row"><span class="file-info-detail-label">Prompt:</span><div class="file-info-prompt-value">${e(params.prompt)}</div></div>`);
+        if (params.negativePrompt) rows.push(`<div class="file-info-detail-row file-info-prompt-row"><span class="file-info-detail-label">Negative Prompt:</span><div class="file-info-prompt-value">${e(params.negativePrompt)}</div></div>`);
+        const grid = [];
+        if (params.cfgScale !== null) grid.push(`<div class="file-info-detail-row"><span class="file-info-detail-label">CFG Scale:</span><span class="file-info-detail-value">${params.cfgScale}</span></div>`);
+        if (params.steps !== null) grid.push(`<div class="file-info-detail-row"><span class="file-info-detail-label">Steps:</span><span class="file-info-detail-value">${params.steps}</span></div>`);
+        if (params.sampler) grid.push(`<div class="file-info-detail-row"><span class="file-info-detail-label">Sampler:</span><span class="file-info-detail-value">${e(params.sampler)}</span></div>`);
+        if (params.seed !== null) grid.push(`<div class="file-info-detail-row"><span class="file-info-detail-label">Seed:</span><span class="file-info-detail-value">${params.seed}</span></div>`);
+        if (params.model) grid.push(`<div class="file-info-detail-row"><span class="file-info-detail-label">Model:</span><span class="file-info-detail-value">${e(params.model)}</span></div>`);
+        if (params.width && params.height) grid.push(`<div class="file-info-detail-row"><span class="file-info-detail-label">Resolution:</span><span class="file-info-detail-value">${params.width} x ${params.height}</span></div>`);
+        if (grid.length) rows.push(`<div class="file-info-comfyui-params-grid">${grid.join('')}</div>`);
+    }
+
+    rows.push(`<div class="file-info-detail-row"><span class="file-info-detail-label">Metadata Key:</span><span class="file-info-detail-value">${e(data.key)}</span></div>`);
+
+    if (workflow) {
+        const jsonStr = JSON.stringify(workflow, null, 2);
+        rows.push(`<div class="file-info-detail-row"><span class="file-info-detail-label">Workflow Data:</span><div class="file-info-workflow-json"><pre class="file-info-json-pre">${e(jsonStr)}</pre></div></div>`);
+    }
+
+    const actions = [];
+    if (workflow) {
+        actions.push({ label: 'Copy Workflow JSON', copyText: JSON.stringify(workflow, null, 2) });
+    }
+    if (data.raw) {
+        actions.push({ label: 'Copy Raw', copyText: data.raw });
+    }
+
+    return { title: 'ComfyUI Workflow', html: rows.join(''), actions };
+}
+
+/**
+ * Extract generation parameters from a ComfyUI workflow object.
+ */
+function _extractParams(workflow) {
+    const params = { prompt: null, negativePrompt: null, cfgScale: null, steps: null, sampler: null, seed: null, model: null, width: null, height: null };
+    if (!workflow || typeof workflow !== 'object') return params;
+
+    const nodes = Array.isArray(workflow) ? workflow : Object.values(workflow);
+    for (const node of nodes) {
+        if (!node || typeof node !== 'object') continue;
+        const inputs = node.inputs || {};
+        const classType = (node.class_type || '').toLowerCase();
+
+        if (classType.includes('cliptextencode') || classType.includes('text_encode')) {
+            if (!params.prompt && typeof inputs.text === 'string') params.prompt = inputs.text;
+            else if (!params.negativePrompt && typeof inputs.text === 'string') params.negativePrompt = inputs.text;
+        }
+        if (classType.includes('ksampler') || classType.includes('sampler')) {
+            if (inputs.cfg !== undefined) params.cfgScale = inputs.cfg;
+            if (inputs.steps !== undefined) params.steps = inputs.steps;
+            if (inputs.sampler_name !== undefined) params.sampler = inputs.sampler_name;
+            if (inputs.seed !== undefined) params.seed = inputs.seed;
+            if (inputs.noise_seed !== undefined) params.seed = inputs.noise_seed;
+        }
+        if (classType.includes('emptylatent') || classType.includes('empty_latent')) {
+            if (inputs.width !== undefined) params.width = inputs.width;
+            if (inputs.height !== undefined) params.height = inputs.height;
+        }
+        if (classType.includes('checkpointloader') || classType.includes('load_checkpoint')) {
+            if (typeof inputs.ckpt_name === 'string') params.model = inputs.ckpt_name;
+        }
+    }
+    return params;
 }
 
 module.exports = { activate };

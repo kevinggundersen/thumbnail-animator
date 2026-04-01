@@ -52,5 +52,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Plugin system
     getPluginManifests: () => ipcRenderer.invoke('get-plugin-manifests'),
     executePluginAction: (pluginId, actionId, filePath, metadata) =>
-        ipcRenderer.invoke('execute-plugin-action', pluginId, actionId, filePath, metadata)
+        ipcRenderer.invoke('execute-plugin-action', pluginId, actionId, filePath, metadata),
+    getPluginInfoSections: () => ipcRenderer.invoke('get-plugin-info-sections'),
+    renderPluginInfoSection: (pluginId, sectionId, filePath, pluginMetadata) =>
+        ipcRenderer.invoke('render-plugin-info-section', pluginId, sectionId, filePath, pluginMetadata),
+    getPluginBatchOperations: () => ipcRenderer.invoke('get-plugin-batch-operations'),
+    executePluginBatchOperation: (pluginId, operationId, filePaths, options) =>
+        ipcRenderer.invoke('execute-plugin-batch-operation', pluginId, operationId, filePaths, options),
+    getPluginSettingsPanels: () => ipcRenderer.invoke('get-plugin-settings-panels'),
+    executePluginSettingsAction: (pluginId, action, data) =>
+        ipcRenderer.invoke('execute-plugin-settings-action', pluginId, action, data),
+    pluginGenerateThumbnail: (filePath, ext) =>
+        ipcRenderer.invoke('plugin-generate-thumbnail', filePath, ext),
+    getPluginStates: () => ipcRenderer.invoke('get-plugin-states'),
+    setPluginEnabled: (pluginId, enabled) => ipcRenderer.invoke('set-plugin-enabled', pluginId, enabled)
 });

@@ -545,7 +545,8 @@ function createWindow() {
 
 // Initialize plugin registry
 const pluginCacheDir = path.join(app.getPath('userData'), 'plugin-cache');
-const pluginRegistry = new PluginRegistry(pluginCacheDir);
+const pluginStatesFile = path.join(pluginCacheDir, 'plugin-states.json');
+const pluginRegistry = new PluginRegistry(pluginCacheDir, pluginStatesFile);
 pluginRegistry.discover(path.join(__dirname, 'plugins', 'builtin'));
 pluginRegistry.discover(path.join(app.getPath('userData'), 'plugins'));
 
@@ -1955,6 +1956,72 @@ ipcMain.handle('execute-plugin-action', async (event, pluginId, actionId, filePa
         return { success: true, result };
     } catch (err) {
         console.warn(`[Plugin action] ${pluginId}/${actionId} failed:`, err.message);
+        return { success: false, error: err.message };
+    }
+});
+
+ipcMain.handle('get-plugin-info-sections', () => {
+    return pluginRegistry.getAllInfoSections();
+});
+
+ipcMain.handle('render-plugin-info-section', async (event, pluginId, sectionId, filePath, pluginMetadata) => {
+    try {
+        const result = await pluginRegistry.renderInfoSection(pluginId, sectionId, filePath, pluginMetadata);
+        return { success: true, result };
+    } catch (err) {
+        console.warn(`[Plugin info section] ${pluginId}/${sectionId} failed:`, err.message);
+        return { success: false, error: err.message };
+    }
+});
+
+ipcMain.handle('get-plugin-batch-operations', () => {
+    return pluginRegistry.getAllBatchOperations();
+});
+
+ipcMain.handle('execute-plugin-batch-operation', async (event, pluginId, operationId, filePaths, options) => {
+    try {
+        const result = await pluginRegistry.executeBatchOperation(pluginId, operationId, filePaths, options || {});
+        return { success: true, result };
+    } catch (err) {
+        console.warn(`[Plugin batch op] ${pluginId}/${operationId} failed:`, err.message);
+        return { success: false, error: err.message };
+    }
+});
+
+ipcMain.handle('get-plugin-settings-panels', () => {
+    return pluginRegistry.getAllSettingsPanels();
+});
+
+ipcMain.handle('execute-plugin-settings-action', async (event, pluginId, action, data) => {
+    try {
+        const result = await pluginRegistry.executeSettingsAction(pluginId, action, data);
+        return { success: true, result };
+    } catch (err) {
+        console.warn(`[Plugin settings] ${pluginId}/${action} failed:`, err.message);
+        return { success: false, error: err.message };
+    }
+});
+
+ipcMain.handle('plugin-generate-thumbnail', async (event, filePath, ext) => {
+    try {
+        const result = await pluginRegistry.generateThumbnail(filePath, ext);
+        return { success: true, result };
+    } catch (err) {
+        console.warn(`[Plugin thumbnail] ${filePath} failed:`, err.message);
+        return { success: false, error: err.message };
+    }
+});
+
+ipcMain.handle('get-plugin-states', () => {
+    return pluginRegistry.getPluginStates();
+});
+
+ipcMain.handle('set-plugin-enabled', (event, pluginId, enabled) => {
+    try {
+        pluginRegistry.setPluginEnabled(pluginId, enabled);
+        return { success: true };
+    } catch (err) {
+        console.warn(`[Plugin toggle] ${pluginId} failed:`, err.message);
         return { success: false, error: err.message };
     }
 });

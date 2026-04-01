@@ -37,6 +37,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     onDuplicateScanProgress: (callback) => ipcRenderer.on('duplicate-scan-progress', callback),
     removeDuplicateScanProgressListener: () => ipcRenderer.removeAllListeners('duplicate-scan-progress'),
     toggleMenuBar: () => ipcRenderer.send('toggle-menu-bar'),
+    updateTitleBarOverlay: (overlay) => ipcRenderer.send('update-titlebar-overlay', overlay),
     // AI Visual Search (CLIP)
     clipCheckCache: () => ipcRenderer.invoke('clip-check-cache'),
     clipInit: () => ipcRenderer.invoke('clip-init'),

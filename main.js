@@ -491,6 +491,14 @@ function createWindow() {
         }
     });
     
+    // Update title bar overlay colors when theme changes
+    ipcMain.on('update-titlebar-overlay', (event, overlay) => {
+        const sender = BrowserWindow.fromWebContents(event.sender);
+        if (sender) {
+            try { sender.setTitleBarOverlay(overlay); } catch {}
+        }
+    });
+
     // Track window minimize/maximize events to reduce resource usage
     win.on('minimize', () => {
         win.webContents.send('window-minimized');

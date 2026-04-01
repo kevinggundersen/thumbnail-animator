@@ -1443,22 +1443,12 @@ function applyZoom() {
 
 // ==================== THEME ====================
 function initTheme() {
-    const savedTheme = localStorage.getItem('theme');
-    if (savedTheme === 'light' || savedTheme === 'dark') {
-        currentTheme = savedTheme;
-        themeSelect.value = currentTheme;
-    }
-    applyTheme();
+    // Theme is now managed by ThemeManager in themes.js
 }
 
 function applyTheme() {
+    // Theme is now managed by ThemeManager in themes.js
     invalidateMasonryStyleCache();
-    if (currentTheme === 'light') {
-        document.documentElement.classList.add('light-theme');
-    } else {
-        document.documentElement.classList.remove('light-theme');
-    }
-    deferLocalStorageWrite('theme', currentTheme);
 }
 
 // ==================== THUMBNAIL QUALITY ====================

@@ -1182,7 +1182,6 @@ const includeMovingImagesToggle = document.getElementById('include-moving-images
 const includeMovingImagesLabel = document.getElementById('include-moving-images-label');
 const sortTypeSelect = document.getElementById('sort-type-select');
 const sortOrderSelect = document.getElementById('sort-order-select');
-const themeSelect = document.getElementById('theme-select');
 const thumbnailQualitySelect = document.getElementById('thumbnail-quality-select');
 const pauseOnLightboxToggle = document.getElementById('pause-on-lightbox-toggle');
 const pauseOnLightboxLabel = document.getElementById('pause-on-lightbox-label');
@@ -1291,9 +1290,6 @@ let pauseOnBlur = true;
 // Track sorting preferences
 let sortType = 'name'; // 'name' or 'date'
 let sortOrder = 'ascending'; // 'ascending' or 'descending'
-
-// Track theme
-let currentTheme = 'dark'; // 'dark' or 'light'
 
 // Track thumbnail quality
 let thumbnailQuality = 'medium'; // 'low', 'medium', 'high'
@@ -6768,12 +6764,6 @@ sortOrderSelect.addEventListener('change', () => {
     updateSorting();
 });
 
-// Theme select event listener
-themeSelect.addEventListener('change', () => {
-    currentTheme = themeSelect.value;
-    applyTheme();
-});
-
 // Thumbnail quality select event listener
 thumbnailQualitySelect.addEventListener('change', () => {
     thumbnailQuality = thumbnailQualitySelect.value;
@@ -8579,4 +8569,7 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
         }
     }
 }
+
+// Initialize theme system (must be after all let/const declarations to avoid TDZ errors)
+ThemeManager.init();
 

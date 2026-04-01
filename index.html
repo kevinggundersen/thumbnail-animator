@@ -402,6 +402,7 @@
             <div class="settings-modal-body">
                 <div class="settings-tabs">
                     <button class="settings-tab active" data-tab="general">General</button>
+                    <button class="settings-tab" data-tab="appearance">Appearance</button>
                     <button class="settings-tab" data-tab="card-info">Card Info</button>
                     <button class="settings-tab" data-tab="playback">Playback</button>
                     <button class="settings-tab" data-tab="ai-search">AI Search</button>
@@ -441,15 +442,6 @@
                         </div>
                         <div class="settings-item">
                             <label class="settings-label">
-                                <span>Theme</span>
-                                <select id="theme-select" class="settings-select">
-                                    <option value="dark">Dark</option>
-                                    <option value="light">Light</option>
-                                </select>
-                            </label>
-                        </div>
-                        <div class="settings-item">
-                            <label class="settings-label">
                                 <span>Thumbnail Quality</span>
                                 <select id="thumbnail-quality-select" class="settings-select">
                                     <option value="low">Low (Fast)</option>
@@ -458,6 +450,55 @@
                                     <option value="original">Original (Full Res)</option>
                                 </select>
                             </label>
+                        </div>
+                    </div>
+                    <!-- Appearance Tab -->
+                    <div class="settings-tab-content" data-tab="appearance">
+                        <div class="theme-section-header">Theme</div>
+                        <div id="theme-grid" class="theme-grid"></div>
+
+                        <div class="theme-section-header">
+                            Custom Themes
+                            <button id="create-theme-btn" class="theme-create-btn">+ New</button>
+                        </div>
+                        <div id="custom-themes-list" class="custom-themes-list"></div>
+
+                        <div id="theme-editor" class="theme-editor hidden">
+                            <div class="theme-editor-row">
+                                <label>Name</label>
+                                <input type="text" id="theme-editor-name" class="settings-input" placeholder="My Theme" maxlength="30">
+                            </div>
+                            <div class="theme-editor-row">
+                                <label>Base</label>
+                                <select id="theme-editor-base" class="settings-select"></select>
+                            </div>
+                            <div class="theme-editor-colors">
+                                <div class="color-field">
+                                    <label>Accent</label>
+                                    <input type="color" id="theme-editor-accent" value="#e8a44a">
+                                    <span class="color-hex" id="theme-editor-accent-hex">#e8a44a</span>
+                                </div>
+                                <div class="color-field">
+                                    <label>Background</label>
+                                    <input type="color" id="theme-editor-bg" value="#0d0d0f">
+                                    <span class="color-hex" id="theme-editor-bg-hex">#0d0d0f</span>
+                                </div>
+                                <div class="color-field">
+                                    <label>Surface</label>
+                                    <input type="color" id="theme-editor-surface" value="#161618">
+                                    <span class="color-hex" id="theme-editor-surface-hex">#161618</span>
+                                </div>
+                                <div class="color-field">
+                                    <label>Text</label>
+                                    <input type="color" id="theme-editor-text" value="#ececf0">
+                                    <span class="color-hex" id="theme-editor-text-hex">#ececf0</span>
+                                </div>
+                            </div>
+                            <div class="theme-editor-actions">
+                                <button id="theme-editor-preview" class="settings-action-btn">Preview</button>
+                                <button id="theme-editor-save" class="settings-action-btn theme-save-btn">Save</button>
+                                <button id="theme-editor-cancel" class="settings-action-btn">Cancel</button>
+                            </div>
                         </div>
                     </div>
                     <!-- Card Info Tab -->
@@ -747,6 +788,7 @@
     <script src="gifuct-js-bundle.js"></script>
     <script src="webpxmux.min.js"></script>
     <script src="playback-controller.js"></script>
+    <script src="themes.js"></script>
     <script src="renderer.js"></script>
     <script defer src="renderer-features.js"></script>
 </body>

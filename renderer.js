@@ -1833,6 +1833,26 @@ initIndexedDB().catch(() => {
     console.warn('IndexedDB initialization failed, using memory cache only');
 });
 
+// Load plugin manifests for context menu contributions
+let _pluginMenuItems = null; // lazily populated
+async function getPluginMenuItems() {
+    if (_pluginMenuItems !== null) return _pluginMenuItems;
+    try {
+        const manifests = await window.electronAPI.getPluginManifests();
+        _pluginMenuItems = [];
+        for (const manifest of manifests) {
+            const items = manifest.capabilities?.contextMenuItems || [];
+            for (const item of items) {
+                _pluginMenuItems.push({ ...item, pluginId: manifest.id });
+            }
+        }
+    } catch (err) {
+        console.warn('Could not load plugin manifests:', err);
+        _pluginMenuItems = [];
+    }
+    return _pluginMenuItems;
+}
+
 // Normalize path for consistent cache lookups (handle Windows path variations)
 function normalizePath(path) {
     if (!path) return path;
@@ -8093,6 +8113,27 @@ function showContextMenu(event, card) {
     const pinLabel = menu.querySelector('.pin-label');
     if (pinLabel) pinLabel.textContent = pinned ? 'Unpin' : 'Pin to Top';
 
+    // Inject / refresh plugin menu items (file menus only)
+    if (!isFolder) {
+        // Remove any previously injected plugin items and their separator
+        menu.querySelectorAll('.context-menu-item[data-plugin], .context-menu-plugin-separator').forEach(el => el.remove());
+        // Load and inject asynchronously — menu is already visible so items appear shortly after
+        getPluginMenuItems().then(items => {
+            if (!items.length) return;
+            const separator = document.createElement('div');
+            separator.className = 'context-menu-separator context-menu-plugin-separator';
+            menu.appendChild(separator);
+            for (const item of items) {
+                const el = document.createElement('div');
+                el.className = 'context-menu-item';
+                el.dataset.action = `plugin:${item.pluginId}:${item.id}`;
+                el.dataset.plugin = item.pluginId;
+                el.textContent = item.label;
+                menu.appendChild(el);
+            }
+        });
+    }
+
     const x = event.clientX;
     const y = event.clientY;
 
@@ -8201,6 +8242,25 @@ contextMenu.addEventListener('click', async (e) => {
                 await window.electronAPI.openWith(filePath);
             } catch (error) {
                 showToast(`Could not open file: ${friendlyError(error)}`, 'error');
+            }
+            break;
+
+        default:
+            if (action.startsWith('plugin:')) {
+                const [, pluginId, actionId] = action.split(':');
+                try {
+                    const result = await window.electronAPI.executePluginAction(pluginId, actionId, filePath, null);
+                    if (!result.success) {
+                        showToast(`Plugin action failed: ${result.error}`, 'error');
+                    } else if (result.result?.json) {
+                        // If the plugin returned JSON text, copy it to clipboard
+                        navigator.clipboard.writeText(result.result.json).then(() => {
+                            showToast('Copied to clipboard', 'success');
+                        });
+                    }
+                } catch (error) {
+                    showToast(`Plugin error: ${friendlyError(error)}`, 'error');
+                }
             }
             break;
     }

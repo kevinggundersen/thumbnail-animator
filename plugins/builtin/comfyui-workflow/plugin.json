@@ -1,0 +1,27 @@
+{
+  "id": "comfyui-workflow",
+  "name": "ComfyUI Workflow Extractor",
+  "version": "1.0.0",
+  "description": "Extracts ComfyUI workflow and prompt data from PNG metadata chunks (tEXt, zTXt, iTXt).",
+  "main": "index.js",
+  "capabilities": {
+    "metadataExtractors": [
+      {
+        "id": "comfyui-workflow",
+        "name": "ComfyUI Workflow",
+        "extensions": [".png"],
+        "method": "extractWorkflow"
+      }
+    ],
+    "contextMenuItems": [
+      {
+        "id": "copy-workflow-json",
+        "label": "Copy Workflow JSON",
+        "appliesTo": { "hasMetadata": "comfyui-workflow" },
+        "method": "copyWorkflowJSON",
+        "position": "after:reveal"
+      }
+    ],
+    "fileTypes": []
+  }
+}

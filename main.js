@@ -14,6 +14,7 @@ const fs = require('fs');
 const DimensionWorkerPool = require('./worker-pool');
 const ThumbnailWorkerPool = require('./thumbnail-pool');
 const HashWorkerPool = require('./hash-pool');
+const PluginRegistry = require('./plugins/plugin-registry');
 // ClipWorkerPool removed — inference runs directly in the main process
 // to avoid native module ABI issues in Electron worker threads.
 let sizeOf;
@@ -542,6 +543,12 @@ function createWindow() {
     return win;
 }
 
+// Initialize plugin registry
+const pluginCacheDir = path.join(app.getPath('userData'), 'plugin-cache');
+const pluginRegistry = new PluginRegistry(pluginCacheDir);
+pluginRegistry.discover(path.join(__dirname, 'plugins', 'builtin'));
+pluginRegistry.discover(path.join(app.getPath('userData'), 'plugins'));
+
 app.whenReady().then(() => {
     const win = createWindow();
 
@@ -601,10 +608,10 @@ ipcMain.handle('scan-folder', async (event, folderPath, options = {}) => {
         const items = await fs.promises.readdir(folderPath, { withFileTypes: true });
         logPerf('scan-folder.readdir', readdirStart, { entries: items.length });
 
-        // Use Sets for O(1) lookup instead of O(n) array.includes()
-        const videoExtensions = new Set(['.mp4', '.webm', '.ogg', '.mov']);
-        const imageExtensions = new Set(['.gif', '.jpg', '.jpeg', '.png', '.webp', '.bmp', '.svg']);
-        const supportedExtensions = new Set([...videoExtensions, ...imageExtensions]);
+        // Use Sets for O(1) lookup — merged with any plugin-registered extensions
+        const videoExtensions = pluginRegistry.getVideoExtensions();
+        const imageExtensions = pluginRegistry.getImageExtensions();
+        const supportedExtensions = pluginRegistry.getSupportedExtensions();
 
         const isWindows = process.platform === 'win32';
 
@@ -906,8 +913,8 @@ try {
 }
 const watchedFolders = new Map(); // Map<folderPath, watcher>
 
-// Extract ComfyUI workflow from PNG file
-function extractComfyUIWorkflow(filePath) {
+// ComfyUI workflow extraction has been moved to plugins/builtin/comfyui-workflow/index.js
+function extractComfyUIWorkflow_REMOVED(filePath) {
     try {
         // Only process PNG files
         if (path.extname(filePath).toLowerCase() !== '.png') {
@@ -1154,8 +1161,8 @@ ipcMain.handle('get-file-info', async (event, filePath) => {
     try {
         const stats = await fs.promises.stat(filePath);
         const ext = path.extname(filePath).toLowerCase();
-        const isVideo = ['.mp4', '.webm', '.ogg', '.mov'].includes(ext);
-        const isImage = ['.gif', '.jpg', '.jpeg', '.png', '.webp', '.bmp', '.svg'].includes(ext);
+        const isVideo = pluginRegistry.getVideoExtensions().has(ext);
+        const isImage = pluginRegistry.getImageExtensions().has(ext);
         
         let info = {
             path: filePath,
@@ -1188,21 +1195,21 @@ ipcMain.handle('get-file-info', async (event, filePath) => {
             }
         }
         
-        // Extract ComfyUI workflow data for PNG images
-        if (ext === '.png') {
-            try {
-                const workflowData = extractComfyUIWorkflow(filePath);
-                if (workflowData) {
-                    info.comfyUIWorkflow = workflowData;
-                    console.log(`ComfyUI workflow found in ${path.basename(filePath)}: key="${workflowData.key}"`);
-                } else {
-                    console.log(`No ComfyUI workflow found in ${path.basename(filePath)}`);
+        // Run plugin metadata extractors for this file type
+        try {
+            const pluginMetadata = await pluginRegistry.extractMetadata(filePath, ext);
+            if (Object.keys(pluginMetadata).length > 0) {
+                info.pluginMetadata = pluginMetadata;
+                // Backward compatibility: surface comfyUIWorkflow at top level
+                if (pluginMetadata['comfyui-workflow']) {
+                    info.comfyUIWorkflow = pluginMetadata['comfyui-workflow'];
+                    console.log(`ComfyUI workflow found in ${path.basename(filePath)}: key="${info.comfyUIWorkflow.key}"`);
                 }
-            } catch (error) {
-                // Log error for debugging
-                console.warn('Could not extract ComfyUI workflow:', error.message);
-                console.error(error);
+            } else if (ext === '.png') {
+                console.log(`No ComfyUI workflow found in ${path.basename(filePath)}`);
             }
+        } catch (error) {
+            console.warn('Plugin metadata extraction error:', error.message);
         }
 
         logPerf('get-file-info', infoStart, { type: info.type });
@@ -1937,8 +1944,24 @@ ipcMain.handle('clip-terminate', async () => {
     return { success: true };
 });
 
+// Plugin system IPC handlers
+ipcMain.handle('get-plugin-manifests', () => {
+    return pluginRegistry.getManifests();
+});
+
+ipcMain.handle('execute-plugin-action', async (event, pluginId, actionId, filePath, metadata) => {
+    try {
+        const result = await pluginRegistry.executeAction(pluginId, actionId, filePath, metadata);
+        return { success: true, result };
+    } catch (err) {
+        console.warn(`[Plugin action] ${pluginId}/${actionId} failed:`, err.message);
+        return { success: false, error: err.message };
+    }
+});
+
 // Cleanup watchers on app quit
 app.on('before-quit', async () => {
+    await pluginRegistry.teardown();
     if (thumbnailPool) {
         thumbnailPool.terminate();
         thumbnailPool = null;

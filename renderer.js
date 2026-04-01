@@ -2813,14 +2813,16 @@ function sidebarParentDirPath(filePath) {
     const norm = filePath.replace(/\\/g, '/');
     const trimmed = norm.replace(/\/+$/, '');
     if (!trimmed) return null;
-    const lastSlash = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
+    const lastSlash = trimmed.lastIndexOf('/');
     if (lastSlash <= 0) {
         if (trimmed.startsWith('/') && trimmed.length > 1) return '/';
         if (/^[a-zA-Z]:$/.test(trimmed)) return null;
         if (/^[a-zA-Z]:\//.test(trimmed)) return trimmed.slice(0, 2) + '/';
         return null;
     }
-    return trimmed.slice(0, lastSlash) || '/';
+    const parent = trimmed.slice(0, lastSlash) || '/';
+    if (/^[a-zA-Z]:$/.test(parent)) return parent + '/';
+    return parent;
 }
 
 window.sidebarParentDirPath = sidebarParentDirPath;

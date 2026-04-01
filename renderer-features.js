@@ -2940,6 +2940,7 @@ function initNewFeatures() {
     }
     
     // File watching
+    const _sidebarRefreshTimers = new Map(); // debounce sidebar tree refreshes per parent path
     window.electronAPI.onFolderChanged((event, data) => {
         if (!currentFolderPath) return;
 
@@ -2979,10 +2980,16 @@ function initNewFeatures() {
         
         if (isInCurrentFolder || isInSubfolder) {
             // Keep Explorer sidebar in sync when subfolders are created or removed (expanded branches only)
+            // Debounced per parentPath so rapid-fire events (git checkout, npm install) coalesce.
             if (data.filePath && (data.event === 'addDir' || data.event === 'unlinkDir')) {
                 const parentPath = window.sidebarParentDirPath?.(data.filePath);
                 if (parentPath) {
-                    window.refreshSidebarTreeBranchForParentPath?.(parentPath);
+                    const key = parentPath.replace(/\\/g, '/').toLowerCase();
+                    clearTimeout(_sidebarRefreshTimers.get(key));
+                    _sidebarRefreshTimers.set(key, setTimeout(() => {
+                        _sidebarRefreshTimers.delete(key);
+                        window.refreshSidebarTreeBranchForParentPath?.(parentPath);
+                    }, 200));
                 }
             }
 

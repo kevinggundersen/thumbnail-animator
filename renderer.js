@@ -2651,6 +2651,8 @@ function createTreeNode(item, depth, isDrive = false) {
     const node = document.createElement('div');
     node.className = 'tree-node';
     node.dataset.path = item.path;
+    node.dataset.depth = depth;
+    if (isDrive) node.dataset.drive = '1';
 
     const row = document.createElement('div');
     row.className = 'tree-node-row';
@@ -2836,10 +2838,8 @@ async function refreshSidebarTreeBranchForParentPath(parentPath) {
         const children = node.querySelector('.tree-children');
         if (!children.classList.contains('expanded')) return;
 
-        const row = node.querySelector(':scope > .tree-node-row');
-        const pl = row ? parseInt(row.style.paddingLeft, 10) : 8;
-        const depth = Math.max(0, Math.round((pl - 8) / 16));
-        const isDrive = node.parentElement === sidebarTree;
+        const depth = parseInt(node.dataset.depth, 10) || 0;
+        const isDrive = node.dataset.drive === '1';
         await loadTreeNodeChildren(node, depth, isDrive, { forceReload: true });
         return;
     }

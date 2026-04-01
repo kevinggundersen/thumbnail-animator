@@ -2068,9 +2068,99 @@ ipcMain.handle('scan-duplicates', async (event, folderPath, options = {}) => {
 
         event.sender.send('duplicate-scan-progress', { current: 0, total: 0, phase: 'done' });
 
-        return { exactGroups, similarGroups };
+        // Build hashData for client-side caching (enables instant re-grouping)
+        const hashData = files.map(file => {
+            const h = hashMap.get(file.path);
+            return {
+                path: file.path,
+                name: file.name,
+                size: file.size,
+                mtime: file.mtime,
+                exactHash: h ? h.exactHash : null,
+                perceptualHash: h ? h.perceptualHash : null
+            };
+        });
+
+        return { exactGroups, similarGroups, hashData };
     } catch (error) {
         console.error('Error scanning duplicates:', error);
+        return { exactGroups: [], similarGroups: [], error: error.message };
+    }
+});
+
+ipcMain.handle('regroup-duplicates', async (event, hashData, newThreshold) => {
+    try {
+        // Group by exact hash
+        const exactMap = new Map();
+        for (const file of hashData) {
+            if (!file.exactHash) continue;
+            if (!exactMap.has(file.exactHash)) exactMap.set(file.exactHash, []);
+            exactMap.get(file.exactHash).push({
+                path: file.path,
+                name: file.name,
+                size: file.size,
+                mtime: file.mtime
+            });
+        }
+        const exactGroups = [];
+        for (const group of exactMap.values()) {
+            if (group.length >= 2) exactGroups.push(group);
+        }
+
+        // Collect files with perceptual hashes (exclude those in exact groups)
+        const exactPaths = new Set();
+        for (const group of exactGroups) {
+            for (const f of group) exactPaths.add(f.path);
+        }
+
+        const perceptualFiles = [];
+        for (const file of hashData) {
+            if (exactPaths.has(file.path)) continue;
+            if (!file.perceptualHash) continue;
+            perceptualFiles.push(file);
+        }
+
+        // Union-find grouping for perceptual similarity
+        const parent = new Map();
+        const find = (x) => {
+            if (!parent.has(x)) parent.set(x, x);
+            if (parent.get(x) !== x) parent.set(x, find(parent.get(x)));
+            return parent.get(x);
+        };
+        const union = (a, b) => {
+            const ra = find(a);
+            const rb = find(b);
+            if (ra !== rb) parent.set(ra, rb);
+        };
+
+        for (let i = 0; i < perceptualFiles.length; i++) {
+            for (let j = i + 1; j < perceptualFiles.length; j++) {
+                const dist = hammingDistance(perceptualFiles[i].perceptualHash, perceptualFiles[j].perceptualHash);
+                if (dist <= newThreshold) {
+                    union(perceptualFiles[i].path, perceptualFiles[j].path);
+                }
+            }
+        }
+
+        const similarMap = new Map();
+        for (const file of perceptualFiles) {
+            const root = find(file.path);
+            if (!similarMap.has(root)) similarMap.set(root, []);
+            similarMap.get(root).push({
+                path: file.path,
+                name: file.name,
+                size: file.size,
+                mtime: file.mtime
+            });
+        }
+        const similarGroups = [];
+        for (const group of similarMap.values()) {
+            if (group.length >= 2) similarGroups.push(group);
+        }
+
+        return { exactGroups, similarGroups };
+    } catch (error) {
+        console.error('Error regrouping duplicates:', error);
         return { exactGroups: [], similarGroups: [], error: error.message };
     }
 });

@@ -33,6 +33,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     generateThumbnailBatch: (items) => ipcRenderer.invoke('generate-thumbnails-batch', items),
     // Duplicate detection
     scanDuplicates: (folderPath, options) => ipcRenderer.invoke('scan-duplicates', folderPath, options),
+    regroupDuplicates: (hashData, threshold) => ipcRenderer.invoke('regroup-duplicates', hashData, threshold),
     deleteFilesBatch: (filePaths) => ipcRenderer.invoke('delete-files-batch', filePaths),
     onDuplicateScanProgress: (callback) => ipcRenderer.on('duplicate-scan-progress', callback),
     removeDuplicateScanProgressListener: () => ipcRenderer.removeAllListeners('duplicate-scan-progress'),

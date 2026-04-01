@@ -3065,6 +3065,9 @@ function initNewFeatures() {
 let duplicateGroups = [];
 let duplicateMarkedForDeletion = new Set();
 let duplicateScanActive = false;
+let cachedHashData = null;
+let regroupTimer = null;
+let hoveredDuplicateGroupIdx = -1;
 
 function initDuplicateDetection() {
     const btn = document.getElementById('find-duplicates-btn');
@@ -3094,6 +3097,27 @@ function initDuplicateDetection() {
     thresholdInput.addEventListener('input', () => {
         const val = parseInt(thresholdInput.value);
         thresholdValue.textContent = Math.round(((64 - val) / 64) * 100) + '%';
+        if (cachedHashData) {
+            clearTimeout(regroupTimer);
+            regroupTimer = setTimeout(regroupFromCache, 200);
+        }
+    });
+
+    // Keybind: press C to toggle compare (open on hover, close if open)
+    document.addEventListener('keydown', (e) => {
+        if (modal.classList.contains('hidden')) return;
+        if (e.key === 'c' || e.key === 'C') {
+            const lightbox = document.getElementById('duplicate-compare-lightbox');
+            if (lightbox && !lightbox.classList.contains('hidden')) {
+                e.preventDefault();
+                closeComparisonLightbox();
+                return;
+            }
+            if (hoveredDuplicateGroupIdx >= 0) {
+                e.preventDefault();
+                openComparisonLightbox(hoveredDuplicateGroupIdx);
+            }
+        }
     });
 
     highlightBtn.addEventListener('click', () => {
@@ -3158,6 +3182,9 @@ function closeDuplicatesModal() {
     const modal = document.getElementById('duplicates-modal');
     modal.classList.add('hidden');
     duplicateScanActive = false;
+    cachedHashData = null;
+    clearTimeout(regroupTimer);
+    cleanupDuplicateHoverPreviews();
     window.electronAPI.removeDuplicateScanProgressListener();
 }
 
@@ -3191,6 +3218,8 @@ async function startDuplicateScan() {
         scanning.classList.add('hidden');
         window.electronAPI.removeDuplicateScanProgressListener();
 
+        cachedHashData = result.hashData || null;
+
         const allGroups = [];
         if (result.exactGroups) {
             for (const group of result.exactGroups) {
@@ -3214,12 +3243,41 @@ async function startDuplicateScan() {
     }
 }
 
+async function regroupFromCache() {
+    if (!cachedHashData) return;
+    const thresholdInput = document.getElementById('duplicates-threshold');
+    const threshold = parseInt(thresholdInput.value);
+
+    const result = await window.electronAPI.regroupDuplicates(cachedHashData, threshold);
+
+    const allGroups = [];
+    if (result.exactGroups) {
+        for (const group of result.exactGroups) {
+            allGroups.push({ type: 'exact', files: group });
+        }
+    }
+    if (result.similarGroups) {
+        for (const group of result.similarGroups) {
+            allGroups.push({ type: 'similar', files: group });
+        }
+    }
+
+    duplicateGroups = allGroups;
+    duplicateMarkedForDeletion.clear();
+    renderDuplicateGroups(allGroups);
+}
+
+function cleanupDuplicateHoverPreviews() {
+    document.querySelectorAll('.duplicate-hover-preview').forEach(p => p.remove());
+}
+
 function renderDuplicateGroups(groups) {
     const container = document.getElementById('duplicates-results');
     const empty = document.getElementById('duplicates-empty');
     const highlightBtn = document.getElementById('duplicates-highlight-btn');
     const summary = document.getElementById('duplicates-summary');
 
+    cleanupDuplicateHoverPreviews();
     container.innerHTML = '';
 
     if (groups.length === 0) {
@@ -3239,6 +3297,8 @@ function renderDuplicateGroups(groups) {
         const groupEl = document.createElement('div');
         groupEl.className = 'duplicate-group';
         groupEl.dataset.groupId = groupIdx;
+        groupEl.addEventListener('mouseenter', () => { hoveredDuplicateGroupIdx = groupIdx; });
+        groupEl.addEventListener('mouseleave', () => { hoveredDuplicateGroupIdx = -1; });
 
         const typeLabel = group.type === 'exact' ? 'Exact Match' : 'Similar';
         const header = document.createElement('div');
@@ -3246,6 +3306,14 @@ function renderDuplicateGroups(groups) {
         header.innerHTML = `
             <span class="duplicate-group-label">Group ${groupIdx + 1} (${typeLabel}) &mdash; ${group.files.length} files</span>
         `;
+
+        if (group.files.length >= 2) {
+            const compareBtn = document.createElement('button');
+            compareBtn.className = 'duplicate-group-compare-btn';
+            compareBtn.textContent = 'Compare';
+            compareBtn.addEventListener('click', () => openComparisonLightbox(groupIdx));
+            header.appendChild(compareBtn);
+        }
 
         const keepBestBtn = document.createElement('button');
         keepBestBtn.className = 'duplicate-group-keep-best';
@@ -3545,6 +3613,366 @@ function highlightDuplicatesInGrid() {
             card.appendChild(badge);
         }
     });
+}
+
+// ==================== COMPARISON LIGHTBOX ====================
+
+let compareGroup = null;
+let compareGroupIdx = -1;
+let compareLeftIndex = 0;
+let compareRightIndex = 1;
+let compareShowAll = false;
+
+function openComparisonLightbox(groupIdx) {
+    const group = duplicateGroups[groupIdx];
+    if (!group || group.files.length < 2) return;
+
+    compareGroup = group.files;
+    compareGroupIdx = groupIdx;
+    compareLeftIndex = 0;
+    compareRightIndex = Math.min(1, group.files.length - 1);
+    compareShowAll = false;
+
+    const lightbox = document.getElementById('duplicate-compare-lightbox');
+    const title = document.getElementById('compare-lightbox-title');
+    const closeBtn = document.getElementById('compare-lightbox-close');
+    const showAllBtn = document.getElementById('compare-show-all-btn');
+
+    title.textContent = `Compare \u2014 Group ${groupIdx + 1} (${group.files.length} files)`;
+    lightbox.classList.remove('hidden');
+    compareShowAll = true;
+    showAllBtn.classList.add('active');
+    showAllBtn.querySelector('span').textContent = 'Side by Side';
+
+    // Start in show-all mode
+    const body = lightbox.querySelector('.compare-lightbox-body');
+    const grid = document.getElementById('compare-show-all-grid');
+    body.classList.add('hidden');
+    grid.classList.remove('hidden');
+    renderShowAllGrid();
+
+    // Event listeners
+    closeBtn.onclick = closeComparisonLightbox;
+    lightbox.addEventListener('keydown', handleCompareKeydown);
+    lightbox.setAttribute('tabindex', '0');
+    lightbox.focus();
+
+    // Backdrop click to close
+    lightbox.onclick = (e) => {
+        if (e.target === lightbox) closeComparisonLightbox();
+    };
+
+    // Show-all toggle
+    showAllBtn.onclick = (e) => {
+        e.stopPropagation();
+        toggleCompareShowAll();
+    };
+
+    // Nav buttons
+    lightbox.querySelectorAll('.compare-nav-prev').forEach(btn => {
+        btn.onclick = () => navigateComparePane(btn.dataset.side, -1);
+    });
+    lightbox.querySelectorAll('.compare-nav-next').forEach(btn => {
+        btn.onclick = () => navigateComparePane(btn.dataset.side, 1);
+    });
+}
+
+function closeComparisonLightbox() {
+    const lightbox = document.getElementById('duplicate-compare-lightbox');
+    lightbox.classList.add('hidden');
+    lightbox.removeEventListener('keydown', handleCompareKeydown);
+    lightbox.onclick = null;
+
+    // Clean up media
+    ['compare-left-media', 'compare-right-media'].forEach(id => {
+        const container = document.getElementById(id);
+        if (container) {
+            container.querySelectorAll('video').forEach(v => { v.pause(); v.src = ''; });
+            container.innerHTML = '';
+        }
+    });
+
+    // Clean up show-all grid
+    const grid = document.getElementById('compare-show-all-grid');
+    if (grid) {
+        grid.querySelectorAll('video').forEach(v => { v.pause(); v.src = ''; });
+        grid.innerHTML = '';
+        grid.classList.add('hidden');
+    }
+
+    // Restore side-by-side body visibility
+    const body = lightbox.querySelector('.compare-lightbox-body');
+    if (body) body.classList.remove('hidden');
+
+    compareGroup = null;
+    compareGroupIdx = -1;
+    compareShowAll = false;
+
+    // Sync deletion state back to main modal UI
+    syncDuplicateModalUI();
+}
+
+function handleCompareKeydown(e) {
+    if (e.key === 'Escape') {
+        closeComparisonLightbox();
+        e.stopPropagation();
+    } else if (e.key === 'a' || e.key === 'A') {
+        e.preventDefault();
+        toggleCompareShowAll();
+    } else if (e.key === 'ArrowLeft') {
+        navigateComparePane('left', -1);
+        e.preventDefault();
+    } else if (e.key === 'ArrowRight') {
+        navigateComparePane('right', 1);
+        e.preventDefault();
+    }
+}
+
+function toggleCompareShowAll() {
+    const lightbox = document.getElementById('duplicate-compare-lightbox');
+    if (!lightbox || lightbox.classList.contains('hidden')) return;
+
+    compareShowAll = !compareShowAll;
+    const showAllBtn = document.getElementById('compare-show-all-btn');
+    showAllBtn.classList.toggle('active', compareShowAll);
+    showAllBtn.querySelector('span').textContent = compareShowAll ? 'Side by Side' : 'Show All';
+    const body = lightbox.querySelector('.compare-lightbox-body');
+    const grid = document.getElementById('compare-show-all-grid');
+    if (compareShowAll) {
+        body.classList.add('hidden');
+        grid.classList.remove('hidden');
+        renderShowAllGrid();
+    } else {
+        body.classList.remove('hidden');
+        grid.classList.add('hidden');
+        renderComparisonView();
+    }
+}
+
+function navigateComparePane(side, direction) {
+    if (!compareGroup) return;
+    const len = compareGroup.length;
+    if (side === 'left') {
+        compareLeftIndex = (compareLeftIndex + direction + len) % len;
+    } else {
+        compareRightIndex = (compareRightIndex + direction + len) % len;
+    }
+    renderComparisonView();
+}
+
+function renderComparisonView() {
+    if (!compareGroup) return;
+
+    renderComparePane('left', compareLeftIndex);
+    renderComparePane('right', compareRightIndex);
+
+    document.getElementById('compare-left-indicator').textContent = `${compareLeftIndex + 1} / ${compareGroup.length}`;
+    document.getElementById('compare-right-indicator').textContent = `${compareRightIndex + 1} / ${compareGroup.length}`;
+}
+
+function renderComparePane(side, fileIndex) {
+    const file = compareGroup[fileIndex];
+    if (!file) return;
+
+    const mediaContainer = document.getElementById(`compare-${side}-media`);
+    const infoContainer = document.getElementById(`compare-${side}-info`);
+    const actionsContainer = document.getElementById(`compare-${side}-actions`);
+
+    // Clean up old media
+    mediaContainer.querySelectorAll('video').forEach(v => { v.pause(); v.src = ''; });
+    mediaContainer.innerHTML = '';
+
+    // Render media
+    const fileUrl = `file:///${file.path.replace(/\\/g, '/')}`;
+    const ext = file.name.split('.').pop().toLowerCase();
+    const videoExts = ['mp4', 'webm', 'ogg', 'mov'];
+
+    if (videoExts.includes(ext)) {
+        const vid = document.createElement('video');
+        vid.src = fileUrl;
+        vid.muted = true;
+        vid.loop = true;
+        vid.autoplay = true;
+        vid.play().catch(() => {});
+        mediaContainer.appendChild(vid);
+    } else {
+        const img = document.createElement('img');
+        img.src = fileUrl;
+        img.alt = file.name;
+        mediaContainer.appendChild(img);
+    }
+
+    // Render file info
+    const isMarked = duplicateMarkedForDeletion.has(file.path);
+    const copyPattern = /[\s\-_]*\((\d+)\)\s*(?=\.[^.]+$)/;
+    const isCopy = copyPattern.test(file.name);
+
+    let infoHtml = `<div class="compare-file-name" title="${file.name}">${file.name}`;
+    if (isCopy) {
+        infoHtml += ` <span class="duplicate-copy-tag">Copy</span>`;
+    }
+    infoHtml += `</div>`;
+    infoHtml += `<div class="compare-file-details">${formatFileSize(file.size)} &mdash; ${new Date(file.mtime).toLocaleDateString()}</div>`;
+
+    // Rating
+    const rating = typeof getFileRating === 'function' ? getFileRating(file.path) : 0;
+    if (rating > 0) {
+        infoHtml += `<div class="compare-file-rating">`;
+        for (let i = 0; i < rating; i++) {
+            infoHtml += `<span>${typeof iconFilled === 'function' ? iconFilled('star', 12, 'var(--warning)') : '\u2605'}</span>`;
+        }
+        infoHtml += `</div>`;
+    }
+
+    infoContainer.innerHTML = infoHtml;
+
+    // Render actions
+    actionsContainer.innerHTML = '';
+
+    const keepBtn = document.createElement('button');
+    keepBtn.className = 'compare-keep-btn' + (!isMarked ? ' active' : '');
+    keepBtn.textContent = 'Keep';
+    keepBtn.addEventListener('click', () => {
+        keepFileInGroup(file.path, compareGroupIdx);
+        renderComparisonView();
+    });
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'compare-delete-btn' + (isMarked ? ' active' : '');
+    deleteBtn.textContent = 'Delete';
+    deleteBtn.addEventListener('click', () => {
+        if (isMarked) {
+            duplicateMarkedForDeletion.delete(file.path);
+        } else {
+            duplicateMarkedForDeletion.add(file.path);
+        }
+        updateDeleteButton();
+        renderComparisonView();
+    });
+
+    actionsContainer.appendChild(keepBtn);
+    actionsContainer.appendChild(deleteBtn);
+}
+
+function updateShowAllGrid() {
+    const grid = document.getElementById('compare-show-all-grid');
+    if (!grid || !compareShowAll) return;
+    renderShowAllGrid();
+}
+
+function renderShowAllGrid() {
+    const grid = document.getElementById('compare-show-all-grid');
+    if (!grid || !compareGroup) return;
+
+    // Clean up old media
+    grid.querySelectorAll('video').forEach(v => { v.pause(); v.src = ''; });
+    grid.innerHTML = '';
+
+    // Compute optimal grid dimensions to maximize preview size
+    const n = compareGroup.length;
+    const cols = Math.ceil(Math.sqrt(n));
+    const rows = Math.ceil(n / cols);
+    grid.style.setProperty('--grid-cols', cols);
+    grid.style.setProperty('--grid-rows', rows);
+
+    const videoExts = ['mp4', 'webm', 'ogg', 'mov'];
+
+    compareGroup.forEach((file, idx) => {
+        const isMarked = duplicateMarkedForDeletion.has(file.path);
+        const isKept = !isMarked && duplicateGroups[compareGroupIdx] &&
+            duplicateGroups[compareGroupIdx].files.some(f => f.path !== file.path && duplicateMarkedForDeletion.has(f.path));
+
+        const item = document.createElement('div');
+        item.className = 'compare-grid-item' + (isMarked ? ' marked-for-deletion' : '') + (isKept ? ' kept' : '');
+
+        // Media
+        const mediaDiv = document.createElement('div');
+        mediaDiv.className = 'compare-grid-item-media';
+        const fileUrl = `file:///${file.path.replace(/\\/g, '/')}`;
+        const ext = file.name.split('.').pop().toLowerCase();
+
+        if (videoExts.includes(ext)) {
+            const vid = document.createElement('video');
+            vid.src = fileUrl;
+            vid.muted = true;
+            vid.loop = true;
+            vid.autoplay = true;
+            vid.play().catch(() => {});
+            mediaDiv.appendChild(vid);
+        } else {
+            const img = document.createElement('img');
+            img.src = fileUrl;
+            img.alt = file.name;
+            mediaDiv.appendChild(img);
+        }
+        item.appendChild(mediaDiv);
+
+        // Hover overlay with info + actions
+        const overlay = document.createElement('div');
+        overlay.className = 'compare-grid-item-overlay';
+
+        const footer = document.createElement('div');
+        footer.className = 'compare-grid-item-footer';
+
+        const copyPattern = /[\s\-_]*\((\d+)\)\s*(?=\.[^.]+$)/;
+        let nameHtml = `<div class="compare-grid-item-name" title="${file.name}">${file.name}`;
+        if (copyPattern.test(file.name)) {
+            nameHtml += ` <span class="duplicate-copy-tag">Copy</span>`;
+        }
+        nameHtml += `</div>`;
+        nameHtml += `<div class="compare-grid-item-details">${formatFileSize(file.size)} &mdash; ${new Date(file.mtime).toLocaleDateString()}</div>`;
+        footer.innerHTML = nameHtml;
+        overlay.appendChild(footer);
+
+        const actions = document.createElement('div');
+        actions.className = 'compare-grid-item-actions';
+
+        const keepBtn = document.createElement('button');
+        keepBtn.className = 'compare-keep-btn' + (isKept ? ' active' : '');
+        keepBtn.textContent = 'Keep';
+        keepBtn.addEventListener('click', () => {
+            keepFileInGroup(file.path, compareGroupIdx);
+            renderShowAllGrid();
+        });
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'compare-delete-btn' + (isMarked ? ' active' : '');
+        deleteBtn.textContent = 'Delete';
+        deleteBtn.addEventListener('click', () => {
+            if (isMarked) {
+                duplicateMarkedForDeletion.delete(file.path);
+            } else {
+                duplicateMarkedForDeletion.add(file.path);
+            }
+            updateDeleteButton();
+            renderShowAllGrid();
+        });
+
+        actions.appendChild(keepBtn);
+        actions.appendChild(deleteBtn);
+        overlay.appendChild(actions);
+        item.appendChild(overlay);
+
+        grid.appendChild(item);
+    });
+}
+
+function syncDuplicateModalUI() {
+    // Update all duplicate items in the main modal to reflect current deletion state
+    const items = document.querySelectorAll('.duplicate-item');
+    items.forEach(item => {
+        const path = item.dataset.path;
+        const cb = item.querySelector('.duplicate-select');
+        if (duplicateMarkedForDeletion.has(path)) {
+            if (cb) cb.checked = true;
+            item.classList.add('marked-for-deletion');
+            item.classList.remove('kept');
+        } else {
+            if (cb) cb.checked = false;
+            item.classList.remove('marked-for-deletion');
+        }
+    });
+    updateDeleteButton();
 }
 
 function clearDuplicateHighlights() {

@@ -10433,3 +10433,78 @@ initIndexedDB().then(() => renderCollectionsSidebar()).catch(() => {});
 // Initialize theme system (must be after all let/const declarations to avoid TDZ errors)
 ThemeManager.init();
 
+// ==================== COMMAND PALETTE REGISTRATIONS ====================
+function openSettingsToTab(tabId) {
+    settingsModal.classList.remove('hidden');
+    document.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.settings-tab-content').forEach(c => c.classList.remove('active'));
+    const tab = document.querySelector(`.settings-tab[data-tab="${tabId}"]`);
+    const content = document.querySelector(`.settings-tab-content[data-tab="${tabId}"]`);
+    if (tab) tab.classList.add('active');
+    if (content) content.classList.add('active');
+}
+
+if (typeof CommandPalette !== 'undefined') {
+    // Navigation
+    CommandPalette.registerMany([
+        { id: 'nav.go-back', label: 'Go Back', category: 'Navigation', shortcut: 'Ctrl+B', keywords: ['back', 'previous', 'history'], action: () => goBack() },
+        { id: 'nav.go-forward', label: 'Go Forward', category: 'Navigation', shortcut: 'Ctrl+Shift+B', keywords: ['forward', 'next', 'history'], action: () => goForward() },
+        { id: 'nav.open-folder', label: 'Open Folder', category: 'Navigation', shortcut: 'Ctrl+O', keywords: ['browse', 'directory', 'folder'], action: () => selectFolderBtn.click() },
+        { id: 'nav.toggle-sidebar', label: 'Toggle Sidebar', category: 'Navigation', shortcut: 'S', keywords: ['sidebar', 'panel', 'explorer'], action: () => setSidebarCollapsed(!sidebarCollapsed) },
+        { id: 'nav.focus-search', label: 'Focus Search', category: 'Navigation', shortcut: 'Ctrl+F', keywords: ['search', 'find', 'filter'], action: () => { searchBox.focus(); searchBox.select(); } },
+        { id: 'nav.advanced-search', label: 'Advanced Search', category: 'Navigation', keywords: ['search', 'filter', 'size', 'date', 'dimension'], action: () => document.getElementById('advanced-search-btn').click() },
+
+        // View
+        { id: 'view.toggle-layout', label: 'Toggle Grid / Masonry Layout', category: 'View', shortcut: 'G', keywords: ['grid', 'masonry', 'layout', 'rigid', 'dynamic'], action: () => { layoutModeToggle.checked = !layoutModeToggle.checked; switchLayoutMode(); } },
+        { id: 'view.filter-all', label: 'Show All Files', category: 'View', shortcut: '1', keywords: ['filter', 'all', 'everything'], action: () => switchFilter('all') },
+        { id: 'view.filter-videos', label: 'Show Videos Only', category: 'View', shortcut: '2', keywords: ['filter', 'video', 'mp4'], action: () => switchFilter('video') },
+        { id: 'view.filter-images', label: 'Show Images Only', category: 'View', shortcut: '3', keywords: ['filter', 'image', 'png', 'jpg'], action: () => switchFilter('image') },
+        { id: 'view.zoom-in', label: 'Zoom In', category: 'View', shortcut: '+', keywords: ['zoom', 'bigger', 'larger'], action: () => { const z = Math.min(200, zoomLevel + 10); zoomSlider.value = z; zoomLevel = z; applyZoom(); deferLocalStorageWrite('zoomLevel', z.toString()); updateStatusBar(); } },
+        { id: 'view.zoom-out', label: 'Zoom Out', category: 'View', shortcut: '-', keywords: ['zoom', 'smaller'], action: () => { const z = Math.max(50, zoomLevel - 10); zoomSlider.value = z; zoomLevel = z; applyZoom(); deferLocalStorageWrite('zoomLevel', z.toString()); updateStatusBar(); } },
+        { id: 'view.zoom-reset', label: 'Reset Zoom', category: 'View', shortcut: '0', keywords: ['zoom', 'reset', '100'], action: () => { zoomSlider.value = 100; zoomLevel = 100; applyZoom(); deferLocalStorageWrite('zoomLevel', '100'); updateStatusBar(); } },
+
+        // File Actions (require focused card -- dispatch keyboard events to reuse existing handlers)
+        { id: 'file.rename', label: 'Rename File', category: 'File', shortcut: 'F2', keywords: ['rename', 'name'], when: () => focusedCardIndex >= 0, action: () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'F2', bubbles: true })) },
+        { id: 'file.delete', label: 'Delete File', category: 'File', shortcut: 'Delete', keywords: ['delete', 'remove', 'trash'], when: () => focusedCardIndex >= 0, action: () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true })) },
+        { id: 'file.reveal', label: 'Reveal in File Explorer', category: 'File', keywords: ['reveal', 'explorer', 'show', 'finder'], when: () => focusedCardIndex >= 0, action: () => { const card = visibleCards[focusedCardIndex]; if (card) { const fp = card.dataset.filePath; if (fp) window.electronAPI.revealInExplorer(fp); } } },
+
+        // Tools
+        { id: 'tools.organize', label: 'Organize Files', category: 'Tools', keywords: ['organize', 'move', 'sort', 'folder'], action: () => document.getElementById('organize-btn').click() },
+        { id: 'tools.duplicates', label: 'Find Duplicates', category: 'Tools', keywords: ['duplicate', 'similar', 'copy'], action: () => document.getElementById('find-duplicates-btn').click() },
+
+        // Settings
+        { id: 'settings.open', label: 'Open Settings', category: 'Settings', keywords: ['settings', 'preferences', 'options', 'config'], action: () => toggleSettingsModal() },
+        { id: 'settings.general', label: 'Settings: General', category: 'Settings', keywords: ['general', 'layout', 'remember'], action: () => openSettingsToTab('general') },
+        { id: 'settings.appearance', label: 'Settings: Appearance', category: 'Settings', keywords: ['appearance', 'theme', 'colors'], action: () => openSettingsToTab('appearance') },
+        { id: 'settings.card-info', label: 'Settings: Card Info', category: 'Settings', keywords: ['card', 'info', 'metadata', 'display'], action: () => openSettingsToTab('card-info') },
+        { id: 'settings.playback', label: 'Settings: Playback', category: 'Settings', keywords: ['playback', 'video', 'loop', 'speed'], action: () => openSettingsToTab('playback') },
+        { id: 'settings.ai-search', label: 'Settings: AI Search', category: 'Settings', keywords: ['ai', 'clip', 'visual', 'search', 'embedding'], action: () => openSettingsToTab('ai-search') },
+        { id: 'settings.plugins', label: 'Settings: Plugins', category: 'Settings', keywords: ['plugin', 'extension', 'addon'], action: () => openSettingsToTab('plugins') },
+        { id: 'settings.data', label: 'Settings: Data', category: 'Settings', keywords: ['data', 'export', 'import', 'backup'], action: () => openSettingsToTab('data') },
+
+        // Collections & Favorites
+        { id: 'collections.new', label: 'New Collection', category: 'Collections', keywords: ['collection', 'smart', 'create'], action: () => { const btn = document.getElementById('new-collection-btn'); if (btn) btn.click(); } },
+        { id: 'favorites.add', label: 'Add Favorite Folder', category: 'Collections', keywords: ['favorite', 'bookmark', 'add'], action: () => { if (addFavoriteBtn) addFavoriteBtn.click(); } },
+        { id: 'favorites.new-group', label: 'New Favorite Group', category: 'Collections', keywords: ['favorite', 'group', 'create'], action: () => { if (newFavGroupBtn) newFavGroupBtn.click(); } },
+
+        // Misc
+        { id: 'misc.shortcuts', label: 'Show Keyboard Shortcuts', category: 'Misc', shortcut: '?', keywords: ['keyboard', 'shortcuts', 'hotkeys', 'keybindings'], action: () => toggleShortcutsOverlay() },
+        { id: 'misc.perf', label: 'Toggle Performance Dashboard', category: 'Misc', shortcut: 'Ctrl+Shift+P', keywords: ['performance', 'perf', 'dashboard', 'debug'], action: () => { if (typeof perfTest !== 'undefined') perfTest.toggle(); } },
+        { id: 'misc.command-palette', label: 'Command Palette', category: 'Misc', shortcut: 'Ctrl+P', keywords: ['command', 'palette', 'actions'], action: () => CommandPalette.open() },
+    ]);
+
+    // Dynamic theme commands
+    if (typeof ThemeManager !== 'undefined') {
+        const themes = ThemeManager.getAllThemes();
+        themes.forEach(theme => {
+            CommandPalette.register({
+                id: 'theme.' + theme.id,
+                label: 'Theme: ' + theme.name,
+                category: 'Theme',
+                keywords: ['theme', 'color', 'appearance', theme.name.toLowerCase(), theme.type],
+                action: () => ThemeManager.apply(theme.id)
+            });
+        });
+    }
+}
+

@@ -358,6 +358,31 @@
             </div>
         </div>
     </div>
+    <!-- Command Palette (toggle with Ctrl+P) -->
+    <div id="command-palette-overlay" class="command-palette-overlay hidden"
+         role="dialog" aria-modal="true" aria-label="Command Palette">
+        <div class="command-palette-dialog">
+            <div class="command-palette-input-wrapper">
+                <svg class="command-palette-search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+                <input type="text" id="command-palette-input"
+                       class="command-palette-input"
+                       placeholder="Type a command..."
+                       autocomplete="off"
+                       aria-label="Search commands"
+                       aria-autocomplete="list"
+                       aria-controls="command-palette-list"
+                       aria-activedescendant="">
+            </div>
+            <div id="command-palette-list" class="command-palette-list"
+                 role="listbox" aria-label="Commands">
+            </div>
+            <div class="command-palette-footer">
+                <span><kbd>&uarr;&darr;</kbd> navigate</span>
+                <span><kbd>Enter</kbd> run</span>
+                <span><kbd>Esc</kbd> close</span>
+            </div>
+        </div>
+    </div>
     <!-- Keyboard Shortcuts Cheat Sheet (toggle with ?) -->
     <div id="shortcuts-overlay" class="shortcuts-overlay hidden">
         <div class="shortcuts-dialog">
@@ -379,6 +404,7 @@
                     <div class="shortcut-row"><kbd>Delete</kbd><span>Delete file</span></div>
                     <div class="shortcut-row"><kbd>Ctrl+O</kbd><span>Open folder</span></div>
                     <div class="shortcut-row"><kbd>Ctrl+F</kbd><span>Search</span></div>
+                    <div class="shortcut-row"><kbd>Ctrl+P</kbd><span>Command palette</span></div>
                 </div>
                 <div class="shortcuts-column">
                     <h3>Filters</h3>
@@ -832,6 +858,7 @@
     <script src="webpxmux.min.js"></script>
     <script src="playback-controller.js"></script>
     <script src="themes.js"></script>
+    <script src="command-palette.js"></script>
     <script src="renderer.js"></script>
     <script defer src="renderer-features.js"></script>
 </body>

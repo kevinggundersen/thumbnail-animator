@@ -3521,6 +3521,82 @@ button:hover {
     font-size: 13px;
 }
 
+/* Data tab (Export/Import) */
+.settings-data-section-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 4px;
+}
+
+.settings-data-description {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin: 0 0 20px 0;
+    line-height: 1.5;
+}
+
+.settings-data-actions {
+    display: flex;
+    flex-direction: column;
+}
+
+.settings-data-action-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border-subtle, rgba(255,255,255,0.08));
+}
+
+.settings-data-action-title {
+    font-size: 14px;
+    color: var(--text-primary);
+}
+
+.settings-data-action-desc {
+    font-size: 12px;
+    color: var(--text-tertiary);
+    margin-top: 2px;
+}
+
+.settings-action-btn {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 6px 16px;
+    font-size: 13px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.15s;
+}
+
+.settings-action-btn:hover {
+    background: var(--accent-hover);
+}
+
+.settings-data-status {
+    font-size: 13px;
+    padding: 8px 12px;
+    border-radius: 6px;
+    margin-top: 16px;
+}
+
+.settings-data-status.hidden {
+    display: none;
+}
+
+.settings-data-status.success {
+    background: rgba(46, 160, 67, 0.15);
+    color: var(--success, #2ea043);
+}
+
+.settings-data-status.error {
+    background: rgba(248, 81, 73, 0.15);
+    color: var(--danger, #f85149);
+}
+
 .plugin-settings-row {
     display: flex;
     align-items: center;

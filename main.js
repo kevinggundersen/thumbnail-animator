@@ -627,6 +627,50 @@ ipcMain.handle('select-folder', async (event, defaultPath) => {
     return result.filePaths[0] || null;
 });
 
+ipcMain.handle('export-settings-dialog', async (event, jsonString) => {
+    try {
+        const result = await dialog.showSaveDialog({
+            title: 'Export Settings',
+            defaultPath: 'thumbnail-animator-settings.json',
+            filters: [{ name: 'JSON Files', extensions: ['json'] }]
+        });
+        if (result.canceled || !result.filePath) return { success: false, canceled: true };
+        fs.writeFileSync(result.filePath, jsonString, 'utf-8');
+        return { success: true, filePath: result.filePath };
+    } catch (err) {
+        return { success: false, error: err.message };
+    }
+});
+
+ipcMain.handle('import-settings-dialog', async () => {
+    try {
+        const result = await dialog.showOpenDialog({
+            title: 'Import Settings',
+            filters: [{ name: 'JSON Files', extensions: ['json'] }],
+            properties: ['openFile']
+        });
+        if (result.canceled || !result.filePaths[0]) return { success: false, canceled: true };
+        const raw = fs.readFileSync(result.filePaths[0], 'utf-8');
+        const data = JSON.parse(raw);
+        return { success: true, data };
+    } catch (err) {
+        return { success: false, error: err.message };
+    }
+});
+
+ipcMain.handle('sync-plugin-states-from-import', async (event, states) => {
+    try {
+        if (states && typeof states === 'object') {
+            for (const [pluginId, enabled] of Object.entries(states)) {
+                pluginRegistry.setPluginEnabled(pluginId, !!enabled);
+            }
+        }
+        return { success: true };
+    } catch (err) {
+        return { success: false, error: err.message };
+    }
+});
+
 ipcMain.handle('trigger-gc', () => {
     if (global.gc) {
         global.gc();

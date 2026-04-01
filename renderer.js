@@ -7475,6 +7475,160 @@ function bindSettingsTabListeners() {
 }
 bindSettingsTabListeners();
 
+// --- Settings Export / Import ---
+const SETTINGS_EXPORT_KEYS_STRING = [
+    'selectedTheme', 'sidebarWidth', 'sidebarCollapsed', 'layoutMode',
+    'zoomLevel', 'zoomToFit', 'thumbnailQuality', 'sortType', 'sortOrder',
+    'rememberLastFolder', 'lastFolderPath', 'includeMovingImages',
+    'autoRepeatVideos', 'pauseOnBlur', 'pauseOnLightbox', 'hoverScrub',
+    'playbackControls', 'activeTabId',
+    'aiVisualSearchEnabled', 'aiModelDownloadConfirmed', 'aiAutoScan',
+    'aiSimilarityThreshold', 'aiClusteringMode'
+];
+const SETTINGS_EXPORT_KEYS_JSON = [
+    'cardInfoSettings', 'customThemes', 'fileRatings', 'pinnedFiles',
+    'favorites', 'tabs', 'recentFiles', 'sidebarExpandedNodes', 'pluginStates'
+];
+
+function showSettingsDataStatus(message, type) {
+    const el = document.getElementById('settings-data-status');
+    if (!el) return;
+    el.textContent = message;
+    el.className = 'settings-data-status ' + type;
+}
+
+async function exportCollectionsData() {
+    try {
+        const collections = await getAllCollections();
+        const collectionsWithFiles = [];
+        for (const col of collections) {
+            const files = await getCollectionFiles(col.id);
+            collectionsWithFiles.push({ ...col, files });
+        }
+        return collectionsWithFiles;
+    } catch {
+        return [];
+    }
+}
+
+async function importCollectionsData(collectionsData) {
+    if (!collectionsData || !Array.isArray(collectionsData) || collectionsData.length === 0) return;
+    if (!db) { try { await initIndexedDB(); } catch { return; } }
+    // Clear existing collections and collection files
+    await new Promise((resolve) => {
+        try {
+            const tx = db.transaction([COLLECTIONS_STORE, COLLECTION_FILES_STORE], 'readwrite');
+            tx.objectStore(COLLECTIONS_STORE).clear();
+            tx.objectStore(COLLECTION_FILES_STORE).clear();
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => resolve();
+        } catch { resolve(); }
+    });
+    // Write imported collections and their files
+    for (const col of collectionsData) {
+        const files = col.files || [];
+        const colCopy = { ...col };
+        delete colCopy.files;
+        await saveCollection(colCopy);
+        if (files.length > 0) {
+            await new Promise((resolve) => {
+                try {
+                    const tx = db.transaction([COLLECTION_FILES_STORE], 'readwrite');
+                    const store = tx.objectStore(COLLECTION_FILES_STORE);
+                    for (const entry of files) store.put(entry);
+                    tx.oncomplete = () => resolve();
+                    tx.onerror = () => resolve();
+                } catch { resolve(); }
+            });
+        }
+    }
+}
+
+async function exportSettings() {
+    _flushStorageWrites();
+    const data = {
+        meta: {
+            app: 'thumbnail-animator',
+            version: '1.4.5',
+            exportedAt: new Date().toISOString(),
+            schemaVersion: 1
+        },
+        settings: {},
+        json: {},
+        collections: []
+    };
+    for (const key of SETTINGS_EXPORT_KEYS_STRING) {
+        const val = localStorage.getItem(key);
+        if (val !== null) data.settings[key] = val;
+    }
+    for (const key of SETTINGS_EXPORT_KEYS_JSON) {
+        const raw = localStorage.getItem(key);
+        if (raw !== null) {
+            try { data.json[key] = JSON.parse(raw); }
+            catch { data.json[key] = raw; }
+        }
+    }
+    data.collections = await exportCollectionsData();
+    try {
+        const result = await window.electronAPI.exportSettingsDialog(JSON.stringify(data, null, 2));
+        if (result.canceled) return;
+        if (result.success) {
+            showSettingsDataStatus('Settings exported successfully.', 'success');
+        } else {
+            showSettingsDataStatus('Export failed: ' + result.error, 'error');
+        }
+    } catch (err) {
+        showSettingsDataStatus('Export failed: ' + err.message, 'error');
+    }
+}
+
+async function importSettings() {
+    let result;
+    try {
+        result = await window.electronAPI.importSettingsDialog();
+    } catch (err) {
+        showSettingsDataStatus('Import failed: ' + err.message, 'error');
+        return;
+    }
+    if (!result.success) {
+        if (result.canceled) return;
+        showSettingsDataStatus('Import failed: ' + (result.error || 'Unknown error'), 'error');
+        return;
+    }
+    const data = result.data;
+    if (!data || !data.meta || data.meta.app !== 'thumbnail-animator') {
+        showSettingsDataStatus('This file was not exported from Thumbnail Animator.', 'error');
+        return;
+    }
+    if (data.meta.schemaVersion !== 1) {
+        showSettingsDataStatus('Unsupported settings format. Please update the app.', 'error');
+        return;
+    }
+    if (!confirm('This will replace ALL current settings and reload the app. Continue?')) return;
+
+    localStorage.clear();
+    if (data.settings) {
+        for (const [key, val] of Object.entries(data.settings)) {
+            localStorage.setItem(key, val);
+        }
+    }
+    if (data.json) {
+        for (const [key, val] of Object.entries(data.json)) {
+            localStorage.setItem(key, typeof val === 'string' ? val : JSON.stringify(val));
+        }
+    }
+    if (data.json && data.json.pluginStates) {
+        try { await window.electronAPI.syncPluginStatesFromImport(data.json.pluginStates); } catch {}
+    }
+    if (data.collections) {
+        try { await importCollectionsData(data.collections); } catch {}
+    }
+    location.reload();
+}
+
+document.getElementById('export-settings-btn').addEventListener('click', exportSettings);
+document.getElementById('import-settings-btn').addEventListener('click', importSettings);
+
 // Inject plugin settings panels into the settings modal
 async function injectPluginSettingsPanels() {
     let panels;

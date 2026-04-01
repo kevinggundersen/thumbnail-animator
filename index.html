@@ -415,6 +415,7 @@
                     <button class="settings-tab" data-tab="playback">Playback</button>
                     <button class="settings-tab" data-tab="ai-search">AI Search</button>
                     <button class="settings-tab" data-tab="plugins">Plugins</button>
+                    <button class="settings-tab" data-tab="data">Data</button>
                 </div>
                 <div class="settings-panel">
                     <!-- General Tab -->
@@ -721,6 +722,27 @@
                     <!-- Plugins Tab -->
                     <div class="settings-tab-content" data-tab="plugins" id="plugins-tab-content">
                         <div class="plugins-tab-loading">Loading plugins...</div>
+                    </div>
+                    <div class="settings-tab-content" data-tab="data">
+                        <div class="settings-data-section-title">Export & Import Settings</div>
+                        <p class="settings-data-description">Export all your settings, themes, file metadata, and plugin states to a JSON file. Import to restore them on this or another machine.</p>
+                        <div class="settings-data-actions">
+                            <div class="settings-data-action-row">
+                                <div>
+                                    <div class="settings-data-action-title">Export Settings</div>
+                                    <div class="settings-data-action-desc">Save all settings to a file</div>
+                                </div>
+                                <button id="export-settings-btn" class="settings-action-btn">Export</button>
+                            </div>
+                            <div class="settings-data-action-row">
+                                <div>
+                                    <div class="settings-data-action-title">Import Settings</div>
+                                    <div class="settings-data-action-desc">Replace all current settings from a file</div>
+                                </div>
+                                <button id="import-settings-btn" class="settings-action-btn">Import</button>
+                            </div>
+                        </div>
+                        <div id="settings-data-status" class="settings-data-status hidden"></div>
                     </div>
                 </div>
             </div>

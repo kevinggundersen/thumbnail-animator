@@ -93,8 +93,13 @@ function parseGifDuration(buffer) {
                 offset += subSize;
             }
         } else {
-            // Unknown block – try to skip
-            break;
+            // Unknown block – try to skip sub-blocks
+            while (offset < len) {
+                const subSize = data.getUint8(offset);
+                offset++;
+                if (subSize === 0) break;
+                offset += subSize;
+            }
         }
     }
 

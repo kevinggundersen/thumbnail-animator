@@ -12,6 +12,7 @@ class DimensionWorkerPool {
         this.ffprobePath = ffprobePath;
         this.workers = [];
         this.workerPath = path.join(__dirname, 'dimension-worker.js');
+        this._requestId = 0;
         this._initWorkers();
     }
 
@@ -58,9 +59,10 @@ class DimensionWorkerPool {
             const worker = this.workers[workerIndex];
             if (!worker) return Promise.resolve([]);
 
+            const requestId = ++this._requestId;
             return new Promise((resolve) => {
                 const onMessage = (msg) => {
-                    if (msg.type === 'result') {
+                    if (msg.type === 'result' && msg.requestId === requestId) {
                         worker.removeListener('message', onMessage);
                         worker.removeListener('error', onError);
                         resolve(msg.results);
@@ -72,7 +74,7 @@ class DimensionWorkerPool {
                 };
                 worker.on('message', onMessage);
                 worker.once('error', onError);
-                worker.postMessage({ type: 'scan', files: chunk });
+                worker.postMessage({ type: 'scan', files: chunk, requestId });
             });
         });
 

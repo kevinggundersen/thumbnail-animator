@@ -82,5 +82,5 @@ parentPort.on('message', async (msg) => {
         });
     }
 
-    parentPort.postMessage({ type: 'result', results });
+    parentPort.postMessage({ type: 'result', requestId: msg.requestId, results });
 });

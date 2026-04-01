@@ -88,6 +88,6 @@ parentPort.on('message', async (msg) => {
         for (const file of msg.files) {
             results.push(await processFile(file));
         }
-        parentPort.postMessage({ type: 'result', results });
+        parentPort.postMessage({ type: 'result', requestId: msg.requestId, results });
     }
 });

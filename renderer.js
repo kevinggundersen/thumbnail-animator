@@ -7487,7 +7487,6 @@ function openLightbox(mediaUrl, filePath, fileName) {
 }
 
 function applyLightboxZoom(zoomLevel, mouseX = null, mouseY = null) {
-    console.log('applyLightboxZoom called with:', zoomLevel);
     const previousZoomLevel = currentZoomLevel;
     // Calculate previous zoom value accurately
     let previousZoomValue;
@@ -7760,15 +7759,12 @@ lightbox.addEventListener('click', (e) => {
 function attachZoomSliderListeners() {
     const slider = document.getElementById('lightbox-zoom-slider');
     if (slider && !slider.dataset.listenersAttached) {
-        console.log('Attaching zoom slider listeners');
         slider.addEventListener('input', (e) => {
             const zoomLevel = parseInt(e.target.value);
-            console.log('Slider input:', zoomLevel);
             applyLightboxZoom(zoomLevel);
         });
         slider.addEventListener('change', (e) => {
             const zoomLevel = parseInt(e.target.value);
-            console.log('Slider change:', zoomLevel);
             applyLightboxZoom(zoomLevel);
         });
         slider.dataset.listenersAttached = 'true';
@@ -7785,14 +7781,11 @@ if (lightboxZoomSlider) {
 // Scrollwheel zoom functionality
 let zoomTimeout;
 function handleLightboxWheel(e) {
-    console.log('Wheel event triggered');
     // Only zoom if lightbox is visible and not clicking on controls
     if (lightbox.classList.contains('hidden')) {
-        console.log('Lightbox is hidden, ignoring wheel');
         return;
     }
     if (e.target === lightboxZoomSlider || e.target.closest('.lightbox-zoom-controls')) {
-        console.log('Wheel on controls, ignoring');
         return;
     }
     
@@ -7807,7 +7800,6 @@ function handleLightboxWheel(e) {
     const mouseX = e.clientX;
     const mouseY = e.clientY;
     
-    console.log('Wheel zoom:', currentZoomLevel, '->', newZoomLevel);
     applyLightboxZoom(newZoomLevel, mouseX, mouseY);
     
     // Clear existing timeout
@@ -7825,18 +7817,14 @@ function handleLightboxWheel(e) {
 }
 
 // Attach wheel event to lightbox and media elements
-console.log('Attaching wheel listeners');
 if (lightbox) {
     lightbox.addEventListener('wheel', handleLightboxWheel, { passive: false });
-    console.log('Wheel listener attached to lightbox');
 }
 if (lightboxImage) {
     lightboxImage.addEventListener('wheel', handleLightboxWheel, { passive: false });
-    console.log('Wheel listener attached to lightboxImage');
 }
 if (lightboxVideo) {
     lightboxVideo.addEventListener('wheel', handleLightboxWheel, { passive: false });
-    console.log('Wheel listener attached to lightboxVideo');
 }
 if (lightboxGifCanvas) {
     lightboxGifCanvas.addEventListener('wheel', handleLightboxWheel, { passive: false });

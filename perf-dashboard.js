@@ -42,7 +42,7 @@ const perfTest = (() => {
     }
 
     function end(operation, startTime, details = {}) {
-        if (startTime === 0) return;
+        if (startTime == null || startTime === 0) return;
         const duration = Math.round((performance.now() - startTime) * 100) / 100;
         if (!history[operation]) history[operation] = [];
         history[operation].push({ duration, timestamp: Date.now(), ...details });

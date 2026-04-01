@@ -2275,6 +2275,10 @@ const navigationHistory = {
     add(path) {
         const tab = this._getTab();
         if (!tab) return;
+        // Don't add duplicate if we're already at this path
+        if (tab.historyIndex >= 0 && normalizePath(tab.historyPaths[tab.historyIndex]) === normalizePath(path)) {
+            return;
+        }
         // Remove any paths after current index (when navigating forward then going back)
         tab.historyPaths = tab.historyPaths.slice(0, tab.historyIndex + 1);
         // Add new path
@@ -6076,35 +6080,17 @@ window.addEventListener('popstate', (event) => {
 });
 
 // Handle mouse back/forward buttons directly
-// Use auxclick event which is specifically for non-primary mouse buttons
-document.addEventListener('auxclick', (e) => {
-    // Check for mouse back button (button 3) or forward button (button 4)
+document.addEventListener('mouseup', (e) => {
     if (e.button === 3) {
-        // Back button
         e.preventDefault();
         e.stopPropagation();
         if (navigationHistory.canGoBack()) {
             goBack();
         }
     } else if (e.button === 4) {
-        // Forward button
         e.preventDefault();
         e.stopPropagation();
         if (navigationHistory.canGoForward()) {
-            goForward();
-        }
-    }
-});
-
-// Also handle mouseup as fallback for older browsers
-document.addEventListener('mouseup', (e) => {
-    // Only handle if auxclick didn't fire (button 3 or 4)
-    if (e.button === 3 || e.button === 4) {
-        e.preventDefault();
-        e.stopPropagation();
-        if (e.button === 3 && navigationHistory.canGoBack()) {
-            goBack();
-        } else if (e.button === 4 && navigationHistory.canGoForward()) {
             goForward();
         }
     }
@@ -6604,29 +6590,36 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
 }
 
 // Navigation functions
+let _navBusy = false;
 async function goBack() {
+    if (_navBusy) return;
     const path = navigationHistory.goBack();
     if (path) {
-        // Use setTimeout to yield control back to event loop, making button responsive
-        setTimeout(() => {
-            navigateToFolder(path, false).catch(err => {
-                console.error('Error navigating back:', err);
-                hideLoadingIndicator();
-            });
-        }, 0);
+        _navBusy = true;
+        try {
+            await navigateToFolder(path, false);
+        } catch (err) {
+            console.error('Error navigating back:', err);
+            hideLoadingIndicator();
+        } finally {
+            _navBusy = false;
+        }
     }
 }
 
 async function goForward() {
+    if (_navBusy) return;
     const path = navigationHistory.goForward();
     if (path) {
-        // Use setTimeout to yield control back to event loop, making button responsive
-        setTimeout(() => {
-            navigateToFolder(path, false).catch(err => {
-                console.error('Error navigating forward:', err);
-                hideLoadingIndicator();
-            });
-        }, 0);
+        _navBusy = true;
+        try {
+            await navigateToFolder(path, false);
+        } catch (err) {
+            console.error('Error navigating forward:', err);
+            hideLoadingIndicator();
+        } finally {
+            _navBusy = false;
+        }
     }
 }
 

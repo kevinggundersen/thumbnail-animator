@@ -838,7 +838,8 @@ ipcMain.handle('scan-folders-for-smart-collection', async (event, folderEntries,
     const scanStart = performance.now();
     const errors = [];
 
-    // Collect all folders to scan first
+    // Collect all folders to scan first, deduplicating overlapping paths
+    const folderSet = new Set();
     const allFoldersToScan = [];
     for (const entry of folderEntries) {
         const folderPath = typeof entry === 'string' ? entry : entry.path;
@@ -848,7 +849,13 @@ ipcMain.handle('scan-folders-for-smart-collection', async (event, folderEntries,
             const foldersToScan = recursive
                 ? await getSubdirectoriesRecursive(folderPath)
                 : [folderPath];
-            allFoldersToScan.push(...foldersToScan);
+            for (const fp of foldersToScan) {
+                const normalized = path.normalize(fp).toLowerCase();
+                if (!folderSet.has(normalized)) {
+                    folderSet.add(normalized);
+                    allFoldersToScan.push(fp);
+                }
+            }
         } catch (error) {
             errors.push({ folder: folderPath, error: error.message });
         }
@@ -886,7 +893,16 @@ ipcMain.handle('scan-folders-for-smart-collection', async (event, folderEntries,
     });
 
     let allFiles = [];
-    for (const files of folderResults) allFiles.push(...files);
+    const seenPaths = new Set();
+    for (const files of folderResults) {
+        for (const f of files) {
+            const key = f.path.toLowerCase();
+            if (!seenPaths.has(key)) {
+                seenPaths.add(key);
+                allFiles.push(f);
+            }
+        }
+    }
 
     // Phase 3: Dimension scan only the surviving files
     const needsDimensionScan = (options.scanImageDimensions || options.scanVideoDimensions) && dimensionPool;

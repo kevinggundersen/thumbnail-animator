@@ -1065,6 +1065,12 @@ function switchToTab(tabId) {
                 if ((cachePathNormalized === normalizedTabPath || tabCache.path === tab.path) &&
                     (now - tabCache.timestamp) < FOLDER_CACHE_TTL) {
                     // Use cached content with proper virtual scroll initialization
+                    // Cancel any in-flight smart collection scan
+                    if (currentCollectionId) {
+                        currentCollectionId = null;
+                        _collectionLoadToken++;
+                        highlightActiveCollection(null);
+                    }
                     currentFolderPath = tab.path;
                     currentItems = tabCache.items;
                     updateBreadcrumb(tab.path);
@@ -1097,6 +1103,11 @@ function switchToTab(tabId) {
 
         } else {
             // If tab has no path, clear the grid
+            if (currentCollectionId) {
+                currentCollectionId = null;
+                _collectionLoadToken++;
+                highlightActiveCollection(null);
+            }
             gridContainer.innerHTML = '';
             currentHoveredCard = null;
             currentFolderPath = null;
@@ -2931,7 +2942,7 @@ function initNewFeatures() {
     // File watching
     window.electronAPI.onFolderChanged((event, data) => {
         if (!currentFolderPath) return;
-        
+
         // Normalize paths for consistent comparison (case-insensitive on Windows)
         const normalizedWatchedPath = normalizePath(data.folderPath).toLowerCase();
         const normalizedCurrentPath = normalizePath(currentFolderPath).toLowerCase();

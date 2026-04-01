@@ -1374,6 +1374,10 @@ function getTabScrollMap(tabId) {
 // Cache folder contents globally (for recently accessed folders)
 const folderCache = new Map(); // Map<folderPath, { items, timestamp }>
 
+// Smart collection result cache — in-memory only for speed
+// Key: collectionId, Value: { items: [], timestamp: number }
+const smartCollectionCache = new Map();
+
 // IndexedDB persistent cache
 let db = null;
 
@@ -1584,6 +1588,8 @@ async function saveCollection(collection) {
                 const idx = collectionsCache.findIndex(c => c.id === collection.id);
                 if (idx >= 0) collectionsCache[idx] = collection;
                 else collectionsCache.push(collection);
+                // Invalidate smart collection result cache (rules may have changed)
+                smartCollectionCache.delete(collection.id);
                 resolve();
             };
             tx.onerror = () => reject(tx.error);
@@ -1607,6 +1613,7 @@ async function deleteCollection(id) {
             };
             tx.oncomplete = () => {
                 collectionsCache = collectionsCache.filter(c => c.id !== id);
+                smartCollectionCache.delete(id);
                 resolve();
             };
             tx.onerror = () => resolve();
@@ -1819,15 +1826,47 @@ async function loadCollectionIntoGrid(collectionId) {
                 return;
             }
 
+            // --- Cache-first: show cached results instantly, then background-refresh ---
+            const cached = smartCollectionCache.get(collectionId);
+
+            if (cached && cached.items && cached.items.length > 0) {
+                // Render cached results immediately — near-instant load
+                items = cached.items;
+                currentItems = items;
+                const filteredCached = filterItems(items);
+                const sortedCached = sortItems(filteredCached);
+
+                currentEmbeddings.clear();
+                currentTextEmbedding = null;
+                cancelEmbeddingScan();
+
+                renderItems(sortedCached, null);
+                updateBreadcrumbForCollection(collection);
+
+                const badge = document.querySelector(`[data-col-count="${collectionId}"]`);
+                if (badge) badge.textContent = items.filter(i => !i.missing).length;
+
+                // Clear loading spinner — the grid is usable now
+                setCollectionLoading(collectionId, false);
+
+                const mediaItemCount = sortedCached.filter(i => i.type !== 'folder' && !i.missing).length;
+                if (mediaItemCount > 0) {
+                    setStatusActivity('Loading media...');
+                    scheduleMediaLoadSettle();
+                }
+            }
+
+            const hadCache = !!(cached && cached.items && cached.items.length > 0);
+
             // Check if rules need dimensions (aspect ratio, width, height)
             const needsDimensionFilter = !!(collection.rules?.aspectRatio || collection.rules?.width != null || collection.rules?.height != null);
 
-            // Accumulate items progressively and render as they arrive
+            // Accumulate items progressively and render as they arrive (only if no cache shown)
             const progressiveItems = [];
             let progressRenderTimer = null;
 
             const scheduleProgressiveRender = () => {
-                if (progressRenderTimer) return; // already scheduled
+                if (progressRenderTimer) return;
                 progressRenderTimer = setTimeout(() => {
                     progressRenderTimer = null;
                     if (loadToken !== _collectionLoadToken) return;
@@ -1843,11 +1882,14 @@ async function loadCollectionIntoGrid(collectionId) {
                 if (loadToken !== _collectionLoadToken) return;
                 if (progress.items) progressFileCount += progress.items.length;
                 const itemLabel = collection.rules?.fileType === 'video' ? 'videos' : collection.rules?.fileType === 'image' ? 'images' : 'items';
-                setStatusActivity(`Scanning folders... ${progress.foldersScanned}/${progress.totalFolders} | ${progressFileCount} ${itemLabel}`);
+                if (hadCache) {
+                    setStatusActivity(`Refreshing... ${progress.foldersScanned}/${progress.totalFolders}`);
+                } else {
+                    setStatusActivity(`Scanning folders... ${progress.foldersScanned}/${progress.totalFolders} | ${progressFileCount} ${itemLabel}`);
+                }
 
-                // If items were streamed and we don't need dimension filtering, render progressively
-                if (progress.items && progress.items.length > 0 && !needsDimensionFilter) {
-                    // Apply full smart rules (cheap rules already applied server-side)
+                // Progressive rendering only when no cache was shown
+                if (!hadCache && progress.items && progress.items.length > 0) {
                     for (const item of progress.items) {
                         if (matchesSmartRules(item, collection.rules)) {
                             progressiveItems.push(item);
@@ -1858,9 +1900,10 @@ async function loadCollectionIntoGrid(collectionId) {
             };
             window.electronAPI.onSmartCollectionProgress(progressHandler);
 
+            // Only request dimension scanning if rules actually filter by dimensions
             const result = await window.electronAPI.scanFoldersForSmartCollection(sourceFolders, {
-                scanImageDimensions: true,
-                scanVideoDimensions: true
+                scanImageDimensions: needsDimensionFilter,
+                scanVideoDimensions: needsDimensionFilter
             }, collection.rules);
 
             window.electronAPI.removeSmartCollectionProgressListener();
@@ -1874,6 +1917,9 @@ async function loadCollectionIntoGrid(collectionId) {
 
             // Final render with full results (including dimension data)
             items = (result.items || []).filter(item => matchesSmartRules(item, collection.rules));
+
+            // Update in-memory cache for instant re-opens
+            smartCollectionCache.set(collectionId, { items, timestamp: Date.now() });
         } else {
             const collectionFiles = await getCollectionFiles(collectionId);
             const filePaths = collectionFiles.map(cf => cf.filePath);
@@ -6912,6 +6958,7 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
     // Exit collection mode when navigating to a folder
     if (currentCollectionId) {
         currentCollectionId = null;
+        _collectionLoadToken++; // Cancel any in-flight smart collection scan
         highlightActiveCollection(null);
     }
     const perfStart = perfTest.start();

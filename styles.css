@@ -2614,6 +2614,72 @@ button:hover {
     transform: translateY(0);
 }
 
+/* Blow-Up Preview (right-click hold) */
+#blow-up-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 999;
+    background: rgba(0, 0, 0, 0.85);
+    backdrop-filter: blur(16px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 1;
+    transition: opacity 0.15s ease;
+}
+
+#blow-up-overlay.hidden {
+    display: none;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.blow-up-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    animation: blowUpScaleIn 0.15s ease-out;
+}
+
+.blow-up-media {
+    object-fit: contain;
+    border-radius: var(--radius-lg);
+    box-shadow: 0 25px 60px rgba(0, 0, 0, 0.5);
+    user-select: none;
+    pointer-events: none;
+}
+
+video.blow-up-media {
+    background: #000;
+}
+
+.blow-up-label {
+    color: #fff;
+    font-size: 13px;
+    text-align: center;
+    max-width: 80vw;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    opacity: 0.8;
+    user-select: none;
+}
+
+@keyframes blowUpScaleIn {
+    from {
+        transform: scale(0.85);
+        opacity: 0;
+    }
+    to {
+        transform: scale(1);
+        opacity: 1;
+    }
+}
+
 /* Lightbox Styles */
 #lightbox {
     position: fixed;

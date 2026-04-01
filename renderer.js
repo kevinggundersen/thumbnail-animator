@@ -3112,6 +3112,13 @@ let currentTranslateY = 0;
 const contextMenu = document.getElementById('context-menu');
 let contextMenuTargetCard = null;
 
+// Blow-Up Preview (right-click hold)
+const BLOW_UP_HOLD_DELAY = 250;
+let blowUpHoldTimer = null;
+let blowUpActive = false;
+let blowUpTargetCard = null;
+let blowUpOverlay = null;
+
 // Rename Dialog Elements
 const renameDialog = document.getElementById('rename-dialog');
 const renameInput = document.getElementById('rename-input');
@@ -9237,6 +9244,142 @@ if (copyNameBtn) {
     });
 }
 
+// --- Blow-Up Preview (right-click hold) ---
+
+function getBlowUpOverlay() {
+    if (!blowUpOverlay) {
+        blowUpOverlay = document.createElement('div');
+        blowUpOverlay.id = 'blow-up-overlay';
+        blowUpOverlay.classList.add('hidden');
+        document.body.appendChild(blowUpOverlay);
+        // Dismiss on any click inside the overlay
+        blowUpOverlay.addEventListener('mouseup', () => { hideBlowUp(); });
+    }
+    return blowUpOverlay;
+}
+
+function showBlowUp(card) {
+    if (!card || !card.isConnected) return;
+    blowUpActive = true;
+    blowUpTargetCard = card;
+
+    const overlay = getBlowUpOverlay();
+    overlay.innerHTML = '';
+
+    const container = document.createElement('div');
+    container.className = 'blow-up-container';
+
+    // Determine display dimensions (fit within 80% of viewport, preserve aspect ratio)
+    const natW = parseInt(card.dataset.width) || 1920;
+    const natH = parseInt(card.dataset.height) || 1080;
+    const maxW = window.innerWidth * 0.8;
+    const maxH = window.innerHeight * 0.8;
+    const scale = Math.min(maxW / natW, maxH / natH);
+    const dispW = Math.round(natW * scale);
+    const dispH = Math.round(natH * scale);
+
+    let mediaEl;
+    const isVideo = card.dataset.mediaType === 'video';
+    const srcUrl = card.dataset.src;
+    const srcLower = (srcUrl || '').toLowerCase();
+    const isAnimated = srcLower.endsWith('.gif') || srcLower.endsWith('.webp');
+
+    if (isVideo) {
+        // Play video in blow-up mode
+        mediaEl = document.createElement('video');
+        mediaEl.src = srcUrl;
+        mediaEl.autoplay = true;
+        mediaEl.loop = true;
+        mediaEl.muted = true;
+        mediaEl.playsInline = true;
+        // Resume from the card's current playback position
+        const cardVideo = card.querySelector('video');
+        if (cardVideo && cardVideo.readyState >= 2 && cardVideo.currentTime > 0) {
+            mediaEl.currentTime = cardVideo.currentTime;
+        }
+    } else if (isAnimated) {
+        // Animated GIF/WebP — use <img> which browsers animate natively
+        mediaEl = document.createElement('img');
+        mediaEl.src = srcUrl;
+    } else {
+        // Static image — use original file URL for full resolution
+        mediaEl = document.createElement('img');
+        mediaEl.src = srcUrl;
+    }
+
+    mediaEl.className = 'blow-up-media';
+    mediaEl.style.width = dispW + 'px';
+    mediaEl.style.height = dispH + 'px';
+    mediaEl.draggable = false;
+
+    // Filename label
+    const label = document.createElement('div');
+    label.className = 'blow-up-label';
+    label.textContent = card.dataset.name || '';
+
+    container.appendChild(mediaEl);
+    container.appendChild(label);
+    overlay.appendChild(container);
+    overlay.classList.remove('hidden');
+}
+
+function hideBlowUp() {
+    if (!blowUpActive && !blowUpHoldTimer) return;
+    clearTimeout(blowUpHoldTimer);
+    blowUpHoldTimer = null;
+    blowUpActive = false;
+    blowUpTargetCard = null;
+    if (blowUpOverlay) {
+        // Stop any playing video before hiding
+        const vid = blowUpOverlay.querySelector('video');
+        if (vid) { vid.pause(); vid.removeAttribute('src'); vid.load(); }
+        blowUpOverlay.classList.add('hidden');
+        // Clear contents after transition
+        setTimeout(() => {
+            if (blowUpOverlay && !blowUpActive) blowUpOverlay.innerHTML = '';
+        }, 200);
+    }
+}
+
+// Right-click hold detection: mousedown starts timer
+let blowUpSuppressContextMenu = false;
+
+document.addEventListener('mousedown', (e) => {
+    if (e.button !== 2) return;
+    const card = e.target.closest('.video-card');
+    if (!card) return;
+
+    // Suppress ALL context menus while we're detecting hold vs quick click
+    blowUpSuppressContextMenu = true;
+    clearTimeout(blowUpHoldTimer);
+    blowUpHoldTimer = setTimeout(() => {
+        blowUpHoldTimer = null;
+        showBlowUp(card);
+    }, BLOW_UP_HOLD_DELAY);
+});
+
+// Right-click release: dismiss blow-up or show context menu
+document.addEventListener('mouseup', (e) => {
+    if (e.button !== 2) return;
+
+    if (blowUpActive) {
+        hideBlowUp();
+        // Keep blowUpSuppressContextMenu true — reset after contextmenu event
+    } else if (blowUpHoldTimer) {
+        // Released before threshold — this was a quick click, allow context menu
+        clearTimeout(blowUpHoldTimer);
+        blowUpHoldTimer = null;
+        blowUpSuppressContextMenu = false;
+    }
+});
+
+// Edge cases: Escape key, mouse leaving window, window blur
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && blowUpActive) hideBlowUp();
+});
+document.addEventListener('mouseleave', () => { hideBlowUp(); });
+window.addEventListener('blur', () => { hideBlowUp(); });
+
 // --- Context Menu Functionality ---
 const folderContextMenu = document.getElementById('folder-context-menu');
 
@@ -9468,6 +9611,15 @@ contextMenu.addEventListener('click', async (e) => {
 
 // Prevent default context menu on cards and show custom menu
 document.addEventListener('contextmenu', (e) => {
+    // Suppress context menu when blow-up hold is active
+    if (blowUpSuppressContextMenu) {
+        e.preventDefault();
+        e.stopPropagation();
+        // Reset the flag now that the contextmenu event has been consumed
+        blowUpSuppressContextMenu = false;
+        return;
+    }
+
     const card = e.target.closest('.video-card') || e.target.closest('.folder-card');
     if (card) {
         showContextMenu(e, card);

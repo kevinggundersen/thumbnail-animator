@@ -648,11 +648,19 @@
                                 <span id="ai-status-text">Model not loaded</span>
                             </div>
                             <div id="ai-embed-progress" class="ai-embed-progress" style="display:none">
-                                <div class="ai-embed-progress-bar">
-                                    <div class="ai-embed-progress-fill" id="ai-embed-progress-fill"></div>
+                                <div class="ai-embed-progress-row">
+                                    <div class="ai-embed-progress-bar">
+                                        <div class="ai-embed-progress-fill" id="ai-embed-progress-fill"></div>
+                                    </div>
+                                    <span id="ai-embed-progress-text">0 / 0</span>
                                 </div>
-                                <span id="ai-embed-progress-text">0 / 0</span>
-                                <button id="ai-embed-cancel-btn" class="ai-cancel-btn">Cancel</button>
+                                <div class="ai-embed-progress-row">
+                                    <div class="ai-embed-progress-bar">
+                                        <div class="ai-embed-progress-fill ai-embed-total-fill" id="ai-embed-total-fill"></div>
+                                    </div>
+                                    <span id="ai-embed-total-text">0 / 0</span>
+                                    <button id="ai-embed-cancel-btn" class="ai-cancel-btn">Cancel</button>
+                                </div>
                             </div>
                         </div>
                     </div>

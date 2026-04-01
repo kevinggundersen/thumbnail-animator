@@ -8219,18 +8219,32 @@ function cancelEmbeddingScan() {
     hideEmbedProgressUI();
 }
 
-function showEmbedProgressUI(current, total) {
+function showEmbedProgressUI(totalFiles) {
     const el = document.getElementById('ai-embed-progress');
-    const fill = document.getElementById('ai-embed-progress-fill');
-    const text = document.getElementById('ai-embed-progress-text');
     if (!el) return;
     el.style.display = 'flex';
+    const fill = document.getElementById('ai-embed-progress-fill');
+    const text = document.getElementById('ai-embed-progress-text');
+    const totalFill = document.getElementById('ai-embed-total-fill');
+    const totalText = document.getElementById('ai-embed-total-text');
+    if (fill) fill.style.width = '0%';
+    if (text) text.textContent = `0 / 0`;
+    if (totalFill) totalFill.style.width = '0%';
+    if (totalText) totalText.textContent = `0 / ${totalFiles}`;
+}
+
+function updateEmbedProgressUI(current, total) {
+    const fill = document.getElementById('ai-embed-progress-fill');
+    const text = document.getElementById('ai-embed-progress-text');
     if (fill) fill.style.width = total > 0 ? `${Math.round((current / total) * 100)}%` : '0%';
     if (text) text.textContent = `${current} / ${total}`;
 }
 
-function updateEmbedProgressUI(current, total) {
-    showEmbedProgressUI(current, total);
+function updateTotalProgressUI(done, total) {
+    const fill = document.getElementById('ai-embed-total-fill');
+    const text = document.getElementById('ai-embed-total-text');
+    if (fill) fill.style.width = total > 0 ? `${Math.round((done / total) * 100)}%` : '0%';
+    if (text) text.textContent = `${done} / ${total}`;
 }
 
 function hideEmbedProgressUI() {
@@ -8267,7 +8281,7 @@ async function scheduleBackgroundEmbedding(items) {
         }
     } catch { hideEmbedProgressUI(); return; }
 
-    showEmbedProgressUI(0, uncached.length);
+    showEmbedProgressUI(uncached.length);
 
     // Wire cancel button
     const cancelBtn = document.getElementById('ai-embed-cancel-btn');
@@ -8297,7 +8311,7 @@ async function scheduleBackgroundEmbedding(items) {
             }
             if (toCache.length > 0) cacheEmbeddings(toCache).catch(() => {});
             done += batch.length;
-            updateEmbedProgressUI(done, uncached.length);
+            updateTotalProgressUI(done, uncached.length);
         } catch { /* skip failed batch */ }
 
         // Yield between batches to keep UI responsive

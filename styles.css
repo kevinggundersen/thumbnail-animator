@@ -5222,9 +5222,15 @@ button:hover {
 /* Embedding progress bar */
 .ai-embed-progress {
     display: flex;
+    flex-direction: column;
+    gap: 5px;
+    margin-top: 8px;
+}
+
+.ai-embed-progress-row {
+    display: flex;
     align-items: center;
     gap: 8px;
-    margin-top: 8px;
 }
 
 .ai-embed-progress-bar {
@@ -5241,6 +5247,10 @@ button:hover {
     border-radius: 2px;
     width: 0%;
     transition: width 0.3s ease;
+}
+
+.ai-embed-total-fill {
+    opacity: 0.55;
 }
 
 #ai-embed-progress-text {

@@ -2225,7 +2225,8 @@ async function clipEmbedOneImage(filePath) {
 }
 
 // Extract N representative frames from a video or animated image using FFmpeg.
-// Samples evenly across the duration. Returns array of temp file paths, or null on failure.
+// Samples evenly across the duration. All frames are extracted in parallel.
+// Returns array of temp file paths, or null on failure.
 async function extractMediaKeyframes(filePath, n = 4) {
     if (!ffmpegPath || !videoThumbDir) return null;
     const duration = await getVideoDuration(filePath);
@@ -2235,24 +2236,23 @@ async function extractMediaKeyframes(filePath, n = 4) {
     await fs.promises.mkdir(framesDir, { recursive: true });
 
     const hash = crypto.createHash('md5').update(filePath).digest('hex').slice(0, 12);
-    const framePaths = [];
     const positions = Array.from({ length: n }, (_, i) => duration * (i + 1) / (n + 1));
 
-    for (let i = 0; i < positions.length; i++) {
+    // Extract all frames in parallel — FFmpeg is I/O-bound so this is safe
+    const framePaths = (await Promise.all(positions.map((pos, i) => {
         const outPath = path.join(framesDir, `${hash}-${i}.jpg`);
-        const ok = await new Promise((resolve) => {
+        return new Promise((resolve) => {
             execFile(ffmpegPath, [
-                '-ss', String(positions[i]),
+                '-ss', String(pos),
                 '-i', filePath,
                 '-vframes', '1',
                 '-q:v', '4',
                 '-vf', 'scale=320:-2',
                 '-y',
                 outPath
-            ], { timeout: 10000 }, (err) => resolve(!err));
+            ], { timeout: 10000 }, (err) => resolve(err ? null : outPath));
         });
-        if (ok) framePaths.push(outPath);
-    }
+    }))).filter(Boolean);
 
     return framePaths.length > 0 ? framePaths : null;
 }
@@ -2285,24 +2285,42 @@ async function clipEmbedMultiFrame(framePaths) {
 
 ipcMain.handle('clip-embed-images', async (event, files) => {
     if (!clipModel) return [];
+
+    // Phase 1: Pre-extract frames for all video/animated files in parallel.
+    // FFmpeg is I/O-bound so we can safely run multiple files concurrently.
+    // We process files in chunks to avoid spawning too many FFmpeg processes at once.
+    const FRAME_EXTRACT_CONCURRENCY = 4;
+    const frameMap = new Map(); // filePath -> framePaths[]
+
+    const mediaFiles = files.filter(f => {
+        const ext = path.extname(f.path).toLowerCase();
+        return CLIP_VIDEO_EXTS.has(ext) || CLIP_ANIM_EXTS.has(ext);
+    });
+
+    for (let i = 0; i < mediaFiles.length; i += FRAME_EXTRACT_CONCURRENCY) {
+        const chunk = mediaFiles.slice(i, i + FRAME_EXTRACT_CONCURRENCY);
+        await Promise.all(chunk.map(async (file) => {
+            const ext = path.extname(file.path).toLowerCase();
+            const n = CLIP_VIDEO_EXTS.has(ext) ? 4 : 3;
+            const frames = await extractMediaKeyframes(file.path, n);
+            if (frames) frameMap.set(file.path, frames);
+        }));
+    }
+
+    // Phase 2: Sequential CLIP inference (ONNX must run on the main thread).
     const results = [];
     for (let i = 0; i < files.length; i++) {
         const file = files[i];
         const result = { path: file.path, embedding: null };
         try {
             const ext = path.extname(file.path).toLowerCase();
-            const isVideo   = CLIP_VIDEO_EXTS.has(ext);
+            const isVideo    = CLIP_VIDEO_EXTS.has(ext);
             const isAnimated = CLIP_ANIM_EXTS.has(ext);
 
             if (isVideo || isAnimated) {
-                // Multi-frame mean-pooled embedding: sample frames across the media duration
-                const framePaths = await extractMediaKeyframes(file.path, isVideo ? 4 : 3);
+                const framePaths = frameMap.get(file.path);
                 if (framePaths) {
-                    try {
-                        result.embedding = await clipEmbedMultiFrame(framePaths);
-                    } finally {
-                        for (const fp of framePaths) fs.promises.unlink(fp).catch(() => {});
-                    }
+                    result.embedding = await clipEmbedMultiFrame(framePaths);
                 }
 
                 // Fallback to single-frame if multi-frame extraction failed
@@ -2314,12 +2332,10 @@ ipcMain.handle('clip-embed-images', async (event, files) => {
                         const vidThumb = getThumbCachePath(file.path, file.mtime);
                         if (fs.existsSync(vidThumb)) source = vidThumb;
                     }
-                    // For videos with no cached thumbnail, generate one on-the-fly
                     if (isVideo && source === file.path) {
                         const vidThumb = await generateVideoThumbnail(file.path);
                         if (vidThumb) source = vidThumb;
                     }
-                    // nativeImage supports GIF/WebP (first frame) and video thumbnails
                     if (source !== file.path || isAnimated) {
                         result.embedding = await clipEmbedOneImage(source);
                     }
@@ -2348,6 +2364,12 @@ ipcMain.handle('clip-embed-images', async (event, files) => {
             event.sender.send('clip-progress', { current: i + 1, total: files.length, phase: 'embedding' });
         } catch { /* window closed */ }
     }
+
+    // Phase 3: Clean up all temp frames now that inference is complete.
+    for (const framePaths of frameMap.values()) {
+        for (const fp of framePaths) fs.promises.unlink(fp).catch(() => {});
+    }
+
     return results;
 });
 

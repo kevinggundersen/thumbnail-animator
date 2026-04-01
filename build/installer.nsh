@@ -10,4 +10,4 @@
   ${IfNot} ${Errors}
     SetSilent silent
   ${EndIf}
-!endmacro
+!macroend

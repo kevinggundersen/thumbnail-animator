@@ -798,14 +798,48 @@ ipcMain.handle('resolve-file-paths', async (event, filePaths, options = {}) => {
 });
 
 // Scan multiple folders and return combined file items (no folders) for smart collections
-ipcMain.handle('scan-folders-for-smart-collection', async (event, folderPaths, options = {}) => {
+// Recursively collect all subdirectory paths under a root folder
+async function getSubdirectoriesRecursive(rootPath) {
+    const dirs = [rootPath];
+    const queue = [rootPath];
+    while (queue.length > 0) {
+        const current = queue.shift();
+        try {
+            const entries = await fs.promises.readdir(current, { withFileTypes: true });
+            for (const entry of entries) {
+                if (entry.isDirectory()) {
+                    const subPath = path.join(current, entry.name);
+                    dirs.push(subPath);
+                    queue.push(subPath);
+                }
+            }
+        } catch { /* skip inaccessible dirs */ }
+    }
+    return dirs;
+}
+
+// folderEntries: array of { path, recursive } or plain string paths (backward compat)
+ipcMain.handle('scan-folders-for-smart-collection', async (event, folderEntries, options = {}) => {
     const allFiles = [];
     const errors = [];
 
-    for (const folderPath of folderPaths) {
+    for (const entry of folderEntries) {
+        const folderPath = typeof entry === 'string' ? entry : entry.path;
+        const recursive = typeof entry === 'object' && entry.recursive;
+
         try {
-            const { mediaFiles } = await scanFolderInternal(folderPath, options);
-            allFiles.push(...mediaFiles);
+            const foldersToScan = recursive
+                ? await getSubdirectoriesRecursive(folderPath)
+                : [folderPath];
+
+            for (const fp of foldersToScan) {
+                try {
+                    const { mediaFiles } = await scanFolderInternal(fp, options);
+                    allFiles.push(...mediaFiles);
+                } catch (error) {
+                    errors.push({ folder: fp, error: error.message });
+                }
+            }
         } catch (error) {
             errors.push({ folder: folderPath, error: error.message });
         }

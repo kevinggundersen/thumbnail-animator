@@ -1762,12 +1762,38 @@ function matchesSmartRules(item, rules) {
 }
 
 // Load a collection's contents into the grid (parallel to loadVideos for folders)
+// Track loading state per collection to show sidebar spinners
+const _collectionLoadingSet = new Set();
+
+function setCollectionLoading(collectionId, loading) {
+    if (loading) _collectionLoadingSet.add(collectionId);
+    else _collectionLoadingSet.delete(collectionId);
+    // Update the sidebar badge for this collection
+    const badge = document.querySelector(`[data-col-count="${collectionId}"]`);
+    if (badge) {
+        if (loading) {
+            badge.textContent = '';
+            badge.classList.add('loading');
+        } else {
+            badge.classList.remove('loading');
+        }
+    }
+}
+
+// Monotonic token so stale loads don't clobber the grid
+let _collectionLoadToken = 0;
+
 async function loadCollectionIntoGrid(collectionId) {
+    const loadToken = ++_collectionLoadToken;
     stopPeriodicCleanup();
     activeDimensionHydrationToken++;
 
-    showLoadingIndicator();
-    setStatusActivity('Loading collection...');
+    setCollectionLoading(collectionId, true);
+
+    // Immediately update UI state so sidebar highlight and breadcrumb respond
+    currentCollectionId = collectionId;
+    currentFolderPath = null;
+    highlightActiveCollection(collectionId);
 
     try {
         await yieldToEventLoop();
@@ -1776,90 +1802,79 @@ async function loadCollectionIntoGrid(collectionId) {
         const collection = await getCollection(collectionId);
         if (!collection) {
             showToast('Collection not found', 'error');
-            hideLoadingIndicator();
-            setStatusActivity('');
             return;
         }
 
-        currentCollectionId = collectionId;
-        currentFolderPath = null; // Not in a folder
+        // Show collection name in breadcrumb right away (before data loads)
+        updateBreadcrumbForCollection(collection);
+        updateCurrentTab(null, collection.name);
 
         let items = [];
         let missingPaths = [];
 
         if (collection.type === 'smart') {
-            // Smart collection: scan source folders and filter
             const sourceFolders = collection.rules?.sourceFolders || [];
             if (sourceFolders.length === 0) {
                 showToast('Smart collection has no source folders', 'warning');
-                hideLoadingIndicator();
-                setStatusActivity('');
                 return;
             }
 
-            setStatusActivity('Scanning source folders...');
             const result = await window.electronAPI.scanFoldersForSmartCollection(sourceFolders, {
                 scanImageDimensions: true,
                 scanVideoDimensions: true
             });
 
+            // Bail if user navigated away during the async scan
+            if (loadToken !== _collectionLoadToken) return;
+
             items = (result.items || []).filter(item => matchesSmartRules(item, collection.rules));
         } else {
-            // Static collection: resolve stored file paths
             const collectionFiles = await getCollectionFiles(collectionId);
             const filePaths = collectionFiles.map(cf => cf.filePath);
 
             if (filePaths.length === 0) {
+                if (loadToken !== _collectionLoadToken) return;
                 currentItems = [];
                 renderItems([], null);
                 updateBreadcrumbForCollection(collection);
-                hideLoadingIndicator();
-                setStatusActivity('');
                 return;
             }
 
-            setStatusActivity('Resolving files...');
             const result = await window.electronAPI.resolveFilePaths(filePaths, {
                 scanImageDimensions: true,
                 scanVideoDimensions: true
             });
 
+            if (loadToken !== _collectionLoadToken) return;
+
             items = result.items || [];
             missingPaths = result.missing || [];
 
-            // Add missing items as placeholders so user can see/remove them
             for (const mp of missingPaths) {
                 const name = mp.split(/[/\\]/).pop() || mp;
                 items.push({
-                    name,
-                    path: mp,
-                    url: '',
-                    type: 'image', // placeholder type
-                    mtime: 0,
-                    size: 0,
-                    width: undefined,
-                    height: undefined,
-                    missing: true
+                    name, path: mp, url: '', type: 'image',
+                    mtime: 0, size: 0, width: undefined, height: undefined, missing: true
                 });
             }
         }
 
         await yieldToEventLoop();
+        if (loadToken !== _collectionLoadToken) return;
 
         currentItems = items;
         const filteredItems = filterItems(items);
         const sortedItems = sortItems(filteredItems);
 
         await yieldToEventLoop();
+        if (loadToken !== _collectionLoadToken) return;
 
         currentEmbeddings.clear();
         currentTextEmbedding = null;
         cancelEmbeddingScan();
 
         renderItems(sortedItems, null);
-
         updateBreadcrumbForCollection(collection);
-        updateCurrentTab(null, collection.name);
 
         if (missingPaths.length > 0) {
             showToast(`${missingPaths.length} file(s) no longer exist`, 'warning');
@@ -1873,15 +1888,12 @@ async function loadCollectionIntoGrid(collectionId) {
             setStatusActivity('');
         }
 
-        // Highlight active collection in sidebar
-        highlightActiveCollection(collectionId);
+        // Update sidebar count badge now that we know the total
+        const badge = document.querySelector(`[data-col-count="${collectionId}"]`);
+        if (badge) badge.textContent = items.filter(i => !i.missing).length;
 
     } finally {
-        hideLoadingIndicator();
-        const act = statusActivity ? statusActivity.textContent : '';
-        if (act === 'Loading collection...' || act === 'Resolving files...' || act === 'Scanning source folders...') {
-            setStatusActivity('');
-        }
+        setCollectionLoading(collectionId, false);
     }
 }
 
@@ -9504,17 +9516,23 @@ function openCollectionDialog(existingCollection = null) {
 
     document.body.appendChild(overlay);
 
-    // Source folders state
-    let sourceFolders = [...(rules.sourceFolders || [])];
+    // Source folders state — each entry is { path, recursive }
+    // Backward compat: old string entries are normalized to objects
+    let sourceFolders = (rules.sourceFolders || []).map(f =>
+        typeof f === 'string' ? { path: f, recursive: false } : { path: f.path, recursive: !!f.recursive }
+    );
 
     function renderFoldersList() {
         const container = document.getElementById('col-dialog-folders');
         container.innerHTML = '';
         for (let i = 0; i < sourceFolders.length; i++) {
+            const entry = sourceFolders[i];
             const div = document.createElement('div');
             div.className = 'collection-dialog-folder-item';
-            const folderName = sourceFolders[i].split(/[/\\]/).pop() || sourceFolders[i];
-            div.innerHTML = `<span title="${escapeHtml(sourceFolders[i])}">${escapeHtml(folderName)}</span>` +
+            const folderName = entry.path.split(/[/\\]/).pop() || entry.path;
+            div.innerHTML = `<span title="${escapeHtml(entry.path)}">${escapeHtml(folderName)}</span>` +
+                `<label class="collection-dialog-folder-recursive" title="Include sub-folders">` +
+                `<input type="checkbox" data-idx="${i}" ${entry.recursive ? 'checked' : ''}> Sub-folders</label>` +
                 `<button class="collection-dialog-folder-remove" data-idx="${i}">&times;</button>`;
             container.appendChild(div);
         }
@@ -9522,6 +9540,11 @@ function openCollectionDialog(existingCollection = null) {
             btn.addEventListener('click', () => {
                 sourceFolders.splice(parseInt(btn.dataset.idx), 1);
                 renderFoldersList();
+            });
+        });
+        container.querySelectorAll('.collection-dialog-folder-recursive input').forEach(cb => {
+            cb.addEventListener('change', () => {
+                sourceFolders[parseInt(cb.dataset.idx)].recursive = cb.checked;
             });
         });
     }
@@ -9549,8 +9572,8 @@ function openCollectionDialog(existingCollection = null) {
     // Add folder button
     document.getElementById('col-dialog-add-folder').addEventListener('click', async () => {
         const result = await window.electronAPI.selectFolder();
-        if (result && !sourceFolders.includes(result)) {
-            sourceFolders.push(result);
+        if (result && !sourceFolders.some(f => f.path === result)) {
+            sourceFolders.push({ path: result, recursive: false });
             renderFoldersList();
         }
     });
@@ -9615,8 +9638,10 @@ function openCollectionDialog(existingCollection = null) {
         renderCollectionsSidebar();
         showToast(`Collection "${name}" ${isEdit ? 'updated' : 'created'}`, 'success');
 
-        // Auto-open the new collection
+        // Auto-open the new collection (loads in background with sidebar spinner)
         if (!isEdit) loadCollectionIntoGrid(collectionData.id);
+        // If editing the currently-viewed collection, refresh it
+        else if (currentCollectionId === collectionData.id) loadCollectionIntoGrid(collectionData.id);
     });
 
     // Focus name input

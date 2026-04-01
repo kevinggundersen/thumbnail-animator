@@ -542,6 +542,21 @@ button:active:not(:disabled) {
     color: var(--accent);
 }
 
+.collection-item-count.loading {
+    background: transparent;
+    width: 14px;
+    height: 14px;
+    padding: 0;
+    border: 2px solid var(--border-strong);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: collection-spin 0.7s linear infinite;
+}
+
+@keyframes collection-spin {
+    to { transform: rotate(360deg); }
+}
+
 /* Missing file overlay on cards */
 .video-card.missing-file {
     opacity: 0.4;
@@ -710,6 +725,23 @@ button:active:not(:disabled) {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+.collection-dialog-folder-recursive {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    user-select: none;
+}
+
+.collection-dialog-folder-recursive input {
+    margin: 0;
+    cursor: pointer;
+    accent-color: var(--accent);
 }
 
 .collection-dialog-folder-remove {

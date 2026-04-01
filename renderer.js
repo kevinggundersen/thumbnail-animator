@@ -1819,14 +1819,60 @@ async function loadCollectionIntoGrid(collectionId) {
                 return;
             }
 
+            // Check if rules need dimensions (aspect ratio, width, height)
+            const needsDimensionFilter = !!(collection.rules?.aspectRatio || collection.rules?.width != null || collection.rules?.height != null);
+
+            // Accumulate items progressively and render as they arrive
+            const progressiveItems = [];
+            let progressRenderTimer = null;
+
+            const scheduleProgressiveRender = () => {
+                if (progressRenderTimer) return; // already scheduled
+                progressRenderTimer = setTimeout(() => {
+                    progressRenderTimer = null;
+                    if (loadToken !== _collectionLoadToken) return;
+                    currentItems = progressiveItems.slice();
+                    const filtered = filterItems(currentItems);
+                    const sorted = sortItems(filtered);
+                    renderItems(sorted, null);
+                }, 200);
+            };
+
+            let progressFileCount = 0;
+            const progressHandler = (_event, progress) => {
+                if (loadToken !== _collectionLoadToken) return;
+                if (progress.items) progressFileCount += progress.items.length;
+                const itemLabel = collection.rules?.fileType === 'video' ? 'videos' : collection.rules?.fileType === 'image' ? 'images' : 'items';
+                setStatusActivity(`Scanning folders... ${progress.foldersScanned}/${progress.totalFolders} | ${progressFileCount} ${itemLabel}`);
+
+                // If items were streamed and we don't need dimension filtering, render progressively
+                if (progress.items && progress.items.length > 0 && !needsDimensionFilter) {
+                    // Apply full smart rules (cheap rules already applied server-side)
+                    for (const item of progress.items) {
+                        if (matchesSmartRules(item, collection.rules)) {
+                            progressiveItems.push(item);
+                        }
+                    }
+                    scheduleProgressiveRender();
+                }
+            };
+            window.electronAPI.onSmartCollectionProgress(progressHandler);
+
             const result = await window.electronAPI.scanFoldersForSmartCollection(sourceFolders, {
                 scanImageDimensions: true,
                 scanVideoDimensions: true
-            });
+            }, collection.rules);
+
+            window.electronAPI.removeSmartCollectionProgressListener();
+            if (progressRenderTimer) {
+                clearTimeout(progressRenderTimer);
+                progressRenderTimer = null;
+            }
 
             // Bail if user navigated away during the async scan
             if (loadToken !== _collectionLoadToken) return;
 
+            // Final render with full results (including dimension data)
             items = (result.items || []).filter(item => matchesSmartRules(item, collection.rules));
         } else {
             const collectionFiles = await getCollectionFiles(collectionId);

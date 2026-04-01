@@ -604,7 +604,8 @@ const IO_CONCURRENCY_LIMIT = 20;
 // Core folder scan logic extracted for reuse by collections
 async function scanFolderInternal(folderPath, options = {}) {
     const scanStart = performance.now();
-    const { skipStats = false, scanImageDimensions = false, scanVideoDimensions = false } = options;
+    const { skipStats = false, scanImageDimensions = false, scanVideoDimensions = false,
+            smartCollectionMode = false, skipDimensions = false } = options;
     const readdirStart = performance.now();
     const items = await fs.promises.readdir(folderPath, { withFileTypes: true });
     logPerf('scan-folder.readdir', readdirStart, { entries: items.length });
@@ -622,7 +623,10 @@ async function scanFolderInternal(folderPath, options = {}) {
 
     for (const item of items) {
         if (item.isDirectory()) {
-            folderItems.push(item);
+            // Smart collection mode: skip folders entirely (only files needed)
+            if (!smartCollectionMode) {
+                folderItems.push(item);
+            }
         } else if (item.isFile()) {
             const name = item.name;
             const lastDot = name.lastIndexOf('.');
@@ -648,21 +652,24 @@ async function scanFolderInternal(folderPath, options = {}) {
     }
 
     // === Phase B: Dimension scanning via worker pool (parallel across workers) ===
-    const needsDimensionScan = (scanImageDimensions && sizeOf) || (scanVideoDimensions && ffprobePath);
-    if (needsDimensionScan && dimensionPool) {
-        const filesToScan = fileObjs.filter(f =>
-            (f.isImage && scanImageDimensions) || (!f.isImage && scanVideoDimensions && ffprobePath)
-        ).map(f => ({ path: f.path, isImage: f.isImage }));
+    // Skip when smartCollectionMode + skipDimensions (dimensions handled separately after pre-filtering)
+    if (!skipDimensions) {
+        const needsDimensionScan = (scanImageDimensions && sizeOf) || (scanVideoDimensions && ffprobePath);
+        if (needsDimensionScan && dimensionPool) {
+            const filesToScan = fileObjs.filter(f =>
+                (f.isImage && scanImageDimensions) || (!f.isImage && scanVideoDimensions && ffprobePath)
+            ).map(f => ({ path: f.path, isImage: f.isImage }));
 
-        if (filesToScan.length > 0) {
-            const dimensionStart = performance.now();
-            const dimensionMap = await dimensionPool.scanDimensions(filesToScan);
-            logPerf('scan-folder.dimensions', dimensionStart, { files: filesToScan.length, hits: dimensionMap.size });
-            for (const fileObj of fileObjs) {
-                const dims = dimensionMap.get(fileObj.path);
-                if (dims) {
-                    fileObj.width = dims.width;
-                    fileObj.height = dims.height;
+            if (filesToScan.length > 0) {
+                const dimensionStart = performance.now();
+                const dimensionMap = await dimensionPool.scanDimensions(filesToScan);
+                logPerf('scan-folder.dimensions', dimensionStart, { files: filesToScan.length, hits: dimensionMap.size });
+                for (const fileObj of fileObjs) {
+                    const dims = dimensionMap.get(fileObj.path);
+                    if (dims) {
+                        fileObj.width = dims.width;
+                        fileObj.height = dims.height;
+                    }
                 }
             }
         }
@@ -677,18 +684,21 @@ async function scanFolderInternal(folderPath, options = {}) {
             folders.push({ name: item.name, path: path.join(folderPath, item.name), type: 'folder', mtime: 0 });
         }
     } else {
-        const folderStatStart = performance.now();
-        const folderResults = await asyncPool(IO_CONCURRENCY_LIMIT, folderItems, async (item) => {
-            const itemPath = path.join(folderPath, item.name);
-            try {
-                const stats = await fs.promises.stat(itemPath);
-                return { name: item.name, path: itemPath, type: 'folder', mtime: stats.mtime.getTime() };
-            } catch {
-                return { name: item.name, path: itemPath, type: 'folder', mtime: 0 };
-            }
-        });
-        folders.push(...folderResults);
-        logPerf('scan-folder.folder-stats', folderStatStart, { count: folderItems.length, limit: IO_CONCURRENCY_LIMIT });
+        // Smart collection mode: skip folder stats entirely
+        if (!smartCollectionMode) {
+            const folderStatStart = performance.now();
+            const folderResults = await asyncPool(IO_CONCURRENCY_LIMIT, folderItems, async (item) => {
+                const itemPath = path.join(folderPath, item.name);
+                try {
+                    const stats = await fs.promises.stat(itemPath);
+                    return { name: item.name, path: itemPath, type: 'folder', mtime: stats.mtime.getTime() };
+                } catch {
+                    return { name: item.name, path: itemPath, type: 'folder', mtime: 0 };
+                }
+            });
+            folders.push(...folderResults);
+            logPerf('scan-folder.folder-stats', folderStatStart, { count: folderItems.length, limit: IO_CONCURRENCY_LIMIT });
+        }
 
         const fileStatStart = performance.now();
         await asyncPool(IO_CONCURRENCY_LIMIT, fileObjs, async (fileObj) => {
@@ -706,12 +716,14 @@ async function scanFolderInternal(folderPath, options = {}) {
     // Clean up internal field before sending to renderer
     const mediaFiles = fileObjs.map(({ isImage, ...rest }) => rest);
 
-    // Default alphabetical sorting for backward compatibility
-    if (folders.length > 1) {
-        folders.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
-    }
-    if (mediaFiles.length > 1) {
-        mediaFiles.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+    // Smart collection mode: skip sorting (renderer re-sorts after filtering)
+    if (!smartCollectionMode) {
+        if (folders.length > 1) {
+            folders.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+        }
+        if (mediaFiles.length > 1) {
+            mediaFiles.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+        }
     }
 
     logPerf('scan-folder.total', scanStart, { folders: folders.length, files: mediaFiles.length, skipStats: skipStats ? 1 : 0 });
@@ -819,10 +831,15 @@ async function getSubdirectoriesRecursive(rootPath) {
 }
 
 // folderEntries: array of { path, recursive } or plain string paths (backward compat)
-ipcMain.handle('scan-folders-for-smart-collection', async (event, folderEntries, options = {}) => {
-    const allFiles = [];
+// rules: optional smart collection rules for pre-filtering before dimension scanning
+const FOLDER_SCAN_CONCURRENCY = 8;
+
+ipcMain.handle('scan-folders-for-smart-collection', async (event, folderEntries, options = {}, rules = null) => {
+    const scanStart = performance.now();
     const errors = [];
 
+    // Collect all folders to scan first
+    const allFoldersToScan = [];
     for (const entry of folderEntries) {
         const folderPath = typeof entry === 'string' ? entry : entry.path;
         const recursive = typeof entry === 'object' && entry.recursive;
@@ -831,22 +848,110 @@ ipcMain.handle('scan-folders-for-smart-collection', async (event, folderEntries,
             const foldersToScan = recursive
                 ? await getSubdirectoriesRecursive(folderPath)
                 : [folderPath];
-
-            for (const fp of foldersToScan) {
-                try {
-                    const { mediaFiles } = await scanFolderInternal(fp, options);
-                    allFiles.push(...mediaFiles);
-                } catch (error) {
-                    errors.push({ folder: fp, error: error.message });
-                }
-            }
+            allFoldersToScan.push(...foldersToScan);
         } catch (error) {
             errors.push({ folder: folderPath, error: error.message });
         }
     }
 
+    // Phase 1: Scan all folders in parallel (readdir + stats, no dimensions yet)
+    const smartOptions = { ...options, smartCollectionMode: true, skipDimensions: true };
+    const sender = event.sender;
+    let foldersScanned = 0;
+    const totalFolders = allFoldersToScan.length;
+
+    const folderResults = await asyncPool(FOLDER_SCAN_CONCURRENCY, allFoldersToScan, async (fp) => {
+        try {
+            const { mediaFiles } = await scanFolderInternal(fp, smartOptions);
+            foldersScanned++;
+            // Pre-filter this batch with cheap rules
+            const filtered = rules ? mediaFiles.filter(f => matchesCheapRules(f, rules)) : mediaFiles;
+            // Stream progress + file items to renderer for progressive rendering
+            if (!sender.isDestroyed() && filtered.length > 0) {
+                sender.send('smart-collection-scan-progress', {
+                    foldersScanned, totalFolders,
+                    items: filtered
+                });
+            } else if (!sender.isDestroyed()) {
+                sender.send('smart-collection-scan-progress', {
+                    foldersScanned, totalFolders
+                });
+            }
+            return filtered; // return pre-filtered results (cheap rules already applied)
+        } catch (error) {
+            foldersScanned++;
+            errors.push({ folder: fp, error: error.message });
+            return [];
+        }
+    });
+
+    let allFiles = [];
+    for (const files of folderResults) allFiles.push(...files);
+
+    // Phase 3: Dimension scan only the surviving files
+    const needsDimensionScan = (options.scanImageDimensions || options.scanVideoDimensions) && dimensionPool;
+    if (needsDimensionScan && allFiles.length > 0) {
+        const filesToScan = allFiles.filter(f => {
+            // Check main-process dimension cache first
+            const cacheKey = `${f.path}|${f.mtime}`;
+            const cached = dimensionCacheMain.get(cacheKey);
+            if (cached) {
+                f.width = cached.width;
+                f.height = cached.height;
+                return false;
+            }
+            return (f.type === 'image' && options.scanImageDimensions) ||
+                   (f.type === 'video' && options.scanVideoDimensions && ffprobePath);
+        }).map(f => ({ path: f.path, isImage: f.type === 'image' }));
+
+        if (filesToScan.length > 0) {
+            const dimensionStart = performance.now();
+            const dimensionMap = await dimensionPool.scanDimensions(filesToScan);
+            logPerf('smart-collection.dimensions', dimensionStart, { scanned: filesToScan.length, hits: dimensionMap.size });
+
+            for (const fileObj of allFiles) {
+                const dims = dimensionMap.get(fileObj.path);
+                if (dims) {
+                    fileObj.width = dims.width;
+                    fileObj.height = dims.height;
+                    // Populate dimension cache
+                    const cacheKey = `${fileObj.path}|${fileObj.mtime}`;
+                    dimensionCacheMain.set(cacheKey, { width: dims.width, height: dims.height });
+                }
+            }
+
+            // Evict oldest entries if cache is too large
+            if (dimensionCacheMain.size > DIMENSION_CACHE_MAX) {
+                const excess = dimensionCacheMain.size - DIMENSION_CACHE_MAX;
+                const iter = dimensionCacheMain.keys();
+                for (let i = 0; i < excess; i++) {
+                    dimensionCacheMain.delete(iter.next().value);
+                }
+            }
+        }
+    }
+
+    logPerf('smart-collection.total', scanStart, { folders: allFoldersToScan.length, files: allFiles.length });
     return { items: allFiles, errors };
 });
+
+// Cheap rule matching for pre-filtering (no dimension/aspect/rating checks)
+function matchesCheapRules(file, rules) {
+    if (rules.fileType && rules.fileType !== 'all' && file.type !== rules.fileType) return false;
+    if (rules.nameContains && !file.name.toLowerCase().includes(rules.nameContains.toLowerCase())) return false;
+    if (rules.sizeValue && rules.sizeOperator) {
+        const targetBytes = rules.sizeValue * 1024 * 1024;
+        if (rules.sizeOperator === '>' && file.size <= targetBytes) return false;
+        if (rules.sizeOperator === '<' && file.size >= targetBytes) return false;
+    }
+    if (rules.dateFrom && file.mtime < rules.dateFrom) return false;
+    if (rules.dateTo && file.mtime > rules.dateTo) return false;
+    return true;
+}
+
+// Main-process dimension cache (LRU by insertion order)
+const dimensionCacheMain = new Map();
+const DIMENSION_CACHE_MAX = 10000;
 
 // Context menu IPC handlers
 ipcMain.handle('reveal-in-explorer', async (event, filePath) => {

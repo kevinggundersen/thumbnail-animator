@@ -67,20 +67,34 @@ function getVideoDimensions(filePath) {
     });
 }
 
+const WORKER_CONCURRENCY = 4;
+
 parentPort.on('message', async (msg) => {
     if (msg.type !== 'scan') return;
 
-    const results = [];
-    for (const file of msg.files) {
-        const dims = file.isImage
-            ? await getImageDimensions(file.path)
-            : await getVideoDimensions(file.path);
-        results.push({
-            path: file.path,
-            width: dims ? dims.width : undefined,
-            height: dims ? dims.height : undefined
-        });
+    const results = new Array(msg.files.length);
+    const executing = new Set();
+
+    for (let i = 0; i < msg.files.length; i++) {
+        const index = i;
+        const file = msg.files[i];
+        const p = (async () => {
+            const dims = file.isImage
+                ? await getImageDimensions(file.path)
+                : await getVideoDimensions(file.path);
+            results[index] = {
+                path: file.path,
+                width: dims ? dims.width : undefined,
+                height: dims ? dims.height : undefined
+            };
+        })();
+        executing.add(p);
+        p.then(() => executing.delete(p), () => executing.delete(p));
+        if (executing.size >= WORKER_CONCURRENCY) {
+            await Promise.race(executing);
+        }
     }
+    await Promise.all(executing);
 
     parentPort.postMessage({ type: 'result', results });
 });

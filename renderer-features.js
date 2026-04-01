@@ -2978,6 +2978,14 @@ function initNewFeatures() {
         }
         
         if (isInCurrentFolder || isInSubfolder) {
+            // Keep Explorer sidebar in sync when subfolders are created or removed (expanded branches only)
+            if (data.filePath && (data.event === 'addDir' || data.event === 'unlinkDir')) {
+                const parentPath = window.sidebarParentDirPath?.(data.filePath);
+                if (parentPath) {
+                    window.refreshSidebarTreeBranchForParentPath?.(parentPath);
+                }
+            }
+
             // If change is in a subfolder, invalidate that subfolder's cache
             // This ensures that when navigating into the subfolder, fresh data is loaded
             if (subfolderPath) {

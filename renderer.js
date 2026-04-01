@@ -1085,6 +1085,7 @@ function escapeHtml(str) {
 // ===== Auto-Update Notifications =====
 (function initAutoUpdateListeners() {
     let updateToast = null;
+    let downloading = false;
 
     window.electronAPI.onUpdateAvailable((info) => {
         if (updateToast) dismissToast(updateToast);
@@ -1093,27 +1094,37 @@ function escapeHtml(str) {
             duration: 0,
             actionLabel: 'Download',
             actionCallback: () => {
+                downloading = true;
                 window.electronAPI.downloadUpdate();
-                if (updateToast) dismissToast(updateToast);
-                updateToast = showToast('Downloading update...', 'info', {
-                    details: '0%',
-                    duration: 0
-                });
+                // Don't create a new toast here — the first progress event will update it
             }
         });
     });
 
     window.electronAPI.onUpdateDownloadProgress((progress) => {
-        // Update the existing toast's details text in place instead of recreating
-        if (updateToast) {
-            const detailsEl = updateToast.querySelector('.toast-details');
+        if (updateToast && !updateToast.classList.contains('toast-exit')) {
+            // Update text in place
+            const msgEl = updateToast.querySelector('.toast-message');
+            if (msgEl) msgEl.textContent = 'Downloading update...';
+            let detailsEl = updateToast.querySelector('.toast-details');
             if (detailsEl) {
                 detailsEl.textContent = `${progress.percent}%`;
-                return;
+            } else {
+                // Add details element if the toast doesn't have one yet
+                const body = updateToast.querySelector('.toast-body');
+                if (body) {
+                    detailsEl = document.createElement('div');
+                    detailsEl.className = 'toast-details';
+                    detailsEl.textContent = `${progress.percent}%`;
+                    body.appendChild(detailsEl);
+                }
             }
+            // Hide the action button once downloading starts
+            const actionBtn = updateToast.querySelector('[data-toast-action]');
+            if (actionBtn) actionBtn.closest('.toast-actions').remove();
+            return;
         }
         // Fallback: create a new toast if the existing one is gone
-        if (updateToast) dismissToast(updateToast);
         updateToast = showToast('Downloading update...', 'info', {
             details: `${progress.percent}%`,
             duration: 0

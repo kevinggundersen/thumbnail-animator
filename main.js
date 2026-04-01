@@ -602,7 +602,7 @@ app.whenReady().then(() => {
     });
 
     ipcMain.handle('install-update', () => {
-        autoUpdater.quitAndInstall(false, true);
+        autoUpdater.quitAndInstall(true, true);
     });
 
     app.on('activate', () => {

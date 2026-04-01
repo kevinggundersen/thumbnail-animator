@@ -31,6 +31,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     scanFileDimensions: (files) => ipcRenderer.invoke('scan-file-dimensions', files),
     hasFfmpeg: () => ipcRenderer.invoke('has-ffmpeg'),
     generateThumbnailBatch: (items) => ipcRenderer.invoke('generate-thumbnails-batch', items),
+    getFolderPreview: (folderPath) => ipcRenderer.invoke('get-folder-preview', folderPath),
     // Duplicate detection
     scanDuplicates: (folderPath, options) => ipcRenderer.invoke('scan-duplicates', folderPath, options),
     regroupDuplicates: (hashData, threshold) => ipcRenderer.invoke('regroup-duplicates', hashData, threshold),

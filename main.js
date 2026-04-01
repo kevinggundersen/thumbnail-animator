@@ -324,6 +324,7 @@ app.setPath('userData', userDataPath);
 // Initialize video thumbnail cache directory now that userDataPath is set
 videoThumbDir = path.join(userDataPath, 'video-thumbnails');
 imageThumbDir = path.join(userDataPath, 'image-thumbnails');
+let folderPreviewDir = path.join(userDataPath, 'folder-previews');
 
 // Fix for VRAM leak: Disable Hardware Acceleration
 // This forces software decoding which is often more stable for many simultaneous videos
@@ -825,6 +826,126 @@ async function scanFolderInternal(folderPath, options = {}) {
     logPerf('scan-folder.total', scanStart, { folders: folders.length, files: mediaFiles.length, skipStats: skipStats ? 1 : 0 });
     return { folders, mediaFiles };
 }
+
+/**
+ * Lightweight peek into a folder to find up to `limit` media files for folder thumbnail previews.
+ * Prioritizes images over videos (faster thumbnail generation via sharp vs ffmpeg).
+ * Stops early once limit is reached — does NOT scan the entire directory.
+ */
+async function peekFolderMedia(folderPath, limit = 4) {
+    try {
+        const items = await fs.promises.readdir(folderPath, { withFileTypes: true });
+        const imageExts = pluginRegistry.getImageExtensions();
+        const videoExts = pluginRegistry.getVideoExtensions();
+
+        const images = [];
+        const videos = [];
+
+        for (const item of items) {
+            if (!item.isFile()) continue;
+            const lastDot = item.name.lastIndexOf('.');
+            if (lastDot === -1) continue;
+            const ext = item.name.substring(lastDot).toLowerCase();
+
+            if (images.length < limit && imageExts.has(ext)) {
+                images.push({ name: item.name, type: 'image' });
+            } else if (videoExts.has(ext)) {
+                videos.push({ name: item.name, type: 'video' });
+            }
+            if (images.length >= limit) break;
+        }
+
+        // Fill remaining slots with videos
+        const combined = images.concat(videos.slice(0, limit - images.length));
+        if (combined.length === 0) return [];
+
+        // Stat files in parallel for mtime
+        const results = await Promise.all(combined.map(async (f) => {
+            const fullPath = path.join(folderPath, f.name);
+            try {
+                const stats = await fs.promises.stat(fullPath);
+                return { path: fullPath, type: f.type, mtime: stats.mtimeMs };
+            } catch {
+                return null;
+            }
+        }));
+
+        return results.filter(Boolean);
+    } catch {
+        return [];
+    }
+}
+
+function getFolderPreviewCachePath(folderPath) {
+    return path.join(folderPreviewDir, createThumbCacheKey(folderPath, 0, 'folder-preview') + '.json');
+}
+
+ipcMain.handle('get-folder-preview', async (event, folderPath) => {
+    const startTime = performance.now();
+    try {
+        // Check folder mtime for cache invalidation
+        let folderMtime;
+        try {
+            const folderStats = await fs.promises.stat(folderPath);
+            folderMtime = folderStats.mtimeMs;
+        } catch {
+            return [];
+        }
+
+        // Check disk cache
+        const cachePath = getFolderPreviewCachePath(folderPath);
+        try {
+            const cacheData = JSON.parse(await fs.promises.readFile(cachePath, 'utf8'));
+            if (cacheData.folderMtime === folderMtime && Array.isArray(cacheData.results)) {
+                logPerf('get-folder-preview', startTime, { cached: 1, count: cacheData.results.length });
+                return cacheData.results;
+            }
+        } catch { /* cache miss */ }
+
+        // Peek for media files
+        const files = await peekFolderMedia(folderPath, 4);
+        if (files.length === 0) {
+            // Cache the empty result too
+            fs.promises.mkdir(folderPreviewDir, { recursive: true }).then(() =>
+                fs.promises.writeFile(cachePath, JSON.stringify({ folderMtime, results: [] }))
+            ).catch(() => {});
+            logPerf('get-folder-preview', startTime, { cached: 0, count: 0 });
+            return [];
+        }
+
+        // Generate thumbnails at 192px using existing pipeline
+        if (!thumbnailPool) return [];
+
+        const thumbItems = files.map(f => ({
+            type: f.type,
+            filePath: f.path,
+            thumbPath: f.type === 'video'
+                ? getThumbCachePath(f.path, f.mtime)
+                : getImageThumbCachePath(f.path, f.mtime, 192),
+            maxSize: 192
+        }));
+
+        const thumbResults = await thumbnailPool.generateBatch(thumbItems);
+        const results = thumbItems.map((item, i) => {
+            const r = thumbResults[i];
+            return {
+                filePath: item.filePath,
+                url: r && r.success && r.thumbPath ? pathToFileUrl(r.thumbPath) : null
+            };
+        }).filter(r => r.url);
+
+        // Write cache in the background
+        fs.promises.mkdir(folderPreviewDir, { recursive: true }).then(() =>
+            fs.promises.writeFile(cachePath, JSON.stringify({ folderMtime, results }))
+        ).catch(() => {});
+
+        logPerf('get-folder-preview', startTime, { cached: 0, count: results.length });
+        return results;
+    } catch (error) {
+        logPerf('get-folder-preview', startTime, { error: 1 });
+        return [];
+    }
+});
 
 ipcMain.handle('scan-folder', async (event, folderPath, options = {}) => {
     try {

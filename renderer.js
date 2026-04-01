@@ -566,6 +566,8 @@ function vsUpdateDOM(startIndex, endIndex) {
         if (isMedia) {
             newCards.push(card);
             videoCards.add(card);
+        } else if (card.classList.contains('folder-card')) {
+            newCards.push(card); // observe for folder preview loading
         }
     }
 
@@ -3588,6 +3590,9 @@ const imageThumbnailUrlCache = new Map();
 const imageThumbnailRequests = new Map();
 const videoPosterUrlCache = new Map();
 const videoPosterRequests = new Map();
+const folderPreviewCache = new Map(); // folderPath → { urls: string[], ts: number }
+const folderPreviewRequests = new Map(); // folderPath → Promise (in-flight dedup)
+const FOLDER_PREVIEW_CACHE_TTL = 120000; // 2 minutes
 
 // Optimized function to get media counts with caching
 function getMediaCounts() {
@@ -3749,6 +3754,88 @@ function requestVideoPosterUrl(filePath) {
 
     videoPosterRequests.set(filePath, request);
     return request;
+}
+
+/**
+ * Request folder preview thumbnail URLs for a given folder path.
+ * Uses in-memory cache with TTL and deduplicates in-flight requests.
+ */
+function requestFolderPreview(folderPath) {
+    const cached = folderPreviewCache.get(folderPath);
+    if (cached && Date.now() - cached.ts < FOLDER_PREVIEW_CACHE_TTL) {
+        return Promise.resolve(cached.urls);
+    }
+    if (folderPreviewRequests.has(folderPath)) {
+        return folderPreviewRequests.get(folderPath);
+    }
+
+    const request = window.electronAPI.getFolderPreview(folderPath)
+        .then(results => {
+            const urls = results.filter(r => r.url).map(r => r.url);
+            folderPreviewCache.set(folderPath, { urls, ts: Date.now() });
+            // Cap cache size
+            if (folderPreviewCache.size > 200) {
+                const firstKey = folderPreviewCache.keys().next().value;
+                folderPreviewCache.delete(firstKey);
+            }
+            return urls;
+        })
+        .catch(() => [])
+        .finally(() => {
+            folderPreviewRequests.delete(folderPath);
+        });
+
+    folderPreviewRequests.set(folderPath, request);
+    return request;
+}
+
+/**
+ * Load folder preview thumbnails into a folder card.
+ * Creates a 2x2 CSS grid of background-image cells.
+ */
+async function loadFolderPreview(card) {
+    const folderPath = card.dataset.folderPath;
+    if (!folderPath || card.dataset.previewLoaded === '1' || card.dataset.previewLoading === '1') return;
+    card.dataset.previewLoading = '1';
+
+    try {
+        const urls = await requestFolderPreview(folderPath);
+
+        // Stale card check — virtual scroll may have recycled this card
+        if (card.dataset.folderPath !== folderPath) return;
+
+        if (!urls || urls.length === 0) {
+            delete card.dataset.previewLoading;
+            return;
+        }
+
+        const grid = document.createElement('div');
+        grid.className = 'folder-preview-grid';
+        if (urls.length <= 3) {
+            grid.classList.add(`folder-preview-${urls.length}`);
+        }
+
+        for (const url of urls.slice(0, 4)) {
+            const cell = document.createElement('div');
+            cell.className = 'folder-preview-cell';
+            cell.style.backgroundImage = `url("${url.replace(/"/g, '\\"')}")`;
+            grid.appendChild(cell);
+        }
+
+        // Insert before folder-info so info label stays on top
+        const info = card.querySelector('.folder-info');
+        if (info) {
+            card.insertBefore(grid, info);
+        } else {
+            card.appendChild(grid);
+        }
+
+        card.dataset.previewLoaded = '1';
+    } catch {
+        // Silently fail — folder icon remains
+    } finally {
+        delete card.dataset.previewLoading;
+    }
 }
 
 // Optimized function to check if card is in preload zone
@@ -4814,9 +4901,11 @@ function renderItemsProgressive(items) {
         if (isMedia) {
             cardsToObserve.push(card);
             videoCards.add(card);
+        } else if (card.classList.contains('folder-card')) {
+            cardsToObserve.push(card);
         }
     }
-    
+
     gridContainer.appendChild(initialFragment);
     updateItemCount();
     currentIndex = initialEnd;
@@ -4872,6 +4961,8 @@ function renderItemsProgressive(items) {
             if (isMedia) {
                 chunkCardsToObserve.push(card);
                 videoCards.add(card);
+            } else if (card.classList.contains('folder-card')) {
+                chunkCardsToObserve.push(card);
             }
         }
         
@@ -5664,9 +5755,18 @@ function processEntries(entries) {
     entries.forEach(entry => {
         if (entry.isIntersecting) {
             const card = entry.target;
+
+            // Handle folder preview loading
+            if (card.classList.contains('folder-card')) {
+                if (card.dataset.previewLoaded !== '1' && card.dataset.previewLoading !== '1') {
+                    loadFolderPreview(card);
+                }
+                return;
+            }
+
             const videos = card.querySelectorAll('video');
             const images = card.querySelectorAll('img.media-thumbnail');
-            
+
             // Remove any duplicate videos first
             if (videos.length > 1) {
                 for (let i = 1; i < videos.length; i++) {

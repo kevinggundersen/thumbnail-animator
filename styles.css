@@ -2205,7 +2205,7 @@ button:hover {
     box-shadow: var(--shadow-sm);
     transition: transform 0.2s var(--ease-out), box-shadow 0.2s ease, border-color 0.2s ease;
     cursor: pointer;
-    border: 1px solid var(--border-default);
+    border: 3px solid var(--accent);
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -2247,6 +2247,67 @@ button:hover {
     text-overflow: ellipsis;
     text-align: center;
     z-index: 2;
+}
+
+/* Folder preview grid - shows up to 4 thumbnail previews from folder contents */
+.folder-preview-grid {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+    gap: 2px;
+    padding: 2px;
+    z-index: 1;
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+}
+
+.folder-preview-cell {
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+    border-radius: 2px;
+}
+
+/* Single image fills entire card */
+.folder-preview-1 {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr;
+}
+
+/* Two images side by side */
+.folder-preview-2 {
+    grid-template-rows: 1fr;
+}
+
+/* Three images: left spans full height, right column stacks two */
+.folder-preview-3 {
+    grid-template-rows: 1fr 1fr;
+}
+
+.folder-preview-3 .folder-preview-cell:first-child {
+    grid-row: 1 / -1;
+}
+
+/* Reposition folder icon as a badge overlay when preview is loaded */
+.folder-card[data-preview-loaded="1"] .folder-icon {
+    position: absolute;
+    top: 6px;
+    left: 6px;
+    z-index: 3;
+    font-size: 24px;
+    margin: 0;
+    filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.6));
+    opacity: 0.9;
+}
+
+.folder-card[data-preview-loaded="1"] .folder-icon svg {
+    width: 24px;
+    height: 24px;
 }
 
 /* When masonry is active, cards are positioned absolutely by JavaScript */

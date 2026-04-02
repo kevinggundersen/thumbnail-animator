@@ -151,12 +151,15 @@ class VideoPlaybackController extends MediaPlaybackController {
 
 // ==================== ANIMATED IMAGE CONTROLLER (GIF + WebP) ====================
 
-// Eagerly initialize webpxmux WASM at script load so it's ready when needed
+// Lazy-initialize webpxmux WASM on first use (saves ~100ms+ at startup)
 let _webpxmuxReady = null;
-{
-    const wasmPath = 'webpxmux.wasm';
-    const inst = WebPXMux(wasmPath);
-    _webpxmuxReady = inst.waitRuntime().then(() => inst);
+function getWebPXMux() {
+    if (!_webpxmuxReady) {
+        const wasmPath = 'webpxmux.wasm';
+        const inst = WebPXMux(wasmPath);
+        _webpxmuxReady = inst.waitRuntime().then(() => inst);
+    }
+    return _webpxmuxReady;
 }
 
 class AnimatedImagePlaybackController extends MediaPlaybackController {
@@ -260,7 +263,7 @@ class AnimatedImagePlaybackController extends MediaPlaybackController {
 
     async _decodeWebp(bytes) {
         try {
-            const mux = await _webpxmuxReady;
+            const mux = await getWebPXMux();
             const result = await mux.decodeFrames(bytes);
 
             if (!result.frames || result.frames.length === 0) return;

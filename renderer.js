@@ -1316,6 +1316,11 @@ const cardInfoStarsLabel = document.getElementById('card-info-stars-label');
 const cardInfoExtensionLabel = document.getElementById('card-info-extension-label');
 const cardInfoAudioLabel = document.getElementById('card-info-audio-label');
 const cardInfoFilenameLabel = document.getElementById('card-info-filename-label');
+const cardInfoTagsToggle = document.getElementById('card-info-tags-toggle');
+const cardInfoTagsLabel = document.getElementById('card-info-tags-label');
+const cardInfoTagsHoverToggle = document.getElementById('card-info-tags-hover-toggle');
+const cardInfoTagsHoverLabel = document.getElementById('card-info-tags-hover-label');
+const cardInfoTagsHoverRow = document.getElementById('card-info-tags-hover-row');
 const toolsMenuBtn = document.getElementById('tools-menu-btn');
 const toolsMenuDropdown = document.getElementById('tools-menu-dropdown');
 const favoritesList = document.getElementById('favorites-list');
@@ -1439,7 +1444,9 @@ const DEFAULT_CARD_INFO = Object.freeze({
     duration: true,
     starRating: true,
     audioLabel: true,
-    filename: true
+    filename: true,
+    tags: true,
+    tagsOnlyOnHover: false
 });
 let cardInfoSettings = { ...DEFAULT_CARD_INFO };
 
@@ -4039,6 +4046,9 @@ function syncCardInfoToggleLabels() {
     if (cardInfoStarsLabel) cardInfoStarsLabel.textContent = cardInfoSettings.starRating ? 'On' : 'Off';
     if (cardInfoAudioLabel) cardInfoAudioLabel.textContent = cardInfoSettings.audioLabel ? 'On' : 'Off';
     if (cardInfoFilenameLabel) cardInfoFilenameLabel.textContent = cardInfoSettings.filename ? 'On' : 'Off';
+    if (cardInfoTagsLabel) cardInfoTagsLabel.textContent = cardInfoSettings.tags ? 'On' : 'Off';
+    if (cardInfoTagsHoverLabel) cardInfoTagsHoverLabel.textContent = cardInfoSettings.tagsOnlyOnHover ? 'On' : 'Off';
+    if (cardInfoTagsHoverRow) cardInfoTagsHoverRow.style.display = cardInfoSettings.tags ? '' : 'none';
 }
 
 function syncCardInfoTogglesFromState() {
@@ -4050,6 +4060,8 @@ function syncCardInfoTogglesFromState() {
     if (cardInfoStarsToggle) cardInfoStarsToggle.checked = cardInfoSettings.starRating;
     if (cardInfoAudioToggle) cardInfoAudioToggle.checked = cardInfoSettings.audioLabel;
     if (cardInfoFilenameToggle) cardInfoFilenameToggle.checked = cardInfoSettings.filename;
+    if (cardInfoTagsToggle) cardInfoTagsToggle.checked = cardInfoSettings.tags;
+    if (cardInfoTagsHoverToggle) cardInfoTagsHoverToggle.checked = cardInfoSettings.tagsOnlyOnHover;
     syncCardInfoToggleLabels();
 }
 
@@ -4084,6 +4096,8 @@ function onCardInfoSettingsChanged() {
     cardInfoSettings.starRating = !!cardInfoStarsToggle?.checked;
     cardInfoSettings.audioLabel = !!cardInfoAudioToggle?.checked;
     cardInfoSettings.filename = !!cardInfoFilenameToggle?.checked;
+    cardInfoSettings.tags = !!cardInfoTagsToggle?.checked;
+    cardInfoSettings.tagsOnlyOnHover = !!cardInfoTagsHoverToggle?.checked;
     syncCardInfoToggleLabels();
     saveCardInfoSettings();
     refreshAllVisibleMediaCardInfo();
@@ -4120,16 +4134,15 @@ function syncCardMetaRow(card, item, _durationSec) {
 
     const showSize = cardInfoSettings.fileSize && size > 0;
     const showDate = cardInfoSettings.date && mtime > 0;
-    // Duration display is handled by the existing video-time overlay (showScrubber),
-    // not by the metadata chip row.
-    const showDur = false;
 
-    if (!showSize && !showDate && !showDur) {
-        card.querySelector('.card-meta-row')?.remove();
+    let row = card.querySelector('.card-meta-row');
+    const hasResChip = row?.querySelector('.resolution-chip');
+
+    if (!showSize && !showDate && !hasResChip) {
+        row?.remove();
         return;
     }
 
-    let row = card.querySelector('.card-meta-row');
     if (!row) {
         row = document.createElement('div');
         row.className = 'card-meta-row';
@@ -4138,7 +4151,8 @@ function syncCardMetaRow(card, item, _durationSec) {
         else card.appendChild(row);
     }
 
-    row.textContent = '';
+    // Clear non-resolution chips, preserve resolution chip managed by createResolutionLabel
+    row.querySelectorAll('.card-meta-chip:not(.resolution-chip)').forEach(el => el.remove());
     if (showSize) {
         const span = document.createElement('span');
         span.className = 'card-meta-chip';
@@ -4151,7 +4165,6 @@ function syncCardMetaRow(card, item, _durationSec) {
         span.textContent = formatCardDate(mtime);
         row.appendChild(span);
     }
-    // No duration chip here by design.
 }
 
 function applyCardInfoStarRatingVisibility(card) {
@@ -4195,6 +4208,8 @@ function applyCardInfoLayoutClasses(card) {
     card.classList.toggle('ci-no-filename', !cardInfoSettings.filename);
     card.classList.toggle('ci-no-stars', !cardInfoSettings.starRating);
     card.classList.toggle('ci-no-audio', !cardInfoSettings.audioLabel);
+    card.classList.toggle('ci-no-tags', !cardInfoSettings.tags);
+    card.classList.toggle('ci-tags-hover', cardInfoSettings.tags && cardInfoSettings.tagsOnlyOnHover);
 }
 
 function refreshAllVisibleMediaCardInfo() {
@@ -4204,7 +4219,7 @@ function refreshAllVisibleMediaCardInfo() {
 
     for (const card of cards) {
         if (!card.classList.contains('video-card')) continue;
-        delete card.dataset.overlapChecked;
+        delete card.dataset.tagOverlapChecked;
 
         const item = getMediaItemForCard(card);
         const video = card.querySelector('video.media-thumbnail, video');
@@ -4218,11 +4233,7 @@ function refreshAllVisibleMediaCardInfo() {
 
         const w = item?.width || parseInt(card.dataset.mediaWidth || card.dataset.width || '0', 10);
         const h = item?.height || parseInt(card.dataset.mediaHeight || card.dataset.height || '0', 10);
-        if (cardInfoSettings.resolution && w > 0 && h > 0) {
-            createResolutionLabel(card, w, h);
-        } else {
-            card.querySelector('.resolution-label')?.remove();
-        }
+        createResolutionLabel(card, w, h);
 
         // Toggle extension label visibility
         const extLabel = card.querySelector('.extension-label');
@@ -4236,35 +4247,52 @@ function refreshAllVisibleMediaCardInfo() {
         const infoEl = card.querySelector('.video-info');
         if (infoEl) infoEl.style.display = cardInfoSettings.filename ? '' : 'none';
 
+        // Toggle tag badges visibility
+        const tagContainer = card.querySelector('.card-tags');
+        if (tagContainer) tagContainer.style.display = cardInfoSettings.tags ? '' : 'none';
+
         // Apply responsive layout classes
         applyCardInfoLayoutClasses(card);
     }
 }
 
-// Create or update resolution label for a card
+// Create or update resolution chip inside the card-meta-row
 function createResolutionLabel(card, width, height) {
+    // Remove legacy standalone label if present
+    card.querySelector('.resolution-label')?.remove();
+
     if (!cardInfoSettings.resolution) {
-        card.querySelector('.resolution-label')?.remove();
+        const existing = card.querySelector('.resolution-chip');
+        if (existing) {
+            const row = existing.parentElement;
+            existing.remove();
+            if (row && row.classList.contains('card-meta-row') && !row.children.length) row.remove();
+        }
         return;
     }
     if (!width || !height) return;
-    
-    // Check if label already exists
-    let resolutionLabel = card.querySelector('.resolution-label');
-    
-    if (!resolutionLabel) {
-        resolutionLabel = document.createElement('div');
-        resolutionLabel.className = 'resolution-label';
-        card.appendChild(resolutionLabel);
+
+    // Find or create the meta-row
+    let row = card.querySelector('.card-meta-row');
+    if (!row) {
+        row = document.createElement('div');
+        row.className = 'card-meta-row';
+        const infoEl = card.querySelector('.video-info');
+        if (infoEl) card.insertBefore(row, infoEl);
+        else card.appendChild(row);
     }
-    
-    // Calculate aspect ratio
+
+    // Find or create the resolution chip
+    let chip = row.querySelector('.resolution-chip');
+    if (!chip) {
+        chip = document.createElement('span');
+        chip.className = 'card-meta-chip resolution-chip';
+        row.appendChild(chip);
+    }
+
     const aspectRatio = calculateAspectRatio(width, height);
-    
-    // Update label text
-    resolutionLabel.textContent = `${width}×${height} • ${aspectRatio}`;
-    
-    // Store dimensions on card for later use
+    chip.textContent = `${width}\u00d7${height} \u2022 ${aspectRatio}`;
+
     card.dataset.mediaWidth = width;
     card.dataset.mediaHeight = height;
 }
@@ -6632,24 +6660,27 @@ gridContainer.addEventListener('mouseover', (e) => {
             showGifProgress(card);
         }
     }
-    // Check if filename overlaps with resolution label and shift it up if needed
-    // Cache the result per card to avoid layout thrashing on every hover
-    // Skip when filename is hidden — no overlap possible
-    if (card && !card.dataset.overlapChecked) {
+    // Check if filename text overlaps with right-aligned tags and shift if needed
+    if (card && !card.dataset.tagOverlapChecked) {
         const info = card.querySelector('.video-info');
-        const resLabel = card.querySelector('.resolution-label');
-        if (info && resLabel) {
-            if (!cardInfoSettings.filename) {
-                resLabel.classList.remove('shifted-up');
+        const tagsEl = card.querySelector('.card-tags');
+        if (info && tagsEl) {
+            if (!cardInfoSettings.filename || !cardInfoSettings.tags) {
+                tagsEl.classList.remove('tags-shifted');
             } else {
-                const range = document.createRange();
-                range.selectNodeContents(info);
-                const textWidth = range.getBoundingClientRect().width;
-                const cardWidth = card.offsetWidth;
-                const labelLeft = cardWidth - resLabel.offsetWidth - 16;
-                resLabel.classList.toggle('shifted-up', textWidth + 10 > labelLeft);
+                const firstBadge = tagsEl.querySelector('.tag-badge');
+                if (firstBadge) {
+                    const range = document.createRange();
+                    range.selectNodeContents(info);
+                    const textWidth = range.getBoundingClientRect().width;
+                    const cardLeft = card.getBoundingClientRect().left;
+                    const badgeLeft = firstBadge.getBoundingClientRect().left - cardLeft;
+                    tagsEl.classList.toggle('tags-shifted', textWidth + 16 > badgeLeft);
+                } else {
+                    tagsEl.classList.remove('tags-shifted');
+                }
             }
-            card.dataset.overlapChecked = '1';
+            card.dataset.tagOverlapChecked = '1';
         }
     }
 });
@@ -8021,7 +8052,7 @@ includeMovingImagesToggle.addEventListener('change', () => {
 });
 
 // Card info toggles
-[cardInfoExtensionToggle, cardInfoResolutionToggle, cardInfoSizeToggle, cardInfoDateToggle, cardInfoDurationToggle, cardInfoStarsToggle, cardInfoAudioToggle, cardInfoFilenameToggle]
+[cardInfoExtensionToggle, cardInfoResolutionToggle, cardInfoSizeToggle, cardInfoDateToggle, cardInfoDurationToggle, cardInfoStarsToggle, cardInfoAudioToggle, cardInfoFilenameToggle, cardInfoTagsToggle, cardInfoTagsHoverToggle]
     .filter(Boolean)
     .forEach(el => el.addEventListener('change', () => onCardInfoSettingsChanged()));
 
@@ -8526,8 +8557,8 @@ let zoomLayoutTimer = null;
 zoomSlider.addEventListener('input', (e) => {
     zoomLevel = parseInt(e.target.value, 10);
     zoomValue.textContent = `${zoomLevel}%`;
-    // Clear cached overlap checks since card sizes changed
-    gridContainer.querySelectorAll('.video-card[data-overlap-checked]').forEach(c => delete c.dataset.overlapChecked);
+    // Clear cached tag overlap checks since card sizes changed
+    gridContainer.querySelectorAll('.video-card[data-tag-overlap-checked]').forEach(c => delete c.dataset.tagOverlapChecked);
     // Instant CSS variable update for visual feedback
     document.documentElement.style.setProperty('--zoom-level', zoomLevel);
     // Throttle the expensive layout recalculation + localStorage write
@@ -10859,6 +10890,11 @@ function invalidateFileTagsCache(filePath) {
 function updateCardTagBadges(card) {
     const filePath = card.dataset.filePath;
     if (!filePath) return;
+    if (!cardInfoSettings.tags) {
+        const existing = card.querySelector('.card-tags');
+        if (existing) existing.remove();
+        return;
+    }
     const tags = fileTagsCache.get(normalizePath(filePath));
 
     let container = card.querySelector('.card-tags');

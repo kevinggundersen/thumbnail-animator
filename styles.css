@@ -2462,32 +2462,6 @@ button:hover {
     text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
 }
 
-.resolution-label {
-    position: absolute;
-    bottom: 8px;
-    right: 8px;
-    background: rgba(0, 0, 0, 0.75);
-    color: #ffffff;
-    padding: 4px 8px;
-    font-size: 11px;
-    font-weight: bold;
-    border-radius: 4px;
-    z-index: 3;
-    pointer-events: none;
-    letter-spacing: 0.5px;
-    backdrop-filter: blur(4px);
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
-    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
-    opacity: 0;
-}
-
-.video-card:hover .resolution-label {
-    opacity: 1;
-}
-
-.video-card:hover .resolution-label.shifted-up {
-    bottom: 28px;
-}
 
 .card-meta-row {
     position: absolute;
@@ -2524,11 +2498,6 @@ button:hover {
 .video-card.ci-no-filename .video-time-label.show {
     bottom: 8px;
 }
-.video-card.ci-no-filename .resolution-label,
-.video-card.ci-no-filename .resolution-label.shifted-up {
-    bottom: 8px;
-}
-
 /* Star rating shifts below audio label to avoid overlap when both visible */
 .video-card[data-has-audio="true"]:not(.ci-no-audio) .star-rating {
     top: 36px;
@@ -2559,13 +2528,17 @@ button:hover {
     font-size: 9px;
     padding: 1px 5px;
 }
-:root.zoom-md .video-card .resolution-label {
-    font-size: 10px;
-    padding: 3px 6px;
-}
 :root.zoom-md .video-card .video-info {
     font-size: 11px;
     padding: 4px 8px;
+}
+:root.zoom-md .video-card .tag-badge {
+    font-size: 9px;
+    padding: 1px 5px;
+    line-height: 14px;
+}
+:root.zoom-md .video-card:hover .card-tags.tags-shifted {
+    bottom: 23px;
 }
 
 /* --- zoom-sm (60-74%): Hide secondary info, shrink remaining --- */
@@ -2588,13 +2561,18 @@ button:hover {
     font-size: 9px;
     padding: 2px 5px;
 }
-:root.zoom-sm .video-card .resolution-label {
-    font-size: 9px;
-    padding: 2px 5px;
-}
 :root.zoom-sm .video-card .video-info {
     font-size: 10px;
     padding: 3px 6px;
+}
+:root.zoom-sm .video-card .tag-badge {
+    font-size: 8px;
+    padding: 1px 4px;
+    line-height: 12px;
+    max-width: 70px;
+}
+:root.zoom-sm .video-card:hover .card-tags.tags-shifted {
+    bottom: 19px;
 }
 
 /* --- zoom-xs (<60%): Minimal overlay --- */
@@ -2608,9 +2586,6 @@ button:hover {
     display: none !important;
 }
 :root.zoom-xs .video-card .video-time-label.show {
-    display: none !important;
-}
-:root.zoom-xs .video-card .resolution-label {
     display: none !important;
 }
 :root.zoom-xs .video-card .extension-label {
@@ -2633,6 +2608,21 @@ button:hover {
     display: block !important;
     font-size: 9px;
     padding: 2px 5px;
+}
+
+:root.zoom-xs .video-card .card-tags {
+    display: none !important;
+}
+:root.zoom-xs .video-card:hover .card-tags {
+    display: flex !important;
+    gap: 2px;
+    padding: 1px 3px 2px;
+}
+:root.zoom-xs .video-card:hover .tag-badge {
+    font-size: 7px;
+    padding: 1px 3px;
+    line-height: 11px;
+    max-width: 55px;
 }
 
 /* ==================== END ZOOM-TIER ==================== */
@@ -6510,11 +6500,24 @@ video.blow-up-media {
     right: 0;
     display: flex;
     flex-wrap: wrap;
+    justify-content: flex-end;
     gap: 3px;
     padding: 2px 6px 4px;
     min-height: 0;
     z-index: 3;
     pointer-events: none;
+    transition: bottom 0.2s ease, opacity 0.2s ease;
+}
+/* Shift tags above filename bar only when text actually overlaps */
+.video-card:hover .card-tags.tags-shifted {
+    bottom: 28px;
+}
+/* Hover-only mode */
+.video-card.ci-tags-hover .card-tags {
+    opacity: 0;
+}
+.video-card.ci-tags-hover:hover .card-tags {
+    opacity: 1;
 }
 .tag-badge {
     display: inline-flex;

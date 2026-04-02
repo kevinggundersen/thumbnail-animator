@@ -2861,16 +2861,15 @@ const CLIP_SIZE = 224;
 const CLIP_VIDEO_EXTS = new Set(['.mp4', '.webm', '.ogg', '.mov']);
 const CLIP_ANIM_EXTS  = new Set(['.gif', '.webp']);
 
-async function clipEmbedOneImage(filePath) {
-    const { visionModel } = clipModel;
-
-    // 1. Load with Electron's nativeImage (supports JPG, PNG, BMP, GIF, WebP)
+// Preprocess an image file into a normalised float32 CHW tensor ready for CLIP.
+// Returns Float32Array(3 * 224 * 224) or null on failure.
+function clipPreprocessImage(filePath) {
     let img = nativeImage.createFromPath(filePath);
     if (img.isEmpty()) return null;
 
     const { width, height } = img.getSize();
 
-    // 2. Resize (cover) + centre-crop to 224x224
+    // Resize (cover) + centre-crop to 224x224
     const scale = Math.max(CLIP_SIZE / width, CLIP_SIZE / height);
     const scaledW = Math.ceil(width * scale);
     const scaledH = Math.ceil(height * scale);
@@ -2880,36 +2879,68 @@ async function clipEmbedOneImage(filePath) {
     const cropY = Math.max(0, Math.floor((scaledH - CLIP_SIZE) / 2));
     img = img.crop({ x: cropX, y: cropY, width: CLIP_SIZE, height: CLIP_SIZE });
 
-    // 3. Get BGRA bitmap → build normalised float32 CHW tensor (no processor needed)
-    const bitmap = img.toBitmap(); // BGRA, 4 bytes/pixel
+    // BGRA bitmap → normalised float32 CHW tensor
+    const bitmap = img.toBitmap();
     const pixels = CLIP_SIZE * CLIP_SIZE;
     const tensor = new Float32Array(3 * pixels);
 
     for (let i = 0; i < pixels; i++) {
-        const r = bitmap[i * 4 + 2] / 255; // BGRA → R
-        const g = bitmap[i * 4 + 1] / 255; // BGRA → G
-        const b = bitmap[i * 4]     / 255; // BGRA → B
-        tensor[i]               = (r - CLIP_MEAN[0]) / CLIP_STD[0]; // R plane
-        tensor[pixels + i]      = (g - CLIP_MEAN[1]) / CLIP_STD[1]; // G plane
-        tensor[2 * pixels + i]  = (b - CLIP_MEAN[2]) / CLIP_STD[2]; // B plane
+        const r = bitmap[i * 4 + 2] / 255;
+        const g = bitmap[i * 4 + 1] / 255;
+        const b = bitmap[i * 4]     / 255;
+        tensor[i]               = (r - CLIP_MEAN[0]) / CLIP_STD[0];
+        tensor[pixels + i]      = (g - CLIP_MEAN[1]) / CLIP_STD[1];
+        tensor[2 * pixels + i]  = (b - CLIP_MEAN[2]) / CLIP_STD[2];
     }
 
-    // 4. Run vision model directly — bypass processor (which uses OffscreenCanvas and crashes)
+    return tensor;
+}
+
+// Run CLIP vision model on a batch of preprocessed pixel tensors in a single session.run().
+// Returns array of L2-normalised embeddings (Array[]), one per input. Null entries for failures.
+const CLIP_PIXELS = CLIP_SIZE * CLIP_SIZE * 3;
+
+async function clipEmbedBatch(pixelDataArray) {
+    const { visionModel } = clipModel;
     const ort = require('onnxruntime-web');
-    const inputTensor = new ort.Tensor('float32', tensor, [1, 3, CLIP_SIZE, CLIP_SIZE]);
     const inputName = visionModel.session.inputNames[0];
-    const output = await visionModel.session.run({ [inputName]: inputTensor });
     const outputName = visionModel.session.outputNames[0];
+
+    const n = pixelDataArray.length;
+    if (n === 0) return [];
+
+    // Concatenate into a single [N, 3, 224, 224] tensor
+    const batchData = new Float32Array(n * CLIP_PIXELS);
+    for (let i = 0; i < n; i++) {
+        batchData.set(pixelDataArray[i], i * CLIP_PIXELS);
+    }
+
+    const inputTensor = new ort.Tensor('float32', batchData, [n, 3, CLIP_SIZE, CLIP_SIZE]);
+    const output = await visionModel.session.run({ [inputName]: inputTensor });
     const raw = output[outputName].data;
 
-    // 5. L2-normalise
-    let mag = 0;
-    for (let i = 0; i < raw.length; i++) mag += raw[i] * raw[i];
-    mag = Math.sqrt(mag) || 1;
-    const out = new Array(raw.length);
-    for (let i = 0; i < raw.length; i++) out[i] = raw[i] / mag;
+    // The output shape is [N, embeddingDim] — split and L2-normalise each
+    const embDim = raw.length / n;
+    const results = [];
+    for (let i = 0; i < n; i++) {
+        const offset = i * embDim;
+        let mag = 0;
+        for (let j = 0; j < embDim; j++) mag += raw[offset + j] * raw[offset + j];
+        mag = Math.sqrt(mag) || 1;
+        const emb = new Array(embDim);
+        for (let j = 0; j < embDim; j++) emb[j] = raw[offset + j] / mag;
+        results.push(emb);
+    }
 
-    return out;
+    return results;
+}
+
+// Convenience: embed a single image file (preprocess + batch of 1).
+async function clipEmbedOneImage(filePath) {
+    const pixels = clipPreprocessImage(filePath);
+    if (!pixels) return null;
+    const [emb] = await clipEmbedBatch([pixels]);
+    return emb;
 }
 
 // Extract N representative frames from a video or animated image using FFmpeg.
@@ -2935,7 +2966,7 @@ async function extractMediaKeyframes(filePath, n = 4) {
                 '-i', filePath,
                 '-vframes', '1',
                 '-q:v', '4',
-                '-vf', 'scale=320:-2',
+                '-vf', `scale=${CLIP_SIZE}:-2`,
                 '-y',
                 outPath
             ], { timeout: 10000 }, (err) => resolve(err ? null : outPath));
@@ -2946,21 +2977,28 @@ async function extractMediaKeyframes(filePath, n = 4) {
 }
 
 // Average multiple frame embeddings into a single L2-normalised vector.
+// Preprocesses all frames, then runs a single batched inference call.
 async function clipEmbedMultiFrame(framePaths) {
-    const embeddings = [];
+    // Preprocess all frames (sync I/O but fast at 224px)
+    const pixelData = [];
     for (const fp of framePaths) {
-        const emb = await clipEmbedOneImage(fp);
-        if (emb) embeddings.push(emb);
+        const px = clipPreprocessImage(fp);
+        if (px) pixelData.push(px);
     }
-    if (embeddings.length === 0) return null;
-    if (embeddings.length === 1) return embeddings[0];
+    if (pixelData.length === 0) return null;
 
-    const len = embeddings[0].length;
+    // Single batched inference for all frames
+    const embeddings = await clipEmbedBatch(pixelData);
+    const valid = embeddings.filter(Boolean);
+    if (valid.length === 0) return null;
+    if (valid.length === 1) return valid[0];
+
+    const len = valid[0].length;
     const avg = new Array(len).fill(0);
-    for (const emb of embeddings) {
+    for (const emb of valid) {
         for (let i = 0; i < len; i++) avg[i] += emb[i];
     }
-    for (let i = 0; i < len; i++) avg[i] /= embeddings.length;
+    for (let i = 0; i < len; i++) avg[i] /= valid.length;
 
     // L2-normalise the averaged vector
     let mag = 0;
@@ -2995,63 +3033,138 @@ ipcMain.handle('clip-embed-images', async (event, files) => {
         }));
     }
 
-    // Phase 2: Sequential CLIP inference (ONNX must run on the main thread).
-    const results = [];
-    for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        const result = { path: file.path, embedding: null };
+    // Phase 2: Batched CLIP inference with I/O pipelining.
+    // Video/animated files use clipEmbedMultiFrame (already batched internally).
+    // Static images are batched in groups of CLIP_BATCH_SIZE with look-ahead preprocessing.
+    const CLIP_BATCH_SIZE = 4;
+    const resultMap = new Map(); // filePath -> embedding
+    let completed = 0;
+    const sender = event.sender;
+
+    // Helper: resolve the best source path for a static image
+    function resolveImageSource(file) {
+        if (file.thumbPath && fs.existsSync(file.thumbPath)) return file.thumbPath;
+        if (imageThumbDir && file.mtime != null) {
+            const imgThumb = getImageThumbCachePath(file.path, file.mtime, 512);
+            if (fs.existsSync(imgThumb)) return imgThumb;
+            if (videoThumbDir) {
+                const vidThumb = getThumbCachePath(file.path, file.mtime);
+                if (fs.existsSync(vidThumb)) return vidThumb;
+            }
+        }
+        return file.path;
+    }
+
+    // Separate files into video/animated and static images
+    const videoFiles = [];
+    const staticFiles = [];
+    for (const file of files) {
+        const ext = path.extname(file.path).toLowerCase();
+        if (CLIP_VIDEO_EXTS.has(ext) || CLIP_ANIM_EXTS.has(ext)) {
+            videoFiles.push(file);
+        } else {
+            staticFiles.push(file);
+        }
+    }
+
+    // Process video/animated files (multi-frame batching already handled internally)
+    for (const file of videoFiles) {
         try {
             const ext = path.extname(file.path).toLowerCase();
-            const isVideo    = CLIP_VIDEO_EXTS.has(ext);
-            const isAnimated = CLIP_ANIM_EXTS.has(ext);
+            const isVideo = CLIP_VIDEO_EXTS.has(ext);
+            let embedding = null;
 
-            if (isVideo || isAnimated) {
-                const framePaths = frameMap.get(file.path);
-                if (framePaths) {
-                    result.embedding = await clipEmbedMultiFrame(framePaths);
-                }
+            const framePaths = frameMap.get(file.path);
+            if (framePaths) {
+                embedding = await clipEmbedMultiFrame(framePaths);
+            }
 
-                // Fallback to single-frame if multi-frame extraction failed
-                if (!result.embedding) {
-                    let source = file.path;
-                    if (file.thumbPath && fs.existsSync(file.thumbPath)) {
-                        source = file.thumbPath;
-                    } else if (videoThumbDir && file.mtime != null) {
-                        const vidThumb = getThumbCachePath(file.path, file.mtime);
-                        if (fs.existsSync(vidThumb)) source = vidThumb;
-                    }
-                    if (isVideo && source === file.path) {
-                        const vidThumb = await generateVideoThumbnail(file.path);
-                        if (vidThumb) source = vidThumb;
-                    }
-                    if (source !== file.path || isAnimated) {
-                        result.embedding = await clipEmbedOneImage(source);
-                    }
-                }
-            } else {
-                // Static image: prefer cached thumbnail for faster load + resize
+            // Fallback to single-frame
+            if (!embedding) {
                 let source = file.path;
                 if (file.thumbPath && fs.existsSync(file.thumbPath)) {
                     source = file.thumbPath;
-                } else if (imageThumbDir && file.mtime != null) {
-                    const imgThumb = getImageThumbCachePath(file.path, file.mtime, 512);
-                    if (fs.existsSync(imgThumb)) {
-                        source = imgThumb;
-                    } else if (videoThumbDir) {
-                        const vidThumb = getThumbCachePath(file.path, file.mtime);
-                        if (fs.existsSync(vidThumb)) source = vidThumb;
-                    }
+                } else if (videoThumbDir && file.mtime != null) {
+                    const vidThumb = getThumbCachePath(file.path, file.mtime);
+                    if (fs.existsSync(vidThumb)) source = vidThumb;
                 }
-                result.embedding = await clipEmbedOneImage(source);
+                if (isVideo && source === file.path) {
+                    const vidThumb = await generateVideoThumbnail(file.path);
+                    if (vidThumb) source = vidThumb;
+                }
+                if (source !== file.path || CLIP_ANIM_EXTS.has(ext)) {
+                    embedding = await clipEmbedOneImage(source);
+                }
             }
+
+            resultMap.set(file.path, embedding);
         } catch (err) {
-            console.error('clip-embed image error:', file.path, err.message);
+            console.error('clip-embed video error:', file.path, err.message);
+            resultMap.set(file.path, null);
         }
-        results.push(result);
-        try {
-            event.sender.send('clip-progress', { current: i + 1, total: files.length, phase: 'embedding' });
-        } catch { /* window closed */ }
+        completed++;
+        try { sender.send('clip-progress', { current: completed, total: files.length, phase: 'embedding' }); } catch { /* window closed */ }
     }
+
+    // Process static images in batches with look-ahead I/O pipelining
+    // Preprocess next batch while current batch is being inferred
+    function preprocessBatch(batch) {
+        const items = [];
+        for (const file of batch) {
+            try {
+                const source = resolveImageSource(file);
+                const pixels = clipPreprocessImage(source);
+                items.push({ file, pixels });
+            } catch (err) {
+                console.error('clip-embed preprocess error:', file.path, err.message);
+                items.push({ file, pixels: null });
+            }
+        }
+        return items;
+    }
+
+    for (let i = 0; i < staticFiles.length; i += CLIP_BATCH_SIZE) {
+        const batch = staticFiles.slice(i, i + CLIP_BATCH_SIZE);
+
+        // Preprocess current batch (I/O + resize)
+        const preprocessed = preprocessBatch(batch);
+        const validPixels = [];
+        const validIndices = [];
+        for (let j = 0; j < preprocessed.length; j++) {
+            if (preprocessed[j].pixels) {
+                validPixels.push(preprocessed[j].pixels);
+                validIndices.push(j);
+            }
+        }
+
+        // Single batched inference for all valid images in this batch
+        let embeddings = [];
+        if (validPixels.length > 0) {
+            try {
+                embeddings = await clipEmbedBatch(validPixels);
+            } catch (err) {
+                console.error('clip-embed batch error:', err.message);
+                embeddings = new Array(validPixels.length).fill(null);
+            }
+        }
+
+        // Map results back to files
+        let embIdx = 0;
+        for (let j = 0; j < preprocessed.length; j++) {
+            const file = preprocessed[j].file;
+            if (validIndices.includes(j)) {
+                resultMap.set(file.path, embeddings[embIdx++] || null);
+            } else {
+                resultMap.set(file.path, null);
+            }
+        }
+
+        completed += batch.length;
+        try { sender.send('clip-progress', { current: completed, total: files.length, phase: 'embedding' }); } catch { /* window closed */ }
+    }
+
+    // Build results array in original file order
+    const results = files.map(f => ({ path: f.path, embedding: resultMap.get(f.path) || null }));
 
     // Phase 3: Clean up all temp frames now that inference is complete.
     for (const framePaths of frameMap.values()) {

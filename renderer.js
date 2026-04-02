@@ -578,6 +578,16 @@ function vsUpdateDOM(startIndex, endIndex) {
         requestAnimationFrame(() => {
             newCards.forEach(card => observer.observe(card));
         });
+
+        // Update tag badges on newly added cards
+        if (typeof updateCardTagBadges === 'function') {
+            for (let i = startIndex; i < endIndex; i++) {
+                const card = vsActiveCards.get(i);
+                if (card && card.classList.contains('video-card')) {
+                    updateCardTagBadges(card);
+                }
+            }
+        }
     }
 
     vsLastStartIndex = startIndex;
@@ -10973,21 +10983,10 @@ document.getElementById('tag-picker-search').addEventListener('input', (e) => {
 document.getElementById('filter-tags-toggle').addEventListener('click', handleTagFilterClick);
 
 async function handleTagFilterClick() {
-    if (activeTagFilters.length > 0) {
-        // Clear all tag filters
-        activeTagFilters = [];
-        tagFilterActive = false;
-        tagFilteredPaths = null;
-        renderActiveTagFilters();
-        document.getElementById('filter-tags-toggle').classList.remove('active');
-        applyFilters();
-        return;
-    }
-    // Show a quick tag picker for adding filter tags
+    // Always show dropdown (to add, remove, or clear tags)
     await refreshTagsCache();
     if (allTagsCache.length === 0) {
         showToast('No tags created yet. Open Settings > Tags to create one, or right-click a file.', 'info', { duration: 4000 });
-        // Open settings to the Tags tab
         const settingsModal = document.getElementById('settings-modal');
         if (settingsModal) {
             settingsModal.classList.remove('hidden');
@@ -11012,20 +11011,47 @@ function showTagFilterDropdown() {
     const rect = btn.getBoundingClientRect();
     dropdown.style.left = rect.left + 'px';
 
-    const activeIds = new Set(activeTagFilters.map(t => t.tagId));
-    for (const tag of allTagsCache) {
-        const item = document.createElement('div');
-        item.style.cssText = 'display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:4px;cursor:pointer;font-size:13px;color:var(--text-color);';
-        item.innerHTML = `<span style="width:8px;height:8px;border-radius:50%;background:${tag.color || '#6366f1'};flex-shrink:0"></span>${tag.name}${activeIds.has(tag.id) ? ' <span style="margin-left:auto;color:var(--accent)">&#10003;</span>' : ''}`;
-        item.addEventListener('mouseenter', () => item.style.background = 'var(--bg-hover,#2a2a2e)');
-        item.addEventListener('mouseleave', () => item.style.background = '');
-        item.addEventListener('click', () => {
-            toggleTagFilter(tag);
-            dropdown.remove();
-        });
-        dropdown.appendChild(item);
+    function buildDropdownItems() {
+        dropdown.innerHTML = '';
+        const activeIds = new Set(activeTagFilters.map(t => t.tagId));
+
+        // Clear all option (only if filters are active)
+        if (activeIds.size > 0) {
+            const clearItem = document.createElement('div');
+            clearItem.style.cssText = 'display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:4px;cursor:pointer;font-size:12px;color:var(--text-secondary);border-bottom:1px solid var(--border-color,#2a2a2e);margin-bottom:4px;padding-bottom:8px;';
+            clearItem.textContent = 'Clear all filters';
+            clearItem.addEventListener('mouseenter', () => clearItem.style.background = 'var(--bg-hover,#2a2a2e)');
+            clearItem.addEventListener('mouseleave', () => clearItem.style.background = '');
+            clearItem.addEventListener('click', () => {
+                activeTagFilters = [];
+                tagFilterActive = false;
+                tagFilteredPaths = null;
+                renderActiveTagFilters();
+                document.getElementById('filter-tags-toggle').classList.remove('active');
+                applyFilters();
+                buildDropdownItems();
+            });
+            dropdown.appendChild(clearItem);
+        }
+
+        for (const tag of allTagsCache) {
+            const isActive = activeIds.has(tag.id);
+            const item = document.createElement('div');
+            item.style.cssText = 'display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:4px;cursor:pointer;font-size:13px;color:var(--text-color);';
+            item.innerHTML = `<span style="width:8px;height:8px;border-radius:50%;background:${tag.color || '#6366f1'};flex-shrink:0"></span><span style="flex:1">${tag.name}</span>${isActive ? '<span style="color:var(--accent)">&#10003;</span>' : ''}`;
+            item.addEventListener('mouseenter', () => item.style.background = 'var(--bg-hover,#2a2a2e)');
+            item.addEventListener('mouseleave', () => item.style.background = '');
+            item.addEventListener('click', async () => {
+                await toggleTagFilter(tag);
+                buildDropdownItems();
+                // Reposition after content change
+                dropdown.style.top = (rect.top - dropdown.offsetHeight - 4) + 'px';
+            });
+            dropdown.appendChild(item);
+        }
     }
 
+    buildDropdownItems();
     document.body.appendChild(dropdown);
     // Position above the button since it's in the status bar at the bottom of the window
     dropdown.style.top = (rect.top - dropdown.offsetHeight - 4) + 'px';
@@ -11189,28 +11215,7 @@ if (tagsTabBtn) {
     tagsTabBtn.addEventListener('click', () => renderTagsManagement());
 }
 
-// Load tag badges when cards are rendered
-// Hook into the existing card creation by watching for new cards added to #grid-container
-if (gridContainer) {
-    const tagBadgeObserver = new MutationObserver((mutations) => {
-        for (const mut of mutations) {
-            for (const node of mut.addedNodes) {
-                if (node.nodeType !== 1) continue;
-                // Direct video-card additions
-                if (node.classList && node.classList.contains('video-card')) {
-                    updateCardTagBadges(node);
-                }
-                // Cards added via DocumentFragment — check children
-                if (node.querySelectorAll) {
-                    for (const card of node.querySelectorAll('.video-card')) {
-                        updateCardTagBadges(card);
-                    }
-                }
-            }
-        }
-    });
-    tagBadgeObserver.observe(gridContainer, { childList: true, subtree: true });
-}
+// Tag badges are updated directly in vsUpdateDOM when cards are added/recycled
 
 // Initialize tags on startup
 refreshTagsCache();

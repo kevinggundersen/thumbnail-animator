@@ -2249,7 +2249,8 @@ function updateCardStars(card, rating, filePath) {
         star.addEventListener('click', (e) => {
             e.stopPropagation();
             e.preventDefault();
-            setFileRating(filePath, i);
+            const current = getFileRating(filePath);
+            setFileRating(filePath, current === i ? 0 : i);
         });
         starContainer.appendChild(star);
     }

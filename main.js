@@ -1223,69 +1223,154 @@ const FOLDER_SCAN_CONCURRENCY = 8;
 ipcMain.handle('scan-folders-for-smart-collection', async (event, folderEntries, options = {}, rules = null) => {
     const scanStart = performance.now();
     const errors = [];
-
-    // Collect all folders to scan first, deduplicating overlapping paths
-    const folderSet = new Set();
-    const allFoldersToScan = [];
-    for (const entry of folderEntries) {
-        const folderPath = typeof entry === 'string' ? entry : entry.path;
-        const recursive = typeof entry === 'object' && entry.recursive;
-
-        try {
-            const foldersToScan = recursive
-                ? await getSubdirectoriesRecursive(folderPath)
-                : [folderPath];
-            for (const fp of foldersToScan) {
-                const normalized = path.normalize(fp).toLowerCase();
-                if (!folderSet.has(normalized)) {
-                    folderSet.add(normalized);
-                    allFoldersToScan.push(fp);
-                }
-            }
-        } catch (error) {
-            errors.push({ folder: folderPath, error: error.message });
-        }
-    }
-
-    // Phase 1: Scan all folders in parallel (readdir + stats, no dimensions yet)
-    const smartOptions = { ...options, smartCollectionMode: true, skipDimensions: true };
     const sender = event.sender;
-    let foldersScanned = 0;
-    const totalFolders = allFoldersToScan.length;
-
-    const folderResults = await asyncPool(FOLDER_SCAN_CONCURRENCY, allFoldersToScan, async (fp) => {
-        try {
-            const { mediaFiles } = await scanFolderInternal(fp, smartOptions);
-            foldersScanned++;
-            // Pre-filter this batch with cheap rules
-            const filtered = rules ? mediaFiles.filter(f => matchesCheapRules(f, rules)) : mediaFiles;
-            // Stream progress + file items to renderer for progressive rendering
-            if (!sender.isDestroyed() && filtered.length > 0) {
-                sender.send('smart-collection-scan-progress', {
-                    foldersScanned, totalFolders,
-                    items: filtered
-                });
-            } else if (!sender.isDestroyed()) {
-                sender.send('smart-collection-scan-progress', {
-                    foldersScanned, totalFolders
-                });
-            }
-            return filtered; // return pre-filtered results (cheap rules already applied)
-        } catch (error) {
-            foldersScanned++;
-            errors.push({ folder: fp, error: error.message });
-            return [];
-        }
-    });
+    const isWindows = process.platform === 'win32';
+    const imageExtensions = pluginRegistry.getImageExtensions();
+    const videoExtensions = pluginRegistry.getVideoExtensions();
 
     let allFiles = [];
-    const seenPaths = new Set();
-    for (const files of folderResults) {
-        for (const f of files) {
-            const key = f.path.toLowerCase();
-            if (!seenPaths.has(key)) {
-                seenPaths.add(key);
-                allFiles.push(f);
+
+    // === Native fast path: single Rust call for recursive scan + filter + dedup ===
+    if (nativeScanner) {
+        const nativeStart = performance.now();
+        // Separate recursive and non-recursive entries
+        const recursiveRoots = [];
+        const flatRoots = [];
+        for (const entry of folderEntries) {
+            const folderPath = typeof entry === 'string' ? entry : entry.path;
+            const recursive = typeof entry === 'object' && entry.recursive;
+            if (recursive) {
+                recursiveRoots.push(folderPath);
+            } else {
+                flatRoots.push(folderPath);
+            }
+        }
+
+        // Recursive entries: single native call walks entire trees
+        if (recursiveRoots.length > 0) {
+            try {
+                const imageExts = [...imageExtensions];
+                const videoExts = [...videoExtensions];
+                const nativeFiles = nativeScanner.scanDirectoryRecursive(recursiveRoots, imageExts, videoExts);
+                for (const f of nativeFiles) {
+                    const file = {
+                        name: f.name,
+                        path: f.path,
+                        url: isWindows ? `file:///${f.path.replace(/\\/g, '/')}` : `file://${f.path}`,
+                        type: f.fileType,
+                        mtime: f.mtime,
+                        size: f.size,
+                        width: undefined,
+                        height: undefined,
+                    };
+                    if (!rules || matchesCheapRules(file, rules)) {
+                        allFiles.push(file);
+                    }
+                }
+            } catch (error) {
+                for (const root of recursiveRoots) errors.push({ folder: root, error: error.message });
+            }
+        }
+
+        // Non-recursive entries: single-level native scan per folder
+        for (const fp of flatRoots) {
+            try {
+                const imageExts = [...imageExtensions];
+                const videoExts = [...videoExtensions];
+                const result = nativeScanner.scanDirectory(fp, imageExts, videoExts, false, true);
+                for (const f of result.mediaFiles) {
+                    const file = {
+                        name: f.name,
+                        path: f.path,
+                        url: isWindows ? `file:///${f.path.replace(/\\/g, '/')}` : `file://${f.path}`,
+                        type: f.fileType,
+                        mtime: f.mtime,
+                        size: f.size,
+                        width: undefined,
+                        height: undefined,
+                    };
+                    if (!rules || matchesCheapRules(file, rules)) {
+                        allFiles.push(file);
+                    }
+                }
+            } catch (error) {
+                errors.push({ folder: fp, error: error.message });
+            }
+        }
+
+        // Dedup (native recursive already deduplicates, but flat entries might overlap)
+        if (flatRoots.length > 0 && recursiveRoots.length > 0) {
+            const seen = new Set();
+            allFiles = allFiles.filter(f => {
+                const key = f.path.toLowerCase();
+                if (seen.has(key)) return false;
+                seen.add(key);
+                return true;
+            });
+        }
+
+        logPerf('smart-collection.native-scan', nativeStart, { files: allFiles.length });
+
+        // Send single progress update (native scan is too fast for streaming)
+        if (!sender.isDestroyed()) {
+            sender.send('smart-collection-scan-progress', {
+                foldersScanned: 1, totalFolders: 1,
+                items: allFiles
+            });
+        }
+    } else {
+        // === JS fallback: original per-folder scan ===
+        const folderSet = new Set();
+        const allFoldersToScan = [];
+        for (const entry of folderEntries) {
+            const folderPath = typeof entry === 'string' ? entry : entry.path;
+            const recursive = typeof entry === 'object' && entry.recursive;
+            try {
+                const foldersToScan = recursive
+                    ? await getSubdirectoriesRecursive(folderPath)
+                    : [folderPath];
+                for (const fp of foldersToScan) {
+                    const normalized = path.normalize(fp).toLowerCase();
+                    if (!folderSet.has(normalized)) {
+                        folderSet.add(normalized);
+                        allFoldersToScan.push(fp);
+                    }
+                }
+            } catch (error) {
+                errors.push({ folder: folderPath, error: error.message });
+            }
+        }
+
+        const smartOptions = { ...options, smartCollectionMode: true, skipDimensions: true };
+        let foldersScanned = 0;
+        const totalFolders = allFoldersToScan.length;
+
+        const folderResults = await asyncPool(FOLDER_SCAN_CONCURRENCY, allFoldersToScan, async (fp) => {
+            try {
+                const { mediaFiles } = await scanFolderInternal(fp, smartOptions);
+                foldersScanned++;
+                const filtered = rules ? mediaFiles.filter(f => matchesCheapRules(f, rules)) : mediaFiles;
+                if (!sender.isDestroyed() && filtered.length > 0) {
+                    sender.send('smart-collection-scan-progress', { foldersScanned, totalFolders, items: filtered });
+                } else if (!sender.isDestroyed()) {
+                    sender.send('smart-collection-scan-progress', { foldersScanned, totalFolders });
+                }
+                return filtered;
+            } catch (error) {
+                foldersScanned++;
+                errors.push({ folder: fp, error: error.message });
+                return [];
+            }
+        });
+
+        const seenPaths = new Set();
+        for (const files of folderResults) {
+            for (const f of files) {
+                const key = f.path.toLowerCase();
+                if (!seenPaths.has(key)) {
+                    seenPaths.add(key);
+                    allFiles.push(f);
+                }
             }
         }
     }

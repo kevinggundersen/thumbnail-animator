@@ -116,6 +116,95 @@ pub fn list_subdirectories(folder_path: String) -> Result<Vec<SubdirEntry>> {
     Ok(dirs)
 }
 
+/// Recursive directory scan: walks entire folder trees and returns all matching media files.
+/// Replaces the JS getSubdirectoriesRecursive + per-folder scanFolderInternal loop.
+/// Deduplicates by lowercase path. Returns only files (no folder entries).
+#[napi]
+pub fn scan_directory_recursive(
+    root_paths: Vec<String>,
+    image_exts: Vec<String>,
+    video_exts: Vec<String>,
+) -> Result<Vec<FileEntry>> {
+    let image_set: HashSet<String> = image_exts.into_iter().collect();
+    let video_set: HashSet<String> = video_exts.into_iter().collect();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut media_files: Vec<FileEntry> = Vec::new();
+
+    for root in &root_paths {
+        #[cfg(windows)]
+        {
+            win::scan_dir_recursive_win(root, &image_set, &video_set, &mut seen, &mut media_files);
+        }
+        #[cfg(not(windows))]
+        {
+            scan_dir_recursive_posix(root, &image_set, &video_set, &mut seen, &mut media_files);
+        }
+    }
+
+    Ok(media_files)
+}
+
+#[cfg(not(windows))]
+fn scan_dir_recursive_posix(
+    dir_path: &str,
+    image_set: &HashSet<String>,
+    video_set: &HashSet<String>,
+    seen: &mut HashSet<String>,
+    media_files: &mut Vec<FileEntry>,
+) {
+    use std::collections::VecDeque;
+    use std::fs;
+    use std::time::UNIX_EPOCH;
+
+    let mut queue = VecDeque::new();
+    queue.push_back(dir_path.to_string());
+
+    while let Some(current) = queue.pop_front() {
+        let entries = match fs::read_dir(&current) {
+            Ok(rd) => rd,
+            Err(_) => continue,
+        };
+        for entry in entries {
+            let entry = match entry { Ok(e) => e, Err(_) => continue };
+            let ft = match entry.file_type() { Ok(ft) => ft, Err(_) => continue };
+            if ft.is_dir() {
+                queue.push_back(entry.path().to_string_lossy().into_owned());
+            } else if ft.is_file() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let ext = match name.rfind('.') {
+                    Some(pos) => name[pos..].to_ascii_lowercase(),
+                    None => continue,
+                };
+                let is_image = image_set.contains(&ext);
+                let is_video = if is_image { false } else { video_set.contains(&ext) };
+                if !is_image && !is_video { continue; }
+
+                let file_path = entry.path().to_string_lossy().into_owned();
+                let key = file_path.to_lowercase();
+                if !seen.insert(key) { continue; }
+
+                let (mtime, size) = match fs::metadata(&file_path) {
+                    Ok(meta) => {
+                        let mt = meta.modified().ok()
+                            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                            .map(|d| d.as_millis() as f64)
+                            .unwrap_or(0.0);
+                        (mt, meta.len() as f64)
+                    }
+                    Err(_) => (0.0, 0.0),
+                };
+                media_files.push(FileEntry {
+                    name,
+                    path: file_path,
+                    file_type: if is_image { "image".to_string() } else { "video".to_string() },
+                    mtime,
+                    size,
+                });
+            }
+        }
+    }
+}
+
 // ── POSIX fallback (for non-Windows builds) ──────────────────────────────────
 
 #[cfg(not(windows))]

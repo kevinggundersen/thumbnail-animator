@@ -310,3 +310,95 @@ fn check_has_children_win(dir_path: &str) -> bool {
     }
     result
 }
+
+/// Recursive directory scan using FindFirstFileExW. Walks entire tree, collects media files.
+pub fn scan_dir_recursive_win(
+    root_path: &str,
+    image_set: &HashSet<String>,
+    video_set: &HashSet<String>,
+    seen: &mut HashSet<String>,
+    media_files: &mut Vec<FileEntry>,
+) {
+    let mut dir_queue: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+    dir_queue.push_back(root_path.to_string());
+
+    while let Some(current_dir) = dir_queue.pop_front() {
+        let pattern = make_search_pattern(&current_dir);
+        let mut find_data: Win32FindDataW = unsafe { std::mem::zeroed() };
+
+        let handle = unsafe {
+            FindFirstFileExW(
+                pattern.as_ptr(),
+                FIND_EX_INFO_BASIC,
+                &mut find_data as *mut _ as *mut Win32FindDataW,
+                FIND_EX_SEARCH_NAME_MATCH,
+                std::ptr::null(),
+                FIND_FIRST_EX_LARGE_FETCH,
+            )
+        };
+
+        if handle == INVALID_HANDLE {
+            continue; // Permission denied, skip this directory
+        }
+
+        loop {
+            let name = wchar_to_string(&find_data.file_name);
+
+            if name != "." && name != ".." {
+                let attrs = find_data.file_attributes;
+                let is_dir = (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
+                let is_reparse = (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+
+                if is_dir && !is_reparse {
+                    // Queue subdirectory for recursive scanning
+                    dir_queue.push_back(join_path(&current_dir, &name));
+                } else if !is_dir && !is_reparse {
+                    // Check file extension
+                    let ext = match name.rfind('.') {
+                        Some(pos) => name[pos..].to_ascii_lowercase(),
+                        None => {
+                            if unsafe { FindNextFileW(handle, &mut find_data) } == 0 {
+                                break;
+                            }
+                            continue;
+                        }
+                    };
+
+                    let is_image = image_set.contains(&ext);
+                    let is_video = if is_image { false } else { video_set.contains(&ext) };
+
+                    if is_image || is_video {
+                        let full_path = join_path(&current_dir, &name);
+                        let key = full_path.to_lowercase();
+                        if seen.insert(key) {
+                            let mt = filetime_to_ms(&find_data.last_write_time);
+                            let sz = ((find_data.file_size_high as u64) << 32
+                                | find_data.file_size_low as u64)
+                                as f64;
+
+                            media_files.push(FileEntry {
+                                name,
+                                path: full_path,
+                                file_type: if is_image {
+                                    "image".to_string()
+                                } else {
+                                    "video".to_string()
+                                },
+                                mtime: mt,
+                                size: sz,
+                            });
+                        }
+                    }
+                }
+            }
+
+            if unsafe { FindNextFileW(handle, &mut find_data) } == 0 {
+                break;
+            }
+        }
+
+        unsafe {
+            FindClose(handle);
+        }
+    }
+}

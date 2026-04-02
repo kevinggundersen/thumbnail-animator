@@ -3164,6 +3164,7 @@ function initNewFeatures() {
 
 let duplicateGroups = [];
 let duplicateMarkedForDeletion = new Set();
+let duplicateHighlightPaths = new Map(); // Map<path, groupIndex> for VS-persistent highlights
 let duplicateScanActive = false;
 let cachedHashData = null;
 let regroupTimer = null;
@@ -3720,23 +3721,28 @@ function updateDeleteButton() {
 function highlightDuplicatesInGrid() {
     clearDuplicateHighlights();
 
-    const pathToGroup = new Map();
+    // Populate persistent map so virtual-scrolling card creation can apply highlights
+    duplicateHighlightPaths.clear();
     duplicateGroups.forEach((group, idx) => {
-        group.files.forEach(f => pathToGroup.set(f.path, idx));
+        group.files.forEach(f => duplicateHighlightPaths.set(f.path, idx));
     });
 
+    // Apply to currently rendered cards
     const cards = document.querySelectorAll('.video-card, .folder-card');
     cards.forEach(card => {
-        const filePath = card.dataset.path;
-        if (pathToGroup.has(filePath)) {
-            card.classList.add('duplicate-highlight');
-            const badge = document.createElement('div');
-            badge.className = 'duplicate-badge';
-            badge.textContent = 'D' + (pathToGroup.get(filePath) + 1);
-            card.style.position = 'relative';
-            card.appendChild(badge);
-        }
+        applyDuplicateHighlight(card);
     });
+}
+
+function applyDuplicateHighlight(card) {
+    const filePath = card.dataset.path;
+    if (duplicateHighlightPaths.has(filePath)) {
+        card.classList.add('duplicate-highlight');
+        const badge = document.createElement('div');
+        badge.className = 'duplicate-badge';
+        badge.textContent = 'D' + (duplicateHighlightPaths.get(filePath) + 1);
+        card.appendChild(badge);
+    }
 }
 
 // ==================== COMPARISON LIGHTBOX ====================
@@ -4100,6 +4106,7 @@ function syncDuplicateModalUI() {
 }
 
 function clearDuplicateHighlights() {
+    duplicateHighlightPaths.clear();
     document.querySelectorAll('.duplicate-highlight').forEach(card => {
         card.classList.remove('duplicate-highlight');
     });

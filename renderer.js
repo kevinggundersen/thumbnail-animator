@@ -708,6 +708,9 @@ function vsPopulateExistingCard(card, item) {
 
         applyCardInfoLayoutClasses(card);
 
+        // Apply duplicate highlight if active
+        if (typeof applyDuplicateHighlight === 'function') applyDuplicateHighlight(card);
+
         return { card, isMedia: true };
     }
 }
@@ -5012,6 +5015,9 @@ function createCardFromItem(item) {
         if (item.missing) {
             card.classList.add('missing-file');
         }
+
+        // Apply duplicate highlight if active
+        if (typeof applyDuplicateHighlight === 'function') applyDuplicateHighlight(card);
 
         return { card, isMedia: !item.missing };
     }
@@ -10162,6 +10168,8 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
     // Stop periodic cleanup during folder switch
     stopPeriodicCleanup();
     activeDimensionHydrationToken++;
+    // Clear duplicate highlights from previous folder
+    if (typeof clearDuplicateHighlights === 'function') clearDuplicateHighlights();
     
     // Show loading indicator if we need to scan
     let needsScan = false;

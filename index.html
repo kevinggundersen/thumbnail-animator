@@ -604,175 +604,193 @@
                     </div>
                     <!-- Card Info Tab -->
                     <div class="settings-tab-content" data-tab="card-info">
-                        <div class="settings-item">
-                            <label class="settings-label">
-                                <span>Show Extension</span>
-                                <div class="toggle-switch">
-                                    <input type="checkbox" id="card-info-extension-toggle" checked>
-                                    <span class="toggle-slider"></span>
-                                </div>
-                                <span class="toggle-label" id="card-info-extension-label">On</span>
-                            </label>
+                        <div class="ci-group">
+                            <div class="settings-item ci-main">
+                                <label class="settings-label">
+                                    <span>Show Extension</span>
+                                    <div class="toggle-switch">
+                                        <input type="checkbox" id="card-info-extension-toggle" checked>
+                                        <span class="toggle-slider"></span>
+                                    </div>
+                                    <span class="toggle-label" id="card-info-extension-label">On</span>
+                                </label>
+                            </div>
+                            <div class="ci-sub" id="card-info-extension-hover-row" style="display: none;">
+                                <label class="settings-label">
+                                    <span>Only on Hover</span>
+                                    <div class="toggle-switch toggle-switch-sm">
+                                        <input type="checkbox" id="card-info-extension-hover-toggle">
+                                        <span class="toggle-slider"></span>
+                                    </div>
+                                    <span class="toggle-label" id="card-info-extension-hover-label">Off</span>
+                                </label>
+                            </div>
                         </div>
-                        <div class="settings-item" id="card-info-extension-hover-row" style="display: none; margin-left: 24px;">
-                            <label class="settings-label">
-                                <span>Show Only on Hover</span>
-                                <div class="toggle-switch">
-                                    <input type="checkbox" id="card-info-extension-hover-toggle">
-                                    <span class="toggle-slider"></span>
-                                </div>
-                                <span class="toggle-label" id="card-info-extension-hover-label">Off</span>
-                            </label>
+                        <div class="ci-group">
+                            <div class="settings-item ci-main">
+                                <label class="settings-label">
+                                    <span>Show Resolution</span>
+                                    <div class="toggle-switch">
+                                        <input type="checkbox" id="card-info-resolution-toggle" checked>
+                                        <span class="toggle-slider"></span>
+                                    </div>
+                                    <span class="toggle-label" id="card-info-resolution-label">On</span>
+                                </label>
+                            </div>
+                            <div class="ci-sub" id="card-info-resolution-hover-row" style="display: none;">
+                                <label class="settings-label">
+                                    <span>Only on Hover</span>
+                                    <div class="toggle-switch toggle-switch-sm">
+                                        <input type="checkbox" id="card-info-resolution-hover-toggle" checked>
+                                        <span class="toggle-slider"></span>
+                                    </div>
+                                    <span class="toggle-label" id="card-info-resolution-hover-label">On</span>
+                                </label>
+                            </div>
                         </div>
-                        <div class="settings-item">
-                            <label class="settings-label">
-                                <span>Show Resolution</span>
-                                <div class="toggle-switch">
-                                    <input type="checkbox" id="card-info-resolution-toggle" checked>
-                                    <span class="toggle-slider"></span>
-                                </div>
-                                <span class="toggle-label" id="card-info-resolution-label">On</span>
-                            </label>
+                        <div class="ci-group">
+                            <div class="settings-item ci-main">
+                                <label class="settings-label">
+                                    <span>Show File Size</span>
+                                    <div class="toggle-switch">
+                                        <input type="checkbox" id="card-info-size-toggle">
+                                        <span class="toggle-slider"></span>
+                                    </div>
+                                    <span class="toggle-label" id="card-info-size-label">Off</span>
+                                </label>
+                            </div>
+                            <div class="ci-sub" id="card-info-size-hover-row" style="display: none;">
+                                <label class="settings-label">
+                                    <span>Only on Hover</span>
+                                    <div class="toggle-switch toggle-switch-sm">
+                                        <input type="checkbox" id="card-info-size-hover-toggle" checked>
+                                        <span class="toggle-slider"></span>
+                                    </div>
+                                    <span class="toggle-label" id="card-info-size-hover-label">On</span>
+                                </label>
+                            </div>
                         </div>
-                        <div class="settings-item" id="card-info-resolution-hover-row" style="display: none; margin-left: 24px;">
-                            <label class="settings-label">
-                                <span>Show Only on Hover</span>
-                                <div class="toggle-switch">
-                                    <input type="checkbox" id="card-info-resolution-hover-toggle" checked>
-                                    <span class="toggle-slider"></span>
-                                </div>
-                                <span class="toggle-label" id="card-info-resolution-hover-label">On</span>
-                            </label>
+                        <div class="ci-group">
+                            <div class="settings-item ci-main">
+                                <label class="settings-label">
+                                    <span>Show Modified Date</span>
+                                    <div class="toggle-switch">
+                                        <input type="checkbox" id="card-info-date-toggle">
+                                        <span class="toggle-slider"></span>
+                                    </div>
+                                    <span class="toggle-label" id="card-info-date-label">Off</span>
+                                </label>
+                            </div>
+                            <div class="ci-sub" id="card-info-date-hover-row" style="display: none;">
+                                <label class="settings-label">
+                                    <span>Only on Hover</span>
+                                    <div class="toggle-switch toggle-switch-sm">
+                                        <input type="checkbox" id="card-info-date-hover-toggle" checked>
+                                        <span class="toggle-slider"></span>
+                                    </div>
+                                    <span class="toggle-label" id="card-info-date-hover-label">On</span>
+                                </label>
+                            </div>
                         </div>
-                        <div class="settings-item">
-                            <label class="settings-label">
-                                <span>Show File Size</span>
-                                <div class="toggle-switch">
-                                    <input type="checkbox" id="card-info-size-toggle">
-                                    <span class="toggle-slider"></span>
-                                </div>
-                                <span class="toggle-label" id="card-info-size-label">Off</span>
-                            </label>
+                        <div class="ci-group">
+                            <div class="settings-item ci-main">
+                                <label class="settings-label">
+                                    <span>Show Duration (Video)</span>
+                                    <div class="toggle-switch">
+                                        <input type="checkbox" id="card-info-duration-toggle" checked>
+                                        <span class="toggle-slider"></span>
+                                    </div>
+                                    <span class="toggle-label" id="card-info-duration-label">On</span>
+                                </label>
+                            </div>
                         </div>
-                        <div class="settings-item" id="card-info-size-hover-row" style="display: none; margin-left: 24px;">
-                            <label class="settings-label">
-                                <span>Show Only on Hover</span>
-                                <div class="toggle-switch">
-                                    <input type="checkbox" id="card-info-size-hover-toggle" checked>
-                                    <span class="toggle-slider"></span>
-                                </div>
-                                <span class="toggle-label" id="card-info-size-hover-label">On</span>
-                            </label>
+                        <div class="ci-group">
+                            <div class="settings-item ci-main">
+                                <label class="settings-label">
+                                    <span>Show Star Rating</span>
+                                    <div class="toggle-switch">
+                                        <input type="checkbox" id="card-info-stars-toggle" checked>
+                                        <span class="toggle-slider"></span>
+                                    </div>
+                                    <span class="toggle-label" id="card-info-stars-label">On</span>
+                                </label>
+                            </div>
+                            <div class="ci-sub" id="card-info-stars-hover-row" style="display: none;">
+                                <label class="settings-label">
+                                    <span>Only on Hover</span>
+                                    <div class="toggle-switch toggle-switch-sm">
+                                        <input type="checkbox" id="card-info-stars-hover-toggle" checked>
+                                        <span class="toggle-slider"></span>
+                                    </div>
+                                    <span class="toggle-label" id="card-info-stars-hover-label">On</span>
+                                </label>
+                            </div>
                         </div>
-                        <div class="settings-item">
-                            <label class="settings-label">
-                                <span>Show Modified Date</span>
-                                <div class="toggle-switch">
-                                    <input type="checkbox" id="card-info-date-toggle">
-                                    <span class="toggle-slider"></span>
-                                </div>
-                                <span class="toggle-label" id="card-info-date-label">Off</span>
-                            </label>
+                        <div class="ci-group">
+                            <div class="settings-item ci-main">
+                                <label class="settings-label">
+                                    <span>Show Audio Label</span>
+                                    <div class="toggle-switch">
+                                        <input type="checkbox" id="card-info-audio-toggle" checked>
+                                        <span class="toggle-slider"></span>
+                                    </div>
+                                    <span class="toggle-label" id="card-info-audio-label">On</span>
+                                </label>
+                            </div>
+                            <div class="ci-sub" id="card-info-audio-hover-row" style="display: none;">
+                                <label class="settings-label">
+                                    <span>Only on Hover</span>
+                                    <div class="toggle-switch toggle-switch-sm">
+                                        <input type="checkbox" id="card-info-audio-hover-toggle">
+                                        <span class="toggle-slider"></span>
+                                    </div>
+                                    <span class="toggle-label" id="card-info-audio-hover-label">Off</span>
+                                </label>
+                            </div>
                         </div>
-                        <div class="settings-item" id="card-info-date-hover-row" style="display: none; margin-left: 24px;">
-                            <label class="settings-label">
-                                <span>Show Only on Hover</span>
-                                <div class="toggle-switch">
-                                    <input type="checkbox" id="card-info-date-hover-toggle" checked>
-                                    <span class="toggle-slider"></span>
-                                </div>
-                                <span class="toggle-label" id="card-info-date-hover-label">On</span>
-                            </label>
+                        <div class="ci-group">
+                            <div class="settings-item ci-main">
+                                <label class="settings-label">
+                                    <span>Show Filename</span>
+                                    <div class="toggle-switch">
+                                        <input type="checkbox" id="card-info-filename-toggle" checked>
+                                        <span class="toggle-slider"></span>
+                                    </div>
+                                    <span class="toggle-label" id="card-info-filename-label">On</span>
+                                </label>
+                            </div>
+                            <div class="ci-sub" id="card-info-filename-hover-row" style="display: none;">
+                                <label class="settings-label">
+                                    <span>Only on Hover</span>
+                                    <div class="toggle-switch toggle-switch-sm">
+                                        <input type="checkbox" id="card-info-filename-hover-toggle" checked>
+                                        <span class="toggle-slider"></span>
+                                    </div>
+                                    <span class="toggle-label" id="card-info-filename-hover-label">On</span>
+                                </label>
+                            </div>
                         </div>
-                        <div class="settings-item">
-                            <label class="settings-label">
-                                <span>Show Duration (Video)</span>
-                                <div class="toggle-switch">
-                                    <input type="checkbox" id="card-info-duration-toggle" checked>
-                                    <span class="toggle-slider"></span>
-                                </div>
-                                <span class="toggle-label" id="card-info-duration-label">On</span>
-                            </label>
-                        </div>
-                        <div class="settings-item">
-                            <label class="settings-label">
-                                <span>Show Star Rating</span>
-                                <div class="toggle-switch">
-                                    <input type="checkbox" id="card-info-stars-toggle" checked>
-                                    <span class="toggle-slider"></span>
-                                </div>
-                                <span class="toggle-label" id="card-info-stars-label">On</span>
-                            </label>
-                        </div>
-                        <div class="settings-item" id="card-info-stars-hover-row" style="display: none; margin-left: 24px;">
-                            <label class="settings-label">
-                                <span>Show Only on Hover</span>
-                                <div class="toggle-switch">
-                                    <input type="checkbox" id="card-info-stars-hover-toggle" checked>
-                                    <span class="toggle-slider"></span>
-                                </div>
-                                <span class="toggle-label" id="card-info-stars-hover-label">On</span>
-                            </label>
-                        </div>
-                        <div class="settings-item">
-                            <label class="settings-label">
-                                <span>Show Audio Label</span>
-                                <div class="toggle-switch">
-                                    <input type="checkbox" id="card-info-audio-toggle" checked>
-                                    <span class="toggle-slider"></span>
-                                </div>
-                                <span class="toggle-label" id="card-info-audio-label">On</span>
-                            </label>
-                        </div>
-                        <div class="settings-item" id="card-info-audio-hover-row" style="display: none; margin-left: 24px;">
-                            <label class="settings-label">
-                                <span>Show Only on Hover</span>
-                                <div class="toggle-switch">
-                                    <input type="checkbox" id="card-info-audio-hover-toggle">
-                                    <span class="toggle-slider"></span>
-                                </div>
-                                <span class="toggle-label" id="card-info-audio-hover-label">Off</span>
-                            </label>
-                        </div>
-                        <div class="settings-item">
-                            <label class="settings-label">
-                                <span>Show Filename</span>
-                                <div class="toggle-switch">
-                                    <input type="checkbox" id="card-info-filename-toggle" checked>
-                                    <span class="toggle-slider"></span>
-                                </div>
-                                <span class="toggle-label" id="card-info-filename-label">On</span>
-                            </label>
-                        </div>
-                        <div class="settings-item" id="card-info-filename-hover-row" style="display: none; margin-left: 24px;">
-                            <label class="settings-label">
-                                <span>Show Only on Hover</span>
-                                <div class="toggle-switch">
-                                    <input type="checkbox" id="card-info-filename-hover-toggle" checked>
-                                    <span class="toggle-slider"></span>
-                                </div>
-                                <span class="toggle-label" id="card-info-filename-hover-label">On</span>
-                            </label>
-                        </div>
-                        <div class="settings-item">
-                            <label class="settings-label">
-                                <span>Show Tags</span>
-                                <div class="toggle-switch">
-                                    <input type="checkbox" id="card-info-tags-toggle" checked>
-                                    <span class="toggle-slider"></span>
-                                </div>
-                                <span class="toggle-label" id="card-info-tags-label">On</span>
-                            </label>
-                        </div>
-                        <div class="settings-item" id="card-info-tags-hover-row" style="display: none; margin-left: 24px;">
-                            <label class="settings-label">
-                                <span>Show Only on Hover</span>
-                                <div class="toggle-switch">
-                                    <input type="checkbox" id="card-info-tags-hover-toggle">
-                                    <span class="toggle-slider"></span>
-                                </div>
-                                <span class="toggle-label" id="card-info-tags-hover-label">Off</span>
-                            </label>
+                        <div class="ci-group">
+                            <div class="settings-item ci-main">
+                                <label class="settings-label">
+                                    <span>Show Tags</span>
+                                    <div class="toggle-switch">
+                                        <input type="checkbox" id="card-info-tags-toggle" checked>
+                                        <span class="toggle-slider"></span>
+                                    </div>
+                                    <span class="toggle-label" id="card-info-tags-label">On</span>
+                                </label>
+                            </div>
+                            <div class="ci-sub" id="card-info-tags-hover-row" style="display: none;">
+                                <label class="settings-label">
+                                    <span>Only on Hover</span>
+                                    <div class="toggle-switch toggle-switch-sm">
+                                        <input type="checkbox" id="card-info-tags-hover-toggle">
+                                        <span class="toggle-slider"></span>
+                                    </div>
+                                    <span class="toggle-label" id="card-info-tags-hover-label">Off</span>
+                                </label>
+                            </div>
                         </div>
                     </div>
                     <!-- AI Search Tab -->

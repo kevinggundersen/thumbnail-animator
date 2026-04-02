@@ -1794,6 +1794,7 @@ header {
     border-radius: var(--radius-xl);
     box-shadow: var(--shadow-xl);
     width: 560px;
+    height: 50vh;
     max-height: 80vh;
     display: flex;
     flex-direction: column;
@@ -1837,6 +1838,7 @@ header {
 .settings-modal-body {
     display: flex;
     flex: 1;
+    min-height: 0;
     overflow: hidden;
 }
 
@@ -1888,7 +1890,7 @@ header {
     flex: 1;
     padding: 20px 24px;
     overflow-y: auto;
-    min-height: 380px;
+    min-height: 0;
 }
 
 .settings-tab-content {
@@ -1972,6 +1974,62 @@ header {
     text-align: right;
     font-size: 12px;
     color: var(--text-secondary);
+}
+
+/* ── Card Info grouped layout ────────────────────────────── */
+.ci-group {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    padding: 10px 14px;
+    margin-bottom: 8px;
+}
+
+.ci-group:last-child {
+    margin-bottom: 0;
+}
+
+.ci-group .ci-main {
+    margin-bottom: 0;
+}
+
+.ci-sub {
+    margin-top: 8px;
+    padding: 6px 10px;
+    border-left: 2px solid var(--accent);
+    margin-left: 6px;
+    border-radius: 0 6px 6px 0;
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.ci-sub .settings-label {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.ci-sub .toggle-label {
+    font-size: 11px;
+}
+
+/* Small toggle variant for sub-toggles */
+.toggle-switch-sm {
+    width: 34px;
+    height: 18px;
+}
+
+.toggle-switch-sm .toggle-slider {
+    border-radius: 18px;
+}
+
+.toggle-switch-sm .toggle-slider:before {
+    height: 12px;
+    width: 12px;
+    left: 3px;
+    bottom: 3px;
+}
+
+.toggle-switch-sm input:checked + .toggle-slider:before {
+    transform: translateX(16px);
 }
 
 .settings-select {

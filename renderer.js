@@ -11323,12 +11323,66 @@ async function renderTagsManagement() {
                 <button class="tag-list-item-btn danger delete-tag-btn" title="Delete">&times;</button>
             </div>
         `;
-        item.querySelector('.edit-tag-btn').addEventListener('click', async () => {
-            const newName = prompt('Tag name:', tag.name);
-            if (newName && newName.trim() && newName.trim() !== tag.name) {
-                await window.electronAPI.dbUpdateTag(tag.id, { name: newName.trim() });
+        item.querySelector('.edit-tag-btn').addEventListener('click', () => {
+            // Already in edit mode? bail
+            if (item.classList.contains('editing')) return;
+            item.classList.add('editing');
+
+            const dot = item.querySelector('.tag-list-item-dot');
+            const nameSpan = item.querySelector('.tag-list-item-name');
+            const countSpan = item.querySelector('.tag-list-item-count');
+            const actionsDiv = item.querySelector('.tag-list-item-actions');
+
+            // Hide display elements
+            dot.style.display = 'none';
+            nameSpan.style.display = 'none';
+            countSpan.style.display = 'none';
+            actionsDiv.style.display = 'none';
+
+            // Build inline edit row
+            const editRow = document.createElement('div');
+            editRow.className = 'tag-edit-row';
+            editRow.innerHTML = `
+                <input type="color" class="tag-color-picker" value="${tag.color || '#6366f1'}">
+                <input type="text" class="tag-create-input" value="${tag.name}">
+                <button class="tag-list-item-btn tag-edit-save" title="Save">&#10003;</button>
+                <button class="tag-list-item-btn tag-edit-cancel" title="Cancel">&#10005;</button>
+            `;
+            item.appendChild(editRow);
+
+            const nameInput = editRow.querySelector('input[type="text"]');
+            const colorInput = editRow.querySelector('input[type="color"]');
+            nameInput.focus();
+            nameInput.select();
+
+            const save = async () => {
+                const newName = nameInput.value.trim();
+                if (!newName) return;
+                const newColor = colorInput.value;
+                const updates = {};
+                if (newName !== tag.name) updates.name = newName;
+                if (newColor !== (tag.color || '#6366f1')) updates.color = newColor;
+                if (Object.keys(updates).length > 0) {
+                    await window.electronAPI.dbUpdateTag(tag.id, updates);
+                }
                 renderTagsManagement();
-            }
+            };
+
+            const cancel = () => {
+                editRow.remove();
+                dot.style.display = '';
+                nameSpan.style.display = '';
+                countSpan.style.display = '';
+                actionsDiv.style.display = '';
+                item.classList.remove('editing');
+            };
+
+            editRow.querySelector('.tag-edit-save').addEventListener('click', save);
+            editRow.querySelector('.tag-edit-cancel').addEventListener('click', cancel);
+            nameInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') save();
+                if (e.key === 'Escape') cancel();
+            });
         });
         item.querySelector('.delete-tag-btn').addEventListener('click', async () => {
             if (confirm(`Delete tag "${tag.name}"? This will remove it from all files.`)) {

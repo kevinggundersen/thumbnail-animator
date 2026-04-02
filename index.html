@@ -493,27 +493,30 @@
     <!-- Settings Modal -->
     <div id="settings-modal" class="settings-modal hidden">
         <div class="settings-modal-content">
-            <div class="settings-modal-header">
-                <h3>Settings</h3>
-                <button id="settings-modal-close" class="settings-modal-close-btn" title="Close"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
-            </div>
+            <button id="settings-modal-close" class="settings-modal-close-btn" title="Close"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
             <div class="settings-modal-body">
                 <div class="settings-tabs">
+                    <div class="settings-tabs-section-header">Options</div>
                     <button class="settings-tab active" data-tab="general">General</button>
                     <button class="settings-tab" data-tab="appearance">Appearance</button>
                     <button class="settings-tab" data-tab="card-info">Card Info</button>
                     <button class="settings-tab" data-tab="playback">Playback</button>
                     <button class="settings-tab" data-tab="ai-search">AI Search</button>
-                    <button class="settings-tab" data-tab="plugins">Plugins</button>
                     <button class="settings-tab" data-tab="tags">Tags</button>
                     <button class="settings-tab" data-tab="data">Data</button>
+                    <div class="settings-tabs-section-header">Community</div>
+                    <button class="settings-tab" data-tab="plugins">Plugins</button>
                 </div>
                 <div class="settings-panel">
                     <!-- General Tab -->
                     <div class="settings-tab-content active" data-tab="general">
+                        <div class="settings-content-heading">General</div>
                         <div class="settings-item">
                             <label class="settings-label">
-                                <span>Layout Mode</span>
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Layout Mode</div>
+                                    <div class="settings-item-description">Switch between dynamic masonry and fixed grid layout.</div>
+                                </div>
                                 <div class="toggle-switch">
                                     <input type="checkbox" id="layout-mode-toggle">
                                     <span class="toggle-slider"></span>
@@ -523,7 +526,10 @@
                         </div>
                         <div class="settings-item">
                             <label class="settings-label">
-                                <span>Remember Last Folder</span>
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Remember Last Folder</div>
+                                    <div class="settings-item-description">Automatically reopen the last folder when the app starts.</div>
+                                </div>
                                 <div class="toggle-switch">
                                     <input type="checkbox" id="remember-folder-toggle" checked>
                                     <span class="toggle-slider"></span>
@@ -533,7 +539,10 @@
                         </div>
                         <div class="settings-item">
                             <label class="settings-label">
-                                <span>Include Moving Images</span>
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Include Moving Images</div>
+                                    <div class="settings-item-description">Include animated GIFs, WebPs, and APNGs alongside video files.</div>
+                                </div>
                                 <div class="toggle-switch">
                                     <input type="checkbox" id="include-moving-images-toggle" checked>
                                     <span class="toggle-slider"></span>
@@ -543,7 +552,10 @@
                         </div>
                         <div class="settings-item">
                             <label class="settings-label">
-                                <span>Thumbnail Quality</span>
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Thumbnail Quality</div>
+                                    <div class="settings-item-description">Higher quality uses more memory but produces sharper previews.</div>
+                                </div>
                                 <select id="thumbnail-quality-select" class="settings-select">
                                     <option value="low">Low (Fast)</option>
                                     <option value="medium" selected>Medium (Balanced)</option>
@@ -555,6 +567,7 @@
                     </div>
                     <!-- Appearance Tab -->
                     <div class="settings-tab-content" data-tab="appearance">
+                        <div class="settings-content-heading">Appearance</div>
                         <div class="theme-section-header">Theme</div>
                         <div id="theme-grid" class="theme-grid"></div>
 
@@ -604,10 +617,14 @@
                     </div>
                     <!-- Card Info Tab -->
                     <div class="settings-tab-content" data-tab="card-info">
+                        <div class="settings-content-heading">Card Info</div>
                         <div class="ci-group">
                             <div class="settings-item ci-main">
                                 <label class="settings-label">
-                                    <span>Show Extension</span>
+                                    <div class="settings-item-info">
+                                        <div class="settings-item-title">Show Extension</div>
+                                        <div class="settings-item-description">Display the file type extension on each card.</div>
+                                    </div>
                                     <div class="toggle-switch">
                                         <input type="checkbox" id="card-info-extension-toggle" checked>
                                         <span class="toggle-slider"></span>
@@ -617,7 +634,10 @@
                             </div>
                             <div class="ci-sub" id="card-info-extension-hover-row" style="display: none;">
                                 <label class="settings-label">
-                                    <span>Only on Hover</span>
+                                    <div class="settings-item-info">
+                                        <div class="settings-item-title">Only on Hover</div>
+                                        <div class="settings-item-description">Only reveal this info when hovering over the card.</div>
+                                    </div>
                                     <div class="toggle-switch toggle-switch-sm">
                                         <input type="checkbox" id="card-info-extension-hover-toggle">
                                         <span class="toggle-slider"></span>
@@ -629,7 +649,10 @@
                         <div class="ci-group">
                             <div class="settings-item ci-main">
                                 <label class="settings-label">
-                                    <span>Show Resolution</span>
+                                    <div class="settings-item-info">
+                                        <div class="settings-item-title">Show Resolution</div>
+                                        <div class="settings-item-description">Display the image or video resolution.</div>
+                                    </div>
                                     <div class="toggle-switch">
                                         <input type="checkbox" id="card-info-resolution-toggle" checked>
                                         <span class="toggle-slider"></span>
@@ -639,7 +662,10 @@
                             </div>
                             <div class="ci-sub" id="card-info-resolution-hover-row" style="display: none;">
                                 <label class="settings-label">
-                                    <span>Only on Hover</span>
+                                    <div class="settings-item-info">
+                                        <div class="settings-item-title">Only on Hover</div>
+                                        <div class="settings-item-description">Only reveal this info when hovering over the card.</div>
+                                    </div>
                                     <div class="toggle-switch toggle-switch-sm">
                                         <input type="checkbox" id="card-info-resolution-hover-toggle" checked>
                                         <span class="toggle-slider"></span>
@@ -651,7 +677,10 @@
                         <div class="ci-group">
                             <div class="settings-item ci-main">
                                 <label class="settings-label">
-                                    <span>Show File Size</span>
+                                    <div class="settings-item-info">
+                                        <div class="settings-item-title">Show File Size</div>
+                                        <div class="settings-item-description">Display the file size on each card.</div>
+                                    </div>
                                     <div class="toggle-switch">
                                         <input type="checkbox" id="card-info-size-toggle">
                                         <span class="toggle-slider"></span>
@@ -661,7 +690,10 @@
                             </div>
                             <div class="ci-sub" id="card-info-size-hover-row" style="display: none;">
                                 <label class="settings-label">
-                                    <span>Only on Hover</span>
+                                    <div class="settings-item-info">
+                                        <div class="settings-item-title">Only on Hover</div>
+                                        <div class="settings-item-description">Only reveal this info when hovering over the card.</div>
+                                    </div>
                                     <div class="toggle-switch toggle-switch-sm">
                                         <input type="checkbox" id="card-info-size-hover-toggle" checked>
                                         <span class="toggle-slider"></span>
@@ -673,7 +705,10 @@
                         <div class="ci-group">
                             <div class="settings-item ci-main">
                                 <label class="settings-label">
-                                    <span>Show Modified Date</span>
+                                    <div class="settings-item-info">
+                                        <div class="settings-item-title">Show Modified Date</div>
+                                        <div class="settings-item-description">Display when the file was last modified.</div>
+                                    </div>
                                     <div class="toggle-switch">
                                         <input type="checkbox" id="card-info-date-toggle">
                                         <span class="toggle-slider"></span>
@@ -683,7 +718,10 @@
                             </div>
                             <div class="ci-sub" id="card-info-date-hover-row" style="display: none;">
                                 <label class="settings-label">
-                                    <span>Only on Hover</span>
+                                    <div class="settings-item-info">
+                                        <div class="settings-item-title">Only on Hover</div>
+                                        <div class="settings-item-description">Only reveal this info when hovering over the card.</div>
+                                    </div>
                                     <div class="toggle-switch toggle-switch-sm">
                                         <input type="checkbox" id="card-info-date-hover-toggle" checked>
                                         <span class="toggle-slider"></span>
@@ -695,7 +733,10 @@
                         <div class="ci-group">
                             <div class="settings-item ci-main">
                                 <label class="settings-label">
-                                    <span>Show Duration (Video)</span>
+                                    <div class="settings-item-info">
+                                        <div class="settings-item-title">Show Duration (Video)</div>
+                                        <div class="settings-item-description">Display video duration on video cards.</div>
+                                    </div>
                                     <div class="toggle-switch">
                                         <input type="checkbox" id="card-info-duration-toggle" checked>
                                         <span class="toggle-slider"></span>
@@ -707,7 +748,10 @@
                         <div class="ci-group">
                             <div class="settings-item ci-main">
                                 <label class="settings-label">
-                                    <span>Show Star Rating</span>
+                                    <div class="settings-item-info">
+                                        <div class="settings-item-title">Show Star Rating</div>
+                                        <div class="settings-item-description">Display the star rating overlay.</div>
+                                    </div>
                                     <div class="toggle-switch">
                                         <input type="checkbox" id="card-info-stars-toggle" checked>
                                         <span class="toggle-slider"></span>
@@ -717,7 +761,10 @@
                             </div>
                             <div class="ci-sub" id="card-info-stars-hover-row" style="display: none;">
                                 <label class="settings-label">
-                                    <span>Only on Hover</span>
+                                    <div class="settings-item-info">
+                                        <div class="settings-item-title">Only on Hover</div>
+                                        <div class="settings-item-description">Only reveal this info when hovering over the card.</div>
+                                    </div>
                                     <div class="toggle-switch toggle-switch-sm">
                                         <input type="checkbox" id="card-info-stars-hover-toggle" checked>
                                         <span class="toggle-slider"></span>
@@ -729,7 +776,10 @@
                         <div class="ci-group">
                             <div class="settings-item ci-main">
                                 <label class="settings-label">
-                                    <span>Show Audio Label</span>
+                                    <div class="settings-item-info">
+                                        <div class="settings-item-title">Show Audio Label</div>
+                                        <div class="settings-item-description">Indicate whether a video has an audio track.</div>
+                                    </div>
                                     <div class="toggle-switch">
                                         <input type="checkbox" id="card-info-audio-toggle" checked>
                                         <span class="toggle-slider"></span>
@@ -739,7 +789,10 @@
                             </div>
                             <div class="ci-sub" id="card-info-audio-hover-row" style="display: none;">
                                 <label class="settings-label">
-                                    <span>Only on Hover</span>
+                                    <div class="settings-item-info">
+                                        <div class="settings-item-title">Only on Hover</div>
+                                        <div class="settings-item-description">Only reveal this info when hovering over the card.</div>
+                                    </div>
                                     <div class="toggle-switch toggle-switch-sm">
                                         <input type="checkbox" id="card-info-audio-hover-toggle">
                                         <span class="toggle-slider"></span>
@@ -751,7 +804,10 @@
                         <div class="ci-group">
                             <div class="settings-item ci-main">
                                 <label class="settings-label">
-                                    <span>Show Filename</span>
+                                    <div class="settings-item-info">
+                                        <div class="settings-item-title">Show Filename</div>
+                                        <div class="settings-item-description">Display the filename below each thumbnail.</div>
+                                    </div>
                                     <div class="toggle-switch">
                                         <input type="checkbox" id="card-info-filename-toggle" checked>
                                         <span class="toggle-slider"></span>
@@ -761,7 +817,10 @@
                             </div>
                             <div class="ci-sub" id="card-info-filename-hover-row" style="display: none;">
                                 <label class="settings-label">
-                                    <span>Only on Hover</span>
+                                    <div class="settings-item-info">
+                                        <div class="settings-item-title">Only on Hover</div>
+                                        <div class="settings-item-description">Only reveal this info when hovering over the card.</div>
+                                    </div>
                                     <div class="toggle-switch toggle-switch-sm">
                                         <input type="checkbox" id="card-info-filename-hover-toggle" checked>
                                         <span class="toggle-slider"></span>
@@ -773,7 +832,10 @@
                         <div class="ci-group">
                             <div class="settings-item ci-main">
                                 <label class="settings-label">
-                                    <span>Show Tags</span>
+                                    <div class="settings-item-info">
+                                        <div class="settings-item-title">Show Tags</div>
+                                        <div class="settings-item-description">Display assigned tag badges on each card.</div>
+                                    </div>
                                     <div class="toggle-switch">
                                         <input type="checkbox" id="card-info-tags-toggle" checked>
                                         <span class="toggle-slider"></span>
@@ -783,7 +845,10 @@
                             </div>
                             <div class="ci-sub" id="card-info-tags-hover-row" style="display: none;">
                                 <label class="settings-label">
-                                    <span>Only on Hover</span>
+                                    <div class="settings-item-info">
+                                        <div class="settings-item-title">Only on Hover</div>
+                                        <div class="settings-item-description">Only reveal this info when hovering over the card.</div>
+                                    </div>
                                     <div class="toggle-switch toggle-switch-sm">
                                         <input type="checkbox" id="card-info-tags-hover-toggle">
                                         <span class="toggle-slider"></span>
@@ -795,47 +860,56 @@
                     </div>
                     <!-- AI Search Tab -->
                     <div class="settings-tab-content" data-tab="ai-search">
+                        <div class="settings-content-heading">AI Search</div>
                         <div class="settings-item">
                             <label class="settings-label">
-                                <span>Enable AI Visual Search</span>
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Enable AI Visual Search</div>
+                                    <div class="settings-item-description">Uses a local ML model (~65 MB) to enable semantic search. Requires ~300 MB RAM when active.</div>
+                                </div>
                                 <div class="toggle-switch">
                                     <input type="checkbox" id="ai-search-enabled-toggle">
                                     <span class="toggle-slider"></span>
                                 </div>
                                 <span class="toggle-label" id="ai-search-enabled-label">Off</span>
                             </label>
-                            <p class="settings-hint">Uses a local ML model (~65 MB) to enable semantic search. Requires ~300 MB RAM when active.</p>
                         </div>
                         <div class="settings-item">
                             <label class="settings-label">
-                                <span>Auto-Scan New Folders</span>
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Auto-Scan New Folders</div>
+                                    <div class="settings-item-description">Automatically generate embeddings when a folder is opened.</div>
+                                </div>
                                 <div class="toggle-switch">
                                     <input type="checkbox" id="ai-auto-scan-toggle">
                                     <span class="toggle-slider"></span>
                                 </div>
                                 <span class="toggle-label" id="ai-auto-scan-label">Off</span>
                             </label>
-                            <p class="settings-hint">Automatically generate embeddings when a folder is opened.</p>
                         </div>
                         <div class="settings-item">
                             <label class="settings-label">
-                                <span>Search Sensitivity</span>
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Search Sensitivity</div>
+                                    <div class="settings-item-description">Lower = more results (less precise). Higher = fewer results (more precise).</div>
+                                </div>
                                 <div class="ai-slider-group">
                                     <input type="range" id="ai-threshold-slider" min="10" max="40" step="1" value="15">
                                     <span id="ai-threshold-value">0.25</span>
                                 </div>
                             </label>
-                            <p class="settings-hint">Lower = more results (less precise). Higher = fewer results (more precise).</p>
                         </div>
                         <div class="settings-item">
                             <label class="settings-label">
-                                <span>Clustering Mode</span>
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Clustering Mode</div>
+                                    <div class="settings-item-description">Reorders the gallery to group visually similar media together.</div>
+                                </div>
                                 <select id="ai-clustering-select" class="settings-select">
                                     <option value="off">Off</option>
                                     <option value="similarity">Group by Visual Similarity</option>
                                 </select>
                             </label>
-                            <p class="settings-hint">Reorders the gallery to group visually similar media together.</p>
                         </div>
                         <div class="settings-item ai-actions-row">
                             <button id="ai-scan-now-btn" class="settings-action-btn" disabled>Scan Current Folder</button>
@@ -865,9 +939,13 @@
                     </div>
                     <!-- Playback Tab -->
                     <div class="settings-tab-content" data-tab="playback">
+                        <div class="settings-content-heading">Playback</div>
                         <div class="settings-item">
                             <label class="settings-label">
-                                <span>Pause on Fullscreen</span>
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Pause on Fullscreen</div>
+                                    <div class="settings-item-description">Pause gallery playback when the fullscreen viewer is open.</div>
+                                </div>
                                 <div class="toggle-switch">
                                     <input type="checkbox" id="pause-on-lightbox-toggle" checked>
                                     <span class="toggle-slider"></span>
@@ -877,7 +955,10 @@
                         </div>
                         <div class="settings-item">
                             <label class="settings-label">
-                                <span>Pause on Focus Loss</span>
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Pause on Focus Loss</div>
+                                    <div class="settings-item-description">Pause all playback when the app window loses focus.</div>
+                                </div>
                                 <div class="toggle-switch">
                                     <input type="checkbox" id="pause-on-blur-toggle" checked>
                                     <span class="toggle-slider"></span>
@@ -887,7 +968,10 @@
                         </div>
                         <div class="settings-item">
                             <label class="settings-label">
-                                <span>Auto-Repeat Videos</span>
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Auto-Repeat Videos</div>
+                                    <div class="settings-item-description">Loop videos automatically when they reach the end.</div>
+                                </div>
                                 <div class="toggle-switch">
                                     <input type="checkbox" id="auto-repeat-toggle">
                                     <span class="toggle-slider"></span>
@@ -897,7 +981,10 @@
                         </div>
                         <div class="settings-item">
                             <label class="settings-label">
-                                <span>Playback Controls</span>
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Playback Controls</div>
+                                    <div class="settings-item-description">Show play/pause controls on video thumbnails.</div>
+                                </div>
                                 <div class="toggle-switch">
                                     <input type="checkbox" id="playback-controls-toggle" checked>
                                     <span class="toggle-slider"></span>
@@ -907,7 +994,10 @@
                         </div>
                         <div class="settings-item">
                             <label class="settings-label">
-                                <span>Zoom to Fit</span>
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Zoom to Fit</div>
+                                    <div class="settings-item-description">Scale the fullscreen viewer to fit the window.</div>
+                                </div>
                                 <div class="toggle-switch">
                                     <input type="checkbox" id="zoom-to-fit-toggle" checked>
                                     <span class="toggle-slider"></span>
@@ -917,7 +1007,10 @@
                         </div>
                         <div class="settings-item">
                             <label class="settings-label">
-                                <span>Hover Scrub</span>
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Hover Scrub</div>
+                                    <div class="settings-item-description">Preview video by scrubbing the mouse across thumbnails.</div>
+                                </div>
                                 <div class="toggle-switch">
                                     <input type="checkbox" id="hover-scrub-toggle" checked>
                                     <span class="toggle-slider"></span>
@@ -928,9 +1021,11 @@
                     </div>
                     <!-- Plugins Tab -->
                     <div class="settings-tab-content" data-tab="plugins" id="plugins-tab-content">
+                        <div class="settings-content-heading">Plugins</div>
                         <div class="plugins-tab-loading">Loading plugins...</div>
                     </div>
                     <div class="settings-tab-content" data-tab="tags">
+                        <div class="settings-content-heading">Tags</div>
                         <div class="settings-data-section-title">Manage Tags</div>
                         <p class="settings-data-description">Create and manage tags for organizing your files. Tags can be assigned to files via the right-click context menu.</p>
                         <div class="tags-management">
@@ -943,6 +1038,7 @@
                         </div>
                     </div>
                     <div class="settings-tab-content" data-tab="data">
+                        <div class="settings-content-heading">Data</div>
                         <div class="settings-data-section-title">Export & Import Settings</div>
                         <p class="settings-data-description">Export all your settings, themes, file metadata, and plugin states to a JSON file. Import to restore them on this or another machine.</p>
                         <div class="settings-data-actions">

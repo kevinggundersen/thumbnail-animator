@@ -1789,13 +1789,15 @@ header {
 }
 
 .settings-modal-content {
-    background-color: var(--bg-tertiary);
+    position: relative;
+    background-color: var(--bg-secondary);
     border: 1px solid var(--border-default);
-    border-radius: var(--radius-xl);
+    border-radius: var(--radius-md);
     box-shadow: var(--shadow-xl);
-    width: 560px;
-    height: 50vh;
-    max-height: 80vh;
+    width: 92vw;
+    max-width: 1100px;
+    height: 88vh;
+    max-height: 92vh;
     display: flex;
     flex-direction: column;
     animation: modal-enter 0.2s var(--ease-out-expo);
@@ -1803,11 +1805,7 @@ header {
 }
 
 .settings-modal-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 20px 24px 16px;
-    border-bottom: 1px solid var(--border-subtle);
+    display: none;
 }
 
 .settings-modal-header h3 {
@@ -1818,6 +1816,10 @@ header {
 }
 
 .settings-modal-close-btn {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    z-index: 10;
     background: transparent;
     border: none;
     color: var(--text-secondary);
@@ -1845,24 +1847,42 @@ header {
 .settings-tabs {
     display: flex;
     flex-direction: column;
-    padding: 12px 0;
+    padding: 16px 0;
     border-right: 1px solid var(--border-subtle);
-    min-width: 140px;
-    gap: 2px;
+    min-width: 220px;
+    width: 220px;
+    gap: 1px;
+    background-color: var(--bg-primary);
+    overflow-y: auto;
+}
+
+.settings-tabs-section-header {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 20px 24px 6px;
+    user-select: none;
+}
+
+.settings-tabs-section-header:first-child {
+    padding-top: 8px;
 }
 
 .settings-tab {
     background: transparent;
     border: none;
     color: var(--text-secondary);
-    font-size: 13px;
+    font-size: 14px;
     font-family: inherit;
-    padding: 10px 20px;
+    padding: 8px 20px 8px 24px;
+    margin: 0 8px;
     text-align: left;
     cursor: pointer;
     transition: background-color var(--duration-normal), color var(--duration-normal);
     position: relative;
-    border-radius: 0;
+    border-radius: var(--radius-sm);
 }
 
 .settings-tab:hover {
@@ -1871,26 +1891,20 @@ header {
 }
 
 .settings-tab.active {
-    color: var(--accent);
-    background-color: var(--accent-muted);
+    color: var(--text-primary);
+    background-color: var(--bg-hover);
 }
 
 .settings-tab.active::before {
-    content: '';
-    position: absolute;
-    left: 0;
-    top: 6px;
-    bottom: 6px;
-    width: 3px;
-    background-color: var(--accent);
-    border-radius: 0 3px 3px 0;
+    display: none;
 }
 
 .settings-panel {
     flex: 1;
-    padding: 20px 24px;
+    padding: 32px 40px;
     overflow-y: auto;
     min-height: 0;
+    background-color: var(--bg-secondary);
 }
 
 .settings-tab-content {
@@ -1902,26 +1916,57 @@ header {
 }
 
 .settings-item {
-    margin-bottom: 16px;
+    margin-bottom: 0;
+    padding: 18px 0;
+    border-bottom: 1px solid var(--border-subtle);
 }
 
 .settings-item:last-child {
-    margin-bottom: 0;
+    border-bottom: none;
 }
 
 .settings-label {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 12px;
-    color: var(--text-color);
+    gap: 16px;
+    color: var(--text-primary);
     font-size: 14px;
+    font-weight: 500;
     cursor: pointer;
     user-select: none;
 }
 
 .settings-label > span:first-child {
     flex: 1;
+}
+
+.settings-label > .settings-item-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.settings-item-info .settings-item-title {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.settings-item-description {
+    font-size: 13px;
+    color: var(--text-secondary);
+    font-weight: 400;
+    margin-top: 4px;
+    line-height: 1.45;
+}
+
+.settings-content-heading {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin: 0 0 24px 0;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border-subtle);
 }
 
 .toggle-switch {
@@ -1970,45 +2015,45 @@ header {
 }
 
 .toggle-label {
-    min-width: 40px;
-    text-align: right;
-    font-size: 12px;
-    color: var(--text-secondary);
+    display: none;
 }
 
 /* ── Card Info grouped layout ────────────────────────────── */
 .ci-group {
-    background: var(--bg-tertiary);
-    border: 1px solid var(--border-subtle);
-    border-radius: 8px;
-    padding: 10px 14px;
-    margin-bottom: 8px;
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    padding: 0;
+    margin-bottom: 0;
+    border-bottom: 1px solid var(--border-subtle);
 }
 
 .ci-group:last-child {
-    margin-bottom: 0;
+    border-bottom: none;
 }
 
 .ci-group .ci-main {
     margin-bottom: 0;
+    padding: 18px 0;
+    border-bottom: none;
 }
 
 .ci-sub {
-    margin-top: 8px;
-    padding: 6px 10px;
-    border-left: 2px solid var(--accent);
-    margin-left: 6px;
-    border-radius: 0 6px 6px 0;
-    background: rgba(255, 255, 255, 0.02);
+    margin-top: 0;
+    padding: 10px 0 14px 20px;
+    border-left: 2px solid var(--border-subtle);
+    margin-left: 12px;
+    border-radius: 0;
+    background: transparent;
 }
 
 .ci-sub .settings-label {
-    font-size: 12px;
+    font-size: 13px;
     color: var(--text-secondary);
 }
 
 .ci-sub .toggle-label {
-    font-size: 11px;
+    display: none;
 }
 
 /* Small toggle variant for sub-toggles */
@@ -3742,19 +3787,32 @@ video.blow-up-media {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 12px 0;
+    gap: 24px;
+    padding: 18px 0;
     border-bottom: 1px solid var(--border-subtle, rgba(255,255,255,0.08));
+}
+
+.settings-data-action-row:last-child {
+    border-bottom: none;
 }
 
 .settings-data-action-title {
     font-size: 14px;
+    font-weight: 500;
     color: var(--text-primary);
 }
 
 .settings-data-action-desc {
-    font-size: 12px;
-    color: var(--text-tertiary);
-    margin-top: 2px;
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-top: 4px;
+}
+
+.settings-data-action-row .settings-action-btn {
+    flex: none;
+    padding: 8px 24px;
+    font-size: 13px;
+    white-space: nowrap;
 }
 
 .settings-action-btn {

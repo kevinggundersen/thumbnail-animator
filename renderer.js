@@ -9636,12 +9636,29 @@ contextMenu.addEventListener('click', async (e) => {
             
         case 'delete':
             try {
-                if (await showConfirm('Delete File', `Move "${fileName}" to Recycle Bin?`, { confirmLabel: 'Delete', danger: true })) {
+                if (await showConfirm('Delete File', `Delete "${fileName}"?`, { confirmLabel: 'Delete', danger: true })) {
                     setStatusActivity(`Deleting ${fileName}...`);
                     const result = await window.electronAPI.deleteFile(filePath);
                     setStatusActivity('');
                     if (result.success) {
-                        showToast(`Moved "${fileName}" to Recycle Bin`, 'success');
+                        showToast(`Deleted "${fileName}"`, 'success', {
+                            duration: 8000,
+                            actionLabel: 'Undo',
+                            actionCallback: () => {
+                                window.electronAPI.undoFileOperation().then(undoResult => {
+                                    if (undoResult.success) {
+                                        showToast(`Restored "${fileName}"`, 'success');
+                                        if (currentFolderPath) {
+                                            invalidateFolderCache(currentFolderPath);
+                                            const st = gridContainer.scrollTop;
+                                            loadVideos(currentFolderPath, false, st);
+                                        }
+                                    } else {
+                                        showToast(`Undo failed: ${undoResult.error}`, 'error');
+                                    }
+                                });
+                            }
+                        });
                         if (currentFolderPath) {
                             invalidateFolderCache(currentFolderPath);
                             const previousScrollTop = gridContainer.scrollTop;
@@ -9775,12 +9792,29 @@ folderContextMenu.addEventListener('click', async (e) => {
 
         case 'delete-folder':
             try {
-                if (await showConfirm('Delete Folder', `Move "${folderName}" to Recycle Bin?`, { confirmLabel: 'Delete', danger: true })) {
+                if (await showConfirm('Delete Folder', `Delete "${folderName}"?`, { confirmLabel: 'Delete', danger: true })) {
                     setStatusActivity(`Deleting ${folderName}...`);
                     const result = await window.electronAPI.deleteFile(folderPath);
                     setStatusActivity('');
                     if (result.success) {
-                        showToast(`Moved "${folderName}" to Recycle Bin`, 'success');
+                        showToast(`Deleted "${folderName}"`, 'success', {
+                            duration: 8000,
+                            actionLabel: 'Undo',
+                            actionCallback: () => {
+                                window.electronAPI.undoFileOperation().then(undoResult => {
+                                    if (undoResult.success) {
+                                        showToast(`Restored "${folderName}"`, 'success');
+                                        if (currentFolderPath) {
+                                            invalidateFolderCache(currentFolderPath);
+                                            const st = gridContainer.scrollTop;
+                                            loadVideos(currentFolderPath, false, st);
+                                        }
+                                    } else {
+                                        showToast(`Undo failed: ${undoResult.error}`, 'error');
+                                    }
+                                });
+                            }
+                        });
                         if (currentFolderPath) {
                             invalidateFolderCache(currentFolderPath);
                             const previousScrollTop = gridContainer.scrollTop;

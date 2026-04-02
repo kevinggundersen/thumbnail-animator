@@ -18,6 +18,42 @@ function initKeyboardShortcuts() {
             return;
         }
 
+        // Ctrl/Cmd + Shift + Z or Ctrl/Cmd + Y: Redo file operation
+        if ((e.ctrlKey || e.metaKey) && ((e.shiftKey && e.key === 'Z') || e.key === 'y')) {
+            e.preventDefault();
+            window.electronAPI.redoFileOperation().then(result => {
+                if (result.success) {
+                    showToast(`Redo: ${result.description}`, 'success');
+                    if (currentFolderPath) {
+                        invalidateFolderCache(currentFolderPath);
+                        const previousScrollTop = gridContainer.scrollTop;
+                        loadVideos(currentFolderPath, false, previousScrollTop);
+                    }
+                } else if (result.error !== 'Nothing to redo') {
+                    showToast(`Redo failed: ${result.error}`, 'error');
+                }
+            });
+            return;
+        }
+
+        // Ctrl/Cmd + Z: Undo file operation
+        if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+            e.preventDefault();
+            window.electronAPI.undoFileOperation().then(result => {
+                if (result.success) {
+                    showToast(`Undo: ${result.description}`, 'success');
+                    if (currentFolderPath) {
+                        invalidateFolderCache(currentFolderPath);
+                        const previousScrollTop = gridContainer.scrollTop;
+                        loadVideos(currentFolderPath, false, previousScrollTop);
+                    }
+                } else if (result.error !== 'Nothing to undo') {
+                    showToast(`Undo failed: ${result.error}`, 'error');
+                }
+            });
+            return;
+        }
+
         // Ctrl/Cmd + F: Focus search
         if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
             e.preventDefault();
@@ -89,12 +125,29 @@ function initKeyboardShortcuts() {
             if (card && !card.classList.contains('folder-card')) {
                 const path = card.dataset.filePath;
                 const name = card.querySelector('.video-info')?.textContent || '';
-                if (path && await showConfirm('Delete File', `Move "${name}" to Recycle Bin?`, { confirmLabel: 'Delete', danger: true })) {
+                if (path && await showConfirm('Delete File', `Delete "${name}"?`, { confirmLabel: 'Delete', danger: true })) {
                     setStatusActivity(`Deleting ${name}...`);
                     window.electronAPI.deleteFile(path).then(result => {
                         setStatusActivity('');
                         if (result.success) {
-                            showToast(`Moved "${name}" to Recycle Bin`, 'success');
+                            showToast(`Deleted "${name}"`, 'success', {
+                                duration: 8000,
+                                actionLabel: 'Undo',
+                                actionCallback: () => {
+                                    window.electronAPI.undoFileOperation().then(undoResult => {
+                                        if (undoResult.success) {
+                                            showToast(`Restored "${name}"`, 'success');
+                                            if (currentFolderPath) {
+                                                invalidateFolderCache(currentFolderPath);
+                                                const st = gridContainer.scrollTop;
+                                                loadVideos(currentFolderPath, false, st);
+                                            }
+                                        } else {
+                                            showToast(`Undo failed: ${undoResult.error}`, 'error');
+                                        }
+                                    });
+                                }
+                            });
                             if (currentFolderPath) {
                                 invalidateFolderCache(currentFolderPath);
                                 const previousScrollTop = gridContainer.scrollTop;
@@ -3130,7 +3183,7 @@ function initDuplicateDetection() {
     deleteBtn.addEventListener('click', async () => {
         if (duplicateMarkedForDeletion.size === 0) return;
         const count = duplicateMarkedForDeletion.size;
-        if (!await showConfirm('Delete Files', `Move ${count} file(s) to Recycle Bin?`, { confirmLabel: 'Delete', danger: true })) return;
+        if (!await showConfirm('Delete Files', `Delete ${count} file(s)?`, { confirmLabel: 'Delete', danger: true })) return;
 
         deleteBtn.disabled = true;
         deleteBtn.textContent = 'Deleting...';
@@ -3143,7 +3196,23 @@ function initDuplicateDetection() {
         } else if (failCount > 0) {
             showToast(`Failed to delete ${failCount} file(s)`, 'error');
         } else {
-            showToast(`Moved ${count} file(s) to Recycle Bin`, 'success');
+            showToast(`Deleted ${count} file(s)`, 'success', {
+                duration: 8000,
+                actionLabel: 'Undo',
+                actionCallback: () => {
+                    window.electronAPI.undoFileOperation().then(undoResult => {
+                        if (undoResult.success) {
+                            showToast(`Restored ${count} file(s)`, 'success');
+                            if (currentFolderPath) {
+                                invalidateFolderCache(currentFolderPath);
+                                loadVideos(currentFolderPath);
+                            }
+                        } else {
+                            showToast(`Undo failed: ${undoResult.error}`, 'error');
+                        }
+                    });
+                }
+            });
         }
 
         duplicateMarkedForDeletion.clear();

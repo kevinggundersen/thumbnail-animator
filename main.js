@@ -326,6 +326,95 @@ videoThumbDir = path.join(userDataPath, 'video-thumbnails');
 imageThumbDir = path.join(userDataPath, 'image-thumbnails');
 let folderPreviewDir = path.join(userDataPath, 'folder-previews');
 
+// Undo/Redo: app-managed staging folder for deleted files
+const undoTrashDir = path.join(userDataPath, 'undo-trash');
+// Clean any leftovers from previous session (crash recovery), then recreate
+if (fs.existsSync(undoTrashDir)) {
+    fs.rmSync(undoTrashDir, { recursive: true, force: true });
+}
+fs.mkdirSync(undoTrashDir, { recursive: true });
+
+// Undo/Redo operation history
+const undoStack = [];
+const redoStack = [];
+const MAX_UNDO_HISTORY = 30;
+
+function pushUndoEntry(entry) {
+    entry.timestamp = Date.now();
+    undoStack.push(entry);
+    if (undoStack.length > MAX_UNDO_HISTORY) {
+        const removed = undoStack.shift();
+        // Clean up staging files for evicted delete entries
+        if (removed.operations) {
+            for (const op of removed.operations) {
+                if (op.stagingPath && fs.existsSync(op.stagingPath)) {
+                    fs.promises.rm(op.stagingPath, { recursive: true, force: true }).catch(() => {});
+                }
+            }
+        }
+    }
+    // Any new action invalidates the redo chain
+    for (const entry of redoStack) {
+        if (entry.operations) {
+            for (const op of entry.operations) {
+                if (op.stagingPath && fs.existsSync(op.stagingPath)) {
+                    fs.promises.rm(op.stagingPath, { recursive: true, force: true }).catch(() => {});
+                }
+            }
+        }
+    }
+    redoStack.length = 0;
+}
+
+async function moveToStaging(filePath) {
+    const basename = path.basename(filePath);
+    const stagingPath = path.join(undoTrashDir, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${basename}`);
+    try {
+        await fs.promises.rename(filePath, stagingPath);
+    } catch (err) {
+        if (err.code === 'EXDEV') {
+            // Cross-device: copy then delete
+            const stat = await fs.promises.stat(filePath);
+            if (stat.isDirectory()) {
+                await fs.promises.cp(filePath, stagingPath, { recursive: true });
+            } else {
+                await fs.promises.copyFile(filePath, stagingPath);
+            }
+            await fs.promises.rm(filePath, { recursive: true, force: true });
+        } else {
+            throw err;
+        }
+    }
+    return stagingPath;
+}
+
+async function restoreFromStaging(stagingPath, originalPath) {
+    // Ensure parent directory exists
+    const parentDir = path.dirname(originalPath);
+    if (!fs.existsSync(parentDir)) {
+        await fs.promises.mkdir(parentDir, { recursive: true });
+    }
+    // Check for name collision
+    if (fs.existsSync(originalPath)) {
+        throw new Error(`"${path.basename(originalPath)}" already exists at the original location`);
+    }
+    try {
+        await fs.promises.rename(stagingPath, originalPath);
+    } catch (err) {
+        if (err.code === 'EXDEV') {
+            const stat = await fs.promises.stat(stagingPath);
+            if (stat.isDirectory()) {
+                await fs.promises.cp(stagingPath, originalPath, { recursive: true });
+            } else {
+                await fs.promises.copyFile(stagingPath, originalPath);
+            }
+            await fs.promises.rm(stagingPath, { recursive: true, force: true });
+        } else {
+            throw err;
+        }
+    }
+}
+
 // Fix for VRAM leak: Disable Hardware Acceleration
 // This forces software decoding which is often more stable for many simultaneous videos
 // app.disableHardwareAcceleration(); // Re-enabled per user request
@@ -1213,6 +1302,11 @@ ipcMain.handle('rename-file', async (event, filePath, newName) => {
         }
         
         await fs.promises.rename(filePath, newPath);
+        pushUndoEntry({
+            type: 'rename',
+            description: `Rename "${path.basename(filePath)}" → "${newName}"`,
+            operations: [{ type: 'rename', oldPath: filePath, newPath }]
+        });
         return { success: true, newPath };
     } catch (error) {
         console.error('Error renaming file:', error);
@@ -1222,7 +1316,13 @@ ipcMain.handle('rename-file', async (event, filePath, newName) => {
 
 ipcMain.handle('delete-file', async (event, filePath) => {
     try {
-        await shell.trashItem(filePath);
+        const basename = path.basename(filePath);
+        const stagingPath = await moveToStaging(filePath);
+        pushUndoEntry({
+            type: 'delete',
+            description: `Delete "${basename}"`,
+            operations: [{ type: 'delete', originalPath: filePath, stagingPath }]
+        });
         return { success: true };
     } catch (error) {
         console.error('Error deleting file:', error);
@@ -1804,6 +1904,11 @@ ipcMain.handle('move-file', async (event, sourcePath, destFolderOrPath, fileName
         }
 
         await fs.promises.rename(sourcePath, finalPath);
+        pushUndoEntry({
+            type: 'move',
+            description: `Move "${path.basename(sourcePath)}"`,
+            operations: [{ type: 'move', sourcePath, destPath: finalPath }]
+        });
         return { success: true };
     } catch (error) {
         console.error('Error moving file:', error);
@@ -2289,13 +2394,22 @@ ipcMain.handle('regroup-duplicates', async (event, hashData, newThreshold) => {
 ipcMain.handle('delete-files-batch', async (event, filePaths) => {
     const deleted = [];
     const failed = [];
+    const operations = [];
     for (const filePath of filePaths) {
         try {
-            await shell.trashItem(filePath);
+            const stagingPath = await moveToStaging(filePath);
             deleted.push(filePath);
+            operations.push({ type: 'delete', originalPath: filePath, stagingPath });
         } catch (error) {
             failed.push({ path: filePath, error: error.message });
         }
+    }
+    if (operations.length > 0) {
+        pushUndoEntry({
+            type: 'batch-delete',
+            description: `Delete ${operations.length} file${operations.length > 1 ? 's' : ''}`,
+            operations
+        });
     }
     return { deleted, failed };
 });
@@ -2708,7 +2822,88 @@ ipcMain.handle('set-plugin-enabled', (event, pluginId, enabled) => {
 });
 
 // Cleanup watchers on app quit
+// Undo file operation
+ipcMain.handle('undo-file-operation', async () => {
+    if (undoStack.length === 0) {
+        return { success: false, error: 'Nothing to undo' };
+    }
+    const entry = undoStack.pop();
+    try {
+        // Process operations in reverse order
+        for (let i = entry.operations.length - 1; i >= 0; i--) {
+            const op = entry.operations[i];
+            switch (op.type) {
+                case 'rename':
+                    if (!fs.existsSync(op.newPath)) throw new Error(`File "${path.basename(op.newPath)}" no longer exists`);
+                    if (fs.existsSync(op.oldPath)) throw new Error(`"${path.basename(op.oldPath)}" already exists`);
+                    await fs.promises.rename(op.newPath, op.oldPath);
+                    break;
+                case 'delete':
+                    if (!fs.existsSync(op.stagingPath)) throw new Error(`Staged file for "${path.basename(op.originalPath)}" is missing`);
+                    await restoreFromStaging(op.stagingPath, op.originalPath);
+                    break;
+                case 'move':
+                    if (!fs.existsSync(op.destPath)) throw new Error(`File "${path.basename(op.destPath)}" no longer exists`);
+                    const parentDir = path.dirname(op.sourcePath);
+                    if (!fs.existsSync(parentDir)) await fs.promises.mkdir(parentDir, { recursive: true });
+                    if (fs.existsSync(op.sourcePath)) throw new Error(`"${path.basename(op.sourcePath)}" already exists at original location`);
+                    await fs.promises.rename(op.destPath, op.sourcePath);
+                    break;
+            }
+        }
+        redoStack.push(entry);
+        return { success: true, description: entry.description, canUndo: undoStack.length > 0, canRedo: true };
+    } catch (error) {
+        console.error('Undo failed:', error);
+        return { success: false, error: error.message, description: entry.description };
+    }
+});
+
+// Redo file operation
+ipcMain.handle('redo-file-operation', async () => {
+    if (redoStack.length === 0) {
+        return { success: false, error: 'Nothing to redo' };
+    }
+    const entry = redoStack.pop();
+    try {
+        // Process operations in forward order
+        for (const op of entry.operations) {
+            switch (op.type) {
+                case 'rename':
+                    if (!fs.existsSync(op.oldPath)) throw new Error(`File "${path.basename(op.oldPath)}" no longer exists`);
+                    if (fs.existsSync(op.newPath)) throw new Error(`"${path.basename(op.newPath)}" already exists`);
+                    await fs.promises.rename(op.oldPath, op.newPath);
+                    break;
+                case 'delete':
+                    if (!fs.existsSync(op.originalPath)) throw new Error(`File "${path.basename(op.originalPath)}" no longer exists`);
+                    op.stagingPath = await moveToStaging(op.originalPath);
+                    break;
+                case 'move':
+                    if (!fs.existsSync(op.sourcePath)) throw new Error(`File "${path.basename(op.sourcePath)}" no longer exists`);
+                    const destDir = path.dirname(op.destPath);
+                    if (!fs.existsSync(destDir)) await fs.promises.mkdir(destDir, { recursive: true });
+                    if (fs.existsSync(op.destPath)) throw new Error(`"${path.basename(op.destPath)}" already exists at destination`);
+                    await fs.promises.rename(op.sourcePath, op.destPath);
+                    break;
+            }
+        }
+        undoStack.push(entry);
+        return { success: true, description: entry.description, canUndo: true, canRedo: redoStack.length > 0 };
+    } catch (error) {
+        console.error('Redo failed:', error);
+        return { success: false, error: error.message, description: entry.description };
+    }
+});
+
 app.on('before-quit', async () => {
+    // Clean up undo staging folder
+    try {
+        if (fs.existsSync(undoTrashDir)) {
+            fs.rmSync(undoTrashDir, { recursive: true, force: true });
+        }
+    } catch (err) {
+        console.error('Error cleaning undo-trash:', err);
+    }
     await pluginRegistry.teardown();
     if (thumbnailPool) {
         thumbnailPool.terminate();

@@ -36,6 +36,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     scanDuplicates: (folderPath, options) => ipcRenderer.invoke('scan-duplicates', folderPath, options),
     regroupDuplicates: (hashData, threshold) => ipcRenderer.invoke('regroup-duplicates', hashData, threshold),
     deleteFilesBatch: (filePaths) => ipcRenderer.invoke('delete-files-batch', filePaths),
+    undoFileOperation: () => ipcRenderer.invoke('undo-file-operation'),
+    redoFileOperation: () => ipcRenderer.invoke('redo-file-operation'),
     onDuplicateScanProgress: (callback) => ipcRenderer.on('duplicate-scan-progress', callback),
     removeDuplicateScanProgressListener: () => ipcRenderer.removeAllListeners('duplicate-scan-progress'),
     toggleMenuBar: () => ipcRenderer.send('toggle-menu-bar'),

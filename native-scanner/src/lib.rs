@@ -240,6 +240,205 @@ fn hash_file_blake3(path: &str) -> std::result::Result<String, String> {
     Ok(blake3::hash(&data).to_hex().to_string())
 }
 
+// ── Image dimension reading ──────────────────────────────────────────────────
+
+#[napi(object)]
+pub struct DimensionResult {
+    pub path: String,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+}
+
+/// Read image dimensions from file headers in parallel.
+/// Parses PNG, JPEG, GIF, WebP, BMP headers directly (no external library).
+/// Returns one DimensionResult per input path. SVGs and unsupported formats get None.
+#[napi]
+pub fn read_image_dimensions(file_paths: Vec<String>) -> Vec<DimensionResult> {
+    use rayon::prelude::*;
+
+    file_paths
+        .into_par_iter()
+        .map(|file_path| {
+            let dims = read_dims_from_header(&file_path);
+            DimensionResult {
+                path: file_path,
+                width: dims.map(|(w, _)| w),
+                height: dims.map(|(_, h)| h),
+            }
+        })
+        .collect()
+}
+
+/// Read the first 32KB of a file and parse image dimensions from header bytes.
+fn read_dims_from_header(path: &str) -> Option<(u32, u32)> {
+    use std::fs::File;
+    use std::io::Read;
+
+    let mut file = File::open(path).ok()?;
+    let file_len = file.metadata().ok()?.len() as usize;
+    let read_len = file_len.min(131072); // Read up to 128KB (covers large EXIF headers)
+    let mut buf = vec![0u8; read_len];
+    let n = file.read(&mut buf).ok()?;
+    if n < 12 {
+        return None;
+    }
+    let data = &buf[..n];
+
+    // PNG: 89 50 4E 47 0D 0A 1A 0A, IHDR at offset 8, width@16 height@20 (BE u32)
+    if n >= 24 && data[0] == 0x89 && data[1] == b'P' && data[2] == b'N' && data[3] == b'G' {
+        let w = u32::from_be_bytes([data[16], data[17], data[18], data[19]]);
+        let h = u32::from_be_bytes([data[20], data[21], data[22], data[23]]);
+        return Some((w, h));
+    }
+
+    // GIF: "GIF87a" or "GIF89a", width@6 height@8 (LE u16)
+    if n >= 10 && data[0] == b'G' && data[1] == b'I' && data[2] == b'F' {
+        let w = u16::from_le_bytes([data[6], data[7]]) as u32;
+        let h = u16::from_le_bytes([data[8], data[9]]) as u32;
+        return Some((w, h));
+    }
+
+    // BMP: "BM", width@18 height@22 (LE i32, height can be negative for top-down)
+    if n >= 26 && data[0] == b'B' && data[1] == b'M' {
+        let w = i32::from_le_bytes([data[18], data[19], data[20], data[21]]);
+        let h = i32::from_le_bytes([data[22], data[23], data[24], data[25]]);
+        return Some((w.unsigned_abs(), h.unsigned_abs()));
+    }
+
+    // JPEG: FF D8 FF, scan for SOF0-SOF15 markers (C0-CF, skip C4 DHT and C8 reserved)
+    if n >= 4 && data[0] == 0xFF && data[1] == 0xD8 {
+        return parse_jpeg_dimensions(data);
+    }
+
+    // WebP: "RIFF" + 4 bytes size + "WEBP"
+    if n >= 30
+        && data[0] == b'R'
+        && data[1] == b'I'
+        && data[2] == b'F'
+        && data[3] == b'F'
+        && data[8] == b'W'
+        && data[9] == b'E'
+        && data[10] == b'B'
+        && data[11] == b'P'
+    {
+        return parse_webp_dimensions(data);
+    }
+
+    None
+}
+
+fn parse_jpeg_dimensions(data: &[u8]) -> Option<(u32, u32)> {
+    let len = data.len();
+    let mut i = 2; // skip FF D8
+
+    while i + 1 < len {
+        if data[i] != 0xFF {
+            i += 1;
+            continue;
+        }
+
+        let marker = data[i + 1];
+        i += 2;
+
+        // Skip padding FF bytes
+        if marker == 0xFF || marker == 0x00 {
+            continue;
+        }
+
+        // SOF markers: C0-CF except C4 (DHT), C8 (reserved), CC (DAC)
+        if (marker >= 0xC0 && marker <= 0xCF) && marker != 0xC4 && marker != 0xC8 && marker != 0xCC
+        {
+            if i + 7 <= len {
+                let h = u16::from_be_bytes([data[i + 3], data[i + 4]]) as u32;
+                let w = u16::from_be_bytes([data[i + 5], data[i + 6]]) as u32;
+                if w > 0 && h > 0 {
+                    return Some((w, h));
+                }
+            }
+            return None;
+        }
+
+        // SOS marker: start of scan data, stop searching
+        if marker == 0xDA {
+            return None;
+        }
+
+        // Skip segment: read 2-byte length and advance
+        if i + 1 < len {
+            let seg_len = u16::from_be_bytes([data[i], data[i + 1]]) as usize;
+            i += seg_len;
+        } else {
+            break;
+        }
+    }
+    None
+}
+
+fn parse_webp_dimensions(data: &[u8]) -> Option<(u32, u32)> {
+    let len = data.len();
+    let mut offset = 12; // skip RIFF + size + WEBP
+
+    while offset + 8 <= len {
+        let fourcc = &data[offset..offset + 4];
+        let chunk_size =
+            u32::from_le_bytes([data[offset + 4], data[offset + 5], data[offset + 6], data[offset + 7]])
+                as usize;
+        let chunk_data = offset + 8;
+
+        match fourcc {
+            // VP8 lossy: dimensions at chunk_data+6 (after frame tag)
+            b"VP8 " => {
+                if chunk_data + 10 <= len {
+                    // Skip 3-byte frame tag + 3-byte start code (9D 01 2A)
+                    let base = chunk_data + 6;
+                    if base + 4 <= len {
+                        let w = (u16::from_le_bytes([data[base], data[base + 1]]) & 0x3FFF) as u32;
+                        let h =
+                            (u16::from_le_bytes([data[base + 2], data[base + 3]]) & 0x3FFF) as u32;
+                        if w > 0 && h > 0 {
+                            return Some((w, h));
+                        }
+                    }
+                }
+                return None;
+            }
+            // VP8L lossless: width/height packed in first 4 bytes after signature byte
+            b"VP8L" => {
+                if chunk_data + 5 <= len && data[chunk_data] == 0x2F {
+                    let bits = u32::from_le_bytes([
+                        data[chunk_data + 1],
+                        data[chunk_data + 2],
+                        data[chunk_data + 3],
+                        data[chunk_data + 4],
+                    ]);
+                    let w = (bits & 0x3FFF) + 1;
+                    let h = ((bits >> 14) & 0x3FFF) + 1;
+                    return Some((w, h));
+                }
+                return None;
+            }
+            // VP8X extended: canvas width/height at chunk_data+4 (24-bit LE each)
+            b"VP8X" => {
+                if chunk_data + 10 <= len {
+                    let w = (data[chunk_data + 4] as u32)
+                        | ((data[chunk_data + 5] as u32) << 8)
+                        | ((data[chunk_data + 6] as u32) << 16);
+                    let h = (data[chunk_data + 7] as u32)
+                        | ((data[chunk_data + 8] as u32) << 8)
+                        | ((data[chunk_data + 9] as u32) << 16);
+                    return Some((w + 1, h + 1)); // VP8X stores (width-1, height-1)
+                }
+                return None;
+            }
+            _ => {}
+        }
+
+        // Next chunk (padded to even boundary)
+        offset = chunk_data + chunk_size + (chunk_size & 1);
+    }
+    None
+}
+
 // ── POSIX fallback (for non-Windows builds) ──────────────────────────────────
 
 #[cfg(not(windows))]

@@ -966,24 +966,47 @@ async function scanFolderInternal(folderPath, options = {}) {
         }
     }
 
-    // === Phase B: Dimension scanning via worker pool (unchanged) ===
+    // === Phase B: Dimension scanning ===
     if (!skipDimensions) {
-        const needsDimensionScan = (scanImageDimensions && getSizeOf()) || (scanVideoDimensions && ffprobePath);
-        if (needsDimensionScan && dimensionPool) {
-            const filesToScan = fileObjs.filter(f =>
-                (f.isImage && scanImageDimensions) || (!f.isImage && scanVideoDimensions && ffprobePath)
-            ).map(f => ({ path: f.path, isImage: f.isImage }));
+        // Native path: use Rust for images (non-SVG), worker pool for videos + SVG
+        if (scanImageDimensions && nativeScanner && nativeScanner.readImageDimensions) {
+            const nativeImagePaths = fileObjs
+                .filter(f => f.isImage && !f.path.toLowerCase().endsWith('.svg'))
+                .map(f => f.path);
+            if (nativeImagePaths.length > 0) {
+                const dimStart = performance.now();
+                const nativeResults = nativeScanner.readImageDimensions(nativeImagePaths);
+                const dimMap = new Map();
+                for (const r of nativeResults) {
+                    if (r.width && r.height) dimMap.set(r.path, { width: r.width, height: r.height });
+                }
+                for (const fileObj of fileObjs) {
+                    const dims = dimMap.get(fileObj.path);
+                    if (dims) { fileObj.width = dims.width; fileObj.height = dims.height; }
+                }
+                logPerf('scan-folder.dimensions-native', dimStart, { files: nativeImagePaths.length, hits: dimMap.size });
+            }
+        }
+
+        // Worker pool: videos, SVGs, and images if native not available
+        const needsWorkerScan = (scanImageDimensions && (!nativeScanner || !nativeScanner.readImageDimensions) && getSizeOf())
+            || (scanImageDimensions && fileObjs.some(f => f.isImage && f.path.toLowerCase().endsWith('.svg')))
+            || (scanVideoDimensions && ffprobePath);
+        if (needsWorkerScan && dimensionPool) {
+            const filesToScan = fileObjs.filter(f => {
+                if (f.width) return false; // Already resolved by native
+                if (f.isImage && scanImageDimensions) return true; // SVGs and fallback
+                if (!f.isImage && scanVideoDimensions && ffprobePath) return true;
+                return false;
+            }).map(f => ({ path: f.path, isImage: f.isImage }));
 
             if (filesToScan.length > 0) {
                 const dimensionStart = performance.now();
                 const dimensionMap = await dimensionPool.scanDimensions(filesToScan);
-                logPerf('scan-folder.dimensions', dimensionStart, { files: filesToScan.length, hits: dimensionMap.size });
+                logPerf('scan-folder.dimensions-worker', dimensionStart, { files: filesToScan.length, hits: dimensionMap.size });
                 for (const fileObj of fileObjs) {
                     const dims = dimensionMap.get(fileObj.path);
-                    if (dims) {
-                        fileObj.width = dims.width;
-                        fileObj.height = dims.height;
-                    }
+                    if (dims) { fileObj.width = dims.width; fileObj.height = dims.height; }
                 }
             }
         }
@@ -1376,32 +1399,56 @@ ipcMain.handle('scan-folders-for-smart-collection', async (event, folderEntries,
     }
 
     // Phase 3: Dimension scan only the surviving files
-    const needsDimensionScan = (options.scanImageDimensions || options.scanVideoDimensions) && dimensionPool;
+    const needsDimensionScan = (options.scanImageDimensions || options.scanVideoDimensions);
     if (needsDimensionScan && allFiles.length > 0) {
-        const filesToScan = allFiles.filter(f => {
-            // Check main-process dimension cache first
+        // Apply cache first
+        const uncachedFiles = allFiles.filter(f => {
             const cacheKey = `${f.path}|${f.mtime}`;
             const cached = dimensionCacheMain.get(cacheKey);
-            if (cached) {
-                f.width = cached.width;
-                f.height = cached.height;
-                return false;
+            if (cached) { f.width = cached.width; f.height = cached.height; return false; }
+            return true;
+        });
+
+        // Native path for images (non-SVG)
+        if (options.scanImageDimensions && nativeScanner && nativeScanner.readImageDimensions) {
+            const nativeImagePaths = uncachedFiles
+                .filter(f => f.type === 'image' && !f.path.toLowerCase().endsWith('.svg'))
+                .map(f => f.path);
+            if (nativeImagePaths.length > 0) {
+                const dimStart = performance.now();
+                const nativeResults = nativeScanner.readImageDimensions(nativeImagePaths);
+                for (const r of nativeResults) {
+                    if (r.width && r.height) {
+                        const fileObj = uncachedFiles.find(f => f.path === r.path);
+                        if (fileObj) {
+                            fileObj.width = r.width; fileObj.height = r.height;
+                            const cacheKey = `${fileObj.path}|${fileObj.mtime}`;
+                            dimensionCacheMain.set(cacheKey, { width: r.width, height: r.height });
+                        }
+                    }
+                }
+                logPerf('smart-collection.dimensions-native', dimStart, { files: nativeImagePaths.length });
             }
-            return (f.type === 'image' && options.scanImageDimensions) ||
-                   (f.type === 'video' && options.scanVideoDimensions && ffprobePath);
+        }
+
+        // Worker pool for remaining (videos, SVGs, fallback images)
+        const workerFiles = uncachedFiles.filter(f => {
+            if (f.width) return false; // Already resolved
+            if (f.type === 'image' && options.scanImageDimensions) return true;
+            if (f.type === 'video' && options.scanVideoDimensions && ffprobePath) return true;
+            return false;
         }).map(f => ({ path: f.path, isImage: f.type === 'image' }));
 
-        if (filesToScan.length > 0) {
+        if (workerFiles.length > 0 && dimensionPool) {
             const dimensionStart = performance.now();
-            const dimensionMap = await dimensionPool.scanDimensions(filesToScan);
-            logPerf('smart-collection.dimensions', dimensionStart, { scanned: filesToScan.length, hits: dimensionMap.size });
+            const dimensionMap = await dimensionPool.scanDimensions(workerFiles);
+            logPerf('smart-collection.dimensions-worker', dimensionStart, { scanned: workerFiles.length, hits: dimensionMap.size });
 
             for (const fileObj of allFiles) {
                 const dims = dimensionMap.get(fileObj.path);
                 if (dims) {
                     fileObj.width = dims.width;
                     fileObj.height = dims.height;
-                    // Populate dimension cache
                     const cacheKey = `${fileObj.path}|${fileObj.mtime}`;
                     dimensionCacheMain.set(cacheKey, { width: dims.width, height: dims.height });
                 }
@@ -2333,32 +2380,53 @@ ipcMain.handle('generate-thumbnails-batch', async (event, items) => {
 ipcMain.handle('scan-file-dimensions', async (event, files) => {
     const startTime = performance.now();
     try {
-        if (!dimensionPool || !Array.isArray(files) || files.length === 0) {
+        if (!Array.isArray(files) || files.length === 0) {
             logPerf('scan-file-dimensions', startTime, { files: 0, hits: 0 });
             return [];
         }
 
         const sanitizedFiles = files.filter(file =>
-            file &&
-            typeof file.path === 'string' &&
-            typeof file.isImage === 'boolean'
+            file && typeof file.path === 'string' && typeof file.isImage === 'boolean'
         );
         if (sanitizedFiles.length === 0) {
             logPerf('scan-file-dimensions', startTime, { files: 0, hits: 0 });
             return [];
         }
 
-        const dimensionMap = await dimensionPool.scanDimensions(sanitizedFiles);
-        const results = sanitizedFiles.map(file => {
-            const dims = dimensionMap.get(file.path);
-            return {
-                path: file.path,
-                width: dims ? dims.width : undefined,
-                height: dims ? dims.height : undefined
-            };
-        });
+        const results = sanitizedFiles.map(f => ({ path: f.path, width: undefined, height: undefined }));
 
-        logPerf('scan-file-dimensions', startTime, { files: sanitizedFiles.length, hits: dimensionMap.size });
+        // Native path for images (non-SVG)
+        if (nativeScanner && nativeScanner.readImageDimensions) {
+            const nativeImages = sanitizedFiles
+                .filter(f => f.isImage && !f.path.toLowerCase().endsWith('.svg'));
+            if (nativeImages.length > 0) {
+                const nativeResults = nativeScanner.readImageDimensions(nativeImages.map(f => f.path));
+                const nativeMap = new Map();
+                for (const r of nativeResults) {
+                    if (r.width && r.height) nativeMap.set(r.path, { width: r.width, height: r.height });
+                }
+                for (const r of results) {
+                    const dims = nativeMap.get(r.path);
+                    if (dims) { r.width = dims.width; r.height = dims.height; }
+                }
+            }
+        }
+
+        // Worker pool for remaining (videos, SVGs, fallback)
+        const workerFiles = sanitizedFiles.filter((f, i) => !results[i].width);
+        if (workerFiles.length > 0 && dimensionPool) {
+            const dimensionMap = await dimensionPool.scanDimensions(
+                workerFiles.map(f => ({ path: f.path, isImage: f.isImage }))
+            );
+            for (const r of results) {
+                if (!r.width) {
+                    const dims = dimensionMap.get(r.path);
+                    if (dims) { r.width = dims.width; r.height = dims.height; }
+                }
+            }
+        }
+
+        logPerf('scan-file-dimensions', startTime, { files: sanitizedFiles.length, hits: results.filter(r => r.width).length });
         return results;
     } catch (error) {
         logPerf('scan-file-dimensions', startTime, { error: 1 });

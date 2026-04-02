@@ -1530,7 +1530,7 @@ ipcMain.handle('scan-folders-for-smart-collection', async (event, folderEntries,
         }
     }
 
-    logPerf('smart-collection.total', scanStart, { folders: allFoldersToScan.length, files: allFiles.length });
+    logPerf('smart-collection.total', scanStart, { folders: folderEntries.length, files: allFiles.length });
     return { items: allFiles, errors };
 });
 

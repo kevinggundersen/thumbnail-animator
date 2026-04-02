@@ -205,6 +205,41 @@ fn scan_dir_recursive_posix(
     }
 }
 
+#[napi(object)]
+pub struct HashResult {
+    pub path: String,
+    pub hash: Option<String>,
+    pub error: Option<String>,
+}
+
+/// Hash multiple files in parallel using BLAKE3 + rayon threadpool.
+/// Returns one HashResult per input path.
+#[napi]
+pub fn hash_files(file_paths: Vec<String>) -> Vec<HashResult> {
+    use rayon::prelude::*;
+
+    file_paths
+        .into_par_iter()
+        .map(|file_path| match hash_file_blake3(&file_path) {
+            Ok(hex) => HashResult {
+                path: file_path,
+                hash: Some(hex),
+                error: None,
+            },
+            Err(e) => HashResult {
+                path: file_path,
+                hash: None,
+                error: Some(e),
+            },
+        })
+        .collect()
+}
+
+fn hash_file_blake3(path: &str) -> std::result::Result<String, String> {
+    let data = std::fs::read(path).map_err(|e| e.to_string())?;
+    Ok(blake3::hash(&data).to_hex().to_string())
+}
+
 // ── POSIX fallback (for non-Windows builds) ──────────────────────────────────
 
 #[cfg(not(windows))]

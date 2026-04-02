@@ -9,6 +9,8 @@ crate-type = ["cdylib"]
 [dependencies]
 napi = { version = "2", features = ["napi4"] }
 napi-derive = "2"
+blake3 = "1"
+rayon = "1"
 
 [build-dependencies]
 napi-build = "2"

@@ -2422,9 +2422,32 @@ ipcMain.handle('scan-duplicates', async (event, folderPath, options = {}) => {
 
         event.sender.send('duplicate-scan-progress', { current: 0, total: files.length, phase: 'hashing' });
 
+        // Exact hashes: use native BLAKE3 if available (parallel, ~3x faster)
+        let exactHashMap;
+        if (nativeScanner && nativeScanner.hashFiles) {
+            const hashStart = performance.now();
+            const results = nativeScanner.hashFiles(files.map(f => f.path));
+            exactHashMap = new Map();
+            for (const r of results) {
+                exactHashMap.set(r.path, r.hash || null);
+            }
+            logPerf('scan-duplicates.exact-hash-native', hashStart, { files: files.length });
+            event.sender.send('duplicate-scan-progress', { current: files.length, total: files.length, phase: 'hashing' });
+        }
+
+        // Perceptual hashes: still use worker pool (needs sharp for image resizing)
         const hashMap = await hashPool.scanHashes(files, (completed, total) => {
-            event.sender.send('duplicate-scan-progress', { current: completed, total, phase: 'hashing' });
+            if (!exactHashMap) {
+                event.sender.send('duplicate-scan-progress', { current: completed, total, phase: 'hashing' });
+            }
         });
+
+        // Merge: use native BLAKE3 for exact hashes if available, else use SHA-256 from worker pool
+        if (exactHashMap) {
+            for (const [filePath, hashes] of hashMap) {
+                hashes.exactHash = exactHashMap.get(filePath) || hashes.exactHash;
+            }
+        }
 
         event.sender.send('duplicate-scan-progress', { current: 0, total: 0, phase: 'comparing' });
 

@@ -1,6 +1,15 @@
 // Increase libuv threadpool for parallel stat() calls (must be before any async I/O)
 process.env.UV_THREADPOOL_SIZE = '16';
 
+// ── Startup Timeline (always-on, runs once) ──────────────────────────────────
+const { performance } = require('perf_hooks');
+const startupT0 = performance.now();
+const startupTimeline = [];
+function markStartup(phase) {
+    startupTimeline.push({ phase, time: Math.round((performance.now() - startupT0) * 100) / 100 });
+}
+markStartup('process-start');
+
 process.on('uncaughtException', (err) => {
     console.error('UNCAUGHT EXCEPTION:', err);
 });
@@ -45,8 +54,8 @@ try {
     nativeScanner = null;
 }
 const { execFile } = require('child_process');
-const { performance } = require('perf_hooks');
 const { autoUpdater } = require('electron-updater');
+markStartup('modules-loaded');
 
 const PERF_TEST_ENABLED = process.env.PERF_TEST === '1';
 
@@ -104,6 +113,7 @@ let ffmpegPath = null;
     }
     if (!ffmpegPath) console.log('ffmpeg not found — video thumbnails will not be generated');
 })();
+markStartup('fftools-detected');
 
 // Worker pool for parallel dimension scanning
 let dimensionPool = new DimensionWorkerPool(ffprobePath);
@@ -111,6 +121,7 @@ let dimensionPool = new DimensionWorkerPool(ffprobePath);
 // Worker pool for thumbnail generation (off main process)
 let thumbnailPool = new ThumbnailWorkerPool({ ffmpegPath, ffprobePath });
 let hashPool = new HashWorkerPool();
+markStartup('worker-pools-created');
 // CLIP model state — loaded directly in main process (no worker threads)
 let clipModel = null; // { visionModel, textModel, processor, tokenizer, RawImage, sharp }
 
@@ -332,6 +343,7 @@ app.setPath('userData', userDataPath);
 
 // Initialize SQLite database
 const appDb = new AppDatabase(path.join(userDataPath, 'thumbnail-animator.db'));
+markStartup('db-initialized');
 
 // Initialize video thumbnail cache directory now that userDataPath is set
 videoThumbDir = path.join(userDataPath, 'video-thumbnails');
@@ -570,7 +582,20 @@ function createWindow() {
     const win = new BrowserWindow(windowOptions);
 
     win.loadFile('index.html');
-    
+
+    win.webContents.once('did-finish-load', () => {
+        markStartup('renderer-loaded');
+        const mem = process.memoryUsage();
+        console.log('\n[Startup Timeline]');
+        let prev = 0;
+        for (const { phase, time } of startupTimeline) {
+            const delta = Math.round((time - prev) * 100) / 100;
+            console.log(`  ${phase.padEnd(24)} +${String(delta).padStart(7)}ms  (total: ${time}ms)`);
+            prev = time;
+        }
+        console.log(`[Startup Memory] RSS: ${(mem.rss / 1024 / 1024).toFixed(1)}MB | Heap: ${(mem.heapUsed / 1024 / 1024).toFixed(1)}/${(mem.heapTotal / 1024 / 1024).toFixed(1)}MB | External: ${(mem.external / 1024 / 1024).toFixed(1)}MB\n`);
+    });
+
     // Restore maximized state after window is ready
     if (windowState.isMaximized) {
         win.once('ready-to-show', () => {
@@ -652,9 +677,12 @@ const pluginStatesFile = path.join(pluginCacheDir, 'plugin-states.json');
 const pluginRegistry = new PluginRegistry(pluginCacheDir, pluginStatesFile);
 pluginRegistry.discover(path.join(__dirname, 'plugins', 'builtin'));
 pluginRegistry.discover(path.join(app.getPath('userData'), 'plugins'));
+markStartup('plugins-loaded');
 
 app.whenReady().then(() => {
+    markStartup('app-ready');
     const win = createWindow();
+    markStartup('window-created');
 
     // --- Auto-updater (notify only) ---
     autoUpdater.autoDownload = false;
@@ -778,6 +806,18 @@ ipcMain.handle('trigger-gc', () => {
         global.gc();
         // console.log('GC Triggered');
     }
+});
+
+ipcMain.handle('get-startup-timeline', () => startupTimeline);
+
+ipcMain.handle('get-memory-info', () => {
+    const mem = process.memoryUsage();
+    return {
+        rss: mem.rss,
+        heapUsed: mem.heapUsed,
+        heapTotal: mem.heapTotal,
+        external: mem.external,
+    };
 });
 
 // Concurrency-limited async pool: runs at most `limit` tasks at a time, preserves result order

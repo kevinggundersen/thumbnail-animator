@@ -5132,6 +5132,8 @@ video.blow-up-media {
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
     user-select: none;
     transition: opacity 0.15s ease;
+    display: flex;
+    flex-direction: column;
 }
 
 :root.light-theme .perf-dashboard {
@@ -5200,7 +5202,8 @@ video.blow-up-media {
 .perf-dashboard-body {
     padding: 8px 12px;
     overflow-y: auto;
-    max-height: 340px;
+    flex: 1;
+    min-height: 0;
 }
 
 .perf-metric {
@@ -5275,6 +5278,29 @@ video.blow-up-media {
     opacity: 0.4;
     padding: 20px 0;
     font-size: 11px;
+}
+
+.perf-section-label {
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    opacity: 0.4;
+    margin: 10px 0 6px;
+    padding-bottom: 3px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.perf-section-label:first-child {
+    margin-top: 0;
+}
+
+:root.light-theme .perf-section-label {
+    border-bottom-color: rgba(0, 0, 0, 0.08);
+}
+
+.perf-startup-row {
+    margin-bottom: 5px;
 }
 
 /* ==================== COMMAND PALETTE ==================== */

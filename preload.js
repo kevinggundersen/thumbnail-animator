@@ -5,6 +5,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     selectFolder: (defaultPath) => ipcRenderer.invoke('select-folder', defaultPath),
     scanFolder: (path, options) => ipcRenderer.invoke('scan-folder', path, options),
     triggerGC: () => ipcRenderer.invoke('trigger-gc'),
+    getStartupTimeline: () => ipcRenderer.invoke('get-startup-timeline'),
+    getMemoryInfo: () => ipcRenderer.invoke('get-memory-info'),
     revealInExplorer: (filePath) => ipcRenderer.invoke('reveal-in-explorer', filePath),
     renameFile: (filePath, newName) => ipcRenderer.invoke('rename-file', filePath, newName),
     deleteFile: (filePath) => ipcRenderer.invoke('delete-file', filePath),

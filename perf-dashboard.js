@@ -8,6 +8,8 @@ const perfTest = (() => {
     const history = {};  // { operationName: [{ duration, cardCount, itemCount, timestamp }] }
     const MAX_HISTORY = 30;
     let renderScheduled = false;
+    let startupData = null;   // cached after first fetch
+    let memoryData = null;    // refreshed on each show()
 
     // Thresholds for color coding (ms)
     const thresholds = {
@@ -63,14 +65,65 @@ const perfTest = (() => {
         const body = document.getElementById('perf-dashboard-body');
         if (!body) return;
 
+        let html = '';
+
+        // ── Startup Timeline ──
+        if (startupData && startupData.length > 0) {
+            const total = startupData[startupData.length - 1].time;
+            html += '<div class="perf-section-label">Startup Timeline</div>';
+            let prev = 0;
+            for (const { phase, time } of startupData) {
+                const delta = Math.round((time - prev) * 100) / 100;
+                const pct = total > 0 ? Math.min(100, (delta / total) * 100) : 0;
+                const cls = delta < 20 ? 'fast' : delta < 100 ? 'medium' : 'slow';
+                html += `<div class="perf-metric perf-startup-row">
+                    <div class="perf-metric-header">
+                        <span class="perf-metric-name">${phase}</span>
+                        <span class="perf-metric-last ${cls}">+${delta}ms</span>
+                    </div>
+                    <div class="perf-metric-bar-track">
+                        <div class="perf-metric-bar ${cls}" style="width:${pct}%"></div>
+                    </div>
+                    <div class="perf-metric-detail">total: ${time}ms</div>
+                </div>`;
+                prev = time;
+            }
+            html += `<div class="perf-metric"><div class="perf-metric-stats"><span>Total startup: ${total}ms</span></div></div>`;
+        }
+
+        // ── Memory ──
+        if (memoryData) {
+            const fmt = (bytes) => (bytes / 1024 / 1024).toFixed(1) + 'MB';
+            const rssMB = memoryData.rss / 1024 / 1024;
+            const cls = rssMB < 300 ? 'fast' : rssMB < 600 ? 'medium' : 'slow';
+            html += '<div class="perf-section-label">Memory (Main Process)</div>';
+            html += `<div class="perf-metric">
+                <div class="perf-metric-header">
+                    <span class="perf-metric-name">RSS</span>
+                    <span class="perf-metric-last ${cls}">${fmt(memoryData.rss)}</span>
+                </div>
+                <div class="perf-metric-bar-track">
+                    <div class="perf-metric-bar ${cls}" style="width:${Math.min(100, rssMB / 10)}%"></div>
+                </div>
+                <div class="perf-metric-stats">
+                    <span>Heap: ${fmt(memoryData.heapUsed)} / ${fmt(memoryData.heapTotal)}</span>
+                    <span>External: ${fmt(memoryData.external)}</span>
+                </div>
+            </div>`;
+        }
+
+        // ── Live Metrics ──
         const ops = Object.keys(history);
-        if (ops.length === 0) {
+        if (ops.length === 0 && !startupData && !memoryData) {
             body.innerHTML = '<div class="perf-empty">Use the app to see live metrics</div>';
             return;
         }
 
+        if (ops.length > 0) {
+            html += '<div class="perf-section-label">Live Metrics</div>';
+        }
+
         // Build HTML in one pass
-        let html = '';
         for (const op of ops) {
             const entries = history[op];
             const durations = entries.map(e => e.duration);
@@ -106,10 +159,21 @@ const perfTest = (() => {
         body.innerHTML = html;
     }
 
-    function show() {
+    async function show() {
         visible = true;
         const el = document.getElementById('perf-dashboard');
         if (el) el.classList.remove('hidden');
+
+        // Fetch startup timeline (once) and memory (every open)
+        try {
+            if (!startupData && window.electronAPI?.getStartupTimeline) {
+                startupData = await window.electronAPI.getStartupTimeline();
+            }
+            if (window.electronAPI?.getMemoryInfo) {
+                memoryData = await window.electronAPI.getMemoryInfo();
+            }
+        } catch { /* IPC not available */ }
+
         renderDashboard();
     }
 

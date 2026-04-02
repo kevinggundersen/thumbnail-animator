@@ -9405,6 +9405,71 @@ if (copyNameBtn) {
     });
 }
 
+// --- Copy Image to Clipboard ---
+
+async function copyImageToClipboardFromElement(element) {
+    try {
+        let canvas;
+        if (element instanceof HTMLCanvasElement) {
+            canvas = element;
+        } else if (element instanceof HTMLVideoElement) {
+            const w = element.videoWidth, h = element.videoHeight;
+            if (!w || !h) { showToast('Video not ready', 'error'); return false; }
+            canvas = document.createElement('canvas');
+            canvas.width = w; canvas.height = h;
+            canvas.getContext('2d').drawImage(element, 0, 0, w, h);
+        } else if (element instanceof HTMLImageElement) {
+            const w = element.naturalWidth, h = element.naturalHeight;
+            if (!w || !h) { showToast('Image not loaded', 'error'); return false; }
+            canvas = document.createElement('canvas');
+            canvas.width = w; canvas.height = h;
+            canvas.getContext('2d').drawImage(element, 0, 0, w, h);
+        } else {
+            showToast('Cannot copy this media type', 'error');
+            return false;
+        }
+        const blob = await new Promise((resolve, reject) => {
+            canvas.toBlob(b => b ? resolve(b) : reject(new Error('Failed to create blob')), 'image/png');
+        });
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+        return true;
+    } catch (error) {
+        console.error('Failed to copy image:', error);
+        showToast('Failed to copy image', 'error');
+        return false;
+    }
+}
+
+const copyImageBtn = document.getElementById('copy-image-btn');
+if (copyImageBtn) {
+    copyImageBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const filePath = copyPathBtn.dataset.filePath;
+        let success = false;
+        // For video frames, capture from canvas since there's no image file
+        if (lightboxVideo.style.display !== 'none' && lightboxVideo.src) {
+            success = await copyImageToClipboardFromElement(lightboxVideo);
+        } else if (filePath) {
+            // For images and GIFs, copy the actual file for paste in file explorers
+            try {
+                const result = await window.electronAPI.copyImageToClipboard(filePath);
+                success = result.success;
+                if (!success) showToast(`Could not copy image: ${result.error}`, 'error');
+            } catch (error) {
+                showToast(`Could not copy image: ${friendlyError(error)}`, 'error');
+            }
+        } else {
+            showToast('No image to copy', 'error');
+            return;
+        }
+        if (success) {
+            const originalText = copyImageBtn.textContent;
+            copyImageBtn.textContent = 'Copied!';
+            setTimeout(() => { copyImageBtn.textContent = originalText; }, 1000);
+        }
+    });
+}
+
 // --- Blow-Up Preview (right-click hold) ---
 
 function getBlowUpOverlay() {
@@ -9745,6 +9810,20 @@ contextMenu.addEventListener('click', async (e) => {
                 showToast(`Could not open file: ${friendlyError(error)}`, 'error');
             }
             break;
+
+        case 'copy-file': {
+            try {
+                const result = await window.electronAPI.copyImageToClipboard(filePath);
+                if (result.success) {
+                    showToast('Copied to clipboard', 'success');
+                } else {
+                    showToast(`Could not copy: ${result.error}`, 'error');
+                }
+            } catch (error) {
+                showToast(`Could not copy: ${friendlyError(error)}`, 'error');
+            }
+            break;
+        }
 
         case 'add-to-collection': {
             // Gather selected files (multi-select support)

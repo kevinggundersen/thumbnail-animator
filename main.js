@@ -8,7 +8,7 @@ process.on('unhandledRejection', (err) => {
     console.error('UNHANDLED REJECTION:', err);
 });
 
-const { app, BrowserWindow, Menu, ipcMain, dialog, shell, screen, nativeImage } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, dialog, shell, screen, nativeImage, clipboard } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const DimensionWorkerPool = require('./worker-pool');
@@ -1346,6 +1346,40 @@ ipcMain.handle('open-with-default', async (event, filePath) => {
         return { success: true };
     } catch (error) {
         console.error('Error opening file with default app:', error);
+        return { success: false, error: error.message };
+    }
+});
+
+ipcMain.handle('copy-image-to-clipboard', async (event, filePath) => {
+    try {
+        // Copy file to clipboard so it can be pasted in file explorers
+        if (process.platform === 'win32') {
+            const { execFile } = require('child_process');
+            const escaped = filePath.replace(/'/g, "''");
+            await new Promise((resolve, reject) => {
+                execFile('powershell.exe', [
+                    '-NoProfile', '-NonInteractive', '-Command',
+                    `Set-Clipboard -LiteralPath '${escaped}'`
+                ], { windowsHide: true }, (err) => err ? reject(err) : resolve());
+            });
+        } else {
+            // Fallback for non-Windows: copy as image data
+            const ext = path.extname(filePath).toLowerCase();
+            let image;
+            if (['.gif', '.webp', '.avif', '.tiff', '.tif'].includes(ext)) {
+                const sharp = require('sharp');
+                const pngBuffer = await sharp(filePath, { animated: false }).png().toBuffer();
+                image = nativeImage.createFromBuffer(pngBuffer);
+            } else {
+                image = nativeImage.createFromPath(filePath);
+            }
+            if (image.isEmpty()) {
+                return { success: false, error: 'Could not load image' };
+            }
+            clipboard.writeImage(image);
+        }
+        return { success: true };
+    } catch (error) {
         return { success: false, error: error.message };
     }
 });

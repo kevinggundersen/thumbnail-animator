@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     openUrl: (url) => ipcRenderer.invoke('open-url', url),
     openWithDefault: (filePath) => ipcRenderer.invoke('open-with-default', filePath),
     openWith: (filePath) => ipcRenderer.invoke('open-with', filePath),
+    copyImageToClipboard: (filePath) => ipcRenderer.invoke('copy-image-to-clipboard', filePath),
     getDrives: () => ipcRenderer.invoke('get-drives'),
     listSubdirectories: (folderPath) => ipcRenderer.invoke('list-subdirectories', folderPath),
     onWindowMinimized: (callback) => ipcRenderer.on('window-minimized', callback),

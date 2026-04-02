@@ -92,5 +92,51 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.removeAllListeners('update-error');
     },
     downloadUpdate: () => ipcRenderer.invoke('download-update'),
-    installUpdate: () => ipcRenderer.invoke('install-update')
+    installUpdate: () => ipcRenderer.invoke('install-update'),
+    // SQLite Database
+    dbCheckMigrationStatus: () => ipcRenderer.invoke('db-check-migration-status'),
+    dbRunMigration: (data) => ipcRenderer.invoke('db-run-migration', data),
+    dbGetMeta: (key) => ipcRenderer.invoke('db-get-meta', key),
+    dbSetMeta: (key, value) => ipcRenderer.invoke('db-set-meta', key, value),
+    // Ratings
+    dbGetAllRatings: () => ipcRenderer.invoke('db-get-all-ratings'),
+    dbSetRating: (filePath, rating) => ipcRenderer.invoke('db-set-rating', filePath, rating),
+    // Pins
+    dbGetAllPinned: () => ipcRenderer.invoke('db-get-all-pinned'),
+    dbSetPinned: (filePath, pinned) => ipcRenderer.invoke('db-set-pinned', filePath, pinned),
+    // Favorites
+    dbGetFavorites: () => ipcRenderer.invoke('db-get-favorites'),
+    dbSaveFavorites: (favObj) => ipcRenderer.invoke('db-save-favorites', favObj),
+    // Recent files
+    dbGetRecentFiles: () => ipcRenderer.invoke('db-get-recent-files'),
+    dbAddRecentFile: (entry) => ipcRenderer.invoke('db-add-recent-file', entry),
+    dbClearRecentFiles: () => ipcRenderer.invoke('db-clear-recent-files'),
+    // Collections
+    dbGetAllCollections: () => ipcRenderer.invoke('db-get-all-collections'),
+    dbGetCollection: (id) => ipcRenderer.invoke('db-get-collection', id),
+    dbSaveCollection: (col) => ipcRenderer.invoke('db-save-collection', col),
+    dbDeleteCollection: (id) => ipcRenderer.invoke('db-delete-collection', id),
+    dbGetCollectionFiles: (collectionId) => ipcRenderer.invoke('db-get-collection-files', collectionId),
+    dbAddFilesToCollection: (collectionId, filePaths) => ipcRenderer.invoke('db-add-files-to-collection', collectionId, filePaths),
+    dbRemoveFileFromCollection: (collectionId, filePath) => ipcRenderer.invoke('db-remove-file-from-collection', collectionId, filePath),
+    dbRemoveFilesFromCollection: (collectionId, filePaths) => ipcRenderer.invoke('db-remove-files-from-collection', collectionId, filePaths),
+    // Tags
+    dbCreateTag: (name, description, color) => ipcRenderer.invoke('db-create-tag', name, description, color),
+    dbUpdateTag: (id, updates) => ipcRenderer.invoke('db-update-tag', id, updates),
+    dbDeleteTag: (id) => ipcRenderer.invoke('db-delete-tag', id),
+    dbGetAllTags: () => ipcRenderer.invoke('db-get-all-tags'),
+    dbGetTag: (id) => ipcRenderer.invoke('db-get-tag', id),
+    dbSearchTags: (query) => ipcRenderer.invoke('db-search-tags', query),
+    dbGetTopTags: (limit) => ipcRenderer.invoke('db-get-top-tags', limit),
+    // File-tag associations
+    dbAddTagToFile: (filePath, tagId) => ipcRenderer.invoke('db-add-tag-to-file', filePath, tagId),
+    dbRemoveTagFromFile: (filePath, tagId) => ipcRenderer.invoke('db-remove-tag-from-file', filePath, tagId),
+    dbGetTagsForFile: (filePath) => ipcRenderer.invoke('db-get-tags-for-file', filePath),
+    dbGetFilesForTag: (tagId) => ipcRenderer.invoke('db-get-files-for-tag', tagId),
+    dbBulkTagFiles: (filePaths, tagId) => ipcRenderer.invoke('db-bulk-tag-files', filePaths, tagId),
+    dbBulkRemoveTagFromFiles: (filePaths, tagId) => ipcRenderer.invoke('db-bulk-remove-tag-from-files', filePaths, tagId),
+    dbQueryFilesByTags: (expression) => ipcRenderer.invoke('db-query-files-by-tags', expression),
+    dbSuggestTags: (filePath) => ipcRenderer.invoke('db-suggest-tags', filePath),
+    dbExportTags: () => ipcRenderer.invoke('db-export-tags'),
+    dbImportTags: (data) => ipcRenderer.invoke('db-import-tags', data)
 });

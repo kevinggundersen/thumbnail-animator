@@ -15,6 +15,7 @@ const DimensionWorkerPool = require('./worker-pool');
 const ThumbnailWorkerPool = require('./thumbnail-pool');
 const HashWorkerPool = require('./hash-pool');
 const PluginRegistry = require('./plugins/plugin-registry');
+const AppDatabase = require('./database');
 // ClipWorkerPool removed — inference runs directly in the main process
 // to avoid native module ABI issues in Electron worker threads.
 let sizeOf;
@@ -320,6 +321,9 @@ if (!fs.existsSync(userDataPath)) {
     fs.mkdirSync(userDataPath, { recursive: true });
 }
 app.setPath('userData', userDataPath);
+
+// Initialize SQLite database
+const appDb = new AppDatabase(path.join(userDataPath, 'thumbnail-animator.db'));
 
 // Initialize video thumbnail cache directory now that userDataPath is set
 videoThumbDir = path.join(userDataPath, 'video-thumbnails');
@@ -2952,6 +2956,7 @@ app.on('before-quit', async () => {
         hashPool = null;
     }
     clipModel = null;
+    try { appDb.close(); } catch {}
     for (const [folderPath, watcher] of watchedFolders) {
         try {
             await watcher.close();
@@ -2962,3 +2967,172 @@ app.on('before-quit', async () => {
     watchedFolders.clear();
 });
 
+// ── SQLite Database IPC Handlers ─────────────────────────────────────────────
+
+// Migration
+ipcMain.handle('db-check-migration-status', () => {
+    try { return { success: true, data: appDb.checkMigrationStatus() }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+ipcMain.handle('db-run-migration', (event, data) => {
+    try { appDb.runMigration(data); return { success: true }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+ipcMain.handle('db-get-meta', (event, key) => {
+    try { return { success: true, data: appDb.getMeta(key) }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+ipcMain.handle('db-set-meta', (event, key, value) => {
+    try { appDb.setMeta(key, value); return { success: true }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+
+// Ratings
+ipcMain.handle('db-get-all-ratings', () => {
+    try { return { success: true, data: appDb.getAllRatings() }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+ipcMain.handle('db-set-rating', (event, filePath, rating) => {
+    try { appDb.setRating(filePath, rating); return { success: true }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+
+// Pins
+ipcMain.handle('db-get-all-pinned', () => {
+    try { return { success: true, data: appDb.getAllPinned() }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+ipcMain.handle('db-set-pinned', (event, filePath, pinned) => {
+    try { appDb.setPinned(filePath, pinned); return { success: true }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+
+// Favorites
+ipcMain.handle('db-get-favorites', () => {
+    try { return { success: true, data: appDb.getFavorites() }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+ipcMain.handle('db-save-favorites', (event, favObj) => {
+    try { appDb.saveFavorites(favObj); return { success: true }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+
+// Recent files
+ipcMain.handle('db-get-recent-files', () => {
+    try { return { success: true, data: appDb.getRecentFiles() }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+ipcMain.handle('db-add-recent-file', (event, entry) => {
+    try { appDb.addRecentFile(entry); return { success: true }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+ipcMain.handle('db-clear-recent-files', () => {
+    try { appDb.clearRecentFiles(); return { success: true }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+
+// Collections
+ipcMain.handle('db-get-all-collections', () => {
+    try { return { success: true, data: appDb.getAllCollections() }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+ipcMain.handle('db-get-collection', (event, id) => {
+    try { return { success: true, data: appDb.getCollection(id) }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+ipcMain.handle('db-save-collection', (event, col) => {
+    try { return { success: true, data: appDb.saveCollection(col) }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+ipcMain.handle('db-delete-collection', (event, id) => {
+    try { appDb.deleteCollection(id); return { success: true }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+ipcMain.handle('db-get-collection-files', (event, collectionId) => {
+    try { return { success: true, data: appDb.getCollectionFiles(collectionId) }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+ipcMain.handle('db-add-files-to-collection', (event, collectionId, filePaths) => {
+    try { return { success: true, data: appDb.addFilesToCollection(collectionId, filePaths) }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+ipcMain.handle('db-remove-file-from-collection', (event, collectionId, filePath) => {
+    try { appDb.removeFileFromCollection(collectionId, filePath); return { success: true }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+ipcMain.handle('db-remove-files-from-collection', (event, collectionId, filePaths) => {
+    try { appDb.removeFilesFromCollection(collectionId, filePaths); return { success: true }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+
+// Tags
+ipcMain.handle('db-create-tag', (event, name, description, color) => {
+    try { return { success: true, data: appDb.createTag(name, description, color) }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+ipcMain.handle('db-update-tag', (event, id, updates) => {
+    try { return { success: true, data: appDb.updateTag(id, updates) }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+ipcMain.handle('db-delete-tag', (event, id) => {
+    try { appDb.deleteTag(id); return { success: true }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+ipcMain.handle('db-get-all-tags', () => {
+    try { return { success: true, data: appDb.getAllTags() }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+ipcMain.handle('db-get-tag', (event, id) => {
+    try { return { success: true, data: appDb.getTag(id) }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+ipcMain.handle('db-search-tags', (event, query) => {
+    try { return { success: true, data: appDb.searchTags(query) }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+ipcMain.handle('db-get-top-tags', (event, limit) => {
+    try { return { success: true, data: appDb.getTopTags(limit) }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+
+// File-tag associations
+ipcMain.handle('db-add-tag-to-file', (event, filePath, tagId) => {
+    try { appDb.addTagToFile(filePath, tagId); return { success: true }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+ipcMain.handle('db-remove-tag-from-file', (event, filePath, tagId) => {
+    try { appDb.removeTagFromFile(filePath, tagId); return { success: true }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+ipcMain.handle('db-get-tags-for-file', (event, filePath) => {
+    try { return { success: true, data: appDb.getTagsForFile(filePath) }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+ipcMain.handle('db-get-files-for-tag', (event, tagId) => {
+    try { return { success: true, data: appDb.getFilesForTag(tagId) }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+ipcMain.handle('db-bulk-tag-files', (event, filePaths, tagId) => {
+    try { appDb.bulkTagFiles(filePaths, tagId); return { success: true }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+ipcMain.handle('db-bulk-remove-tag-from-files', (event, filePaths, tagId) => {
+    try { appDb.bulkRemoveTagFromFiles(filePaths, tagId); return { success: true }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+ipcMain.handle('db-query-files-by-tags', (event, expression) => {
+    try { return { success: true, data: appDb.queryFilesByTags(expression) }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+ipcMain.handle('db-suggest-tags', (event, filePath) => {
+    try { return { success: true, data: appDb.suggestTagsForFile(filePath) }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+ipcMain.handle('db-export-tags', () => {
+    try { return { success: true, data: appDb.exportTags() }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+ipcMain.handle('db-import-tags', (event, data) => {
+    try { appDb.importTags(data); return { success: true }; }
+    catch (e) { return { success: false, error: e.message }; }
+});

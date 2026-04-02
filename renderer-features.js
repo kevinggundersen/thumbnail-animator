@@ -378,32 +378,30 @@ function defaultFavoritesStructure() {
     return { version: 2, groups: [{ id: 'uncategorized', name: 'Uncategorized', collapsed: false, items: [] }] };
 }
 
-function loadFavorites() {
-    const saved = localStorage.getItem('favorites');
-    if (saved) {
-        try {
-            const parsed = JSON.parse(saved);
-            if (Array.isArray(parsed)) {
-                // Migrate V1 flat array to V2 grouped structure
-                favorites = defaultFavoritesStructure();
-                favorites.groups[0].items = parsed;
-                saveFavorites();
-            } else if (parsed && parsed.version === 2) {
-                favorites = parsed;
-            } else {
-                favorites = defaultFavoritesStructure();
+async function loadFavorites() {
+    try {
+        const result = await window.electronAPI.dbGetFavorites();
+        if (result.success && result.data && result.data.groups && result.data.groups.length > 0) {
+            favorites = result.data;
+            // Ensure each item has a 'name' derived from path (SQLite only stores path)
+            for (const group of favorites.groups) {
+                for (const item of group.items) {
+                    if (!item.name && item.path) {
+                        item.name = item.path.split(/[/\\]/).pop();
+                    }
+                }
             }
-        } catch (e) {
+        } else {
             favorites = defaultFavoritesStructure();
         }
-    } else {
+    } catch (e) {
         favorites = defaultFavoritesStructure();
     }
     renderFavorites();
 }
 
 function saveFavorites() {
-    deferLocalStorageWrite('favorites', JSON.stringify(favorites));
+    window.electronAPI.dbSaveFavorites(favorites);
 }
 
 function renderFavorites() {
@@ -785,22 +783,39 @@ function promptFavGroupName(callback, defaultValue = '') {
 }
 
 // ==================== RECENT FILES ====================
-function loadRecentFiles() {
-    const saved = localStorage.getItem('recentFiles');
-    if (saved) {
-        try {
-            recentFiles = JSON.parse(saved);
-            // Keep only last 50
-            recentFiles = recentFiles.slice(0, 50);
-        } catch (e) {
+async function loadRecentFiles() {
+    try {
+        const result = await window.electronAPI.dbGetRecentFiles();
+        if (result.success && result.data) {
+            // SQLite only stores {path, addedAt}. Derive name/type/url for rendering.
+            recentFiles = result.data.map(r => {
+                const p = r.path;
+                const name = p.split(/[/\\]/).pop();
+                const ext = (name.split('.').pop() || '').toLowerCase();
+                const videoExts = ['mp4', 'avi', 'mkv', 'mov', 'webm', 'wmv', 'flv', 'm4v'];
+                const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'tiff', 'svg', 'ico'];
+                let type = 'unknown';
+                if (videoExts.includes(ext)) type = 'video';
+                else if (imageExts.includes(ext)) type = 'image';
+                return {
+                    path: p,
+                    name,
+                    url: 'file:///' + p.replace(/\\/g, '/'),
+                    type,
+                    timestamp: r.addedAt || Date.now()
+                };
+            });
+        } else {
             recentFiles = [];
         }
+    } catch (e) {
+        recentFiles = [];
     }
     renderRecentFiles();
 }
 
 function saveRecentFiles() {
-    deferLocalStorageWrite('recentFiles', JSON.stringify(recentFiles));
+    // Legacy: kept as no-op for any stale call sites
 }
 
 function addRecentFile(path, name, url, type) {
@@ -816,7 +831,8 @@ function addRecentFile(path, name, url, type) {
     });
     // Keep only last 50
     recentFiles = recentFiles.slice(0, 50);
-    saveRecentFiles();
+    // Persist to SQLite
+    window.electronAPI.dbAddRecentFile({ path, addedAt: Date.now() });
     renderRecentFiles();
 }
 
@@ -923,7 +939,7 @@ function getTimeAgo(timestamp) {
 
 function clearRecentFiles() {
     recentFiles = [];
-    saveRecentFiles();
+    window.electronAPI.dbClearRecentFiles();
     renderRecentFiles();
 }
 
@@ -2196,8 +2212,9 @@ function setFileRating(filePath, rating) {
     if (normalizedPath !== filePath) {
         fileRatings[normalizedPath] = rating;
     }
-    saveRatings();
-    
+    // Persist to SQLite (fire-and-forget, in-memory is already updated)
+    window.electronAPI.dbSetRating(normalizedPath, rating);
+
     // Update all cards with the same path immediately - use updateCardRating which calls updateCardStars
     updateCardRating(filePath, rating);
 }
@@ -2243,14 +2260,14 @@ function updateCardStars(card, rating, filePath) {
 }
 
 function saveRatings() {
-    deferLocalStorageWrite('fileRatings', JSON.stringify(fileRatings));
+    // Legacy: kept as no-op for any stale call sites
 }
 
-function loadRatings() {
+async function loadRatings() {
     try {
-        const saved = localStorage.getItem('fileRatings');
-        if (saved) {
-            fileRatings = JSON.parse(saved);
+        const result = await window.electronAPI.dbGetAllRatings();
+        if (result.success && result.data) {
+            fileRatings = result.data;
         }
     } catch (error) {
         console.error('Error loading ratings:', error);
@@ -2277,18 +2294,19 @@ function setFilePinned(filePath, pinned) {
         delete pinnedFiles[filePath];
         if (normalizedPath !== filePath) delete pinnedFiles[normalizedPath];
     }
-    savePins();
+    // Persist to SQLite (fire-and-forget)
+    window.electronAPI.dbSetPinned(normalizedPath, pinned);
 }
 
 function savePins() {
-    deferLocalStorageWrite('pinnedFiles', JSON.stringify(pinnedFiles));
+    // Legacy: kept as no-op for any stale call sites
 }
 
-function loadPins() {
+async function loadPins() {
     try {
-        const saved = localStorage.getItem('pinnedFiles');
-        if (saved) {
-            pinnedFiles = JSON.parse(saved);
+        const result = await window.electronAPI.dbGetAllPinned();
+        if (result.success && result.data) {
+            pinnedFiles = result.data;
         }
     } catch (error) {
         console.error('Error loading pins:', error);
@@ -2990,6 +3008,8 @@ function initNewFeatures() {
             reapplyStarFilter();
         });
     }
+
+    // Tag filter button — handler set via addEventListener in renderer.js
 
     if (filterStarsSortBtn) {
         updateStarSortButtonState();
@@ -4269,10 +4289,61 @@ window.addEventListener('DOMContentLoaded', async () => {
     initTheme();
     initThumbnailQuality();
     initZoom();
-    loadFavorites();
-    loadRecentFiles();
-    loadRatings();
-    loadPins();
+    // SQLite migration: check if we need to migrate from localStorage/IndexedDB
+    try {
+        const migrationStatus = await window.electronAPI.dbCheckMigrationStatus();
+        if (migrationStatus.success && !migrationStatus.data.migrationComplete) {
+            console.log('[SQLite] Running one-time migration from localStorage/IndexedDB...');
+            const migrationData = {};
+            // Gather ratings from localStorage
+            try {
+                const savedRatings = localStorage.getItem('fileRatings');
+                if (savedRatings) migrationData.fileRatings = JSON.parse(savedRatings);
+            } catch {}
+            // Gather pins from localStorage
+            try {
+                const savedPins = localStorage.getItem('pinnedFiles');
+                if (savedPins) migrationData.pinnedFiles = JSON.parse(savedPins);
+            } catch {}
+            // Gather favorites from localStorage
+            try {
+                const savedFavs = localStorage.getItem('favorites');
+                if (savedFavs) {
+                    const parsed = JSON.parse(savedFavs);
+                    if (Array.isArray(parsed)) {
+                        migrationData.favorites = { version: 2, groups: [{ id: 'default', name: 'Favorites', collapsed: false, items: parsed }] };
+                    } else if (parsed && parsed.version === 2) {
+                        migrationData.favorites = parsed;
+                    }
+                }
+            } catch {}
+            // Gather recent files from localStorage
+            try {
+                const savedRecent = localStorage.getItem('recentFiles');
+                if (savedRecent) migrationData.recentFiles = JSON.parse(savedRecent);
+            } catch {}
+            // Gather collections from IndexedDB
+            try {
+                if (typeof exportCollectionsData === 'function') {
+                    migrationData.collections = await exportCollectionsData();
+                }
+            } catch {}
+            // Run migration
+            const migResult = await window.electronAPI.dbRunMigration(migrationData);
+            if (migResult.success) {
+                console.log('[SQLite] Migration complete.');
+            } else {
+                console.error('[SQLite] Migration failed:', migResult.error);
+            }
+        }
+    } catch (e) {
+        console.error('[SQLite] Migration check failed:', e);
+    }
+
+    await loadFavorites();
+    await loadRecentFiles();
+    await loadRatings();
+    await loadPins();
     await initSidebar(); // Must be before loadTabs so sidebar is ready for highlight/expand
     loadTabs(); // This will handle tab restoration and navigation
     initVideoScrubber();

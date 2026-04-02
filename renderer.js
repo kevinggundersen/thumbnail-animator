@@ -1347,6 +1347,10 @@ let embeddingScanAbortController = null;
 let currentFilter = 'all'; // 'all', 'video', 'image'
 let starFilterActive = false;
 let starSortOrder = 'desc'; // 'none' (use settings sort), 'desc' (high to low), 'asc' (low to high)
+let tagFilterActive = false;
+let tagFilteredPaths = null; // Set<string> when filtering, null when not
+let activeTagFilters = []; // [{tagId, name, color}]
+let tagFilterOperator = 'AND'; // 'AND' or 'OR'
 
 // Track layout mode: 'masonry' (dynamic) or 'grid' (rigid row-based)
 let layoutMode = 'masonry'; // Default to masonry
@@ -1645,161 +1649,81 @@ function generateCollectionFileId() {
 }
 
 async function getAllCollections() {
-    if (!db) { try { await initIndexedDB(); } catch { return []; } }
-    return new Promise((resolve) => {
-        try {
-            const tx = db.transaction([COLLECTIONS_STORE], 'readonly');
-            const store = tx.objectStore(COLLECTIONS_STORE);
-            const request = store.getAll();
-            request.onsuccess = () => {
-                collectionsCache = (request.result || []).sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
-                resolve(collectionsCache);
-            };
-            request.onerror = () => resolve([]);
-        } catch { resolve([]); }
-    });
+    try {
+        const result = await window.electronAPI.dbGetAllCollections();
+        if (result.success) {
+            collectionsCache = result.data || [];
+            return collectionsCache;
+        }
+    } catch {}
+    return [];
 }
 
 async function getCollection(id) {
-    if (!db) { try { await initIndexedDB(); } catch { return null; } }
-    return new Promise((resolve) => {
-        try {
-            const tx = db.transaction([COLLECTIONS_STORE], 'readonly');
-            const request = tx.objectStore(COLLECTIONS_STORE).get(id);
-            request.onsuccess = () => resolve(request.result || null);
-            request.onerror = () => resolve(null);
-        } catch { resolve(null); }
-    });
+    try {
+        const result = await window.electronAPI.dbGetCollection(id);
+        if (result.success) return result.data;
+    } catch {}
+    return null;
 }
 
 async function saveCollection(collection) {
-    if (!db) { try { await initIndexedDB(); } catch { return; } }
     collection.updatedAt = Date.now();
-    return new Promise((resolve, reject) => {
-        try {
-            const tx = db.transaction([COLLECTIONS_STORE], 'readwrite');
-            tx.objectStore(COLLECTIONS_STORE).put(collection);
-            tx.oncomplete = () => {
-                // Update in-memory cache
-                const idx = collectionsCache.findIndex(c => c.id === collection.id);
-                if (idx >= 0) collectionsCache[idx] = collection;
-                else collectionsCache.push(collection);
-                // Invalidate smart collection result cache (rules may have changed)
-                smartCollectionCache.delete(collection.id);
-                resolve();
-            };
-            tx.onerror = () => reject(tx.error);
-        } catch (e) { reject(e); }
-    });
+    try {
+        await window.electronAPI.dbSaveCollection(collection);
+        // Update in-memory cache
+        const idx = collectionsCache.findIndex(c => c.id === collection.id);
+        if (idx >= 0) collectionsCache[idx] = collection;
+        else collectionsCache.push(collection);
+        // Invalidate smart collection result cache (rules may have changed)
+        smartCollectionCache.delete(collection.id);
+    } catch (e) {
+        console.error('Error saving collection:', e);
+    }
 }
 
 async function deleteCollection(id) {
-    if (!db) return;
-    return new Promise((resolve) => {
-        try {
-            const tx = db.transaction([COLLECTIONS_STORE, COLLECTION_FILES_STORE], 'readwrite');
-            tx.objectStore(COLLECTIONS_STORE).delete(id);
-            // Delete all associated files
-            const cfStore = tx.objectStore(COLLECTION_FILES_STORE);
-            const index = cfStore.index('collectionId');
-            const request = index.openCursor(IDBKeyRange.only(id));
-            request.onsuccess = (event) => {
-                const cursor = event.target.result;
-                if (cursor) { cursor.delete(); cursor.continue(); }
-            };
-            tx.oncomplete = () => {
-                collectionsCache = collectionsCache.filter(c => c.id !== id);
-                smartCollectionCache.delete(id);
-                resolve();
-            };
-            tx.onerror = () => resolve();
-        } catch { resolve(); }
-    });
+    try {
+        await window.electronAPI.dbDeleteCollection(id);
+        collectionsCache = collectionsCache.filter(c => c.id !== id);
+        smartCollectionCache.delete(id);
+    } catch {}
 }
 
 async function getCollectionFiles(collectionId) {
-    if (!db) { try { await initIndexedDB(); } catch { return []; } }
-    return new Promise((resolve) => {
-        try {
-            const tx = db.transaction([COLLECTION_FILES_STORE], 'readonly');
-            const index = tx.objectStore(COLLECTION_FILES_STORE).index('collectionId');
-            const request = index.getAll(IDBKeyRange.only(collectionId));
-            request.onsuccess = () => {
-                const results = (request.result || []).sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
-                resolve(results);
-            };
-            request.onerror = () => resolve([]);
-        } catch { resolve([]); }
-    });
+    try {
+        const result = await window.electronAPI.dbGetCollectionFiles(collectionId);
+        if (result.success) return result.data || [];
+    } catch {}
+    return [];
 }
 
 async function addFilesToCollection(collectionId, filePaths) {
-    if (!db || filePaths.length === 0) return;
-    // Get existing file paths to deduplicate
-    const existing = await getCollectionFiles(collectionId);
-    const existingPaths = new Set(existing.map(f => normalizePath(f.filePath)));
-    const maxOrder = existing.reduce((max, f) => Math.max(max, f.sortOrder || 0), 0);
-
-    const newEntries = [];
-    let order = maxOrder;
-    for (const fp of filePaths) {
-        if (existingPaths.has(normalizePath(fp))) continue;
-        order++;
-        newEntries.push({
-            id: generateCollectionFileId(),
-            collectionId,
-            filePath: fp,
-            addedAt: Date.now(),
-            sortOrder: order
-        });
-    }
-    if (newEntries.length === 0) return;
-
-    return new Promise((resolve) => {
-        try {
-            const tx = db.transaction([COLLECTION_FILES_STORE], 'readwrite');
-            const store = tx.objectStore(COLLECTION_FILES_STORE);
-            for (const entry of newEntries) store.put(entry);
-            tx.oncomplete = () => resolve(newEntries.length);
-            tx.onerror = () => resolve(0);
-        } catch { resolve(0); }
-    });
+    if (filePaths.length === 0) return 0;
+    try {
+        const result = await window.electronAPI.dbAddFilesToCollection(collectionId, filePaths);
+        if (result.success) return result.data || 0;
+    } catch {}
+    return 0;
 }
 
 async function removeFileFromCollection(collectionId, filePath) {
-    if (!db) return;
-    const files = await getCollectionFiles(collectionId);
-    const normalizedTarget = normalizePath(filePath);
-    const toDelete = files.filter(f => normalizePath(f.filePath) === normalizedTarget);
-    if (toDelete.length === 0) return;
-
-    return new Promise((resolve) => {
-        try {
-            const tx = db.transaction([COLLECTION_FILES_STORE], 'readwrite');
-            const store = tx.objectStore(COLLECTION_FILES_STORE);
-            for (const f of toDelete) store.delete(f.id);
-            tx.oncomplete = () => resolve();
-            tx.onerror = () => resolve();
-        } catch { resolve(); }
-    });
+    try {
+        // Try both original and normalized path since storage format may vary
+        await window.electronAPI.dbRemoveFileFromCollection(collectionId, filePath);
+        const normalized = normalizePath(filePath);
+        if (normalized !== filePath) {
+            await window.electronAPI.dbRemoveFileFromCollection(collectionId, normalized);
+        }
+    } catch {}
 }
 
 async function removeAllMissingFromCollection(collectionId, missingPaths) {
-    if (!db || missingPaths.length === 0) return;
-    const normalizedMissing = new Set(missingPaths.map(p => normalizePath(p)));
-    const files = await getCollectionFiles(collectionId);
-    const toDelete = files.filter(f => normalizedMissing.has(normalizePath(f.filePath)));
-    if (toDelete.length === 0) return;
-
-    return new Promise((resolve) => {
-        try {
-            const tx = db.transaction([COLLECTION_FILES_STORE], 'readwrite');
-            const store = tx.objectStore(COLLECTION_FILES_STORE);
-            for (const f of toDelete) store.delete(f.id);
-            tx.oncomplete = () => resolve();
-            tx.onerror = () => resolve();
-        } catch { resolve(); }
-    });
+    if (missingPaths.length === 0) return;
+    try {
+        const normalizedMissing = missingPaths.map(p => normalizePath(p));
+        await window.electronAPI.dbRemoveFilesFromCollection(collectionId, normalizedMissing);
+    } catch {}
 }
 
 // Match an item against smart collection filter rules
@@ -6479,6 +6403,12 @@ function applyFilters() {
             if (rating <= 0) return false;
         }
 
+        // Tag filter
+        if (tagFilterActive && tagFilteredPaths) {
+            if (item.type === 'folder') return false;
+            if (!tagFilteredPaths.has(normalizePath(item.path))) return false;
+        }
+
         // Advanced search filters
         if (advancedSearchFilters.width || advancedSearchFilters.height) {
             const width = item.width;
@@ -6584,7 +6514,9 @@ gridContainer.addEventListener('click', (e) => {
             const stars = Array.from(star.parentElement.children);
             const starIndex = stars.indexOf(star) + 1;
             if (starIndex > 0) {
-                setFileRating(card.dataset.path, starIndex);
+                const currentRating = getFileRating(card.dataset.path);
+                // Toggle off if clicking the same star
+                setFileRating(card.dataset.path, currentRating === starIndex ? 0 : starIndex);
             }
         }
         return;
@@ -7695,8 +7627,8 @@ const SETTINGS_EXPORT_KEYS_STRING = [
     'aiSimilarityThreshold', 'aiClusteringMode'
 ];
 const SETTINGS_EXPORT_KEYS_JSON = [
-    'cardInfoSettings', 'customThemes', 'fileRatings', 'pinnedFiles',
-    'favorites', 'tabs', 'recentFiles', 'sidebarExpandedNodes', 'pluginStates',
+    'cardInfoSettings', 'customThemes',
+    'tabs', 'sidebarExpandedNodes', 'pluginStates',
     'folderSortPrefs'
 ];
 
@@ -7723,17 +7655,11 @@ async function exportCollectionsData() {
 
 async function importCollectionsData(collectionsData) {
     if (!collectionsData || !Array.isArray(collectionsData) || collectionsData.length === 0) return;
-    if (!db) { try { await initIndexedDB(); } catch { return; } }
-    // Clear existing collections and collection files
-    await new Promise((resolve) => {
-        try {
-            const tx = db.transaction([COLLECTIONS_STORE, COLLECTION_FILES_STORE], 'readwrite');
-            tx.objectStore(COLLECTIONS_STORE).clear();
-            tx.objectStore(COLLECTION_FILES_STORE).clear();
-            tx.oncomplete = () => resolve();
-            tx.onerror = () => resolve();
-        } catch { resolve(); }
-    });
+    // Delete existing collections first
+    const existing = await getAllCollections();
+    for (const col of existing) {
+        await deleteCollection(col.id);
+    }
     // Write imported collections and their files
     for (const col of collectionsData) {
         const files = col.files || [];
@@ -7741,15 +7667,8 @@ async function importCollectionsData(collectionsData) {
         delete colCopy.files;
         await saveCollection(colCopy);
         if (files.length > 0) {
-            await new Promise((resolve) => {
-                try {
-                    const tx = db.transaction([COLLECTION_FILES_STORE], 'readwrite');
-                    const store = tx.objectStore(COLLECTION_FILES_STORE);
-                    for (const entry of files) store.put(entry);
-                    tx.oncomplete = () => resolve();
-                    tx.onerror = () => resolve();
-                } catch { resolve(); }
-            });
+            const filePaths = files.map(f => f.filePath || f.file_path);
+            await addFilesToCollection(col.id, filePaths);
         }
     }
 }
@@ -7779,6 +7698,21 @@ async function exportSettings() {
         }
     }
     data.collections = await exportCollectionsData();
+    // Export SQLite-stored metadata
+    try {
+        const [ratingsResult, pinnedResult, favoritesResult, recentResult, tagsResult] = await Promise.all([
+            window.electronAPI.dbGetAllRatings(),
+            window.electronAPI.dbGetAllPinned(),
+            window.electronAPI.dbGetFavorites(),
+            window.electronAPI.dbGetRecentFiles(),
+            window.electronAPI.dbExportTags()
+        ]);
+        if (ratingsResult.success) data.json.fileRatings = ratingsResult.data;
+        if (pinnedResult.success) data.json.pinnedFiles = pinnedResult.data;
+        if (favoritesResult.success) data.json.favorites = favoritesResult.data;
+        if (recentResult.success) data.json.recentFiles = recentResult.data;
+        if (tagsResult.success) data.json.tags = tagsResult.data;
+    } catch {}
     try {
         const result = await window.electronAPI.exportSettingsDialog(JSON.stringify(data, null, 2));
         if (result.canceled) return;
@@ -7833,6 +7767,27 @@ async function importSettings() {
     if (data.collections) {
         try { await importCollectionsData(data.collections); } catch {}
     }
+    // Import SQLite-stored metadata from exported settings
+    try {
+        if (data.json && data.json.fileRatings) {
+            await window.electronAPI.dbRunMigration({ fileRatings: data.json.fileRatings });
+        }
+        if (data.json && data.json.pinnedFiles) {
+            await window.electronAPI.dbRunMigration({ pinnedFiles: data.json.pinnedFiles });
+        }
+        if (data.json && data.json.favorites) {
+            await window.electronAPI.dbSaveFavorites(data.json.favorites);
+        }
+        if (data.json && data.json.recentFiles) {
+            await window.electronAPI.dbClearRecentFiles();
+            for (const entry of data.json.recentFiles) {
+                await window.electronAPI.dbAddRecentFile(entry);
+            }
+        }
+        if (data.json && data.json.tags) {
+            await window.electronAPI.dbImportTags(data.json.tags);
+        }
+    } catch {}
     location.reload();
 }
 
@@ -9876,6 +9831,15 @@ contextMenu.addEventListener('click', async (e) => {
             break;
         }
 
+        case 'tag-file': {
+            const selectedCards = document.querySelectorAll('.video-card.selected');
+            const tagPaths = selectedCards.length > 1
+                ? Array.from(selectedCards).map(c => c.dataset.filePath).filter(Boolean)
+                : [filePath];
+            openTagPicker(tagPaths);
+            break;
+        }
+
         case 'remove-from-collection': {
             if (currentCollectionId) {
                 await removeFileFromCollection(currentCollectionId, filePath);
@@ -10822,4 +10786,433 @@ if (typeof CommandPalette !== 'undefined') {
         });
     }
 }
+
+// ── Tagging System ───────────────────────────────────────────────────────────
+
+// In-memory tag cache
+let allTagsCache = [];
+// tagFilterActive, tagFilteredPaths, activeTagFilters, tagFilterOperator
+// are declared near other filter state globals (line ~1348)
+
+async function refreshTagsCache() {
+    try {
+        const result = await window.electronAPI.dbGetAllTags();
+        if (result.success) allTagsCache = result.data || [];
+    } catch {}
+}
+
+// ── Tag badges on cards ──────────────────────────────────────────────────────
+
+async function updateCardTagBadges(card) {
+    const filePath = card.dataset.filePath;
+    if (!filePath) return;
+    let container = card.querySelector('.card-tags');
+    try {
+        const result = await window.electronAPI.dbGetTagsForFile(normalizePath(filePath));
+        if (!result.success || !result.data || result.data.length === 0) {
+            if (container) container.remove();
+            return;
+        }
+        if (!container) {
+            container = document.createElement('div');
+            container.className = 'card-tags';
+            // Insert after info section or at end of card
+            const info = card.querySelector('.video-info') || card.querySelector('.card-info');
+            if (info) info.after(container);
+            else card.appendChild(container);
+        }
+        container.innerHTML = '';
+        for (const tag of result.data.slice(0, 5)) { // max 5 visible
+            const badge = document.createElement('span');
+            badge.className = 'tag-badge';
+            if (tag.color) badge.style.background = tag.color;
+            badge.textContent = tag.name;
+            badge.title = tag.name;
+            container.appendChild(badge);
+        }
+        if (result.data.length > 5) {
+            const more = document.createElement('span');
+            more.className = 'tag-badge';
+            more.style.background = '#555';
+            more.textContent = `+${result.data.length - 5}`;
+            container.appendChild(more);
+        }
+    } catch {}
+}
+
+// ── Tag picker dialog ────────────────────────────────────────────────────────
+
+let tagPickerFilePaths = [];
+
+async function openTagPicker(filePaths) {
+    tagPickerFilePaths = filePaths;
+    const dialog = document.getElementById('tag-picker-dialog');
+    const searchInput = document.getElementById('tag-picker-search');
+    dialog.classList.remove('hidden');
+    searchInput.value = '';
+    searchInput.focus();
+
+    await refreshTagsCache();
+    await renderTagPickerList();
+    await renderTagPickerSuggestions();
+}
+
+function closeTagPicker() {
+    document.getElementById('tag-picker-dialog').classList.add('hidden');
+    tagPickerFilePaths = [];
+}
+
+async function renderTagPickerList(filter) {
+    const list = document.getElementById('tag-picker-list');
+    list.innerHTML = '';
+
+    // Get tags currently on the first file (for checkmark state)
+    let currentTags = new Set();
+    if (tagPickerFilePaths.length > 0) {
+        try {
+            const result = await window.electronAPI.dbGetTagsForFile(normalizePath(tagPickerFilePaths[0]));
+            if (result.success && result.data) currentTags = new Set(result.data.map(t => t.id));
+        } catch {}
+    }
+
+    let tags = allTagsCache;
+    if (filter && filter.trim()) {
+        const q = filter.trim().toLowerCase();
+        tags = tags.filter(t => t.name.toLowerCase().includes(q));
+    }
+
+    if (filter && filter.trim() && !tags.some(t => t.name.toLowerCase() === filter.trim().toLowerCase())) {
+        // Show "create tag" option
+        const createItem = document.createElement('div');
+        createItem.className = 'tag-picker-create';
+        createItem.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Create "${filter.trim()}"`;
+        createItem.addEventListener('click', async () => {
+            try {
+                const result = await window.electronAPI.dbCreateTag(filter.trim(), null, '#6366f1');
+                if (result.success && result.data) {
+                    await refreshTagsCache();
+                    // Auto-assign to files
+                    for (const fp of tagPickerFilePaths) {
+                        await window.electronAPI.dbAddTagToFile(normalizePath(fp), result.data.id);
+                    }
+                    document.getElementById('tag-picker-search').value = '';
+                    await renderTagPickerList();
+                    refreshVisibleCardTags();
+                }
+            } catch {}
+        });
+        list.appendChild(createItem);
+    }
+
+    for (const tag of tags) {
+        const item = document.createElement('div');
+        item.className = 'tag-picker-item' + (currentTags.has(tag.id) ? ' active' : '');
+        item.innerHTML = `
+            <div class="tag-picker-item-check"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg></div>
+            <span class="tag-picker-item-dot" style="background:${tag.color || '#6366f1'}"></span>
+            <span class="tag-picker-item-name">${tag.name}</span>
+        `;
+        item.addEventListener('click', async () => {
+            const isActive = item.classList.contains('active');
+            for (const fp of tagPickerFilePaths) {
+                const normalized = normalizePath(fp);
+                if (isActive) {
+                    await window.electronAPI.dbRemoveTagFromFile(normalized, tag.id);
+                } else {
+                    await window.electronAPI.dbAddTagToFile(normalized, tag.id);
+                }
+            }
+            item.classList.toggle('active');
+            refreshVisibleCardTags();
+        });
+        list.appendChild(item);
+    }
+}
+
+async function renderTagPickerSuggestions() {
+    const container = document.getElementById('tag-picker-suggestions');
+    container.innerHTML = '';
+    if (tagPickerFilePaths.length === 0) return;
+
+    try {
+        const result = await window.electronAPI.dbSuggestTags(tagPickerFilePaths[0]);
+        if (!result.success || !result.data || result.data.length === 0) return;
+        for (const sug of result.data.slice(0, 6)) {
+            const chip = document.createElement('span');
+            chip.className = 'tag-suggestion';
+            chip.innerHTML = `<span class="tag-picker-item-dot" style="background:${sug.tag.color || '#6366f1'}"></span>${sug.tag.name}`;
+            chip.addEventListener('click', async () => {
+                for (const fp of tagPickerFilePaths) {
+                    await window.electronAPI.dbAddTagToFile(normalizePath(fp), sug.tag.id);
+                }
+                chip.remove();
+                await renderTagPickerList(document.getElementById('tag-picker-search').value);
+                refreshVisibleCardTags();
+            });
+            container.appendChild(chip);
+        }
+    } catch {}
+}
+
+function refreshVisibleCardTags() {
+    document.querySelectorAll('.video-card').forEach(card => updateCardTagBadges(card));
+}
+
+// Tag picker event listeners
+document.getElementById('tag-picker-close').addEventListener('click', closeTagPicker);
+document.getElementById('tag-picker-dialog').addEventListener('click', (e) => {
+    if (e.target.id === 'tag-picker-dialog') closeTagPicker();
+});
+document.getElementById('tag-picker-search').addEventListener('input', (e) => {
+    renderTagPickerList(e.target.value);
+});
+
+// ── Tag filter bar ───────────────────────────────────────────────────────────
+
+// Tag filter handler — registered in renderer-features.js via initTagFilter()
+document.getElementById('filter-tags-toggle').addEventListener('click', handleTagFilterClick);
+
+async function handleTagFilterClick() {
+    if (activeTagFilters.length > 0) {
+        // Clear all tag filters
+        activeTagFilters = [];
+        tagFilterActive = false;
+        tagFilteredPaths = null;
+        renderActiveTagFilters();
+        document.getElementById('filter-tags-toggle').classList.remove('active');
+        applyFilters();
+        return;
+    }
+    // Show a quick tag picker for adding filter tags
+    await refreshTagsCache();
+    if (allTagsCache.length === 0) {
+        showToast('No tags created yet. Open Settings > Tags to create one, or right-click a file.', 'info', { duration: 4000 });
+        // Open settings to the Tags tab
+        const settingsModal = document.getElementById('settings-modal');
+        if (settingsModal) {
+            settingsModal.classList.remove('hidden');
+            const tagsTab = document.querySelector('.settings-tab[data-tab="tags"]');
+            if (tagsTab) tagsTab.click();
+        }
+        return;
+    }
+    showTagFilterDropdown();
+}
+
+function showTagFilterDropdown() {
+    // Create a simple dropdown near the tag filter button
+    let dropdown = document.getElementById('tag-filter-dropdown');
+    if (dropdown) dropdown.remove();
+
+    dropdown = document.createElement('div');
+    dropdown.id = 'tag-filter-dropdown';
+    dropdown.style.cssText = 'position:fixed;z-index:9999;background:var(--card-bg,#1a1a1e);border:1px solid var(--border-color,#2a2a2e);border-radius:6px;padding:6px;max-height:250px;overflow-y:auto;box-shadow:0 4px 16px rgba(0,0,0,0.3);min-width:180px;';
+
+    const btn = document.getElementById('filter-tags-toggle');
+    const rect = btn.getBoundingClientRect();
+    dropdown.style.left = rect.left + 'px';
+
+    const activeIds = new Set(activeTagFilters.map(t => t.tagId));
+    for (const tag of allTagsCache) {
+        const item = document.createElement('div');
+        item.style.cssText = 'display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:4px;cursor:pointer;font-size:13px;color:var(--text-color);';
+        item.innerHTML = `<span style="width:8px;height:8px;border-radius:50%;background:${tag.color || '#6366f1'};flex-shrink:0"></span>${tag.name}${activeIds.has(tag.id) ? ' <span style="margin-left:auto;color:var(--accent)">&#10003;</span>' : ''}`;
+        item.addEventListener('mouseenter', () => item.style.background = 'var(--bg-hover,#2a2a2e)');
+        item.addEventListener('mouseleave', () => item.style.background = '');
+        item.addEventListener('click', () => {
+            toggleTagFilter(tag);
+            dropdown.remove();
+        });
+        dropdown.appendChild(item);
+    }
+
+    document.body.appendChild(dropdown);
+    // Position above the button since it's in the status bar at the bottom of the window
+    dropdown.style.top = (rect.top - dropdown.offsetHeight - 4) + 'px';
+    const closeDropdown = (e) => {
+        if (!dropdown.contains(e.target) && !btn.contains(e.target)) {
+            dropdown.remove();
+            document.removeEventListener('mousedown', closeDropdown, true);
+        }
+    };
+    // Use mousedown on capture phase with a frame delay to avoid the opening click closing it
+    requestAnimationFrame(() => {
+        document.addEventListener('mousedown', closeDropdown, true);
+    });
+}
+
+async function toggleTagFilter(tag) {
+    const idx = activeTagFilters.findIndex(t => t.tagId === tag.id);
+    if (idx >= 0) {
+        activeTagFilters.splice(idx, 1);
+    } else {
+        activeTagFilters.push({ tagId: tag.id, name: tag.name, color: tag.color });
+    }
+
+    if (activeTagFilters.length === 0) {
+        tagFilterActive = false;
+        tagFilteredPaths = null;
+        document.getElementById('filter-tags-toggle').classList.remove('active');
+    } else {
+        tagFilterActive = true;
+        document.getElementById('filter-tags-toggle').classList.add('active');
+        // Query files matching the tag filter
+        const expression = {
+            op: tagFilterOperator,
+            tagIds: activeTagFilters.map(t => t.tagId)
+        };
+        try {
+            const result = await window.electronAPI.dbQueryFilesByTags(expression);
+            if (result.success) {
+                tagFilteredPaths = new Set(result.data || []);
+            }
+        } catch {
+            tagFilteredPaths = new Set();
+        }
+    }
+    renderActiveTagFilters();
+    applyFilters();
+}
+
+function renderActiveTagFilters() {
+    const container = document.getElementById('active-tag-filters');
+    container.innerHTML = '';
+    for (let i = 0; i < activeTagFilters.length; i++) {
+        const tag = activeTagFilters[i];
+        if (i > 0) {
+            const op = document.createElement('span');
+            op.className = 'tag-filter-operator';
+            op.textContent = tagFilterOperator;
+            op.title = 'Click to toggle AND/OR';
+            op.addEventListener('click', async () => {
+                tagFilterOperator = tagFilterOperator === 'AND' ? 'OR' : 'AND';
+                // Re-apply filter with new operator
+                if (activeTagFilters.length > 0) {
+                    const expression = { op: tagFilterOperator, tagIds: activeTagFilters.map(t => t.tagId) };
+                    try {
+                        const result = await window.electronAPI.dbQueryFilesByTags(expression);
+                        if (result.success) tagFilteredPaths = new Set(result.data || []);
+                    } catch { tagFilteredPaths = new Set(); }
+                    applyFilters();
+                }
+                renderActiveTagFilters();
+            });
+            container.appendChild(op);
+        }
+        const chip = document.createElement('span');
+        chip.className = 'active-tag-chip';
+        if (tag.color) chip.style.background = tag.color;
+        chip.innerHTML = `${tag.name}<span class="active-tag-chip-remove">&times;</span>`;
+        chip.querySelector('.active-tag-chip-remove').addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleTagFilter({ id: tag.tagId, name: tag.name, color: tag.color });
+        });
+        container.appendChild(chip);
+    }
+}
+
+// ── Tags management in settings ──────────────────────────────────────────────
+
+async function renderTagsManagement() {
+    const list = document.getElementById('tags-list');
+    if (!list) return;
+    list.innerHTML = '';
+    await refreshTagsCache();
+
+    // Get file counts for each tag
+    let topTags = [];
+    try {
+        const result = await window.electronAPI.dbGetTopTags(999);
+        if (result.success) topTags = result.data || [];
+    } catch {}
+    const countMap = {};
+    for (const t of topTags) countMap[t.id] = t.file_count || 0;
+
+    for (const tag of allTagsCache) {
+        const item = document.createElement('div');
+        item.className = 'tag-list-item';
+        item.innerHTML = `
+            <span class="tag-list-item-dot" style="background:${tag.color || '#6366f1'}"></span>
+            <span class="tag-list-item-name">${tag.name}</span>
+            <span class="tag-list-item-count">${countMap[tag.id] || 0} files</span>
+            <div class="tag-list-item-actions">
+                <button class="tag-list-item-btn edit-tag-btn" title="Edit">&#9998;</button>
+                <button class="tag-list-item-btn danger delete-tag-btn" title="Delete">&times;</button>
+            </div>
+        `;
+        item.querySelector('.edit-tag-btn').addEventListener('click', async () => {
+            const newName = prompt('Tag name:', tag.name);
+            if (newName && newName.trim() && newName.trim() !== tag.name) {
+                await window.electronAPI.dbUpdateTag(tag.id, { name: newName.trim() });
+                renderTagsManagement();
+            }
+        });
+        item.querySelector('.delete-tag-btn').addEventListener('click', async () => {
+            if (confirm(`Delete tag "${tag.name}"? This will remove it from all files.`)) {
+                await window.electronAPI.dbDeleteTag(tag.id);
+                renderTagsManagement();
+            }
+        });
+        list.appendChild(item);
+    }
+
+    if (allTagsCache.length === 0) {
+        list.innerHTML = '<div style="color:var(--text-secondary);font-size:13px;padding:16px 0;text-align:center;">No tags yet. Create one above or right-click a file.</div>';
+    }
+}
+
+document.getElementById('tag-create-btn').addEventListener('click', async () => {
+    const nameInput = document.getElementById('tag-create-name');
+    const colorInput = document.getElementById('tag-create-color');
+    const name = nameInput.value.trim();
+    if (!name) return;
+    try {
+        const result = await window.electronAPI.dbCreateTag(name, null, colorInput.value);
+        if (result.success) {
+            nameInput.value = '';
+            renderTagsManagement();
+        } else {
+            showToast('Failed to create tag: ' + (result.error || ''), 'error');
+        }
+    } catch (e) {
+        showToast('Failed to create tag: ' + e.message, 'error');
+    }
+});
+
+document.getElementById('tag-create-name').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') document.getElementById('tag-create-btn').click();
+});
+
+// Render tags management when settings tab is clicked
+const tagsTabBtn = document.querySelector('.settings-tab[data-tab="tags"]');
+if (tagsTabBtn) {
+    tagsTabBtn.addEventListener('click', () => renderTagsManagement());
+}
+
+// Load tag badges when cards are rendered
+// Hook into the existing card creation by watching for new cards added to #grid-container
+if (gridContainer) {
+    const tagBadgeObserver = new MutationObserver((mutations) => {
+        for (const mut of mutations) {
+            for (const node of mut.addedNodes) {
+                if (node.nodeType !== 1) continue;
+                // Direct video-card additions
+                if (node.classList && node.classList.contains('video-card')) {
+                    updateCardTagBadges(node);
+                }
+                // Cards added via DocumentFragment — check children
+                if (node.querySelectorAll) {
+                    for (const card of node.querySelectorAll('.video-card')) {
+                        updateCardTagBadges(card);
+                    }
+                }
+            }
+        }
+    });
+    tagBadgeObserver.observe(gridContainer, { childList: true, subtree: true });
+}
+
+// Initialize tags on startup
+refreshTagsCache();
+console.log('[Tags] renderer.js fully loaded, end of file reached');
 

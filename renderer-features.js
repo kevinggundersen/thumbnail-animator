@@ -3752,6 +3752,43 @@ let compareGroupIdx = -1;
 let compareLeftIndex = 0;
 let compareRightIndex = 1;
 let compareShowAll = false;
+let compareSliderPosition = 50;
+let compareSliderRAF = null;
+
+function initCompareSlider() {
+    const container = document.getElementById('compare-slider-container');
+    if (!container) return;
+
+    container.addEventListener('mousemove', (e) => {
+        if (!compareSliderRAF) {
+            compareSliderRAF = requestAnimationFrame(() => {
+                updateSliderFromEvent(e);
+                compareSliderRAF = null;
+            });
+        }
+    });
+}
+
+function updateSliderFromEvent(e) {
+    const container = document.getElementById('compare-slider-container');
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const pct = Math.max(0, Math.min(100, (x / rect.width) * 100));
+    compareSliderPosition = pct;
+    applySliderPosition(pct);
+}
+
+function applySliderPosition(pct) {
+    const leftLayer = document.getElementById('compare-slider-layer-left');
+    const handle = document.getElementById('compare-slider-handle');
+    if (leftLayer) {
+        leftLayer.style.clipPath = `inset(0 ${100 - pct}% 0 0)`;
+    }
+    if (handle) {
+        handle.style.left = pct + '%';
+    }
+}
 
 function openComparisonLightbox(groupIdx) {
     const group = duplicateGroups[groupIdx];
@@ -3772,7 +3809,7 @@ function openComparisonLightbox(groupIdx) {
     lightbox.classList.remove('hidden');
     compareShowAll = true;
     showAllBtn.classList.add('active');
-    showAllBtn.querySelector('span').textContent = 'Side by Side';
+    showAllBtn.querySelector('span').textContent = 'Compare';
 
     // Start in show-all mode
     const body = lightbox.querySelector('.compare-lightbox-body');
@@ -3813,14 +3850,22 @@ function closeComparisonLightbox() {
     lightbox.removeEventListener('keydown', handleCompareKeydown);
     lightbox.onclick = null;
 
-    // Clean up media
-    ['compare-left-media', 'compare-right-media'].forEach(id => {
-        const container = document.getElementById(id);
-        if (container) {
-            container.querySelectorAll('video').forEach(v => { v.pause(); v.src = ''; });
-            container.innerHTML = '';
+    // Clean up slider media
+    ['compare-slider-layer-left', 'compare-slider-layer-right'].forEach(id => {
+        const layer = document.getElementById(id);
+        if (layer) {
+            layer.querySelectorAll('video').forEach(v => { v.pause(); v.src = ''; });
+            layer.innerHTML = '';
         }
     });
+
+    // Reset slider state
+    compareSliderPosition = 50;
+    if (compareSliderRAF) {
+        cancelAnimationFrame(compareSliderRAF);
+        compareSliderRAF = null;
+    }
+    applySliderPosition(50);
 
     // Clean up show-all grid
     const grid = document.getElementById('compare-show-all-grid');
@@ -3849,6 +3894,14 @@ function handleCompareKeydown(e) {
     } else if (e.key === 'a' || e.key === 'A') {
         e.preventDefault();
         toggleCompareShowAll();
+    } else if (e.shiftKey && e.key === 'ArrowLeft') {
+        compareSliderPosition = Math.max(0, compareSliderPosition - 5);
+        applySliderPosition(compareSliderPosition);
+        e.preventDefault();
+    } else if (e.shiftKey && e.key === 'ArrowRight') {
+        compareSliderPosition = Math.min(100, compareSliderPosition + 5);
+        applySliderPosition(compareSliderPosition);
+        e.preventDefault();
     } else if (e.key === 'ArrowLeft') {
         navigateComparePane('left', -1);
         e.preventDefault();
@@ -3865,7 +3918,7 @@ function toggleCompareShowAll() {
     compareShowAll = !compareShowAll;
     const showAllBtn = document.getElementById('compare-show-all-btn');
     showAllBtn.classList.toggle('active', compareShowAll);
-    showAllBtn.querySelector('span').textContent = compareShowAll ? 'Side by Side' : 'Show All';
+    showAllBtn.querySelector('span').textContent = compareShowAll ? 'Compare' : 'Show All';
     const body = lightbox.querySelector('.compare-lightbox-body');
     const grid = document.getElementById('compare-show-all-grid');
     if (compareShowAll) {
@@ -3893,24 +3946,29 @@ function navigateComparePane(side, direction) {
 function renderComparisonView() {
     if (!compareGroup) return;
 
-    renderComparePane('left', compareLeftIndex);
-    renderComparePane('right', compareRightIndex);
+    renderSliderMedia('left', compareLeftIndex);
+    renderSliderMedia('right', compareRightIndex);
+    renderCompareInfo('left', compareLeftIndex);
+    renderCompareInfo('right', compareRightIndex);
 
     document.getElementById('compare-left-indicator').textContent = `${compareLeftIndex + 1} / ${compareGroup.length}`;
     document.getElementById('compare-right-indicator').textContent = `${compareRightIndex + 1} / ${compareGroup.length}`;
+
+    compareSliderPosition = 50;
+    applySliderPosition(50);
 }
 
-function renderComparePane(side, fileIndex) {
+function renderSliderMedia(side, fileIndex) {
     const file = compareGroup[fileIndex];
     if (!file) return;
 
-    const mediaContainer = document.getElementById(`compare-${side}-media`);
-    const infoContainer = document.getElementById(`compare-${side}-info`);
-    const actionsContainer = document.getElementById(`compare-${side}-actions`);
+    const layerId = side === 'left' ? 'compare-slider-layer-left' : 'compare-slider-layer-right';
+    const layer = document.getElementById(layerId);
+    if (!layer) return;
 
     // Clean up old media
-    mediaContainer.querySelectorAll('video').forEach(v => { v.pause(); v.src = ''; });
-    mediaContainer.innerHTML = '';
+    layer.querySelectorAll('video').forEach(v => { v.pause(); v.src = ''; });
+    layer.innerHTML = '';
 
     // Render media
     const fileUrl = `file:///${file.path.replace(/\\/g, '/')}`;
@@ -3924,13 +3982,21 @@ function renderComparePane(side, fileIndex) {
         vid.loop = true;
         vid.autoplay = true;
         vid.play().catch(() => {});
-        mediaContainer.appendChild(vid);
+        layer.appendChild(vid);
     } else {
         const img = document.createElement('img');
         img.src = fileUrl;
         img.alt = file.name;
-        mediaContainer.appendChild(img);
+        layer.appendChild(img);
     }
+}
+
+function renderCompareInfo(side, fileIndex) {
+    const file = compareGroup[fileIndex];
+    if (!file) return;
+
+    const infoContainer = document.getElementById(`compare-${side}-info`);
+    const actionsContainer = document.getElementById(`compare-${side}-actions`);
 
     // Render file info
     const isMarked = duplicateMarkedForDeletion.has(file.path);
@@ -4117,6 +4183,8 @@ function clearDuplicateHighlights() {
 
 // Restore last folder and layout mode on app startup
 window.addEventListener('DOMContentLoaded', async () => {
+    initCompareSlider();
+
     // Check ffmpeg availability for video thumbnail generation
     try {
         const ffStatus = await window.electronAPI.hasFfmpeg();

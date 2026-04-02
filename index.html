@@ -342,34 +342,41 @@
                 </div>
             </div>
             <div class="compare-lightbox-body">
-                <div class="compare-pane compare-pane-left">
-                    <div class="compare-pane-nav">
-                        <button class="compare-nav-btn compare-nav-prev" data-side="left" title="Previous">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
-                        </button>
-                        <span class="compare-nav-indicator" id="compare-left-indicator">1 / 2</span>
-                        <button class="compare-nav-btn compare-nav-next" data-side="left" title="Next">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
-                        </button>
-                    </div>
-                    <div class="compare-media-container" id="compare-left-media"></div>
-                    <div class="compare-file-info" id="compare-left-info"></div>
-                    <div class="compare-pane-actions" id="compare-left-actions"></div>
+                <div class="compare-slider-container" id="compare-slider-container">
+                    <div class="compare-slider-layer compare-slider-layer-right" id="compare-slider-layer-right"></div>
+                    <div class="compare-slider-layer compare-slider-layer-left" id="compare-slider-layer-left"></div>
+                    <div class="compare-slider-handle" id="compare-slider-handle"></div>
+                    <div class="compare-slider-label compare-slider-label-left">A</div>
+                    <div class="compare-slider-label compare-slider-label-right">B</div>
                 </div>
-                <div class="compare-divider"></div>
-                <div class="compare-pane compare-pane-right">
-                    <div class="compare-pane-nav">
-                        <button class="compare-nav-btn compare-nav-prev" data-side="right" title="Previous">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
-                        </button>
-                        <span class="compare-nav-indicator" id="compare-right-indicator">2 / 2</span>
-                        <button class="compare-nav-btn compare-nav-next" data-side="right" title="Next">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
-                        </button>
+                <div class="compare-slider-info-bar">
+                    <div class="compare-slider-info-panel">
+                        <div class="compare-pane-nav">
+                            <button class="compare-nav-btn compare-nav-prev" data-side="left" title="Previous">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+                            </button>
+                            <span class="compare-nav-indicator" id="compare-left-indicator">1 / 2</span>
+                            <button class="compare-nav-btn compare-nav-next" data-side="left" title="Next">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+                            </button>
+                        </div>
+                        <div class="compare-file-info" id="compare-left-info"></div>
+                        <div class="compare-pane-actions" id="compare-left-actions"></div>
                     </div>
-                    <div class="compare-media-container" id="compare-right-media"></div>
-                    <div class="compare-file-info" id="compare-right-info"></div>
-                    <div class="compare-pane-actions" id="compare-right-actions"></div>
+                    <div class="compare-slider-info-divider"></div>
+                    <div class="compare-slider-info-panel">
+                        <div class="compare-pane-nav">
+                            <button class="compare-nav-btn compare-nav-prev" data-side="right" title="Previous">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+                            </button>
+                            <span class="compare-nav-indicator" id="compare-right-indicator">2 / 2</span>
+                            <button class="compare-nav-btn compare-nav-next" data-side="right" title="Next">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+                            </button>
+                        </div>
+                        <div class="compare-file-info" id="compare-right-info"></div>
+                        <div class="compare-pane-actions" id="compare-right-actions"></div>
+                    </div>
                 </div>
             </div>
             <div id="compare-show-all-grid" class="compare-show-all-grid hidden"></div>

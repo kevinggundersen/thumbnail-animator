@@ -1,0 +1,20 @@
+{
+  "name": "native-scanner",
+  "version": "0.1.0",
+  "private": true,
+  "main": "index.js",
+  "napi": {
+    "name": "native-scanner",
+    "triples": {
+      "defaults": false,
+      "additional": ["x86_64-pc-windows-msvc"]
+    }
+  },
+  "scripts": {
+    "build": "napi build --platform --release",
+    "build:debug": "napi build --platform"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^2.18.0"
+  }
+}

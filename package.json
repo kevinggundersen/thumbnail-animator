@@ -7,6 +7,8 @@
     "start": "electron .",
     "build": "electron-builder",
     "build:win": "electron-builder --win",
+    "build:native": "cd native-scanner && npm run build",
+    "build:native:ps": "powershell -Command \"cd native-scanner; npm run build\"",
     "dist": "electron-builder --publish=never",
     "release": "electron-builder --publish=always"
   },
@@ -50,13 +52,20 @@
       "repo": "thumnail-animator"
     },
     "asarUnpack": [
-      "node_modules/better-sqlite3/**"
+      "node_modules/better-sqlite3/**",
+      "native-scanner/**/*.node",
+      "native-scanner/index.js"
     ],
     "files": [
       "**/*",
       "!electron-cache/**/*",
       "!dist/**/*",
-      "!*.md"
+      "!*.md",
+      "!native-scanner/src/**/*",
+      "!native-scanner/target/**/*",
+      "!native-scanner/Cargo.toml",
+      "!native-scanner/Cargo.lock",
+      "!native-scanner/build.rs"
     ],
     "win": {
       "target": [

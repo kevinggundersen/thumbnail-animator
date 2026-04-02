@@ -36,6 +36,14 @@ try {
     sizeOf = null;
 }
 // const mime = require('mime-types'); // Removed unused dependency
+let nativeScanner;
+try {
+    nativeScanner = require('./native-scanner');
+    console.log('[scanner] Native Rust scanner loaded (FindFirstFileExW)');
+} catch (e) {
+    console.warn('[scanner] Native scanner NOT available — using JS fallback. Reason:', e.message);
+    nativeScanner = null;
+}
 const { execFile } = require('child_process');
 const { performance } = require('perf_hooks');
 const { autoUpdater } = require('electron-updater');
@@ -796,53 +804,103 @@ async function scanFolderInternal(folderPath, options = {}) {
     const scanStart = performance.now();
     const { skipStats = false, scanImageDimensions = false, scanVideoDimensions = false,
             smartCollectionMode = false, skipDimensions = false } = options;
-    const readdirStart = performance.now();
-    const items = await fs.promises.readdir(folderPath, { withFileTypes: true });
-    logPerf('scan-folder.readdir', readdirStart, { entries: items.length });
 
-    // Use Sets for O(1) lookup — merged with any plugin-registered extensions
     const videoExtensions = pluginRegistry.getVideoExtensions();
     const imageExtensions = pluginRegistry.getImageExtensions();
-    const supportedExtensions = pluginRegistry.getSupportedExtensions();
-
     const isWindows = process.platform === 'win32';
 
-    // === Phase A: Build base objects (sync, fast) ===
-    const folderItems = [];
-    const fileObjs = [];
+    let folders, fileObjs;
 
-    for (const item of items) {
-        if (item.isDirectory()) {
-            // Smart collection mode: skip folders entirely (only files needed)
-            if (!smartCollectionMode) {
-                folderItems.push(item);
-            }
-        } else if (item.isFile()) {
-            const name = item.name;
-            const lastDot = name.lastIndexOf('.');
-            if (lastDot === -1) continue;
+    // === Phase A+C: readdir + stat + filter + sort (native or JS fallback) ===
+    if (nativeScanner) {
+        const nativeStart = performance.now();
+        const imageExts = [...imageExtensions];
+        const videoExts = [...videoExtensions];
+        const result = nativeScanner.scanDirectory(folderPath, imageExts, videoExts, skipStats, smartCollectionMode);
+        logPerf('scan-folder.native', nativeStart, { folders: result.folders.length, files: result.mediaFiles.length });
 
-            const ext = name.substring(lastDot).toLowerCase();
-            if (!supportedExtensions.has(ext)) continue;
-
-            const itemPath = path.join(folderPath, name);
-            const isImage = imageExtensions.has(ext);
-            fileObjs.push({
-                name: name,
-                path: itemPath,
-                url: isWindows ? `file:///${itemPath.replace(/\\/g, '/')}` : `file://${itemPath}`,
-                type: isImage ? 'image' : 'video',
-                isImage: isImage,
-                mtime: 0,
-                size: 0,
+        // Add url + type:'folder' + isImage fields to match expected shape
+        folders = result.folders.map(f => ({ name: f.name, path: f.path, type: 'folder', mtime: f.mtime }));
+        fileObjs = result.mediaFiles.map(f => {
+            const isImage = f.fileType === 'image';
+            return {
+                name: f.name,
+                path: f.path,
+                url: isWindows ? `file:///${f.path.replace(/\\/g, '/')}` : `file://${f.path}`,
+                type: f.fileType,
+                isImage,
+                mtime: f.mtime,
+                size: f.size,
                 width: undefined,
-                height: undefined
+                height: undefined,
+            };
+        });
+    } else {
+        // JS fallback: Phase A (readdir + classify) then Phase C (stat)
+        const readdirStart = performance.now();
+        const items = await fs.promises.readdir(folderPath, { withFileTypes: true });
+        logPerf('scan-folder.readdir', readdirStart, { entries: items.length });
+
+        const supportedExtensions = pluginRegistry.getSupportedExtensions();
+        const folderItems = [];
+        fileObjs = [];
+
+        for (const item of items) {
+            if (item.isDirectory()) {
+                if (!smartCollectionMode) folderItems.push(item);
+            } else if (item.isFile()) {
+                const name = item.name;
+                const lastDot = name.lastIndexOf('.');
+                if (lastDot === -1) continue;
+                const ext = name.substring(lastDot).toLowerCase();
+                if (!supportedExtensions.has(ext)) continue;
+                const itemPath = path.join(folderPath, name);
+                const isImage = imageExtensions.has(ext);
+                fileObjs.push({
+                    name, path: itemPath,
+                    url: isWindows ? `file:///${itemPath.replace(/\\/g, '/')}` : `file://${itemPath}`,
+                    type: isImage ? 'image' : 'video', isImage,
+                    mtime: 0, size: 0, width: undefined, height: undefined,
+                });
+            }
+        }
+
+        folders = [];
+        if (skipStats) {
+            for (const item of folderItems) {
+                folders.push({ name: item.name, path: path.join(folderPath, item.name), type: 'folder', mtime: 0 });
+            }
+        } else {
+            if (!smartCollectionMode) {
+                const folderStatStart = performance.now();
+                const folderResults = await asyncPool(IO_CONCURRENCY_LIMIT, folderItems, async (item) => {
+                    const itemPath = path.join(folderPath, item.name);
+                    try {
+                        const stats = await fs.promises.stat(itemPath);
+                        return { name: item.name, path: itemPath, type: 'folder', mtime: stats.mtime.getTime() };
+                    } catch { return { name: item.name, path: itemPath, type: 'folder', mtime: 0 }; }
+                });
+                folders.push(...folderResults);
+                logPerf('scan-folder.folder-stats', folderStatStart, { count: folderItems.length, limit: IO_CONCURRENCY_LIMIT });
+            }
+            const fileStatStart = performance.now();
+            await asyncPool(IO_CONCURRENCY_LIMIT, fileObjs, async (fileObj) => {
+                try {
+                    const stats = await fs.promises.stat(fileObj.path);
+                    fileObj.mtime = stats.mtime.getTime();
+                    fileObj.size = stats.size;
+                } catch { /* mtime stays 0 */ }
             });
+            logPerf('scan-folder.file-stats', fileStatStart, { count: fileObjs.length, limit: IO_CONCURRENCY_LIMIT });
+        }
+
+        if (!smartCollectionMode) {
+            if (folders.length > 1) folders.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+            if (fileObjs.length > 1) fileObjs.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
         }
     }
 
-    // === Phase B: Dimension scanning via worker pool (parallel across workers) ===
-    // Skip when smartCollectionMode + skipDimensions (dimensions handled separately after pre-filtering)
+    // === Phase B: Dimension scanning via worker pool (unchanged) ===
     if (!skipDimensions) {
         const needsDimensionScan = (scanImageDimensions && sizeOf) || (scanVideoDimensions && ffprobePath);
         if (needsDimensionScan && dimensionPool) {
@@ -865,58 +923,10 @@ async function scanFolderInternal(folderPath, options = {}) {
         }
     }
 
-    // === Phase C: Batch stat() calls using Promise.all (libuv handles parallelism) ===
-    const folders = [];
-
-    if (skipStats) {
-        // Fast path: no stat calls needed
-        for (const item of folderItems) {
-            folders.push({ name: item.name, path: path.join(folderPath, item.name), type: 'folder', mtime: 0 });
-        }
-    } else {
-        // Smart collection mode: skip folder stats entirely
-        if (!smartCollectionMode) {
-            const folderStatStart = performance.now();
-            const folderResults = await asyncPool(IO_CONCURRENCY_LIMIT, folderItems, async (item) => {
-                const itemPath = path.join(folderPath, item.name);
-                try {
-                    const stats = await fs.promises.stat(itemPath);
-                    return { name: item.name, path: itemPath, type: 'folder', mtime: stats.mtime.getTime() };
-                } catch {
-                    return { name: item.name, path: itemPath, type: 'folder', mtime: 0 };
-                }
-            });
-            folders.push(...folderResults);
-            logPerf('scan-folder.folder-stats', folderStatStart, { count: folderItems.length, limit: IO_CONCURRENCY_LIMIT });
-        }
-
-        const fileStatStart = performance.now();
-        await asyncPool(IO_CONCURRENCY_LIMIT, fileObjs, async (fileObj) => {
-            try {
-                const stats = await fs.promises.stat(fileObj.path);
-                fileObj.mtime = stats.mtime.getTime();
-                fileObj.size = stats.size;
-            } catch {
-                // mtime stays 0
-            }
-        });
-        logPerf('scan-folder.file-stats', fileStatStart, { count: fileObjs.length, limit: IO_CONCURRENCY_LIMIT });
-    }
-
     // Clean up internal field before sending to renderer
     const mediaFiles = fileObjs.map(({ isImage, ...rest }) => rest);
 
-    // Smart collection mode: skip sorting (renderer re-sorts after filtering)
-    if (!smartCollectionMode) {
-        if (folders.length > 1) {
-            folders.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
-        }
-        if (mediaFiles.length > 1) {
-            mediaFiles.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
-        }
-    }
-
-    logPerf('scan-folder.total', scanStart, { folders: folders.length, files: mediaFiles.length, skipStats: skipStats ? 1 : 0 });
+    logPerf('scan-folder.total', scanStart, { folders: folders.length, files: mediaFiles.length, skipStats: skipStats ? 1 : 0, native: nativeScanner ? 1 : 0 });
     return { folders, mediaFiles };
 }
 
@@ -1469,6 +1479,13 @@ ipcMain.handle('get-drives', async () => {
 ipcMain.handle('list-subdirectories', async (event, folderPath) => {
     const listStart = performance.now();
     try {
+        if (nativeScanner) {
+            const results = nativeScanner.listSubdirectories(folderPath);
+            logPerf('list-subdirectories', listStart, { count: results.length, native: 1 });
+            return results;
+        }
+
+        // JS fallback
         const items = await fs.promises.readdir(folderPath, { withFileTypes: true });
         const SKIP_NAMES = new Set([
             'System Volume Information', '$Recycle.Bin', '$RECYCLE.BIN',

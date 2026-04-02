@@ -15,5 +15,12 @@ npm-debug.log*
 .DS_Store
 Thumbs.db
 
+# Native scanner build artifacts
+native-scanner/target/
+native-scanner/node_modules/
+native-scanner/*.node
+native-scanner/index.js
+native-scanner/index.d.ts
+
 # Claude Code
 .claude/

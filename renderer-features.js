@@ -2377,12 +2377,21 @@ function clearAdvancedSearch() {
     document.getElementById('search-aspect-ratio').value = '';
     document.getElementById('search-star-rating').value = '';
 
-    // Reset sort to name
+    // Reset sort — restore per-folder preference if available, otherwise default to 'name'
     const advSortEl = document.getElementById('advanced-sort-type');
     if (advSortEl) advSortEl.value = 'name';
-    sortType = 'name';
+    const folderPref = typeof getFolderSortPref === 'function' ? getFolderSortPref(currentFolderPath) : null;
+    if (folderPref) {
+        sortType = folderPref.sortType;
+        sortOrder = folderPref.sortOrder;
+    } else {
+        sortType = 'name';
+        sortOrder = 'ascending';
+    }
     const sortTypeSelect = document.getElementById('sort-type-select');
-    if (sortTypeSelect) sortTypeSelect.value = 'name';
+    const sortOrderSelect = document.getElementById('sort-order-select');
+    if (sortTypeSelect) sortTypeSelect.value = sortType;
+    if (sortOrderSelect) sortOrderSelect.value = sortOrder;
     applySorting();
     updateAdvancedSearchIndicator();
 }
@@ -3452,6 +3461,14 @@ function createDuplicateItemEl(file, groupIdx) {
     el.className = 'duplicate-item';
     el.dataset.path = file.path;
     el.dataset.groupId = groupIdx;
+
+    // Data attributes for blow-up preview (right-click hold)
+    const dupExt = file.name.split('.').pop().toLowerCase();
+    const dupVideoExts = ['mp4', 'webm', 'ogg', 'mov'];
+    const dupFileUrl = `file:///${file.path.replace(/\\/g, '/')}`;
+    el.dataset.src = dupFileUrl;
+    el.dataset.name = file.name;
+    if (dupVideoExts.includes(dupExt)) el.dataset.mediaType = 'video';
 
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';

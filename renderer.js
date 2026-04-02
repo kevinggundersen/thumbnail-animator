@@ -1365,6 +1365,30 @@ let pauseOnBlur = true;
 let sortType = 'name'; // 'name' or 'date'
 let sortOrder = 'ascending'; // 'ascending' or 'descending'
 
+// Per-folder sort preferences: { folderPath: { sortType, sortOrder } }
+const MAX_FOLDER_SORT_PREFS = 500;
+let folderSortPrefs = {};
+try {
+    const raw = localStorage.getItem('folderSortPrefs');
+    if (raw) folderSortPrefs = JSON.parse(raw);
+} catch { folderSortPrefs = {}; }
+
+function getFolderSortPref(folderPath) {
+    return folderPath ? folderSortPrefs[folderPath] : null;
+}
+
+function setFolderSortPref(folderPath, type, order) {
+    if (!folderPath) return;
+    folderSortPrefs[folderPath] = { sortType: type, sortOrder: order };
+    // LRU eviction: drop oldest entries if over limit
+    const keys = Object.keys(folderSortPrefs);
+    if (keys.length > MAX_FOLDER_SORT_PREFS) {
+        const toRemove = keys.length - MAX_FOLDER_SORT_PREFS;
+        for (let i = 0; i < toRemove; i++) delete folderSortPrefs[keys[i]];
+    }
+    deferLocalStorageWrite('folderSortPrefs', JSON.stringify(folderSortPrefs));
+}
+
 // Track thumbnail quality
 let thumbnailQuality = 'medium'; // 'low', 'medium', 'high'
 
@@ -5207,7 +5231,10 @@ function updateSorting() {
     // Also save to localStorage as fallback/default for new tabs
     deferLocalStorageWrite('sortType', sortType);
     deferLocalStorageWrite('sortOrder', sortOrder);
-    
+
+    // Save per-folder sort preference
+    setFolderSortPref(currentFolderPath, sortType, sortOrder);
+
     // Apply sorting to current folder
     applySorting();
 }
@@ -7499,7 +7526,20 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
         filterAllBtn.classList.add('active');
         filterVideosBtn.classList.remove('active');
         filterImagesBtn.classList.remove('active');
-    
+
+        // Restore per-folder sort preferences (skip if advanced search has active filters/sort)
+        const advSearchBtn = document.getElementById('advanced-search-btn');
+        const hasActiveAdvancedSearch = advSearchBtn && advSearchBtn.classList.contains('active');
+        if (!hasActiveAdvancedSearch) {
+            const folderPref = getFolderSortPref(folderPath);
+            if (folderPref) {
+                sortType = folderPref.sortType;
+                sortOrder = folderPref.sortOrder;
+                if (sortTypeSelect) sortTypeSelect.value = sortType;
+                if (sortOrderSelect) sortOrderSelect.value = sortOrder;
+            }
+        }
+
         const normalizedTargetPath = normalizePath(folderPath);
         const isSameFolder = previousFolderPath && normalizePath(previousFolderPath) === normalizedTargetPath;
         let preservedScrollTop = isSameFolder ? previousScrollTop : null;
@@ -7656,7 +7696,8 @@ const SETTINGS_EXPORT_KEYS_STRING = [
 ];
 const SETTINGS_EXPORT_KEYS_JSON = [
     'cardInfoSettings', 'customThemes', 'fileRatings', 'pinnedFiles',
-    'favorites', 'tabs', 'recentFiles', 'sidebarExpandedNodes', 'pluginStates'
+    'favorites', 'tabs', 'recentFiles', 'sidebarExpandedNodes', 'pluginStates',
+    'folderSortPrefs'
 ];
 
 function showSettingsDataStatus(message, type) {
@@ -9572,7 +9613,7 @@ let blowUpSuppressContextMenu = false;
 
 document.addEventListener('mousedown', (e) => {
     if (e.button !== 2) return;
-    const card = e.target.closest('.video-card');
+    const card = e.target.closest('.video-card') || e.target.closest('.duplicate-item');
     if (!card) return;
 
     // Suppress ALL context menus while we're detecting hold vs quick click

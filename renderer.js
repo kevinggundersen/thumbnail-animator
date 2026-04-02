@@ -7758,7 +7758,8 @@ const SETTINGS_EXPORT_KEYS_STRING = [
     'autoRepeatVideos', 'pauseOnBlur', 'pauseOnLightbox', 'hoverScrub',
     'playbackControls', 'activeTabId',
     'aiVisualSearchEnabled', 'aiModelDownloadConfirmed', 'aiAutoScan',
-    'aiSimilarityThreshold', 'aiClusteringMode'
+    'aiSimilarityThreshold', 'aiClusteringMode',
+    'videoCacheLimitMB', 'imageCacheLimitMB'
 ];
 const SETTINGS_EXPORT_KEYS_JSON = [
     'cardInfoSettings', 'customThemes',
@@ -7927,6 +7928,96 @@ async function importSettings() {
 
 document.getElementById('export-settings-btn').addEventListener('click', exportSettings);
 document.getElementById('import-settings-btn').addEventListener('click', importSettings);
+
+// ── Cache limit settings ──
+{
+    const videoCacheSelect = document.getElementById('video-cache-limit');
+    const imageCacheSelect = document.getElementById('image-cache-limit');
+    const clearCacheBtn = document.getElementById('clear-cache-btn');
+
+    // Restore saved values
+    const savedVideoLimit = localStorage.getItem('videoCacheLimitMB');
+    if (savedVideoLimit && videoCacheSelect) {
+        const opt = videoCacheSelect.querySelector(`option[value="${savedVideoLimit}"]`);
+        if (opt) videoCacheSelect.value = savedVideoLimit;
+    }
+    const savedImageLimit = localStorage.getItem('imageCacheLimitMB');
+    if (savedImageLimit && imageCacheSelect) {
+        const opt = imageCacheSelect.querySelector(`option[value="${savedImageLimit}"]`);
+        if (opt) imageCacheSelect.value = savedImageLimit;
+    }
+
+    // Save on change and sync to main process
+    function syncCacheLimits() {
+        const videoMB = parseInt(videoCacheSelect?.value || '500', 10);
+        const imageMB = parseInt(imageCacheSelect?.value || '1000', 10);
+        if (window.electronAPI?.setCacheLimits) {
+            window.electronAPI.setCacheLimits(videoMB, imageMB);
+        }
+    }
+    if (videoCacheSelect) {
+        videoCacheSelect.addEventListener('change', () => {
+            deferLocalStorageWrite('videoCacheLimitMB', videoCacheSelect.value);
+            syncCacheLimits();
+        });
+    }
+    if (imageCacheSelect) {
+        imageCacheSelect.addEventListener('change', () => {
+            deferLocalStorageWrite('imageCacheLimitMB', imageCacheSelect.value);
+            syncCacheLimits();
+        });
+    }
+
+    // Show cache usage when Data tab is opened
+    async function updateCacheUsage() {
+        if (!window.electronAPI?.getCacheInfo) return;
+        try {
+            const info = await window.electronAPI.getCacheInfo();
+            if (!info) return;
+            const fmt = (b) => b < 1024 * 1024 ? (b / 1024).toFixed(0) + ' KB' : (b / 1024 / 1024).toFixed(1) + ' MB';
+            const videoEl = document.getElementById('video-cache-usage');
+            const imageEl = document.getElementById('image-cache-usage');
+            if (videoEl) videoEl.textContent = `Currently using ${fmt(info.video.size)} (${info.video.files} files)`;
+            if (imageEl) imageEl.textContent = `Currently using ${fmt(info.image.size)} (${info.image.files} files)`;
+        } catch {}
+    }
+
+    // Update usage when settings modal opens to Data tab
+    const observer = new MutationObserver(() => {
+        const dataTab = document.querySelector('.settings-tab-content[data-tab="data"]');
+        if (dataTab && !dataTab.classList.contains('hidden') && dataTab.offsetParent !== null) {
+            updateCacheUsage();
+        }
+    });
+    const settingsModal = document.getElementById('settings-modal');
+    if (settingsModal) observer.observe(settingsModal, { attributes: true, subtree: true, attributeFilter: ['class'] });
+
+    // Clear cache button
+    if (clearCacheBtn) {
+        clearCacheBtn.addEventListener('click', async () => {
+            clearCacheBtn.disabled = true;
+            clearCacheBtn.textContent = 'Clearing...';
+            try {
+                const videoResult = await window.electronAPI.evictCache('video');
+                const imageResult = await window.electronAPI.evictCache('image');
+                const totalDeleted = (videoResult?.deleted || 0) + (imageResult?.deleted || 0);
+                const totalFreed = ((videoResult?.freed || 0) + (imageResult?.freed || 0)) / 1024 / 1024;
+                showSettingsDataStatus(
+                    totalDeleted > 0
+                        ? `Cleared ${totalDeleted} thumbnails (freed ${totalFreed.toFixed(1)} MB)`
+                        : 'Cache is already within limits',
+                    'success'
+                );
+                updateCacheUsage();
+            } catch (err) {
+                showSettingsDataStatus('Clear failed: ' + err.message, 'error');
+            } finally {
+                clearCacheBtn.disabled = false;
+                clearCacheBtn.textContent = 'Clear';
+            }
+        });
+    }
+}
 
 // Inject plugin settings panels into the settings modal
 async function injectPluginSettingsPanels() {

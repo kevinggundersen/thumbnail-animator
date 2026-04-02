@@ -10,6 +10,7 @@ const perfTest = (() => {
     let renderScheduled = false;
     let startupData = null;   // cached after first fetch
     let memoryData = null;    // refreshed on each show()
+    let cacheData = null;     // refreshed on each show()
 
     // Thresholds for color coding (ms)
     const thresholds = {
@@ -112,9 +113,27 @@ const perfTest = (() => {
             </div>`;
         }
 
+        // ── Disk Cache ──
+        if (cacheData) {
+            const fmt = (bytes) => bytes < 1024 * 1024 ? (bytes / 1024).toFixed(0) + 'KB' : (bytes / 1024 / 1024).toFixed(1) + 'MB';
+            html += '<div class="perf-section-label">Disk Cache</div>';
+            for (const [label, info] of [['Video thumbs', cacheData.video], ['Image thumbs', cacheData.image], ['Folder previews', cacheData.folder]]) {
+                const pct = info.maxSize ? Math.min(100, (info.size / info.maxSize) * 100) : 0;
+                const cls = pct < 60 ? 'fast' : pct < 90 ? 'medium' : 'slow';
+                html += `<div class="perf-metric">
+                    <div class="perf-metric-header">
+                        <span class="perf-metric-name">${label}</span>
+                        <span class="perf-metric-last ${cls}">${fmt(info.size)}</span>
+                    </div>
+                    ${info.maxSize ? `<div class="perf-metric-bar-track"><div class="perf-metric-bar ${cls}" style="width:${pct}%"></div></div>` : ''}
+                    <div class="perf-metric-stats"><span>${info.files} files</span>${info.maxSize ? `<span>limit: ${fmt(info.maxSize)}</span>` : ''}</div>
+                </div>`;
+            }
+        }
+
         // ── Live Metrics ──
         const ops = Object.keys(history);
-        if (ops.length === 0 && !startupData && !memoryData) {
+        if (ops.length === 0 && !startupData && !memoryData && !cacheData) {
             body.innerHTML = '<div class="perf-empty">Use the app to see live metrics</div>';
             return;
         }
@@ -164,13 +183,16 @@ const perfTest = (() => {
         const el = document.getElementById('perf-dashboard');
         if (el) el.classList.remove('hidden');
 
-        // Fetch startup timeline (once) and memory (every open)
+        // Fetch startup timeline (once), memory and cache info (every open)
         try {
             if (!startupData && window.electronAPI?.getStartupTimeline) {
                 startupData = await window.electronAPI.getStartupTimeline();
             }
             if (window.electronAPI?.getMemoryInfo) {
                 memoryData = await window.electronAPI.getMemoryInfo();
+            }
+            if (window.electronAPI?.getCacheInfo) {
+                cacheData = await window.electronAPI.getCacheInfo();
             }
         } catch { /* IPC not available */ }
 

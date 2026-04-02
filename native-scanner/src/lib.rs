@@ -439,6 +439,123 @@ fn parse_webp_dimensions(data: &[u8]) -> Option<(u32, u32)> {
     None
 }
 
+// ── Cache management ─────────────────────────────────────────────────────────
+
+#[napi(object)]
+pub struct CacheInfo {
+    /// Total size of all files in bytes
+    pub total_size: f64,
+    /// Number of files
+    pub file_count: u32,
+}
+
+#[napi(object)]
+pub struct CacheEvictionPlan {
+    /// Paths to delete (oldest files first, enough to bring total under max_size)
+    pub files_to_delete: Vec<String>,
+    /// Total bytes that would be freed
+    pub bytes_to_free: f64,
+    /// Current total cache size before eviction
+    pub current_size: f64,
+}
+
+/// Scan a cache directory and return total size and file count.
+#[napi]
+pub fn get_cache_info(dir_path: String) -> CacheInfo {
+    let mut total_size: u64 = 0;
+    let mut file_count: u32 = 0;
+
+    if let Ok(entries) = std::fs::read_dir(&dir_path) {
+        for entry in entries.flatten() {
+            if let Ok(meta) = entry.metadata() {
+                if meta.is_file() {
+                    total_size += meta.len();
+                    file_count += 1;
+                }
+            }
+        }
+    }
+
+    CacheInfo {
+        total_size: total_size as f64,
+        file_count,
+    }
+}
+
+/// Plan cache eviction: scan directory, sort by mtime (oldest first),
+/// return files to delete to bring total size under max_size_bytes.
+#[napi]
+pub fn plan_cache_eviction(dir_path: String, max_size_bytes: f64) -> CacheEvictionPlan {
+    use std::time::UNIX_EPOCH;
+
+    let max_bytes = max_size_bytes as u64;
+    let mut files: Vec<(String, u64, u64)> = Vec::new(); // (path, size, mtime_ms)
+    let mut total_size: u64 = 0;
+
+    if let Ok(entries) = std::fs::read_dir(&dir_path) {
+        for entry in entries.flatten() {
+            if let Ok(meta) = entry.metadata() {
+                if meta.is_file() {
+                    let size = meta.len();
+                    total_size += size;
+                    let mtime = meta
+                        .modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0);
+                    files.push((
+                        entry.path().to_string_lossy().into_owned(),
+                        size,
+                        mtime,
+                    ));
+                }
+            }
+        }
+    }
+
+    if total_size <= max_bytes {
+        return CacheEvictionPlan {
+            files_to_delete: Vec::new(),
+            bytes_to_free: 0.0,
+            current_size: total_size as f64,
+        };
+    }
+
+    // Sort by mtime ascending (oldest first)
+    files.sort_by_key(|f| f.2);
+
+    let mut bytes_to_free: u64 = 0;
+    let target_free = total_size - max_bytes;
+    let mut to_delete: Vec<String> = Vec::new();
+
+    for (file_path, size, _) in &files {
+        if bytes_to_free >= target_free {
+            break;
+        }
+        to_delete.push(file_path.clone());
+        bytes_to_free += size;
+    }
+
+    CacheEvictionPlan {
+        files_to_delete: to_delete,
+        bytes_to_free: bytes_to_free as f64,
+        current_size: total_size as f64,
+    }
+}
+
+/// Delete files from a list of paths. Returns number of files successfully deleted.
+#[napi]
+pub fn delete_files(file_paths: Vec<String>) -> u32 {
+    let mut deleted: u32 = 0;
+    for p in &file_paths {
+        if std::fs::remove_file(p).is_ok() {
+            deleted += 1;
+        }
+    }
+    deleted
+}
+
 // ── POSIX fallback (for non-Windows builds) ──────────────────────────────────
 
 #[cfg(not(windows))]

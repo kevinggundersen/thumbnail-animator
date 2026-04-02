@@ -375,6 +375,39 @@ videoThumbDir = path.join(userDataPath, 'video-thumbnails');
 imageThumbDir = path.join(userDataPath, 'image-thumbnails');
 let folderPreviewDir = path.join(userDataPath, 'folder-previews');
 
+// Cache size limits (bytes). 0 = unlimited. User-configurable via settings.
+let VIDEO_CACHE_MAX_BYTES = 500 * 1024 * 1024;  // default 500 MB
+let IMAGE_CACHE_MAX_BYTES = 1000 * 1024 * 1024;  // default 1 GB
+
+// Load saved cache limits from config file
+const cacheLimitsFile = path.join(userDataPath, 'cache-limits.json');
+try {
+    const saved = JSON.parse(fs.readFileSync(cacheLimitsFile, 'utf8'));
+    if (typeof saved.videoCacheMB === 'number') VIDEO_CACHE_MAX_BYTES = saved.videoCacheMB * 1024 * 1024;
+    if (typeof saved.imageCacheMB === 'number') IMAGE_CACHE_MAX_BYTES = saved.imageCacheMB * 1024 * 1024;
+} catch { /* no saved limits, use defaults */ }
+
+// Run cache eviction on startup (non-blocking)
+if (nativeScanner && nativeScanner.planCacheEviction) {
+    setTimeout(() => {
+        for (const [dir, maxBytes, label] of [
+            [videoThumbDir, VIDEO_CACHE_MAX_BYTES, 'video'],
+            [imageThumbDir, IMAGE_CACHE_MAX_BYTES, 'image'],
+        ]) {
+            if (maxBytes === 0) continue; // 0 = unlimited
+            try {
+                const plan = nativeScanner.planCacheEviction(dir, maxBytes);
+                if (plan.filesToDelete.length > 0) {
+                    const deleted = nativeScanner.deleteFiles(plan.filesToDelete);
+                    console.log(`[cache] Evicted ${deleted} ${label} thumbnails (freed ${(plan.bytesToFree / 1024 / 1024).toFixed(1)}MB, was ${(plan.currentSize / 1024 / 1024).toFixed(1)}MB)`);
+                }
+            } catch (e) {
+                console.warn(`[cache] ${label} eviction failed:`, e.message);
+            }
+        }
+    }, 3000); // Delay 3s after startup to not compete with initial folder load
+}
+
 // Undo/Redo: app-managed staging folder for deleted files
 const undoTrashDir = path.join(userDataPath, 'undo-trash');
 // Clean any leftovers from previous session (crash recovery), then recreate
@@ -844,6 +877,38 @@ ipcMain.handle('get-memory-info', () => {
         heapTotal: mem.heapTotal,
         external: mem.external,
     };
+});
+
+ipcMain.handle('get-cache-info', () => {
+    if (!nativeScanner || !nativeScanner.getCacheInfo) return null;
+    const video = nativeScanner.getCacheInfo(videoThumbDir || '');
+    const image = nativeScanner.getCacheInfo(imageThumbDir || '');
+    const folder = nativeScanner.getCacheInfo(folderPreviewDir || '');
+    return {
+        video: { size: video.totalSize, files: video.fileCount, maxSize: VIDEO_CACHE_MAX_BYTES },
+        image: { size: image.totalSize, files: image.fileCount, maxSize: IMAGE_CACHE_MAX_BYTES },
+        folder: { size: folder.totalSize, files: folder.fileCount },
+    };
+});
+
+ipcMain.handle('evict-cache', (event, cacheType) => {
+    if (!nativeScanner || !nativeScanner.planCacheEviction) return { deleted: 0, freed: 0 };
+    const dir = cacheType === 'video' ? videoThumbDir : imageThumbDir;
+    const maxBytes = cacheType === 'video' ? VIDEO_CACHE_MAX_BYTES : IMAGE_CACHE_MAX_BYTES;
+    if (maxBytes === 0) return { deleted: 0, freed: 0 }; // unlimited
+    // Force evict to 80% of max to avoid re-evicting on every call
+    const plan = nativeScanner.planCacheEviction(dir, Math.floor(maxBytes * 0.8));
+    if (plan.filesToDelete.length === 0) return { deleted: 0, freed: 0 };
+    const deleted = nativeScanner.deleteFiles(plan.filesToDelete);
+    return { deleted, freed: plan.bytesToFree };
+});
+
+ipcMain.handle('set-cache-limits', (event, videoCacheMB, imageCacheMB) => {
+    VIDEO_CACHE_MAX_BYTES = videoCacheMB * 1024 * 1024;
+    IMAGE_CACHE_MAX_BYTES = imageCacheMB * 1024 * 1024;
+    try {
+        fs.writeFileSync(cacheLimitsFile, JSON.stringify({ videoCacheMB, imageCacheMB }));
+    } catch { /* non-critical */ }
 });
 
 // Concurrency-limited async pool: runs at most `limit` tasks at a time, preserves result order

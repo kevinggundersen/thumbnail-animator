@@ -1058,6 +1058,46 @@
                             </div>
                         </div>
                         <div id="settings-data-status" class="settings-data-status hidden"></div>
+
+                        <div class="settings-data-section-title" style="margin-top: 24px;">Thumbnail Cache</div>
+                        <p class="settings-data-description">Cached thumbnails speed up browsing but use disk space. Oldest thumbnails are automatically removed when limits are exceeded.</p>
+                        <div class="settings-data-actions">
+                            <div class="settings-data-action-row">
+                                <div>
+                                    <div class="settings-data-action-title">Video Thumbnail Limit</div>
+                                    <div class="settings-data-action-desc" id="video-cache-usage"></div>
+                                </div>
+                                <select id="video-cache-limit" class="settings-select">
+                                    <option value="100">100 MB</option>
+                                    <option value="250">250 MB</option>
+                                    <option value="500" selected>500 MB</option>
+                                    <option value="1000">1 GB</option>
+                                    <option value="2000">2 GB</option>
+                                    <option value="0">Unlimited</option>
+                                </select>
+                            </div>
+                            <div class="settings-data-action-row">
+                                <div>
+                                    <div class="settings-data-action-title">Image Thumbnail Limit</div>
+                                    <div class="settings-data-action-desc" id="image-cache-usage"></div>
+                                </div>
+                                <select id="image-cache-limit" class="settings-select">
+                                    <option value="250">250 MB</option>
+                                    <option value="500">500 MB</option>
+                                    <option value="1000" selected>1 GB</option>
+                                    <option value="2000">2 GB</option>
+                                    <option value="5000">5 GB</option>
+                                    <option value="0">Unlimited</option>
+                                </select>
+                            </div>
+                            <div class="settings-data-action-row">
+                                <div>
+                                    <div class="settings-data-action-title">Clear All Thumbnails</div>
+                                    <div class="settings-data-action-desc">Remove all cached thumbnails to free disk space</div>
+                                </div>
+                                <button id="clear-cache-btn" class="settings-action-btn">Clear</button>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>

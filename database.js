@@ -497,6 +497,22 @@ class AppDatabase {
         return this._stmts.getTagsForFile.all(filePath);
     }
 
+    getTagsForFiles(filePaths) {
+        if (!filePaths.length) return {};
+        const placeholders = filePaths.map(() => '?').join(',');
+        const rows = this.db.prepare(`
+            SELECT ft.file_path, t.id, t.name, t.color
+            FROM file_tags ft JOIN tags t ON t.id = ft.tag_id
+            WHERE ft.file_path IN (${placeholders})
+            ORDER BY t.name COLLATE NOCASE
+        `).all(...filePaths);
+        const result = {};
+        for (const row of rows) {
+            (result[row.file_path] ||= []).push({ id: row.id, name: row.name, color: row.color });
+        }
+        return result;
+    }
+
     getFilesForTag(tagId) {
         return this._stmts.getFilesForTag.all(tagId).map(r => r.file_path);
     }

@@ -81,6 +81,7 @@ let vsLastEndIndex = -1;           // Last rendered range end
 let vsSpacer = null;               // Spacer element that sets total scroll height
 let vsResizeHandler = null;        // Window resize handler
 let vsDimensionRecalcRafId = null; // RAF ID for coalescing metadata-triggered recalcs
+let vsTagGeneration = 0;           // Incremented on each vsUpdateDOM to cancel stale tag fetches
 
 // Masonry layout cache for incremental updates
 let vsLayoutCache = {
@@ -581,11 +582,28 @@ function vsUpdateDOM(startIndex, endIndex) {
 
         // Update tag badges on newly added cards
         if (typeof updateCardTagBadges === 'function') {
+            const needTagPaths = [];
+            const tagCards = [];
             for (let i = startIndex; i < endIndex; i++) {
                 const card = vsActiveCards.get(i);
-                if (card && card.classList.contains('video-card')) {
-                    updateCardTagBadges(card);
+                if (card && card.classList.contains('video-card') && card.dataset.filePath) {
+                    const np = normalizePath(card.dataset.filePath);
+                    if (!fileTagsCache.has(np)) {
+                        needTagPaths.push(np);
+                    }
+                    tagCards.push(card);
                 }
+            }
+            if (needTagPaths.length > 0) {
+                const gen = ++vsTagGeneration;
+                warmFileTagsCache(needTagPaths).then(() => {
+                    if (gen !== vsTagGeneration) return; // stale scroll
+                    tagCards.forEach(c => {
+                        if (c.dataset.filePath) updateCardTagBadges(c);
+                    });
+                });
+            } else {
+                tagCards.forEach(c => updateCardTagBadges(c));
             }
         }
     }
@@ -10811,43 +10829,66 @@ async function refreshTagsCache() {
     } catch {}
 }
 
-// ── Tag badges on cards ──────────────────────────────────────────────────────
+// ── File-tag cache (mirrors star-rating in-memory pattern) ──────────────────
 
-async function updateCardTagBadges(card) {
-    const filePath = card.dataset.filePath;
-    if (!filePath) return;
-    let container = card.querySelector('.card-tags');
+let fileTagsCache = new Map(); // Map<normalizedPath, Tag[]>
+
+async function warmFileTagsCache(filePaths) {
+    if (!filePaths.length) return;
     try {
-        const result = await window.electronAPI.dbGetTagsForFile(normalizePath(filePath));
-        if (!result.success || !result.data || result.data.length === 0) {
-            if (container) container.remove();
-            return;
-        }
-        if (!container) {
-            container = document.createElement('div');
-            container.className = 'card-tags';
-            // Insert after info section or at end of card
-            const info = card.querySelector('.video-info') || card.querySelector('.card-info');
-            if (info) info.after(container);
-            else card.appendChild(container);
-        }
-        container.innerHTML = '';
-        for (const tag of result.data.slice(0, 5)) { // max 5 visible
-            const badge = document.createElement('span');
-            badge.className = 'tag-badge';
-            if (tag.color) badge.style.background = tag.color;
-            badge.textContent = tag.name;
-            badge.title = tag.name;
-            container.appendChild(badge);
-        }
-        if (result.data.length > 5) {
-            const more = document.createElement('span');
-            more.className = 'tag-badge';
-            more.style.background = '#555';
-            more.textContent = `+${result.data.length - 5}`;
-            container.appendChild(more);
+        const result = await window.electronAPI.dbGetTagsForFiles(filePaths);
+        if (result.success && result.data) {
+            for (const [fp, tags] of Object.entries(result.data)) {
+                fileTagsCache.set(fp, tags);
+            }
+            // Mark files with no tags so we don't refetch
+            for (const fp of filePaths) {
+                if (!fileTagsCache.has(fp)) fileTagsCache.set(fp, []);
+            }
         }
     } catch {}
+}
+
+function invalidateFileTagsCache(filePath) {
+    if (filePath) fileTagsCache.delete(normalizePath(filePath));
+    else fileTagsCache.clear();
+}
+
+// ── Tag badges on cards ──────────────────────────────────────────────────────
+
+function updateCardTagBadges(card) {
+    const filePath = card.dataset.filePath;
+    if (!filePath) return;
+    const tags = fileTagsCache.get(normalizePath(filePath));
+
+    let container = card.querySelector('.card-tags');
+    if (!tags || tags.length === 0) {
+        if (container) container.remove();
+        return;
+    }
+    if (!container) {
+        container = document.createElement('div');
+        container.className = 'card-tags';
+        const info = card.querySelector('.video-info') || card.querySelector('.card-info');
+        if (info) info.after(container);
+        else card.appendChild(container);
+    }
+    container.innerHTML = '';
+    for (const tag of tags.slice(0, 5)) {
+        const badge = document.createElement('span');
+        badge.className = 'tag-badge';
+        if (tag.color) badge.style.background = tag.color;
+        badge.textContent = tag.name;
+        badge.title = tag.name;
+        container.appendChild(badge);
+    }
+    if (tags.length > 5) {
+        const more = document.createElement('span');
+        more.className = 'tag-badge';
+        more.style.background = '#555';
+        more.textContent = `+${tags.length - 5}`;
+        container.appendChild(more);
+    }
 }
 
 // ── Tag picker dialog ────────────────────────────────────────────────────────
@@ -10964,8 +11005,20 @@ async function renderTagPickerSuggestions() {
     } catch {}
 }
 
-function refreshVisibleCardTags() {
-    document.querySelectorAll('.video-card').forEach(card => updateCardTagBadges(card));
+async function refreshVisibleCardTags() {
+    fileTagsCache.clear();
+    let cards;
+    if (vsEnabled && vsActiveCards.size > 0) {
+        cards = Array.from(vsActiveCards.values()).filter(c => c.classList.contains('video-card'));
+    } else {
+        cards = Array.from(document.querySelectorAll('.video-card'));
+    }
+    const paths = cards
+        .map(c => c.dataset.filePath)
+        .filter(Boolean)
+        .map(normalizePath);
+    if (paths.length > 0) await warmFileTagsCache(paths);
+    cards.forEach(c => updateCardTagBadges(c));
 }
 
 // Tag picker event listeners
@@ -11214,8 +11267,6 @@ const tagsTabBtn = document.querySelector('.settings-tab[data-tab="tags"]');
 if (tagsTabBtn) {
     tagsTabBtn.addEventListener('click', () => renderTagsManagement());
 }
-
-// Tag badges are updated directly in vsUpdateDOM when cards are added/recycled
 
 // Initialize tags on startup
 refreshTagsCache();

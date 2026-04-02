@@ -132,6 +132,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     dbAddTagToFile: (filePath, tagId) => ipcRenderer.invoke('db-add-tag-to-file', filePath, tagId),
     dbRemoveTagFromFile: (filePath, tagId) => ipcRenderer.invoke('db-remove-tag-from-file', filePath, tagId),
     dbGetTagsForFile: (filePath) => ipcRenderer.invoke('db-get-tags-for-file', filePath),
+    dbGetTagsForFiles: (filePaths) => ipcRenderer.invoke('db-get-tags-for-files', filePaths),
     dbGetFilesForTag: (tagId) => ipcRenderer.invoke('db-get-files-for-tag', tagId),
     dbBulkTagFiles: (filePaths, tagId) => ipcRenderer.invoke('db-bulk-tag-files', filePaths, tagId),
     dbBulkRemoveTagFromFiles: (filePaths, tagId) => ipcRenderer.invoke('db-bulk-remove-tag-from-files', filePaths, tagId),

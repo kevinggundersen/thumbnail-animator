@@ -6504,11 +6504,17 @@ video.blow-up-media {
 
 /* Tag badges on file cards */
 .card-tags {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
     display: flex;
     flex-wrap: wrap;
     gap: 3px;
     padding: 2px 6px 4px;
     min-height: 0;
+    z-index: 3;
+    pointer-events: none;
 }
 .tag-badge {
     display: inline-flex;
@@ -6525,6 +6531,8 @@ video.blow-up-media {
     max-width: 100px;
     overflow: hidden;
     text-overflow: ellipsis;
+    pointer-events: auto;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
 }
 .tag-badge-dot {
     width: 6px;

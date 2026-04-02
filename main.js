@@ -3108,6 +3108,10 @@ ipcMain.handle('db-get-tags-for-file', (event, filePath) => {
     try { return { success: true, data: appDb.getTagsForFile(filePath) }; }
     catch (e) { return { success: false, error: e.message }; }
 });
+ipcMain.handle('db-get-tags-for-files', (event, filePaths) => {
+    try { return { success: true, data: appDb.getTagsForFiles(filePaths) }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
 ipcMain.handle('db-get-files-for-tag', (event, tagId) => {
     try { return { success: true, data: appDb.getFilesForTag(tagId) }; }
     catch (e) { return { success: false, error: e.message }; }

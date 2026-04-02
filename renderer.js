@@ -2323,7 +2323,150 @@ async function backgroundScanSmartCollection(collectionId) {
 
         if (scanState.abort) return;
 
-        const items = (result.items || []).filter(item => matchesSmartRules(item, collection.rules));
+        let items = (result.items || []).filter(item => matchesSmartRules(item, collection.rules));
+
+        // --- Background AI Content Search ---
+        const aiQuery = collection.rules?.aiQuery;
+        if (aiQuery && items.length > 0) {
+            const aiThreshold = collection.rules.aiThreshold || 0.28;
+            const mediaItems = items.filter(i => i.type !== 'folder' && !i.missing);
+
+            let modelReady = false;
+            try {
+                const status = await window.electronAPI.clipStatus();
+                if (status.loaded) {
+                    modelReady = true;
+                } else if (aiVisualSearchEnabled && aiModelDownloadConfirmed) {
+                    const init = await window.electronAPI.clipInit();
+                    modelReady = init.success;
+                }
+            } catch { /* model unavailable */ }
+
+            if (scanState.abort) return;
+
+            if (modelReady && mediaItems.length > 0) {
+                let textEmb = null;
+                try {
+                    const raw = await window.electronAPI.clipEmbedText(aiQuery);
+                    textEmb = raw ? new Float32Array(raw) : null;
+                } catch { /* skip */ }
+
+                if (scanState.abort) return;
+
+                if (textEmb) {
+                    const embeddingMap = new Map();
+                    try {
+                        const cached = await getCachedEmbeddings(mediaItems.map(i => ({ path: i.path, mtime: i.mtime || 0 })));
+                        for (const [p, emb] of cached) embeddingMap.set(p, emb);
+                    } catch { /* ignore */ }
+
+                    if (scanState.abort) return;
+
+                    // Score cached items immediately
+                    const scoredItems = [];
+                    for (const item of mediaItems) {
+                        const emb = embeddingMap.get(item.path);
+                        if (emb) {
+                            const sim = cosineSimilarity(textEmb, emb);
+                            if (sim >= aiThreshold) {
+                                item._aiScore = sim;
+                                scoredItems.push(item);
+                            }
+                        }
+                    }
+                    scoredItems.sort((a, b) => (b._aiScore || 0) - (a._aiScore || 0));
+
+                    // Cache partial AI results so navigation shows something fast
+                    items = scoredItems;
+                    smartCollectionCache.set(collectionId, { items, timestamp: Date.now() });
+
+                    const badge = document.querySelector(`[data-col-count="${collectionId}"]`);
+                    if (badge) badge.textContent = items.length;
+
+                    if (currentCollectionId === collectionId) {
+                        currentItems = items;
+                        renderItems(sortItems(filterItems(items)), null);
+                        updateBreadcrumbForCollection(collection);
+                    }
+
+                    // Process uncached images with smaller batches + generous yielding
+                    const uncached = mediaItems.filter(i => !embeddingMap.has(i.path));
+                    if (uncached.length > 0) {
+                        const BG_BATCH_SIZE = 8;
+                        let done = 0;
+                        let newMatches = false;
+
+                        for (let i = 0; i < uncached.length; i += BG_BATCH_SIZE) {
+                            if (scanState.abort) return;
+
+                            const batch = uncached.slice(i, i + BG_BATCH_SIZE);
+                            try {
+                                const results = await window.electronAPI.clipEmbedImages(
+                                    batch.map(item => ({ path: item.path, mtime: item.mtime || 0, thumbPath: null }))
+                                );
+                                const toCache = [];
+                                for (const r of results) {
+                                    if (r && r.embedding) {
+                                        const emb = new Float32Array(r.embedding);
+                                        embeddingMap.set(r.path, emb);
+                                        const item = mediaItems.find(m => m.path === r.path);
+                                        toCache.push({ path: r.path, mtime: item ? (item.mtime || 0) : 0, embedding: r.embedding });
+                                        const sim = cosineSimilarity(textEmb, emb);
+                                        if (sim >= aiThreshold) newMatches = true;
+                                    }
+                                }
+                                if (toCache.length > 0) cacheEmbeddings(toCache).catch(() => {});
+                                done += batch.length;
+                            } catch { done += batch.length; }
+
+                            // Update sidebar badge periodically
+                            if (newMatches) {
+                                const allScored = [];
+                                for (const item of mediaItems) {
+                                    const emb = embeddingMap.get(item.path);
+                                    if (emb) {
+                                        const sim = cosineSimilarity(textEmb, emb);
+                                        if (sim >= aiThreshold) { item._aiScore = sim; allScored.push(item); }
+                                    }
+                                }
+                                allScored.sort((a, b) => (b._aiScore || 0) - (a._aiScore || 0));
+                                items = allScored;
+                                smartCollectionCache.set(collectionId, { items, timestamp: Date.now() });
+
+                                const badge2 = document.querySelector(`[data-col-count="${collectionId}"]`);
+                                if (badge2) badge2.textContent = items.length;
+
+                                if (currentCollectionId === collectionId) {
+                                    currentItems = items;
+                                    renderItems(sortItems(filterItems(items)), null);
+                                }
+                                newMatches = false;
+                            }
+
+                            // Yield generously to keep the app responsive
+                            if (i + BG_BATCH_SIZE < uncached.length) {
+                                await new Promise(r => setTimeout(r, 150));
+                            }
+                        }
+
+                        if (scanState.abort) return;
+
+                        // Final scoring pass
+                        const finalScored = [];
+                        for (const item of mediaItems) {
+                            const emb = embeddingMap.get(item.path);
+                            if (emb) {
+                                const sim = cosineSimilarity(textEmb, emb);
+                                if (sim >= aiThreshold) { item._aiScore = sim; finalScored.push(item); }
+                            }
+                        }
+                        finalScored.sort((a, b) => (b._aiScore || 0) - (a._aiScore || 0));
+                        items = finalScored;
+                    }
+                }
+            }
+        }
+
         smartCollectionCache.set(collectionId, { items, timestamp: Date.now() });
 
         // Update sidebar badge with final count

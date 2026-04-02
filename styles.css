@@ -2503,6 +2503,28 @@ button:hover {
     top: 36px;
 }
 
+/* ── Per-label hover/always-show overrides ────────────────────────────── */
+
+/* Extension: make hover-only (currently always visible) */
+.video-card.ci-ext-hover .extension-label { opacity: 0; transition: opacity 0.2s ease; }
+.video-card.ci-ext-hover:hover .extension-label { opacity: 1; }
+
+/* Audio: make hover-only (currently always visible) */
+.video-card.ci-audio-hover .sound-label { opacity: 0; transition: opacity 0.2s ease; }
+.video-card.ci-audio-hover:hover .sound-label { opacity: 1; }
+
+/* Meta-row: make always-visible (currently hover-only) */
+.video-card.ci-meta-always .card-meta-row { opacity: 1; }
+
+/* Star rating: rated-only always-show is handled in the .star-rating section */
+
+/* Filename + gradient: make always-visible (currently hover-only) */
+.video-card.ci-filename-always::after { opacity: 1; }
+.video-card.ci-filename-always .video-info { opacity: 1; transform: translateY(0); }
+
+/* When filename is always visible, tags-shifted should apply without hover */
+.video-card.ci-filename-always .card-tags.tags-shifted { bottom: 28px; }
+
 /* ==================== ZOOM-TIER PROGRESSIVE CONTENT HIDING ==================== */
 
 /* --- zoom-md (75-99%): Slight shrink of all labels --- */
@@ -4893,7 +4915,8 @@ video.blow-up-media {
     transition: opacity 0.2s;
 }
 
-.star-rating.has-rating,
+/* Rated stars always visible only when hover toggle is off */
+.video-card.ci-stars-always .star-rating.has-rating,
 .video-card:hover .star-rating {
     opacity: 1;
 }

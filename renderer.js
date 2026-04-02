@@ -1316,6 +1316,27 @@ const cardInfoStarsLabel = document.getElementById('card-info-stars-label');
 const cardInfoExtensionLabel = document.getElementById('card-info-extension-label');
 const cardInfoAudioLabel = document.getElementById('card-info-audio-label');
 const cardInfoFilenameLabel = document.getElementById('card-info-filename-label');
+const cardInfoExtensionHoverToggle = document.getElementById('card-info-extension-hover-toggle');
+const cardInfoExtensionHoverLabel = document.getElementById('card-info-extension-hover-label');
+const cardInfoExtensionHoverRow = document.getElementById('card-info-extension-hover-row');
+const cardInfoResolutionHoverToggle = document.getElementById('card-info-resolution-hover-toggle');
+const cardInfoResolutionHoverLabel = document.getElementById('card-info-resolution-hover-label');
+const cardInfoResolutionHoverRow = document.getElementById('card-info-resolution-hover-row');
+const cardInfoSizeHoverToggle = document.getElementById('card-info-size-hover-toggle');
+const cardInfoSizeHoverLabel = document.getElementById('card-info-size-hover-label');
+const cardInfoSizeHoverRow = document.getElementById('card-info-size-hover-row');
+const cardInfoDateHoverToggle = document.getElementById('card-info-date-hover-toggle');
+const cardInfoDateHoverLabel = document.getElementById('card-info-date-hover-label');
+const cardInfoDateHoverRow = document.getElementById('card-info-date-hover-row');
+const cardInfoStarsHoverToggle = document.getElementById('card-info-stars-hover-toggle');
+const cardInfoStarsHoverLabel = document.getElementById('card-info-stars-hover-label');
+const cardInfoStarsHoverRow = document.getElementById('card-info-stars-hover-row');
+const cardInfoAudioHoverToggle = document.getElementById('card-info-audio-hover-toggle');
+const cardInfoAudioHoverLabel = document.getElementById('card-info-audio-hover-label');
+const cardInfoAudioHoverRow = document.getElementById('card-info-audio-hover-row');
+const cardInfoFilenameHoverToggle = document.getElementById('card-info-filename-hover-toggle');
+const cardInfoFilenameHoverLabel = document.getElementById('card-info-filename-hover-label');
+const cardInfoFilenameHoverRow = document.getElementById('card-info-filename-hover-row');
 const cardInfoTagsToggle = document.getElementById('card-info-tags-toggle');
 const cardInfoTagsLabel = document.getElementById('card-info-tags-label');
 const cardInfoTagsHoverToggle = document.getElementById('card-info-tags-hover-toggle');
@@ -1446,6 +1467,13 @@ const DEFAULT_CARD_INFO = Object.freeze({
     audioLabel: true,
     filename: true,
     tags: true,
+    extensionOnlyOnHover: false,
+    resolutionOnlyOnHover: true,
+    fileSizeOnlyOnHover: true,
+    dateOnlyOnHover: true,
+    starRatingOnlyOnHover: true,
+    audioLabelOnlyOnHover: false,
+    filenameOnlyOnHover: true,
     tagsOnlyOnHover: false
 });
 let cardInfoSettings = { ...DEFAULT_CARD_INFO };
@@ -4047,6 +4075,21 @@ function syncCardInfoToggleLabels() {
     if (cardInfoAudioLabel) cardInfoAudioLabel.textContent = cardInfoSettings.audioLabel ? 'On' : 'Off';
     if (cardInfoFilenameLabel) cardInfoFilenameLabel.textContent = cardInfoSettings.filename ? 'On' : 'Off';
     if (cardInfoTagsLabel) cardInfoTagsLabel.textContent = cardInfoSettings.tags ? 'On' : 'Off';
+    // Hover sub-toggle labels + row visibility
+    if (cardInfoExtensionHoverLabel) cardInfoExtensionHoverLabel.textContent = cardInfoSettings.extensionOnlyOnHover ? 'On' : 'Off';
+    if (cardInfoExtensionHoverRow) cardInfoExtensionHoverRow.style.display = cardInfoSettings.extension ? '' : 'none';
+    if (cardInfoResolutionHoverLabel) cardInfoResolutionHoverLabel.textContent = cardInfoSettings.resolutionOnlyOnHover ? 'On' : 'Off';
+    if (cardInfoResolutionHoverRow) cardInfoResolutionHoverRow.style.display = cardInfoSettings.resolution ? '' : 'none';
+    if (cardInfoSizeHoverLabel) cardInfoSizeHoverLabel.textContent = cardInfoSettings.fileSizeOnlyOnHover ? 'On' : 'Off';
+    if (cardInfoSizeHoverRow) cardInfoSizeHoverRow.style.display = cardInfoSettings.fileSize ? '' : 'none';
+    if (cardInfoDateHoverLabel) cardInfoDateHoverLabel.textContent = cardInfoSettings.dateOnlyOnHover ? 'On' : 'Off';
+    if (cardInfoDateHoverRow) cardInfoDateHoverRow.style.display = cardInfoSettings.date ? '' : 'none';
+    if (cardInfoStarsHoverLabel) cardInfoStarsHoverLabel.textContent = cardInfoSettings.starRatingOnlyOnHover ? 'On' : 'Off';
+    if (cardInfoStarsHoverRow) cardInfoStarsHoverRow.style.display = cardInfoSettings.starRating ? '' : 'none';
+    if (cardInfoAudioHoverLabel) cardInfoAudioHoverLabel.textContent = cardInfoSettings.audioLabelOnlyOnHover ? 'On' : 'Off';
+    if (cardInfoAudioHoverRow) cardInfoAudioHoverRow.style.display = cardInfoSettings.audioLabel ? '' : 'none';
+    if (cardInfoFilenameHoverLabel) cardInfoFilenameHoverLabel.textContent = cardInfoSettings.filenameOnlyOnHover ? 'On' : 'Off';
+    if (cardInfoFilenameHoverRow) cardInfoFilenameHoverRow.style.display = cardInfoSettings.filename ? '' : 'none';
     if (cardInfoTagsHoverLabel) cardInfoTagsHoverLabel.textContent = cardInfoSettings.tagsOnlyOnHover ? 'On' : 'Off';
     if (cardInfoTagsHoverRow) cardInfoTagsHoverRow.style.display = cardInfoSettings.tags ? '' : 'none';
 }
@@ -4061,6 +4104,13 @@ function syncCardInfoTogglesFromState() {
     if (cardInfoAudioToggle) cardInfoAudioToggle.checked = cardInfoSettings.audioLabel;
     if (cardInfoFilenameToggle) cardInfoFilenameToggle.checked = cardInfoSettings.filename;
     if (cardInfoTagsToggle) cardInfoTagsToggle.checked = cardInfoSettings.tags;
+    if (cardInfoExtensionHoverToggle) cardInfoExtensionHoverToggle.checked = cardInfoSettings.extensionOnlyOnHover;
+    if (cardInfoResolutionHoverToggle) cardInfoResolutionHoverToggle.checked = cardInfoSettings.resolutionOnlyOnHover;
+    if (cardInfoSizeHoverToggle) cardInfoSizeHoverToggle.checked = cardInfoSettings.fileSizeOnlyOnHover;
+    if (cardInfoDateHoverToggle) cardInfoDateHoverToggle.checked = cardInfoSettings.dateOnlyOnHover;
+    if (cardInfoStarsHoverToggle) cardInfoStarsHoverToggle.checked = cardInfoSettings.starRatingOnlyOnHover;
+    if (cardInfoAudioHoverToggle) cardInfoAudioHoverToggle.checked = cardInfoSettings.audioLabelOnlyOnHover;
+    if (cardInfoFilenameHoverToggle) cardInfoFilenameHoverToggle.checked = cardInfoSettings.filenameOnlyOnHover;
     if (cardInfoTagsHoverToggle) cardInfoTagsHoverToggle.checked = cardInfoSettings.tagsOnlyOnHover;
     syncCardInfoToggleLabels();
 }
@@ -4097,6 +4147,13 @@ function onCardInfoSettingsChanged() {
     cardInfoSettings.audioLabel = !!cardInfoAudioToggle?.checked;
     cardInfoSettings.filename = !!cardInfoFilenameToggle?.checked;
     cardInfoSettings.tags = !!cardInfoTagsToggle?.checked;
+    cardInfoSettings.extensionOnlyOnHover = !!cardInfoExtensionHoverToggle?.checked;
+    cardInfoSettings.resolutionOnlyOnHover = !!cardInfoResolutionHoverToggle?.checked;
+    cardInfoSettings.fileSizeOnlyOnHover = !!cardInfoSizeHoverToggle?.checked;
+    cardInfoSettings.dateOnlyOnHover = !!cardInfoDateHoverToggle?.checked;
+    cardInfoSettings.starRatingOnlyOnHover = !!cardInfoStarsHoverToggle?.checked;
+    cardInfoSettings.audioLabelOnlyOnHover = !!cardInfoAudioHoverToggle?.checked;
+    cardInfoSettings.filenameOnlyOnHover = !!cardInfoFilenameHoverToggle?.checked;
     cardInfoSettings.tagsOnlyOnHover = !!cardInfoTagsHoverToggle?.checked;
     syncCardInfoToggleLabels();
     saveCardInfoSettings();
@@ -4209,7 +4266,18 @@ function applyCardInfoLayoutClasses(card) {
     card.classList.toggle('ci-no-stars', !cardInfoSettings.starRating);
     card.classList.toggle('ci-no-audio', !cardInfoSettings.audioLabel);
     card.classList.toggle('ci-no-tags', !cardInfoSettings.tags);
+    // Hover-only classes for always-visible labels
+    card.classList.toggle('ci-ext-hover', cardInfoSettings.extension && cardInfoSettings.extensionOnlyOnHover);
+    card.classList.toggle('ci-audio-hover', cardInfoSettings.audioLabel && cardInfoSettings.audioLabelOnlyOnHover);
+    // Always-show classes for hover-only labels
+    card.classList.toggle('ci-filename-always', cardInfoSettings.filename && !cardInfoSettings.filenameOnlyOnHover);
+    card.classList.toggle('ci-stars-always', cardInfoSettings.starRating && !cardInfoSettings.starRatingOnlyOnHover);
     card.classList.toggle('ci-tags-hover', cardInfoSettings.tags && cardInfoSettings.tagsOnlyOnHover);
+    // Meta-row: always-show if any chip has always-show
+    const metaAlways = (cardInfoSettings.resolution && !cardInfoSettings.resolutionOnlyOnHover)
+        || (cardInfoSettings.fileSize && !cardInfoSettings.fileSizeOnlyOnHover)
+        || (cardInfoSettings.date && !cardInfoSettings.dateOnlyOnHover);
+    card.classList.toggle('ci-meta-always', metaAlways);
 }
 
 function refreshAllVisibleMediaCardInfo() {
@@ -8052,7 +8120,7 @@ includeMovingImagesToggle.addEventListener('change', () => {
 });
 
 // Card info toggles
-[cardInfoExtensionToggle, cardInfoResolutionToggle, cardInfoSizeToggle, cardInfoDateToggle, cardInfoDurationToggle, cardInfoStarsToggle, cardInfoAudioToggle, cardInfoFilenameToggle, cardInfoTagsToggle, cardInfoTagsHoverToggle]
+[cardInfoExtensionToggle, cardInfoResolutionToggle, cardInfoSizeToggle, cardInfoDateToggle, cardInfoDurationToggle, cardInfoStarsToggle, cardInfoAudioToggle, cardInfoFilenameToggle, cardInfoTagsToggle, cardInfoExtensionHoverToggle, cardInfoResolutionHoverToggle, cardInfoSizeHoverToggle, cardInfoDateHoverToggle, cardInfoStarsHoverToggle, cardInfoAudioHoverToggle, cardInfoFilenameHoverToggle, cardInfoTagsHoverToggle]
     .filter(Boolean)
     .forEach(el => el.addEventListener('change', () => onCardInfoSettingsChanged()));
 

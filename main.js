@@ -1308,7 +1308,7 @@ async function getSubdirectoriesRecursive(rootPath) {
 // rules: optional smart collection rules for pre-filtering before dimension scanning
 const FOLDER_SCAN_CONCURRENCY = 8;
 
-ipcMain.handle('scan-folders-for-smart-collection', async (event, folderEntries, options = {}, rules = null) => {
+ipcMain.handle('scan-folders-for-smart-collection', async (event, folderEntries, options = {}, rules = null, scanId = null) => {
     const scanStart = performance.now();
     const errors = [];
     const sender = event.sender;
@@ -1402,6 +1402,7 @@ ipcMain.handle('scan-folders-for-smart-collection', async (event, folderEntries,
         // Send single progress update (native scan is too fast for streaming)
         if (!sender.isDestroyed()) {
             sender.send('smart-collection-scan-progress', {
+                scanId,
                 foldersScanned: 1, totalFolders: 1,
                 items: allFiles
             });
@@ -1439,9 +1440,9 @@ ipcMain.handle('scan-folders-for-smart-collection', async (event, folderEntries,
                 foldersScanned++;
                 const filtered = rules ? mediaFiles.filter(f => matchesCheapRules(f, rules)) : mediaFiles;
                 if (!sender.isDestroyed() && filtered.length > 0) {
-                    sender.send('smart-collection-scan-progress', { foldersScanned, totalFolders, items: filtered });
+                    sender.send('smart-collection-scan-progress', { scanId, foldersScanned, totalFolders, items: filtered });
                 } else if (!sender.isDestroyed()) {
-                    sender.send('smart-collection-scan-progress', { foldersScanned, totalFolders });
+                    sender.send('smart-collection-scan-progress', { scanId, foldersScanned, totalFolders });
                 }
                 return filtered;
             } catch (error) {

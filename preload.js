@@ -61,7 +61,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     removeClipDownloadProgressListener: () => ipcRenderer.removeAllListeners('clip-download-progress'),
     // Collections
     resolveFilePaths: (filePaths, options) => ipcRenderer.invoke('resolve-file-paths', filePaths, options),
-    scanFoldersForSmartCollection: (folderPaths, options, rules) => ipcRenderer.invoke('scan-folders-for-smart-collection', folderPaths, options, rules),
+    scanFoldersForSmartCollection: (folderPaths, options, rules, scanId) => ipcRenderer.invoke('scan-folders-for-smart-collection', folderPaths, options, rules, scanId),
     onSmartCollectionProgress: (callback) => ipcRenderer.on('smart-collection-scan-progress', callback),
     removeSmartCollectionProgressListener: () => ipcRenderer.removeAllListeners('smart-collection-scan-progress'),
     // Plugin system

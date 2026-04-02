@@ -1881,7 +1881,11 @@ async function loadCollectionIntoGrid(collectionId) {
     stopPeriodicCleanup();
     activeDimensionHydrationToken++;
 
+    // Cancel any background scan for this collection — foreground takes over
+    cancelBackgroundScan(collectionId);
+
     setCollectionLoading(collectionId, true);
+    const fgScanId = 'fgscan_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
 
     // Immediately update UI state so sidebar highlight and breadcrumb respond
     currentCollectionId = collectionId;
@@ -1965,6 +1969,7 @@ async function loadCollectionIntoGrid(collectionId) {
 
             let progressFileCount = 0;
             const progressHandler = (_event, progress) => {
+                if (progress.scanId && progress.scanId !== fgScanId) return;
                 if (loadToken !== _collectionLoadToken) return;
                 if (progress.items) progressFileCount += progress.items.length;
                 const itemLabel = collection.rules?.fileType === 'video' ? 'videos' : collection.rules?.fileType === 'image' ? 'images' : 'items';
@@ -1991,7 +1996,7 @@ async function loadCollectionIntoGrid(collectionId) {
             const result = await window.electronAPI.scanFoldersForSmartCollection(sourceFolders, {
                 scanImageDimensions: needsDimensionFilter,
                 scanVideoDimensions: needsDimensionFilter
-            }, collection.rules);
+            }, collection.rules, fgScanId);
 
             window.electronAPI.removeSmartCollectionProgressListener();
             if (progressRenderTimer) {
@@ -2249,6 +2254,100 @@ async function loadCollectionIntoGrid(collectionId) {
 
     } finally {
         setCollectionLoading(collectionId, false);
+    }
+}
+
+// --- Background smart collection scanning ---
+// Allows scanning/populating a smart collection without navigating to it.
+// Results go into smartCollectionCache so the next navigation is instant.
+const _bgScans = new Map(); // collectionId -> { scanId, abort: boolean }
+let _bgScanRunning = false;
+const _bgScanPending = []; // queued collectionId list
+
+function cancelBackgroundScan(collectionId) {
+    const entry = _bgScans.get(collectionId);
+    if (entry) {
+        entry.abort = true;
+        _bgScans.delete(collectionId);
+    }
+}
+
+async function backgroundScanSmartCollection(collectionId) {
+    // Cancel any existing background scan for this collection
+    cancelBackgroundScan(collectionId);
+
+    // Queue if another background scan is already running
+    if (_bgScanRunning) {
+        // Remove any prior queue entry for this collection
+        const idx = _bgScanPending.indexOf(collectionId);
+        if (idx >= 0) _bgScanPending.splice(idx, 1);
+        _bgScanPending.push(collectionId);
+        return;
+    }
+
+    _bgScanRunning = true;
+    const scanId = 'bgscan_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+    const scanState = { scanId, abort: false };
+    _bgScans.set(collectionId, scanState);
+
+    setCollectionLoading(collectionId, true);
+
+    try {
+        const collection = await getCollection(collectionId);
+        if (!collection || collection.type !== 'smart' || scanState.abort) return;
+
+        const sourceFolders = collection.rules?.sourceFolders || [];
+        if (sourceFolders.length === 0) return;
+
+        const needsDimensionFilter = !!(collection.rules?.aspectRatio || collection.rules?.width != null || collection.rules?.height != null);
+
+        // Listen for progress events scoped to this scanId
+        let progressCount = 0;
+        const progressHandler = (_event, progress) => {
+            if (progress.scanId !== scanId || scanState.abort) return;
+            if (progress.items) progressCount += progress.items.length;
+            // Update sidebar badge with running count
+            const badge = document.querySelector(`[data-col-count="${collectionId}"]`);
+            if (badge && progressCount > 0) {
+                badge.textContent = progressCount;
+            }
+        };
+        window.electronAPI.onSmartCollectionProgress(progressHandler);
+
+        const result = await window.electronAPI.scanFoldersForSmartCollection(sourceFolders, {
+            scanImageDimensions: needsDimensionFilter,
+            scanVideoDimensions: needsDimensionFilter
+        }, collection.rules, scanId);
+
+        window.electronAPI.removeSmartCollectionProgressListener();
+
+        if (scanState.abort) return;
+
+        const items = (result.items || []).filter(item => matchesSmartRules(item, collection.rules));
+        smartCollectionCache.set(collectionId, { items, timestamp: Date.now() });
+
+        // Update sidebar badge with final count
+        const badge = document.querySelector(`[data-col-count="${collectionId}"]`);
+        if (badge) badge.textContent = items.filter(i => !i.missing).length;
+
+        // If user navigated to this collection during the scan, render results
+        if (currentCollectionId === collectionId) {
+            currentItems = items;
+            const filtered = filterItems(items);
+            const sorted = sortItems(filtered);
+            renderItems(sorted, null);
+            updateBreadcrumbForCollection(collection);
+        }
+    } finally {
+        _bgScans.delete(collectionId);
+        setCollectionLoading(collectionId, false);
+        _bgScanRunning = false;
+
+        // Process next queued scan
+        if (_bgScanPending.length > 0) {
+            const nextId = _bgScanPending.shift();
+            backgroundScanSmartCollection(nextId);
+        }
     }
 }
 
@@ -10593,6 +10692,7 @@ function showCollectionContextMenu(e, collection) {
                 break;
             case 'refresh-collection':
                 if (currentCollectionId === collection.id) loadCollectionIntoGrid(collection.id);
+                else backgroundScanSmartCollection(collection.id);
                 break;
             case 'delete-collection': {
                 if (confirm(`Delete collection "${collection.name}"?`)) {
@@ -10860,10 +10960,14 @@ function openCollectionDialog(existingCollection = null, onCreated = null) {
             await onCreated(collectionData);
         }
 
-        // Auto-open the new collection (loads in background with sidebar spinner)
-        if (!isEdit) loadCollectionIntoGrid(collectionData.id);
-        // If editing the currently-viewed collection, refresh it
-        else if (currentCollectionId === collectionData.id) loadCollectionIntoGrid(collectionData.id);
+        // If editing the currently-viewed collection, refresh it in-place
+        if (isEdit && currentCollectionId === collectionData.id) {
+            loadCollectionIntoGrid(collectionData.id);
+        }
+        // For smart collections: scan in the background without navigating away
+        else if (collectionData.type === 'smart') {
+            backgroundScanSmartCollection(collectionData.id);
+        }
     });
 
     // Focus name input

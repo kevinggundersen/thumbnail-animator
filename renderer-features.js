@@ -1554,7 +1554,7 @@ function applyTheme() {
 // ==================== THUMBNAIL QUALITY ====================
 function initThumbnailQuality() {
     const savedQuality = localStorage.getItem('thumbnailQuality');
-    if (savedQuality && ['low', 'medium', 'high'].includes(savedQuality)) {
+    if (savedQuality && ['low', 'medium', 'high', 'original'].includes(savedQuality)) {
         thumbnailQuality = savedQuality;
         thumbnailQualitySelect.value = thumbnailQuality;
     }

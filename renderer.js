@@ -7046,6 +7046,7 @@ document.addEventListener('dragend', () => {
 });
 
 window.addEventListener('beforeunload', () => {
+    _flushStorageWrites();
     if (!currentFolderPath) return;
     try {
         sessionStorage.setItem(SESSION_SCROLL_RESTORE_KEY, JSON.stringify({

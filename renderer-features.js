@@ -4510,10 +4510,7 @@ window.addEventListener('DOMContentLoaded', async () => {
         console.error('[SQLite] Migration check failed:', e);
     }
 
-    await loadFavorites();
-    await loadRecentFiles();
-    await loadRatings();
-    await loadPins();
+    await Promise.all([loadFavorites(), loadRecentFiles(), loadRatings(), loadPins()]);
     await initSidebar(); // Must be before loadTabs so sidebar is ready for highlight/expand
     loadTabs(); // This will handle tab restoration and navigation
     initVideoScrubber();

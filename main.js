@@ -75,7 +75,7 @@ function logPerf(operation, startTime, details = {}) {
     console.log(`[Perf] ${operation}: ${duration}ms${suffix ? ` ${suffix}` : ''}`);
 }
 
-async function readImageHeader(filePath, maxBytes = 512 * 1024) {
+async function readImageHeader(filePath, maxBytes = 16 * 1024) {
     const fd = await fs.promises.open(filePath, 'r');
     try {
         const buffer = Buffer.alloc(maxBytes);
@@ -570,16 +570,16 @@ function loadWindowState() {
     };
 }
 
-function saveWindowState(win) {
+function saveWindowState(win, { sync = false } = {}) {
     try {
         // Don't save if window is being destroyed
         if (win.isDestroyed()) {
             return;
         }
-        
+
         const bounds = win.getBounds();
         const isMaximized = win.isMaximized();
-        
+
         const state = {
             width: bounds.width,
             height: bounds.height,
@@ -587,14 +587,21 @@ function saveWindowState(win) {
             y: bounds.y,
             isMaximized: isMaximized
         };
-        
+
         // Ensure directory exists
         const dir = path.dirname(windowStateFile);
         if (!fs.existsSync(dir)) {
             fs.mkdirSync(dir, { recursive: true });
         }
-        
-        fs.writeFileSync(windowStateFile, JSON.stringify(state, null, 2), 'utf8');
+
+        const json = JSON.stringify(state, null, 2);
+        if (sync) {
+            fs.writeFileSync(windowStateFile, json, 'utf8');
+        } else {
+            fs.promises.writeFile(windowStateFile, json, 'utf8').catch(err => {
+                console.error('Error writing window state:', err);
+            });
+        }
         console.log('Window state saved:', state);
     } catch (error) {
         console.error('Error saving window state:', error);
@@ -711,10 +718,10 @@ function createWindow() {
         saveWindowState(win);
     });
     
-    // Save state when window is closed (clear timeout and save immediately)
+    // Save state when window is closed (sync to guarantee persistence before exit)
     win.on('close', () => {
         clearTimeout(saveTimeout);
-        saveWindowState(win);
+        saveWindowState(win, { sync: true });
     });
     
     mainWindow = win;
@@ -3280,6 +3287,16 @@ ipcMain.handle('clip-embed-images', async (event, files) => {
         }
     }
 
+    let lastProgressTime = 0;
+    const PROGRESS_THROTTLE_MS = 100;
+    function sendProgress() {
+        const now = Date.now();
+        if (now - lastProgressTime >= PROGRESS_THROTTLE_MS || completed === files.length) {
+            lastProgressTime = now;
+            try { sender.send('clip-progress', { current: completed, total: files.length, phase: 'embedding' }); } catch { /* window closed */ }
+        }
+    }
+
     // Process video/animated files (multi-frame batching already handled internally)
     for (const file of videoFiles) {
         try {
@@ -3316,7 +3333,7 @@ ipcMain.handle('clip-embed-images', async (event, files) => {
             resultMap.set(file.path, null);
         }
         completed++;
-        try { sender.send('clip-progress', { current: completed, total: files.length, phase: 'embedding' }); } catch { /* window closed */ }
+        sendProgress();
     }
 
     // Process static images in batches with true I/O pipelining:
@@ -3389,7 +3406,7 @@ ipcMain.handle('clip-embed-images', async (event, files) => {
         }
 
         completed += preprocessed.length;
-        try { sender.send('clip-progress', { current: completed, total: files.length, phase: 'embedding' }); } catch { /* window closed */ }
+        sendProgress();
 
         pendingPreprocess = nextPreprocess;
     }

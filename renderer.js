@@ -23,7 +23,7 @@ const VIEWPORT_CACHE_TTL = 100; // Cache viewport bounds for N ms
 const MEDIA_COUNT_CACHE_TTL = 50; // Cache media counts for N ms
 const CARD_RECT_CACHE_TTL = 34; // Short-lived rect cache for hot scroll/cleanup paths
 const IMAGE_THUMBNAIL_MAX_EDGE = 768; // Cap cached image thumbs to a practical grid size
-const BACKGROUND_DIMENSION_SCAN_CHUNK_SIZE = 400; // Keep background scans incremental
+const BACKGROUND_DIMENSION_SCAN_CHUNK_SIZE = 2000; // Larger chunks = fewer layout recalculations
 
 // Progressive Rendering Configuration
 const PROGRESSIVE_RENDER_THRESHOLD = 1000; // Use progressive rendering for N+ items
@@ -4304,18 +4304,20 @@ function performCleanupCheck() {
 
         mediaDistances.sort((a, b) => b.distance - a.distance);
         const toRemove = mediaDistances.slice(safetyThreshold);
+        let removedVideos = 0, removedImages = 0;
         toRemove.forEach(({ element, type }) => {
             if (type === 'video') {
                 destroyVideoElement(element);
+                removedVideos++;
             } else {
                 destroyImageElement(element);
+                removedImages++;
             }
             cleaned = true;
         });
 
-        // Final count from DOM only once at the very end
-        activeVideoCount = gridContainer.querySelectorAll('video').length;
-        activeImageCount = gridContainer.querySelectorAll('img.media-thumbnail').length;
+        activeVideoCount = allVideos.length - removedVideos;
+        activeImageCount = allImages.length - removedImages;
     } else {
         activeVideoCount = allVideos.length;
         activeImageCount = allImages.length;

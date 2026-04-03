@@ -253,12 +253,16 @@ class AnimatedImagePlaybackController extends MediaPlaybackController {
      * Writing each Uint32 as big-endian naturally produces R,G,B,A byte order.
      */
     _convertWebpPixels(rgba32, pixelCount) {
-        const buf = new ArrayBuffer(pixelCount * 4);
-        const dv = new DataView(buf);
+        const out = new Uint8ClampedArray(pixelCount * 4);
         for (let i = 0; i < pixelCount; i++) {
-            dv.setUint32(i * 4, rgba32[i], false); // big-endian → R,G,B,A byte order
+            const v = rgba32[i]; // 0xRRGGBBAA packing
+            const o = i * 4;
+            out[o]     = (v >>> 24) & 0xFF; // R
+            out[o + 1] = (v >>> 16) & 0xFF; // G
+            out[o + 2] = (v >>> 8)  & 0xFF; // B
+            out[o + 3] =  v         & 0xFF; // A
         }
-        return new Uint8ClampedArray(buf);
+        return out;
     }
 
     async _decodeWebp(bytes) {

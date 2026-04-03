@@ -1389,6 +1389,56 @@ document.addEventListener('keydown', (e) => {
     }
 });
 
+// ===== File Conflict Dialog =====
+const fileConflictDialog = document.getElementById('file-conflict-dialog');
+const fileConflictMessage = document.getElementById('file-conflict-message');
+const fileConflictRememberLabel = document.getElementById('file-conflict-remember-label');
+const fileConflictRemember = document.getElementById('file-conflict-remember');
+const fileConflictSkip = document.getElementById('file-conflict-skip');
+const fileConflictKeepBoth = document.getElementById('file-conflict-keep-both');
+const fileConflictReplace = document.getElementById('file-conflict-replace');
+let _conflictResolve = null;
+
+/**
+ * Show a file conflict resolution dialog.
+ * @param {string} fileName - Name of the conflicting file
+ * @param {boolean} showRemember - Show "Apply to all" checkbox (for batch ops)
+ * @returns {Promise<{resolution: 'replace'|'keep-both'|'skip', applyToAll: boolean}>}
+ */
+function showFileConflictDialog(fileName, showRemember = false) {
+    fileConflictMessage.textContent = `"${fileName}" already exists in this location. What would you like to do?`;
+    fileConflictRemember.checked = false;
+    fileConflictRememberLabel.classList.toggle('hidden', !showRemember);
+    fileConflictDialog.classList.remove('hidden');
+    fileConflictKeepBoth.focus();
+
+    return new Promise(resolve => {
+        if (_conflictResolve) _conflictResolve({ resolution: 'skip', applyToAll: false });
+        _conflictResolve = resolve;
+    });
+}
+
+function _closeConflictDialog(resolution) {
+    fileConflictDialog.classList.add('hidden');
+    if (_conflictResolve) {
+        const resolve = _conflictResolve;
+        _conflictResolve = null;
+        resolve({ resolution, applyToAll: fileConflictRemember.checked });
+    }
+}
+
+fileConflictSkip.addEventListener('click', () => _closeConflictDialog('skip'));
+fileConflictKeepBoth.addEventListener('click', () => _closeConflictDialog('keep-both'));
+fileConflictReplace.addEventListener('click', () => _closeConflictDialog('replace'));
+fileConflictDialog.addEventListener('click', (e) => {
+    if (e.target === fileConflictDialog) _closeConflictDialog('skip');
+});
+document.addEventListener('keydown', (e) => {
+    if (!fileConflictDialog.classList.contains('hidden')) {
+        if (e.key === 'Escape') { e.preventDefault(); _closeConflictDialog('skip'); }
+    }
+});
+
 // Debounced clear for "Loading media..." — fires after media load burst settles
 let _mediaSettleTimer = null;
 
@@ -7704,6 +7754,7 @@ async function copyFilesToFolder(filePaths, destFolder) {
     showProgress(0, filePaths.length, 'Copying files...');
     let success = 0;
     let failed = 0;
+    let savedResolution = null;
 
     for (let i = 0; i < filePaths.length; i++) {
         if (currentProgress && currentProgress.cancelled) break;
@@ -7712,7 +7763,13 @@ async function copyFilesToFolder(filePaths, destFolder) {
         const fileName = filePath.replace(/^.*[\\/]/, '');
 
         try {
-            const result = await window.electronAPI.copyFile(filePath, destFolder, fileName);
+            let result = await window.electronAPI.copyFile(filePath, destFolder, fileName);
+            if (result.conflict) {
+                const resolution = savedResolution
+                    || (await showFileConflictDialog(result.fileName, i < filePaths.length - 1));
+                if (resolution.applyToAll) savedResolution = resolution;
+                result = await window.electronAPI.copyFile(filePath, destFolder, fileName, resolution.resolution);
+            }
             if (result.success) {
                 success++;
             } else {

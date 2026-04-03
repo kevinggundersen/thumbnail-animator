@@ -1318,6 +1318,21 @@
         </div>
     </div>
 
+    <div id="file-conflict-dialog" class="confirm-dialog hidden">
+        <div class="confirm-dialog-content">
+            <h3>File Already Exists</h3>
+            <p id="file-conflict-message"></p>
+            <label id="file-conflict-remember-label" class="file-conflict-remember hidden">
+                <input type="checkbox" id="file-conflict-remember"> Apply to all remaining conflicts
+            </label>
+            <div class="confirm-dialog-buttons file-conflict-buttons">
+                <button id="file-conflict-skip">Skip</button>
+                <button id="file-conflict-keep-both">Keep Both</button>
+                <button id="file-conflict-replace" class="confirm-danger">Replace</button>
+            </div>
+        </div>
+    </div>
+
     <script src="icons.js"></script>
     <script src="perf-dashboard.js"></script>
     <script src="gif-duration-parser.js"></script>

@@ -2300,7 +2300,8 @@ ipcMain.handle('create-folder', async (event, folderPath, folderName) => {
 
 // Copy file (used when dropping external files into the app)
 // Accepts either (sourcePath, destPath) or (sourcePath, destFolder, fileName)
-ipcMain.handle('copy-file', async (event, sourcePath, destFolderOrPath, fileName) => {
+// Optional conflictResolution: 'replace' | 'keep-both' | 'skip' — if omitted and conflict exists, returns { conflict: true }
+ipcMain.handle('copy-file', async (event, sourcePath, destFolderOrPath, fileName, conflictResolution) => {
     try {
         const destPath = fileName
             ? path.join(destFolderOrPath, fileName)
@@ -2311,22 +2312,12 @@ ipcMain.handle('copy-file', async (event, sourcePath, destFolderOrPath, fileName
         }
         let finalPath = destPath;
         if (fs.existsSync(finalPath)) {
-            const baseName = path.basename(destPath);
-            const win = BrowserWindow.fromWebContents(event.sender) || mainWindow;
-            const { response } = await dialog.showMessageBox(win, {
-                type: 'question',
-                buttons: ['Replace', 'Keep Both', 'Skip'],
-                defaultId: 2,
-                cancelId: 2,
-                title: 'File Already Exists',
-                message: `"${baseName}" already exists in this location.`,
-                detail: 'Would you like to replace the existing file, keep both files, or skip this file?'
-            });
-            if (response === 2) {
-                // Skip
+            if (!conflictResolution) {
+                return { conflict: true, fileName: path.basename(destPath) };
+            }
+            if (conflictResolution === 'skip') {
                 return { success: true, skipped: true };
-            } else if (response === 1) {
-                // Keep Both — auto-rename
+            } else if (conflictResolution === 'keep-both') {
                 const ext = path.extname(destPath);
                 const base = path.basename(destPath, ext);
                 const dir = path.dirname(destPath);
@@ -2336,7 +2327,7 @@ ipcMain.handle('copy-file', async (event, sourcePath, destFolderOrPath, fileName
                     counter++;
                 }
             }
-            // response === 0: Replace — use original finalPath
+            // 'replace' — use original finalPath (overwrite)
         }
         await fs.promises.copyFile(sourcePath, finalPath);
         return { success: true };
@@ -2348,34 +2339,25 @@ ipcMain.handle('copy-file', async (event, sourcePath, destFolderOrPath, fileName
 
 // Move file
 // Accepts either (sourcePath, destPath) or (sourcePath, destFolder, fileName)
-ipcMain.handle('move-file', async (event, sourcePath, destFolderOrPath, fileName) => {
+// Optional conflictResolution: 'replace' | 'keep-both' | 'skip' — if omitted and conflict exists, returns { conflict: true }
+ipcMain.handle('move-file', async (event, sourcePath, destFolderOrPath, fileName, conflictResolution) => {
     try {
         const destPath = fileName
             ? path.join(destFolderOrPath, fileName)
             : destFolderOrPath;
-        // Ensure destination directory exists
         const destDir = path.dirname(destPath);
         if (!fs.existsSync(destDir)) {
             await fs.promises.mkdir(destDir, { recursive: true });
         }
 
         let finalPath = destPath;
-        // Check if destination already exists — show conflict dialog (same as copy)
         if (fs.existsSync(destPath) && path.normalize(sourcePath) !== path.normalize(destPath)) {
-            const baseName = path.basename(destPath);
-            const win = BrowserWindow.fromWebContents(event.sender) || mainWindow;
-            const { response } = await dialog.showMessageBox(win, {
-                type: 'question',
-                buttons: ['Replace', 'Keep Both', 'Skip'],
-                defaultId: 2,
-                cancelId: 2,
-                title: 'File Already Exists',
-                message: `"${baseName}" already exists in this location.`,
-                detail: 'Would you like to replace the existing file, keep both files, or skip this file?'
-            });
-            if (response === 2) {
+            if (!conflictResolution) {
+                return { conflict: true, fileName: path.basename(destPath) };
+            }
+            if (conflictResolution === 'skip') {
                 return { success: true, skipped: true };
-            } else if (response === 1) {
+            } else if (conflictResolution === 'keep-both') {
                 const ext = path.extname(destPath);
                 const base = path.basename(destPath, ext);
                 const dir = path.dirname(destPath);
@@ -2384,9 +2366,7 @@ ipcMain.handle('move-file', async (event, sourcePath, destFolderOrPath, fileName
                     finalPath = path.join(dir, `${base} (${counter})${ext}`);
                     counter++;
                 }
-            }
-            // response === 0: Replace — delete existing then move
-            if (response === 0) {
+            } else if (conflictResolution === 'replace') {
                 await fs.promises.unlink(destPath);
             }
         }

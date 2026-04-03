@@ -2510,12 +2510,19 @@ async function createFolder(folderName) {
 async function _moveFilesBatch(filePaths, destFolder, progressOffset, progressTotal) {
     let success = 0;
     let failed = 0;
+    let savedResolution = null;
     for (let i = 0; i < filePaths.length; i++) {
         if (currentProgress && currentProgress.cancelled) break;
         const filePath = filePaths[i];
         const fileName = filePath.replace(/^.*[\\/]/, '');
         try {
-            const result = await window.electronAPI.moveFile(filePath, destFolder, fileName);
+            let result = await window.electronAPI.moveFile(filePath, destFolder, fileName);
+            if (result.conflict) {
+                const resolution = savedResolution
+                    || (await showFileConflictDialog(result.fileName, i < filePaths.length - 1));
+                if (resolution.applyToAll) savedResolution = resolution;
+                result = await window.electronAPI.moveFile(filePath, destFolder, fileName, resolution.resolution);
+            }
             if (result.success && !result.skipped) {
                 success++;
             } else if (!result.success) {

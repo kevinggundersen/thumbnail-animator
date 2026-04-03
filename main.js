@@ -998,6 +998,40 @@ async function scanFolderInternal(folderPath, options = {}) {
             }
             await walkDir(folderPath);
         }
+
+        // Immediate child folders (navigation) — recursive walk only collects files
+        if (!smartCollectionMode) {
+            let folderItems = [];
+            try {
+                const entries = await fs.promises.readdir(folderPath, { withFileTypes: true });
+                for (const entry of entries) {
+                    if (entry.isDirectory()) folderItems.push(entry);
+                }
+            } catch { /* leave folders empty */ }
+
+            if (skipStats) {
+                folders = folderItems.map(item => ({
+                    name: item.name,
+                    path: path.join(folderPath, item.name),
+                    type: 'folder',
+                    mtime: 0
+                }));
+            } else {
+                const folderStatStart = performance.now();
+                const folderResults = await asyncPool(IO_CONCURRENCY_LIMIT, folderItems, async (item) => {
+                    const itemPath = path.join(folderPath, item.name);
+                    try {
+                        const stats = await fs.promises.stat(itemPath);
+                        return { name: item.name, path: itemPath, type: 'folder', mtime: stats.mtime.getTime() };
+                    } catch { return { name: item.name, path: itemPath, type: 'folder', mtime: 0 }; }
+                });
+                folders = folderResults;
+                logPerf('scan-folder.recursive-immediate-folders', folderStatStart, { count: folderItems.length, limit: IO_CONCURRENCY_LIMIT });
+            }
+            if (folders.length > 1) {
+                folders.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+            }
+        }
     }
     // === Normal (non-recursive) mode ===
     else if (nativeScanner) {

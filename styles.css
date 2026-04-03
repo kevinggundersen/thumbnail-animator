@@ -987,6 +987,7 @@ header {
     flex-direction: column;
     overflow: visible;
     animation: dropdown-enter 0.15s var(--ease-out);
+    contain: layout style paint;
 }
 
 .tools-menu-dropdown.hidden {
@@ -2396,6 +2397,7 @@ button:hover {
     contain: layout style paint;
     content-visibility: auto;
     contain-intrinsic-size: auto 300px;
+    will-change: transform;
 }
 
 /* Gradient overlay for card info */
@@ -2429,6 +2431,7 @@ button:hover {
     align-items: center;
     justify-content: center;
     contain: layout style paint;
+    will-change: transform;
 }
 
 .folder-card:hover {
@@ -2939,6 +2942,7 @@ button:hover {
     justify-content: center;
     opacity: 1;
     transition: opacity 0.05s ease;
+    contain: layout style paint;
 }
 
 #blow-up-overlay.hidden {
@@ -3005,6 +3009,7 @@ video.blow-up-media {
     opacity: 1;
     transition: opacity 0.2s ease-in-out;
     backdrop-filter: blur(24px);
+    contain: strict;
 }
 
 #lightbox.hidden {
@@ -3316,6 +3321,7 @@ video.blow-up-media {
     z-index: 2000;
     backdrop-filter: blur(16px);
     animation: context-menu-enter 0.12s var(--ease-out);
+    contain: layout style paint;
 }
 
 .context-menu.hidden {
@@ -7996,6 +8002,7 @@ video.blow-up-media {
     background: #080808;
     display: flex;
     flex-direction: column;
+    contain: layout style paint;
 }
 .cmo-header {
     display: flex;
@@ -8123,6 +8130,7 @@ video.cmo-media {
     display: flex;
     align-items: center;
     justify-content: center;
+    contain: layout style paint;
 }
 .ss-media-wrap {
     width: 100%;

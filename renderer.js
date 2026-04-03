@@ -516,8 +516,18 @@ function vsUpdateDOM(startIndex, endIndex) {
     // Remove cards outside visible range
     for (const [itemIdx, card] of vsActiveCards) {
         if (itemIdx < startIndex || itemIdx >= endIndex) {
-            // Only query for media if card actually has media loaded
-            if (card.dataset.hasMedia) {
+            // Clean up media using cached reference (avoids querySelectorAll)
+            if (card._mediaEl) {
+                if (card._mediaEl.tagName === 'VIDEO') {
+                    destroyVideoElement(card._mediaEl);
+                    activeVideoCount = Math.max(0, activeVideoCount - 1);
+                } else {
+                    destroyImageElement(card._mediaEl);
+                    activeImageCount = Math.max(0, activeImageCount - 1);
+                }
+                card._mediaEl = null;
+            } else if (card.dataset.hasMedia) {
+                // Fallback for cards without cached ref
                 const videos = card.querySelectorAll('video');
                 const images = card.querySelectorAll('img.media-thumbnail');
                 videos.forEach(video => {
@@ -669,6 +679,14 @@ function vsUpdateDOM(startIndex, endIndex) {
  * Reset a recycled card to a blank state.
  */
 function vsResetCard(card) {
+    // Remove hover upgrade listeners before clearing children
+    if (card._hoverEnter) {
+        card.removeEventListener('mouseenter', card._hoverEnter);
+        card.removeEventListener('mouseleave', card._hoverLeave);
+        delete card._hoverEnter;
+        delete card._hoverLeave;
+    }
+
     // Revoke any GIF overlay blob URLs before removing children
     const overlay = card.querySelector('.gif-static-overlay');
     if (overlay && overlay._blobUrl) URL.revokeObjectURL(overlay._blobUrl);
@@ -684,6 +702,7 @@ function vsResetCard(card) {
     card.className = '';
 
     // Clear custom properties
+    card._mediaEl = null;
     delete card._vsLeft;
     delete card._vsTop;
     delete card._vsWidth;
@@ -3847,11 +3866,18 @@ function initSidebarResize() {
         e.preventDefault();
     });
 
+    let _resizeRafPending = false;
     document.addEventListener('mousemove', (e) => {
         if (!isResizing) return;
-        const newWidth = Math.min(500, Math.max(180, e.clientX));
-        folderSidebar.style.width = newWidth + 'px';
-        sidebarWidth = newWidth;
+        if (_resizeRafPending) return;
+        _resizeRafPending = true;
+        const clientX = e.clientX;
+        requestAnimationFrame(() => {
+            _resizeRafPending = false;
+            const newWidth = Math.min(500, Math.max(180, clientX));
+            folderSidebar.style.width = newWidth + 'px';
+            sidebarWidth = newWidth;
+        });
     });
 
     document.addEventListener('mouseup', () => {
@@ -5688,9 +5714,9 @@ function filterItems(items) {
 
 // Function to sort items based on current sorting preferences
 function sortItems(items) {
-    // Separate folders and files
-    const folders = items.filter(item => item.type === 'folder');
-    const files = items.filter(item => item.type !== 'folder');
+    // Separate folders and files (single pass)
+    const folders = [], files = [];
+    for (const item of items) (item.type === 'folder' ? folders : files).push(item);
     
     // Sort folders
     folders.sort((a, b) => {
@@ -6488,6 +6514,7 @@ function createImageForCard(card, imageUrl) {
     const info = card.querySelector('.video-info');
     card.insertBefore(img, info);
     card.dataset.hasMedia = '1';
+    card._mediaEl = img;
 
     if (card.dataset.path && !isGif && !isOriginalQuality) {
         requestImageThumbnailUrl(card.dataset.path, thumbMaxSize)
@@ -6536,6 +6563,8 @@ function createImageForCard(card, imageUrl) {
         };
         card.addEventListener('mouseenter', onEnter);
         card.addEventListener('mouseleave', onLeave);
+        card._hoverEnter = onEnter;
+        card._hoverLeave = onLeave;
     }
 
     pendingMediaCreations.delete(card);
@@ -6742,6 +6771,7 @@ function createVideoForCard(card, videoUrl) {
     const info = card.querySelector('.video-info');
     card.insertBefore(video, info);
     card.dataset.hasMedia = '1';
+    card._mediaEl = video;
 
     // Don't auto-play if lightbox/blur pausing is active
     if (!(isLightboxOpen && pauseOnLightbox) && !(isWindowBlurred && pauseOnBlur)) {
@@ -7071,6 +7101,7 @@ function destroyVideoElement(video) {
     const card = parent && parent.closest ? parent.closest('.video-card') : (parent && parent.classList && parent.classList.contains('video-card') ? parent : null);
     if (card && !card.querySelector('video:nth-of-type(2)') && !card.querySelector('img.media-thumbnail')) {
         delete card.dataset.hasMedia;
+        if (card._mediaEl === video) card._mediaEl = null;
     }
 
     try {
@@ -7162,6 +7193,7 @@ function destroyImageElement(img) {
     const card = parent && parent.closest ? parent.closest('.video-card') : (parent && parent.classList && parent.classList.contains('video-card') ? parent : null);
     if (card && !card.querySelector('video') && !card.querySelector('img.media-thumbnail:nth-of-type(2)')) {
         delete card.dataset.hasMedia;
+        if (card._mediaEl === img) card._mediaEl = null;
     }
 
     // Also remove the static overlay if this is an animated image

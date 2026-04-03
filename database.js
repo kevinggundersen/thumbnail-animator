@@ -10,6 +10,10 @@ class AppDatabase {
         this.db = new Database(dbPath);
         this.db.pragma('journal_mode = WAL');
         this.db.pragma('foreign_keys = ON');
+        this.db.pragma('synchronous = NORMAL');
+        this.db.pragma('cache_size = -64000');
+        this.db.pragma('mmap_size = 268435456');
+        this.db.pragma('journal_size_limit = 67108864');
         this._ensureSchema();
         this._prepareStatements();
     }

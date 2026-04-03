@@ -712,6 +712,18 @@ function vsPopulateExistingCard(card, item) {
         if (!cardInfoSettings.filename) info.style.display = 'none';
         card.appendChild(info);
 
+        // Show relative path when in recursive search mode
+        if (recursiveSearchEnabled && item.relativePath) {
+            const dir = item.relativePath.replace(/[\\/][^\\/]*$/, '');
+            if (dir && dir !== item.name) {
+                const relLabel = document.createElement('div');
+                relLabel.className = 'card-relative-path';
+                relLabel.textContent = dir;
+                relLabel.title = dir;
+                card.appendChild(relLabel);
+            }
+        }
+
         applyCardInfoLayoutClasses(card);
 
         // Apply duplicate highlight if active
@@ -1516,6 +1528,8 @@ let advancedSearchFilters = {
     aspectRatio: '',
     starRating: ''
 };
+
+let recursiveSearchEnabled = localStorage.getItem('recursiveSearch') === 'true';
 
 // Track video playback state
 let videoPlaybackSpeed = 1.0;
@@ -6692,6 +6706,7 @@ function updateStatusBar() {
         const sortLabel = { none: 'Starred', desc: 'Starred ▼', asc: 'Starred ▲' };
         filterParts.push(sortLabel[starSortOrder] || 'Starred');
     }
+    if (recursiveSearchEnabled) filterParts.push('Subfolders');
     if (advancedSearchFilters.sizeValue !== null) filterParts.push('Size');
     if (advancedSearchFilters.dateFrom !== null || advancedSearchFilters.dateTo !== null) filterParts.push('Date');
     if (advancedSearchFilters.width !== null || advancedSearchFilters.height !== null) filterParts.push('Dimensions');
@@ -10997,7 +11012,7 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
             const scanImageDimensions = hasDimensionDependentFilters();
             const scanVideoDimensions = hasDimensionDependentFilters();
             const scanPerfStart = perfTest.start();
-            items = await window.electronAPI.scanFolder(folderPath, { skipStats, scanImageDimensions, scanVideoDimensions });
+            items = await window.electronAPI.scanFolder(folderPath, { skipStats, scanImageDimensions, scanVideoDimensions, recursive: recursiveSearchEnabled });
             perfTest.end('scanFolder (IPC)', scanPerfStart, { itemCount: items ? items.length : 0 });
 
             // Yield control after scan completes

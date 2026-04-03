@@ -938,7 +938,7 @@ const IO_CONCURRENCY_LIMIT = 20;
 async function scanFolderInternal(folderPath, options = {}) {
     const scanStart = performance.now();
     const { skipStats = false, scanImageDimensions = false, scanVideoDimensions = false,
-            smartCollectionMode = false, skipDimensions = false } = options;
+            smartCollectionMode = false, skipDimensions = false, recursive = false } = options;
 
     const videoExtensions = pluginRegistry.getVideoExtensions();
     const imageExtensions = pluginRegistry.getImageExtensions();
@@ -946,8 +946,68 @@ async function scanFolderInternal(folderPath, options = {}) {
 
     let folders, fileObjs;
 
-    // === Phase A+C: readdir + stat + filter + sort (native or JS fallback) ===
-    if (nativeScanner) {
+    // === Recursive mode: scan all subdirectories ===
+    if (recursive) {
+        folders = [];
+        fileObjs = [];
+        if (nativeScanner && nativeScanner.scanDirectoryRecursive) {
+            const nativeStart = performance.now();
+            const imageExts = [...imageExtensions];
+            const videoExts = [...videoExtensions];
+            const nativeFiles = nativeScanner.scanDirectoryRecursive([folderPath], imageExts, videoExts);
+            logPerf('scan-folder.native-recursive', nativeStart, { files: nativeFiles.length });
+            for (const f of nativeFiles) {
+                const isImage = f.fileType === 'image';
+                const relativePath = path.relative(folderPath, f.path);
+                fileObjs.push({
+                    name: f.name, path: f.path,
+                    url: isWindows ? `file:///${f.path.replace(/\\/g, '/')}` : `file://${f.path}`,
+                    type: f.fileType, isImage,
+                    mtime: f.mtime, size: f.size,
+                    width: undefined, height: undefined,
+                    relativePath,
+                });
+            }
+        } else {
+            // JS recursive walk fallback
+            const supportedExtensions = pluginRegistry.getSupportedExtensions();
+            async function walkDir(dir) {
+                let entries;
+                try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { return; }
+                for (const entry of entries) {
+                    const fullPath = path.join(dir, entry.name);
+                    if (entry.isDirectory()) {
+                        await walkDir(fullPath);
+                    } else if (entry.isFile()) {
+                        const lastDot = entry.name.lastIndexOf('.');
+                        if (lastDot === -1) continue;
+                        const ext = entry.name.substring(lastDot).toLowerCase();
+                        if (!supportedExtensions.has(ext)) continue;
+                        const isImage = imageExtensions.has(ext);
+                        const relativePath = path.relative(folderPath, fullPath);
+                        let mtime = 0, size = 0;
+                        if (!skipStats) {
+                            try {
+                                const stats = await fs.promises.stat(fullPath);
+                                mtime = stats.mtimeMs; size = stats.size;
+                            } catch {}
+                        }
+                        fileObjs.push({
+                            name: entry.name, path: fullPath,
+                            url: isWindows ? `file:///${fullPath.replace(/\\/g, '/')}` : `file://${fullPath}`,
+                            type: isImage ? 'image' : 'video', isImage,
+                            mtime, size,
+                            width: undefined, height: undefined,
+                            relativePath,
+                        });
+                    }
+                }
+            }
+            await walkDir(folderPath);
+        }
+    }
+    // === Normal (non-recursive) mode ===
+    else if (nativeScanner) {
         const nativeStart = performance.now();
         const imageExts = [...imageExtensions];
         const videoExts = [...videoExtensions];

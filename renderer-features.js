@@ -2345,7 +2345,7 @@ function applyAdvancedSearch() {
     const height = parseInt(document.getElementById('search-height')?.value);
     const aspectRatio = document.getElementById('search-aspect-ratio')?.value || '';
     const starRating = parseInt(document.getElementById('search-star-rating')?.value);
-    
+
     advancedSearchFilters = {
         sizeOperator: sizeOp,
         sizeValue: isNaN(sizeVal) ? null : sizeVal * 1024 * 1024, // Convert MB to bytes
@@ -2357,6 +2357,13 @@ function applyAdvancedSearch() {
         starRating: isNaN(starRating) ? null : starRating
     };
 
+    // Handle recursive search toggle — re-scan if changed
+    const recursiveCheckbox = document.getElementById('search-recursive');
+    const newRecursive = recursiveCheckbox?.checked || false;
+    const recursiveChanged = newRecursive !== recursiveSearchEnabled;
+    recursiveSearchEnabled = newRecursive;
+    localStorage.setItem('recursiveSearch', String(newRecursive));
+
     // Apply sort selection
     const advancedSortVal = document.getElementById('advanced-sort-type')?.value;
     if (advancedSortVal) {
@@ -2366,9 +2373,20 @@ function applyAdvancedSearch() {
         if (sortTypeSelect && (advancedSortVal === 'name' || advancedSortVal === 'date')) {
             sortTypeSelect.value = advancedSortVal;
         }
-        applySorting();
+        if (recursiveChanged && currentFolderPath) {
+            // Need a full re-scan since recursive mode changed
+            invalidateFolderCache(currentFolderPath);
+            loadVideos(currentFolderPath, false);
+        } else {
+            applySorting();
+        }
     } else {
-        applyFilters();
+        if (recursiveChanged && currentFolderPath) {
+            invalidateFolderCache(currentFolderPath);
+            loadVideos(currentFolderPath, false);
+        } else {
+            applyFilters();
+        }
     }
     updateAdvancedSearchIndicator();
     const panel = document.getElementById('advanced-search-panel');
@@ -2396,6 +2414,13 @@ function clearAdvancedSearch() {
     document.getElementById('search-aspect-ratio').value = '';
     document.getElementById('search-star-rating').value = '';
 
+    // Reset recursive search
+    const recursiveCheckbox = document.getElementById('search-recursive');
+    const wasRecursive = recursiveSearchEnabled;
+    if (recursiveCheckbox) recursiveCheckbox.checked = false;
+    recursiveSearchEnabled = false;
+    localStorage.setItem('recursiveSearch', 'false');
+
     // Reset sort — restore per-folder preference if available, otherwise default to 'name'
     const advSortEl = document.getElementById('advanced-sort-type');
     if (advSortEl) advSortEl.value = 'name';
@@ -2411,7 +2436,12 @@ function clearAdvancedSearch() {
     const sortOrderSelect = document.getElementById('sort-order-select');
     if (sortTypeSelect) sortTypeSelect.value = sortType;
     if (sortOrderSelect) sortOrderSelect.value = sortOrder;
-    applySorting();
+    if (wasRecursive && currentFolderPath) {
+        invalidateFolderCache(currentFolderPath);
+        loadVideos(currentFolderPath, false);
+    } else {
+        applySorting();
+    }
     updateAdvancedSearchIndicator();
 }
 
@@ -2420,6 +2450,7 @@ function updateAdvancedSearchIndicator() {
     if (!btn) return;
 
     let count = 0;
+    if (recursiveSearchEnabled) count++;
     if (advancedSearchFilters.sizeValue !== null) count++;
     if (advancedSearchFilters.dateFrom !== null || advancedSearchFilters.dateTo !== null) count++;
     if (advancedSearchFilters.width !== null || advancedSearchFilters.height !== null) count++;
@@ -2849,10 +2880,12 @@ function initNewFeatures() {
         advancedSearchBtn.addEventListener('click', () => {
             if (advancedSearchPanel) {
                 advancedSearchPanel.classList.toggle('hidden');
-                // Sync sort dropdown to current sort state when opening
+                // Sync sort dropdown and recursive checkbox to current state when opening
                 if (!advancedSearchPanel.classList.contains('hidden')) {
                     const advSortEl = document.getElementById('advanced-sort-type');
                     if (advSortEl) advSortEl.value = sortType || 'name';
+                    const recursiveCheckbox = document.getElementById('search-recursive');
+                    if (recursiveCheckbox) recursiveCheckbox.checked = recursiveSearchEnabled;
                 }
             }
         });

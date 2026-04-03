@@ -451,53 +451,40 @@ function pushUndoEntry(entry) {
     redoStack.length = 0;
 }
 
-async function moveToStaging(filePath) {
-    const basename = path.basename(filePath);
-    const stagingPath = path.join(undoTrashDir, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${basename}`);
+async function safeMove(srcPath, destPath) {
     try {
-        await fs.promises.rename(filePath, stagingPath);
+        await fs.promises.rename(srcPath, destPath);
     } catch (err) {
         if (err.code === 'EXDEV') {
-            // Cross-device: copy then delete
-            const stat = await fs.promises.stat(filePath);
+            const stat = await fs.promises.stat(srcPath);
             if (stat.isDirectory()) {
-                await fs.promises.cp(filePath, stagingPath, { recursive: true });
+                await fs.promises.cp(srcPath, destPath, { recursive: true });
             } else {
-                await fs.promises.copyFile(filePath, stagingPath);
+                await fs.promises.copyFile(srcPath, destPath);
             }
-            await fs.promises.rm(filePath, { recursive: true, force: true });
+            await fs.promises.rm(srcPath, { recursive: true, force: true });
         } else {
             throw err;
         }
     }
+}
+
+async function moveToStaging(filePath) {
+    const basename = path.basename(filePath);
+    const stagingPath = path.join(undoTrashDir, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${basename}`);
+    await safeMove(filePath, stagingPath);
     return stagingPath;
 }
 
 async function restoreFromStaging(stagingPath, originalPath) {
-    // Ensure parent directory exists
     const parentDir = path.dirname(originalPath);
     if (!fs.existsSync(parentDir)) {
         await fs.promises.mkdir(parentDir, { recursive: true });
     }
-    // Check for name collision
     if (fs.existsSync(originalPath)) {
         throw new Error(`"${path.basename(originalPath)}" already exists at the original location`);
     }
-    try {
-        await fs.promises.rename(stagingPath, originalPath);
-    } catch (err) {
-        if (err.code === 'EXDEV') {
-            const stat = await fs.promises.stat(stagingPath);
-            if (stat.isDirectory()) {
-                await fs.promises.cp(stagingPath, originalPath, { recursive: true });
-            } else {
-                await fs.promises.copyFile(stagingPath, originalPath);
-            }
-            await fs.promises.rm(stagingPath, { recursive: true, force: true });
-        } else {
-            throw err;
-        }
-    }
+    await safeMove(stagingPath, originalPath);
 }
 
 // Fix for VRAM leak: Disable Hardware Acceleration
@@ -2404,7 +2391,7 @@ ipcMain.handle('move-file', async (event, sourcePath, destFolderOrPath, fileName
             }
         }
 
-        await fs.promises.rename(sourcePath, finalPath);
+        await safeMove(sourcePath, finalPath);
         pushUndoEntry({
             type: 'move',
             description: `Move "${path.basename(sourcePath)}"`,
@@ -3517,7 +3504,7 @@ ipcMain.handle('undo-file-operation', async () => {
                     const parentDir = path.dirname(op.sourcePath);
                     if (!fs.existsSync(parentDir)) await fs.promises.mkdir(parentDir, { recursive: true });
                     if (fs.existsSync(op.sourcePath)) throw new Error(`"${path.basename(op.sourcePath)}" already exists at original location`);
-                    await fs.promises.rename(op.destPath, op.sourcePath);
+                    await safeMove(op.destPath, op.sourcePath);
                     break;
             }
         }
@@ -3555,7 +3542,7 @@ ipcMain.handle('redo-file-operation', async () => {
                     const destDir = path.dirname(op.destPath);
                     if (!fs.existsSync(destDir)) await fs.promises.mkdir(destDir, { recursive: true });
                     if (fs.existsSync(op.destPath)) throw new Error(`"${path.basename(op.destPath)}" already exists at destination`);
-                    await fs.promises.rename(op.sourcePath, op.destPath);
+                    await safeMove(op.sourcePath, op.destPath);
                     break;
             }
         }

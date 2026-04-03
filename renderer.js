@@ -1328,6 +1328,7 @@ function friendlyError(err) {
     if (/EISDIR/i.test(msg)) return 'Expected a file but found a folder';
     if (/ENOTDIR/i.test(msg)) return 'Expected a folder but found a file';
     if (/ENOTEMPTY/i.test(msg)) return 'Folder is not empty';
+    if (/EXDEV/i.test(msg)) return 'Cannot move between different drives';
     if (/Destination file already exists/i.test(msg)) return 'A file with that name already exists in the destination';
     return msg;
 }

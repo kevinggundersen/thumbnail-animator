@@ -876,33 +876,82 @@ function vsRecalculate() {
 /**
  * Update virtual scrolling with new filtered/sorted items.
  */
-function vsUpdateItems(items) {
+function vsUpdateItems(items, options = {}) {
     if (!vsEnabled) {
         vsInit(items);
         return;
     }
 
-    // Remove all existing cards
-    for (const [itemIdx, card] of vsActiveCards) {
-        const videos = card.querySelectorAll('video');
-        const images = card.querySelectorAll('img.media-thumbnail');
-        videos.forEach(video => {
-            destroyVideoElement(video);
-            activeVideoCount = Math.max(0, activeVideoCount - 1);
-        });
-        images.forEach(img => {
-            destroyImageElement(img);
-            activeImageCount = Math.max(0, activeImageCount - 1);
-        });
-        observer.unobserve(card);
-        card.remove();
-        if (vsRecyclePool.length < VS_MAX_POOL_SIZE) {
-            vsRecyclePool.push(card);
+    const { preserveScroll = false } = options;
+    const savedScrollTop = preserveScroll ? gridContainer.scrollTop : 0;
+
+    if (preserveScroll) {
+        // --- Optimized path for filter changes: keep cards whose item is still in the new set ---
+        // Build a map from item path to new index for fast lookup
+        const pathToNewIndex = new Map();
+        for (let i = 0; i < items.length; i++) {
+            const p = items[i].path || items[i].folderPath || '';
+            if (p) pathToNewIndex.set(p, i);
         }
+
+        // Separate cards into keep (item still exists) and remove
+        const keptCards = new Map(); // newIndex -> card
+        for (const [oldIdx, card] of vsActiveCards) {
+            const cardPath = card.dataset.path || card.dataset.folderPath || '';
+            const newIdx = pathToNewIndex.get(cardPath);
+            if (newIdx !== undefined) {
+                keptCards.set(newIdx, card);
+            } else {
+                // This item was filtered out — destroy and recycle
+                if (card.dataset.hasMedia) {
+                    card.querySelectorAll('video').forEach(v => {
+                        destroyVideoElement(v);
+                        activeVideoCount = Math.max(0, activeVideoCount - 1);
+                    });
+                    card.querySelectorAll('img.media-thumbnail').forEach(img => {
+                        destroyImageElement(img);
+                        activeImageCount = Math.max(0, activeImageCount - 1);
+                    });
+                }
+                pendingMediaCreations.delete(card);
+                mediaToRetry.delete(card);
+                observer.unobserve(card);
+                card.remove();
+                if (vsRecyclePool.length < VS_MAX_POOL_SIZE) {
+                    vsRecyclePool.push(card);
+                }
+            }
+        }
+
+        vsActiveCards.clear();
+        // Re-register kept cards under their new indices
+        for (const [newIdx, card] of keptCards) {
+            card._vsItemIndex = newIdx;
+            vsActiveCards.set(newIdx, card);
+        }
+    } else {
+        // --- Full teardown path for folder navigation ---
+        for (const [itemIdx, card] of vsActiveCards) {
+            const videos = card.querySelectorAll('video');
+            const images = card.querySelectorAll('img.media-thumbnail');
+            videos.forEach(video => {
+                destroyVideoElement(video);
+                activeVideoCount = Math.max(0, activeVideoCount - 1);
+            });
+            images.forEach(img => {
+                destroyImageElement(img);
+                activeImageCount = Math.max(0, activeImageCount - 1);
+            });
+            observer.unobserve(card);
+            card.remove();
+            if (vsRecyclePool.length < VS_MAX_POOL_SIZE) {
+                vsRecyclePool.push(card);
+            }
+        }
+        vsActiveCards.clear();
+        pendingMediaCreations.clear();
+        mediaToRetry.clear();
     }
-    vsActiveCards.clear();
-    pendingMediaCreations.clear();
-    mediaToRetry.clear();
 
     vsSortedItems = items;
 
@@ -920,14 +969,14 @@ function vsUpdateItems(items) {
         vsSpacer.style.height = `${vsTotalHeight}px`;
     }
 
-    // Scroll to top for new items
-    gridContainer.scrollTop = 0;
+    // Scroll to top for new items, or preserve scroll for filter changes
+    gridContainer.scrollTop = savedScrollTop;
 
     // Render visible range
     vsLastStartIndex = -1;
     vsLastEndIndex = -1;
     const viewportHeight = gridContainer.clientHeight;
-    const { startIndex, endIndex } = vsGetVisibleRange(0, viewportHeight);
+    const { startIndex, endIndex } = vsGetVisibleRange(savedScrollTop, viewportHeight);
     vsUpdateDOM(startIndex, endIndex);
 }
 
@@ -1434,6 +1483,15 @@ let tagFilteredPaths = null; // Set<string> when filtering, null when not
 let activeTagFilters = []; // [{tagId, name, color}]
 let tagFilterOperator = 'AND'; // 'AND' or 'OR'
 
+// --- Find Similar state ---
+let findSimilarActive = false;
+let findSimilarEmbedding = null;       // Float32Array - source image embedding
+let findSimilarSourcePath = null;      // Source file path
+let findSimilarThreshold = 0.60;       // Similarity threshold (0-1)
+let findSimilarAllFolders = false;     // Cross-folder toggle
+let findSimilarPreviousItems = null;   // Stashed currentItems to restore on clear
+let findSimilarPreviousFolder = null;  // Stashed currentFolderPath to restore on clear
+
 // Track layout mode: 'masonry' (dynamic) or 'grid' (rigid row-based)
 let layoutMode = 'masonry'; // Default to masonry
 
@@ -1904,6 +1962,16 @@ function setCollectionLoading(collectionId, loading) {
 let _collectionLoadToken = 0;
 
 async function loadCollectionIntoGrid(collectionId) {
+    // Clear find-similar state (silent reset)
+    if (findSimilarActive) {
+        findSimilarActive = false;
+        findSimilarEmbedding = null;
+        findSimilarSourcePath = null;
+        findSimilarPreviousItems = null;
+        findSimilarPreviousFolder = null;
+        const fsBanner = document.getElementById('find-similar-banner');
+        if (fsBanner) fsBanner.classList.add('hidden');
+    }
     const loadToken = ++_collectionLoadToken;
     stopPeriodicCleanup();
     activeDimensionHydrationToken++;
@@ -2727,6 +2795,45 @@ async function cacheEmbeddings(entries) {
 }
 
 /**
+ * Retrieve ALL cached embeddings from IndexedDB (across all folders).
+ * Used by "Find Similar - All Folders" to search the full embedding index.
+ * @returns {Promise<Map<string, {embedding: Float32Array, mtime: number}>>}
+ */
+async function getAllCachedEmbeddings() {
+    const result = new Map();
+    if (!db) return result;
+    try {
+        const transaction = db.transaction([EMBEDDING_STORE], 'readonly');
+        const store = transaction.objectStore(EMBEDDING_STORE);
+        await new Promise((resolve) => {
+            const req = store.openCursor();
+            req.onsuccess = (e) => {
+                const cursor = e.target.result;
+                if (!cursor) { resolve(); return; }
+                const record = cursor.value;
+                if (record && record.embedding && record.key) {
+                    const lastPipe = record.key.lastIndexOf('|');
+                    const version = record.key.substring(lastPipe + 1);
+                    if (version === EMBEDDING_VERSION) {
+                        const rest = record.key.substring(0, lastPipe);
+                        const mtimePipe = rest.lastIndexOf('|');
+                        const path = rest.substring(0, mtimePipe);
+                        const mtime = parseInt(rest.substring(mtimePipe + 1), 10);
+                        result.set(path, {
+                            embedding: l2Normalize(new Float32Array(record.embedding)),
+                            mtime
+                        });
+                    }
+                }
+                cursor.continue();
+            };
+            req.onerror = () => resolve();
+        });
+    } catch { /* best-effort */ }
+    return result;
+}
+
+/**
  * Clear all stored embeddings (e.g. when user changes settings or clears cache).
  */
 async function clearEmbeddingCache() {
@@ -2738,6 +2845,218 @@ async function clearEmbeddingCache() {
         // Ignore
     }
 }
+
+// ============================================================================
+// FIND SIMILAR (Reverse Image Search)
+// ============================================================================
+
+/**
+ * Activate "Find Similar" for a source image.
+ * Gets the source embedding (from cache or on-the-fly), then runs the search.
+ */
+async function activateFindSimilar(filePath, fileName) {
+    // Get source embedding from currentEmbeddings or compute on-the-fly
+    let embedding = currentEmbeddings.get(filePath);
+
+    if (!embedding) {
+        showToast('Computing embedding for source image...', 'info', { duration: 2000 });
+        try {
+            const status = await window.electronAPI.clipStatus();
+            if (!status.loaded) {
+                const init = await window.electronAPI.clipInit();
+                if (!init.success) {
+                    showToast('Could not load AI model', 'error');
+                    return;
+                }
+            }
+            // Find mtime for the source file
+            const sourceItem = currentItems.find(i => i.path === filePath);
+            const mtime = sourceItem ? (sourceItem.mtime || 0) : 0;
+            const results = await window.electronAPI.clipEmbedImages([{ path: filePath, mtime, thumbPath: null }]);
+            if (results && results.length > 0 && results[0].embedding) {
+                embedding = l2Normalize(new Float32Array(results[0].embedding));
+                currentEmbeddings.set(filePath, embedding);
+                // Also cache to IndexedDB
+                await cacheEmbeddings([{ path: filePath, mtime, embedding: results[0].embedding }]);
+            } else {
+                showToast('Could not generate embedding for this image', 'error');
+                return;
+            }
+        } catch (err) {
+            showToast('Failed to compute embedding', 'error');
+            return;
+        }
+    }
+
+    findSimilarActive = true;
+    findSimilarEmbedding = embedding;
+    findSimilarSourcePath = filePath;
+
+    // Show banner
+    const banner = document.getElementById('find-similar-banner');
+    const sourceNameEl = document.getElementById('find-similar-source-name');
+    const thresholdSlider = document.getElementById('find-similar-threshold');
+    const thresholdValue = document.getElementById('find-similar-threshold-value');
+    const allFoldersCheckbox = document.getElementById('find-similar-all-folders');
+
+    if (sourceNameEl) sourceNameEl.textContent = fileName || filePath.split(/[/\\]/).pop();
+    if (thresholdSlider) {
+        thresholdSlider.value = Math.round(findSimilarThreshold * 100);
+        thresholdValue.textContent = findSimilarThreshold.toFixed(2);
+    }
+    if (allFoldersCheckbox) allFoldersCheckbox.checked = findSimilarAllFolders;
+    if (banner) banner.classList.remove('hidden');
+
+    // Highlight source card
+    const sourceCard = gridContainer.querySelector(`[data-path="${CSS.escape(filePath)}"]`);
+    if (sourceCard) sourceCard.classList.add('find-similar-source');
+
+    if (findSimilarAllFolders) {
+        await executeCrossFolderFindSimilar();
+    } else {
+        applyFilters();
+        updateFindSimilarCount();
+    }
+}
+
+/**
+ * Execute cross-folder "Find Similar" by scanning all embeddings in IndexedDB.
+ */
+async function executeCrossFolderFindSimilar() {
+    if (!findSimilarEmbedding) return;
+
+    showToast('Searching across all indexed folders...', 'info', { duration: 2000 });
+
+    const allEmbeddings = await getAllCachedEmbeddings();
+
+    if (allEmbeddings.size === 0) {
+        showToast('No indexed folders found. Visit folders with AI search enabled to build the index.', 'info', { duration: 5000 });
+        return;
+    }
+
+    // Compute similarities
+    const matches = [];
+    for (const [path, data] of allEmbeddings) {
+        if (path === findSimilarSourcePath) continue; // Skip source
+        const sim = cosineSimilarity(findSimilarEmbedding, data.embedding);
+        if (sim >= findSimilarThreshold) {
+            matches.push({ path, mtime: data.mtime, score: sim });
+        }
+    }
+
+    // Sort by score descending
+    matches.sort((a, b) => b.score - a.score);
+
+    // Stash current state for restore
+    if (!findSimilarPreviousItems) {
+        findSimilarPreviousItems = currentItems.slice();
+        findSimilarPreviousFolder = currentFolderPath;
+    }
+
+    // Build item objects from matches (must include url for thumbnails and lightbox)
+    const resultItems = matches.map(m => {
+        const name = m.path.split(/[/\\]/).pop();
+        // Construct file:// URL from path (Windows: file:///C:/..., Unix: file:///...)
+        const normalizedPath = m.path.replace(/\\/g, '/');
+        const url = normalizedPath.startsWith('/') ? `file://${normalizedPath}` : `file:///${normalizedPath}`;
+        return {
+            path: m.path,
+            name,
+            url,
+            type: getFileType(m.path),
+            mtime: m.mtime,
+            size: 0,
+            _similarityScore: m.score
+        };
+    });
+
+    // Update grid with results
+    currentItems = resultItems;
+    currentFolderPath = null;
+    currentCollectionId = null;
+
+    currentEmbeddings.clear();
+    currentTextEmbedding = null;
+    cancelEmbeddingScan();
+
+    renderItems(resultItems, null);
+    updateFindSimilarCount();
+
+    if (resultItems.length === 0) {
+        showToast('No similar images found across indexed folders', 'info');
+    } else {
+        showToast(`Found ${resultItems.length} similar image${resultItems.length !== 1 ? 's' : ''} across all folders`, 'success');
+    }
+}
+
+/**
+ * Update the count display in the find-similar banner.
+ */
+function updateFindSimilarCount() {
+    const countEl = document.getElementById('find-similar-count');
+    if (!countEl) return;
+
+    if (findSimilarAllFolders) {
+        countEl.textContent = `${currentItems.length} result${currentItems.length !== 1 ? 's' : ''}`;
+    } else {
+        // Count items that pass the similarity filter in current folder
+        let count = 0;
+        for (const item of currentItems) {
+            if (item.type === 'folder') continue;
+            const emb = currentEmbeddings.get(item.path);
+            if (!emb) continue;
+            const sim = cosineSimilarity(findSimilarEmbedding, emb);
+            if (sim >= findSimilarThreshold) count++;
+        }
+        countEl.textContent = `${count} result${count !== 1 ? 's' : ''}`;
+    }
+}
+
+/**
+ * Clear the "Find Similar" filter and restore previous view.
+ */
+function clearFindSimilar() {
+    const wasAllFolders = findSimilarAllFolders;
+
+    // Remove source card highlight
+    const sourceCard = gridContainer.querySelector('.find-similar-source');
+    if (sourceCard) sourceCard.classList.remove('find-similar-source');
+
+    // Reset state
+    findSimilarActive = false;
+    findSimilarEmbedding = null;
+    findSimilarSourcePath = null;
+
+    // Hide banner
+    const banner = document.getElementById('find-similar-banner');
+    if (banner) banner.classList.add('hidden');
+    const countEl = document.getElementById('find-similar-count');
+    if (countEl) countEl.textContent = '';
+
+    if (wasAllFolders && findSimilarPreviousItems) {
+        // Restore previous view
+        currentItems = findSimilarPreviousItems;
+        currentFolderPath = findSimilarPreviousFolder;
+        findSimilarPreviousItems = null;
+        findSimilarPreviousFolder = null;
+
+        if (currentFolderPath) {
+            // Re-render the previous folder
+            const st = gridContainer.scrollTop;
+            loadVideos(currentFolderPath, true, st);
+        } else {
+            renderItems(currentItems, null);
+        }
+    } else {
+        findSimilarPreviousItems = null;
+        findSimilarPreviousFolder = null;
+        applyFilters();
+    }
+}
+
+// ============================================================================
+// END FIND SIMILAR
+// ============================================================================
 
 async function getCachedGifDuration(filePath, mtime) {
     if (!db) return null;
@@ -6857,6 +7176,16 @@ function applyFilters() {
             if (!tagFilteredPaths.has(normalizePath(item.path))) return false;
         }
 
+        // Find Similar filter (current folder mode only — cross-folder replaces currentItems)
+        if (findSimilarActive && findSimilarEmbedding && !findSimilarAllFolders) {
+            if (item.type === 'folder') return false;
+            const emb = currentEmbeddings.get(item.path);
+            if (!emb) return false;
+            const sim = cosineSimilarity(findSimilarEmbedding, emb);
+            item._similarityScore = sim;
+            if (sim < findSimilarThreshold) return false;
+        }
+
         // Advanced search filters
         if (advancedSearchFilters.width || advancedSearchFilters.height) {
             if (advancedSearchFilters.width && item.width !== advancedSearchFilters.width) return false;
@@ -6902,6 +7231,15 @@ function applyFilters() {
         });
     }
 
+    // Sort by similarity when find-similar is active (current folder mode)
+    if (findSimilarActive && findSimilarEmbedding && !findSimilarAllFolders) {
+        sortedFiltered = [...sortedFiltered].sort((a, b) => {
+            if (a.type === 'folder') return 1;
+            if (b.type === 'folder') return -1;
+            return (b._similarityScore || 0) - (a._similarityScore || 0);
+        });
+    }
+
     // Apply visual similarity clustering (group by nearest neighbors)
     if (aiVisualSearchEnabled && aiClusteringMode === 'similarity' && currentEmbeddings.size > 0 && query === '') {
         sortedFiltered = applyVisualClustering(sortedFiltered);
@@ -6921,7 +7259,7 @@ function applyFilters() {
 
     // Update virtual scrolling with filtered items
     if (vsEnabled) {
-        vsUpdateItems(sortedFiltered);
+        vsUpdateItems(sortedFiltered, { preserveScroll: true });
     }
     updateItemCount();
     perfTest.end('applyFilters', perfStart, { cardCount: currentItems.length });
@@ -8997,6 +9335,67 @@ thumbnailQualitySelect.addEventListener('change', () => {
     });
 })();
 
+// --- Find Similar banner event listeners ---
+(function initFindSimilarBanner() {
+    const thresholdSlider = document.getElementById('find-similar-threshold');
+    const thresholdValue = document.getElementById('find-similar-threshold-value');
+    const allFoldersCheckbox = document.getElementById('find-similar-all-folders');
+    const clearBtn = document.getElementById('find-similar-clear');
+    let _fsThresholdTimer = null;
+
+    if (thresholdSlider) {
+        thresholdSlider.addEventListener('input', () => {
+            findSimilarThreshold = parseInt(thresholdSlider.value, 10) / 100;
+            if (thresholdValue) thresholdValue.textContent = findSimilarThreshold.toFixed(2);
+            if (!findSimilarActive || !findSimilarEmbedding) return;
+            // Debounce the heavy re-render to avoid card flashing while dragging
+            clearTimeout(_fsThresholdTimer);
+            _fsThresholdTimer = setTimeout(() => {
+                if (findSimilarAllFolders) {
+                    executeCrossFolderFindSimilar();
+                } else {
+                    applyFilters();
+                    updateFindSimilarCount();
+                }
+            }, 200);
+        });
+    }
+
+    if (allFoldersCheckbox) {
+        allFoldersCheckbox.addEventListener('change', () => {
+            findSimilarAllFolders = allFoldersCheckbox.checked;
+            if (!findSimilarActive || !findSimilarEmbedding) return;
+            if (findSimilarAllFolders) {
+                // Stash current state before switching to cross-folder
+                if (!findSimilarPreviousItems) {
+                    findSimilarPreviousItems = currentItems.slice();
+                    findSimilarPreviousFolder = currentFolderPath;
+                }
+                executeCrossFolderFindSimilar();
+            } else {
+                // Restore previous view and use current-folder filter
+                if (findSimilarPreviousItems) {
+                    currentItems = findSimilarPreviousItems;
+                    currentFolderPath = findSimilarPreviousFolder;
+                    findSimilarPreviousItems = null;
+                    findSimilarPreviousFolder = null;
+                    if (currentFolderPath) {
+                        const st = gridContainer.scrollTop;
+                        loadVideos(currentFolderPath, true, st);
+                    }
+                } else {
+                    applyFilters();
+                }
+                updateFindSimilarCount();
+            }
+        });
+    }
+
+    if (clearBtn) {
+        clearBtn.addEventListener('click', () => clearFindSimilar());
+    }
+})();
+
 // --- Background embedding pipeline ---
 
 function cancelEmbeddingScan() {
@@ -10379,6 +10778,14 @@ function showContextMenu(event, card) {
         }
     }
 
+    // Show/hide "Find Similar" — only for images when AI visual search is enabled
+    if (!isFolder) {
+        const findSimilarItem = menu.querySelector('[data-action="find-similar"]');
+        if (findSimilarItem) {
+            findSimilarItem.style.display = aiVisualSearchEnabled ? '' : 'none';
+        }
+    }
+
     // Inject / refresh plugin menu items (file menus only)
     if (!isFolder) {
         // Remove any previously injected plugin items and their separator
@@ -10429,6 +10836,7 @@ document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
         hideContextMenu();
         if (favContextMenu) hideFavContextMenu();
+        if (findSimilarActive) { clearFindSimilar(); return; }
     }
 });
 
@@ -10607,6 +11015,21 @@ contextMenu.addEventListener('click', async (e) => {
                 loadCollectionIntoGrid(currentCollectionId);
                 renderCollectionsSidebar();
             }
+            break;
+        }
+
+        case 'find-similar': {
+            const ext = filePath.split('.').pop().toLowerCase();
+            const imgExts = ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif'];
+            if (!imgExts.includes(ext)) {
+                showToast('Find Similar works with image files', 'info');
+                break;
+            }
+            if (!aiVisualSearchEnabled) {
+                showToast('Enable AI Visual Search in Settings first', 'info');
+                break;
+            }
+            activateFindSimilar(filePath, fileName);
             break;
         }
 
@@ -11258,6 +11681,16 @@ autoTagApply.addEventListener('click', async () => {
 });
 
 async function loadVideos(folderPath, useCache = true, preservedScrollTop = null) {
+    // Clear find-similar state on folder navigation (silent reset, no re-render)
+    if (findSimilarActive) {
+        findSimilarActive = false;
+        findSimilarEmbedding = null;
+        findSimilarSourcePath = null;
+        findSimilarPreviousItems = null;
+        findSimilarPreviousFolder = null;
+        const fsBanner = document.getElementById('find-similar-banner');
+        if (fsBanner) fsBanner.classList.add('hidden');
+    }
     // Clear card selection on folder navigation
     clearCardSelection();
     // Stop periodic cleanup during folder switch

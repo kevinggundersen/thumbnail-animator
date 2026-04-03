@@ -11501,6 +11501,15 @@ document.addEventListener('keydown', (e) => {
 batchRenameApply.addEventListener('click', async () => {
     const type = batchRenameType.value;
     const opts = getBatchRenamePatternOptions();
+    const fileCount = batchRenameFilePaths.length;
+
+    const confirmed = await showConfirm(
+        'Batch Rename',
+        `Rename ${fileCount} file${fileCount === 1 ? '' : 's'}? This can be undone with Ctrl+Z.`,
+        { confirmLabel: 'Rename' }
+    );
+    if (!confirmed) return;
+
     batchRenameApply.disabled = true;
     batchRenameApply.textContent = 'Renaming...';
 
@@ -11511,7 +11520,17 @@ batchRenameApply.addEventListener('click', async () => {
 
         if (result.success) {
             closeBatchRename();
-            showToast(`Renamed ${result.successCount} of ${result.totalCount} files`, 'success');
+            const failedResults = (result.results || []).filter(r => r.success === false);
+            if (failedResults.length > 0) {
+                const firstError = friendlyError(failedResults[0].error);
+                showToast(
+                    `Renamed ${result.successCount} of ${result.totalCount} files`,
+                    'warning',
+                    { details: `${failedResults.length} failed: ${firstError}`, duration: 8000 }
+                );
+            } else {
+                showToast(`Renamed ${result.successCount} of ${result.totalCount} files`, 'success');
+            }
             if (currentFolderPath) {
                 invalidateFolderCache(currentFolderPath);
                 const previousScrollTop = gridContainer.scrollTop;

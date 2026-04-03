@@ -652,7 +652,10 @@ class AppDatabase {
 
     updateFilePaths(pathPairs) {
         const tx = this.db.transaction((pairs) => {
-            for (const { oldPath, newPath } of pairs) {
+            for (let { oldPath, newPath } of pairs) {
+                // Normalize to forward slashes to match how the renderer stores paths
+                oldPath = oldPath.replace(/\\/g, '/');
+                newPath = newPath.replace(/\\/g, '/');
                 // Ratings
                 const rating = this._stmts.getRating.get(oldPath);
                 if (rating) {

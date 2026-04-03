@@ -2505,6 +2505,43 @@ function updateBreadcrumbForCollection(collection) {
     pathSpan.textContent = icon + ' ' + collection.name;
     breadcrumbContainer.appendChild(pathSpan);
     currentPathSpan = pathSpan;
+
+    // Show rule chips for smart collections
+    if (collection.type === 'smart' && collection.rules) {
+        const rules = collection.rules;
+        const chips = [];
+        if (rules.fileType && rules.fileType !== 'all') chips.push(rules.fileType === 'video' ? 'Video' : 'Image');
+        if (rules.nameContains) chips.push(`"${rules.nameContains}"`);
+        if (rules.aspectRatio) chips.push(rules.aspectRatio);
+        if (rules.width != null) chips.push(`W: ${rules.width}px`);
+        if (rules.height != null) chips.push(`H: ${rules.height}px`);
+        if (rules.sizeValue != null && rules.sizeOperator) chips.push(`${rules.sizeOperator} ${rules.sizeValue} MB`);
+        if (rules.minStarRating != null && rules.minStarRating > 0) chips.push('\u2605'.repeat(rules.minStarRating) + '+');
+        if (rules.dateFrom != null || rules.dateTo != null) {
+            const fmt = ts => new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: '2-digit' });
+            if (rules.dateFrom && rules.dateTo) chips.push(fmt(rules.dateFrom) + ' \u2013 ' + fmt(rules.dateTo));
+            else if (rules.dateFrom) chips.push('After ' + fmt(rules.dateFrom));
+            else chips.push('Before ' + fmt(rules.dateTo));
+        }
+        if (rules.sourceFolders?.length) {
+            const names = rules.sourceFolders.map(f => typeof f === 'string' ? f.split(/[\\/]/).pop() : (f.name || f.path?.split(/[\\/]/).pop() || ''));
+            chips.push(names.length === 1 ? names[0] : `${names.length} folders`);
+        }
+        if (rules.aiQuery) chips.push('\u2726 ' + rules.aiQuery);
+
+        if (chips.length) {
+            const rulesWrap = document.createElement('span');
+            rulesWrap.className = 'collection-rule-chips';
+            for (const text of chips) {
+                const chip = document.createElement('span');
+                chip.className = 'collection-rule-chip';
+                chip.textContent = text;
+                rulesWrap.appendChild(chip);
+            }
+            breadcrumbContainer.appendChild(rulesWrap);
+        }
+    }
+
     breadcrumbContainer.appendChild(itemCountEl);
     const validCount = currentItems.filter(i => !i.missing).length;
     const missingCount = currentItems.filter(i => i.missing).length;

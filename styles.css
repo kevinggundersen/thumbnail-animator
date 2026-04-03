@@ -1632,6 +1632,30 @@ header {
     box-shadow: 0 0 0 3px var(--accent-strong);
 }
 
+.collection-rule-chips {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 1;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.collection-rule-chip {
+    display: inline-block;
+    font-size: 10px;
+    color: var(--text-secondary);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 4px;
+    padding: 1px 6px;
+    white-space: nowrap;
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    line-height: 1.4;
+}
+
 .filter-buttons {
     display: flex;
     gap: 0;

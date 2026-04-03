@@ -1472,6 +1472,16 @@ const sortOrderSelect = document.getElementById('sort-order-select');
 const thumbnailQualitySelect = document.getElementById('thumbnail-quality-select');
 const hoverScaleSlider = document.getElementById('hover-scale-slider');
 const hoverScaleValue = document.getElementById('hover-scale-value');
+const hoverScaleFixedWrap = document.getElementById('hover-scale-fixed-wrap');
+const hoverScaleZoomToggle = document.getElementById('hover-scale-zoom-toggle');
+const hoverScaleZoomLabel = document.getElementById('hover-scale-zoom-label');
+const hoverScaleZoomRow = document.getElementById('hover-scale-zoom-row');
+const hoverScaleZ50 = document.getElementById('hover-scale-z50');
+const hoverScaleZ50Value = document.getElementById('hover-scale-z50-value');
+const hoverScaleZ100 = document.getElementById('hover-scale-z100');
+const hoverScaleZ100Value = document.getElementById('hover-scale-z100-value');
+const hoverScaleZ200 = document.getElementById('hover-scale-z200');
+const hoverScaleZ200Value = document.getElementById('hover-scale-z200-value');
 const pauseOnLightboxToggle = document.getElementById('pause-on-lightbox-toggle');
 const pauseOnLightboxLabel = document.getElementById('pause-on-lightbox-label');
 const pauseOnBlurToggle = document.getElementById('pause-on-blur-toggle');
@@ -8681,7 +8691,8 @@ const SETTINGS_EXPORT_KEYS_STRING = [
     'aiVisualSearchEnabled', 'aiModelDownloadConfirmed', 'aiAutoScan',
     'aiSimilarityThreshold', 'aiClusteringMode',
     'videoCacheLimitMB', 'imageCacheLimitMB',
-    'useSystemTrash', 'hoverScale'
+    'useSystemTrash', 'hoverScale', 'hoverScaleWithZoom',
+    'hoverScaleAt50', 'hoverScaleAt100', 'hoverScaleAt200'
 ];
 const SETTINGS_EXPORT_KEYS_JSON = [
     'cardInfoSettings', 'customThemes',
@@ -9264,24 +9275,97 @@ thumbnailQualitySelect.addEventListener('change', () => {
 });
 
 // Hover expand setting (slider: 100 = no scale, 150 = 1.5x)
-function applyHoverScale(pct) {
+let hoverScalePct = 102;
+let hoverScaleWithZoom = false;
+let hoverScaleAt50 = 120;
+let hoverScaleAt100 = 102;
+let hoverScaleAt200 = 100;
+
+function applyHoverScale() {
+    let pct;
+    if (hoverScaleWithZoom) {
+        // Lerp between the 3 user-defined breakpoints based on current zoom
+        const z = Math.max(50, Math.min(200, zoomLevel));
+        if (z <= 100) {
+            const t = (z - 50) / 50;
+            pct = hoverScaleAt50 + (hoverScaleAt100 - hoverScaleAt50) * t;
+        } else {
+            const t = (z - 100) / 100;
+            pct = hoverScaleAt100 + (hoverScaleAt200 - hoverScaleAt100) * t;
+        }
+    } else {
+        pct = hoverScalePct;
+    }
     const scale = pct / 100;
     const lift = pct <= 100 ? 0 : Math.round((pct - 100) * 0.16);
     document.documentElement.style.setProperty('--hover-scale', String(scale));
     document.documentElement.style.setProperty('--hover-lift', `-${lift}px`);
-    if (hoverScaleValue) hoverScaleValue.textContent = scale.toFixed(2) + 'x';
+    if (!hoverScaleWithZoom && hoverScaleValue) {
+        hoverScaleValue.textContent = (hoverScalePct / 100).toFixed(2) + 'x';
+    }
+}
+
+function updateHoverScaleUI() {
+    if (hoverScaleFixedWrap) hoverScaleFixedWrap.style.display = hoverScaleWithZoom ? 'none' : '';
+    if (hoverScaleZoomRow) hoverScaleZoomRow.style.display = hoverScaleWithZoom ? '' : 'none';
+    if (hoverScaleZoomLabel) hoverScaleZoomLabel.textContent = hoverScaleWithZoom ? 'Per-Zoom' : 'Fixed';
+}
+
+function formatZoomSliderValue(el, pct) {
+    if (el) el.textContent = (pct / 100).toFixed(2) + 'x';
 }
 
 (function initHoverScale() {
-    const saved = parseInt(localStorage.getItem('hoverScale')) || 102;
-    if (hoverScaleSlider) hoverScaleSlider.value = saved;
-    applyHoverScale(saved);
+    hoverScalePct = parseInt(localStorage.getItem('hoverScale')) || 102;
+    hoverScaleWithZoom = localStorage.getItem('hoverScaleWithZoom') === 'true';
+    hoverScaleAt50 = parseInt(localStorage.getItem('hoverScaleAt50')) || 120;
+    hoverScaleAt100 = parseInt(localStorage.getItem('hoverScaleAt100')) || 102;
+    hoverScaleAt200 = parseInt(localStorage.getItem('hoverScaleAt200')) || 100;
+    if (hoverScaleSlider) hoverScaleSlider.value = hoverScalePct;
+    if (hoverScaleZoomToggle) hoverScaleZoomToggle.checked = hoverScaleWithZoom;
+    if (hoverScaleZ50) hoverScaleZ50.value = hoverScaleAt50;
+    if (hoverScaleZ100) hoverScaleZ100.value = hoverScaleAt100;
+    if (hoverScaleZ200) hoverScaleZ200.value = hoverScaleAt200;
+    formatZoomSliderValue(hoverScaleValue, hoverScalePct);
+    formatZoomSliderValue(hoverScaleZ50Value, hoverScaleAt50);
+    formatZoomSliderValue(hoverScaleZ100Value, hoverScaleAt100);
+    formatZoomSliderValue(hoverScaleZ200Value, hoverScaleAt200);
+    updateHoverScaleUI();
+    applyHoverScale();
 })();
 
 hoverScaleSlider.addEventListener('input', () => {
-    const val = parseInt(hoverScaleSlider.value);
-    applyHoverScale(val);
-    deferLocalStorageWrite('hoverScale', String(val));
+    hoverScalePct = parseInt(hoverScaleSlider.value);
+    applyHoverScale();
+    deferLocalStorageWrite('hoverScale', String(hoverScalePct));
+});
+
+hoverScaleZoomToggle.addEventListener('change', () => {
+    hoverScaleWithZoom = hoverScaleZoomToggle.checked;
+    updateHoverScaleUI();
+    applyHoverScale();
+    deferLocalStorageWrite('hoverScaleWithZoom', String(hoverScaleWithZoom));
+});
+
+hoverScaleZ50.addEventListener('input', () => {
+    hoverScaleAt50 = parseInt(hoverScaleZ50.value);
+    formatZoomSliderValue(hoverScaleZ50Value, hoverScaleAt50);
+    applyHoverScale();
+    deferLocalStorageWrite('hoverScaleAt50', String(hoverScaleAt50));
+});
+
+hoverScaleZ100.addEventListener('input', () => {
+    hoverScaleAt100 = parseInt(hoverScaleZ100.value);
+    formatZoomSliderValue(hoverScaleZ100Value, hoverScaleAt100);
+    applyHoverScale();
+    deferLocalStorageWrite('hoverScaleAt100', String(hoverScaleAt100));
+});
+
+hoverScaleZ200.addEventListener('input', () => {
+    hoverScaleAt200 = parseInt(hoverScaleZ200.value);
+    formatZoomSliderValue(hoverScaleZ200Value, hoverScaleAt200);
+    applyHoverScale();
+    deferLocalStorageWrite('hoverScaleAt200', String(hoverScaleAt200));
 });
 
 // --- AI Visual Search settings event handlers ---
@@ -9835,6 +9919,8 @@ zoomSlider.addEventListener('input', (e) => {
     gridContainer.querySelectorAll('.video-card[data-tag-overlap-checked]').forEach(c => delete c.dataset.tagOverlapChecked);
     // Instant CSS variable update for visual feedback
     document.documentElement.style.setProperty('--zoom-level', zoomLevel);
+    // Re-apply hover scale if it's zoom-dependent
+    if (hoverScaleWithZoom) applyHoverScale();
     // Throttle the expensive layout recalculation + localStorage write
     if (zoomLayoutTimer === null) {
         zoomLayoutTimer = requestAnimationFrame(() => {

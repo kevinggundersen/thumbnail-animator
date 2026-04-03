@@ -676,17 +676,43 @@
                                 <span class="toggle-label" id="use-system-trash-label">Off</span>
                             </label>
                         </div>
-                        <div class="settings-item">
-                            <label class="settings-label">
-                                <div class="settings-item-info">
-                                    <div class="settings-item-title">Hover Expand</div>
-                                    <div class="settings-item-description">How much cards scale up when you hover over them.</div>
+                        <div class="ci-group">
+                            <div class="settings-item ci-main">
+                                <label class="settings-label">
+                                    <div class="settings-item-info">
+                                        <div class="settings-item-title">Hover Expand</div>
+                                        <div class="settings-item-description">How much cards scale up when you hover over them.</div>
+                                    </div>
+                                    <div class="settings-range-wrap" id="hover-scale-fixed-wrap">
+                                        <input type="range" id="hover-scale-slider" min="100" max="150" value="102" step="1" class="settings-range">
+                                        <span id="hover-scale-value" class="settings-range-value">1.02x</span>
+                                    </div>
+                                    <div class="toggle-switch toggle-switch-sm">
+                                        <input type="checkbox" id="hover-scale-zoom-toggle">
+                                        <span class="toggle-slider"></span>
+                                    </div>
+                                    <span class="toggle-label" id="hover-scale-zoom-label">Fixed</span>
+                                </label>
+                            </div>
+                            <div class="ci-sub" id="hover-scale-zoom-row" style="display:none;">
+                                <div class="hover-scale-zoom-sliders">
+                                    <div class="hover-scale-zoom-row">
+                                        <span class="hover-scale-zoom-label">At 50%</span>
+                                        <input type="range" id="hover-scale-z50" min="100" max="250" value="120" step="1" class="settings-range">
+                                        <span id="hover-scale-z50-value" class="settings-range-value">1.20x</span>
+                                    </div>
+                                    <div class="hover-scale-zoom-row">
+                                        <span class="hover-scale-zoom-label">At 100%</span>
+                                        <input type="range" id="hover-scale-z100" min="100" max="200" value="102" step="1" class="settings-range">
+                                        <span id="hover-scale-z100-value" class="settings-range-value">1.02x</span>
+                                    </div>
+                                    <div class="hover-scale-zoom-row">
+                                        <span class="hover-scale-zoom-label">At 200%</span>
+                                        <input type="range" id="hover-scale-z200" min="100" max="150" value="100" step="1" class="settings-range">
+                                        <span id="hover-scale-z200-value" class="settings-range-value">1.00x</span>
+                                    </div>
                                 </div>
-                                <div class="settings-range-wrap">
-                                    <input type="range" id="hover-scale-slider" min="100" max="200" value="102" step="1" class="settings-range">
-                                    <span id="hover-scale-value" class="settings-range-value">1.02x</span>
-                                </div>
-                            </label>
+                            </div>
                         </div>
                     </div>
                     <!-- Appearance Tab -->

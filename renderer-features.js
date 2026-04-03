@@ -73,7 +73,7 @@ function initKeyboardShortcuts() {
             return;
         }
 
-        // Escape: Close dialogs/lightbox/shortcuts
+        // Escape: Close dialogs/lightbox/shortcuts, or clear selection
         if (e.key === 'Escape') {
             if (!shortcutsOverlay.classList.contains('hidden')) {
                 shortcutsOverlay.classList.add('hidden');
@@ -85,6 +85,8 @@ function initKeyboardShortcuts() {
                 closeDuplicatesModal();
             } else if (!toolsMenuDropdown.classList.contains('hidden')) {
                 toolsMenuDropdown.classList.add('hidden');
+            } else if (selectedCardPaths.size > 0) {
+                clearCardSelection();
             }
             return;
         }

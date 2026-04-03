@@ -570,6 +570,11 @@ function vsUpdateDOM(startIndex, endIndex) {
         card._vsHeight = height;
         card._vsItemIndex = i;
 
+        // Restore selection state across virtual scroll recycling
+        if (item.path && selectedCardPaths.has(item.path)) {
+            card.classList.add('selected');
+        }
+
         vsActiveCards.set(i, card);
         fragment.appendChild(card);
 
@@ -6949,6 +6954,65 @@ function performSearch(searchQuery) {
 
 let currentHoveredCard = null;
 
+// ── Multi-select state ───────────────────────────────────────────────
+const selectedCardPaths = new Set();
+let lastSelectedCardIndex = -1; // index into vsSortedItems for shift-click range
+
+function clearCardSelection() {
+    if (selectedCardPaths.size === 0) return;
+    selectedCardPaths.clear();
+    lastSelectedCardIndex = -1;
+    document.querySelectorAll('.video-card.selected').forEach(c => c.classList.remove('selected'));
+    updateSelectionStatusBar();
+}
+
+function toggleCardSelection(card, itemIndex) {
+    const p = card.dataset.path;
+    if (!p) return;
+    if (selectedCardPaths.has(p)) {
+        selectedCardPaths.delete(p);
+        card.classList.remove('selected');
+    } else {
+        selectedCardPaths.add(p);
+        card.classList.add('selected');
+    }
+    lastSelectedCardIndex = itemIndex;
+    updateSelectionStatusBar();
+}
+
+function rangeSelectCards(fromIndex, toIndex) {
+    const lo = Math.min(fromIndex, toIndex);
+    const hi = Math.max(fromIndex, toIndex);
+    for (let i = lo; i <= hi; i++) {
+        const item = vsSortedItems[i];
+        if (!item || item.type === 'folder') continue;
+        selectedCardPaths.add(item.path);
+    }
+    // Update visible card DOM
+    vsActiveCards.forEach((card) => {
+        if (card.dataset.path && selectedCardPaths.has(card.dataset.path)) {
+            card.classList.add('selected');
+        }
+    });
+    lastSelectedCardIndex = toIndex;
+    updateSelectionStatusBar();
+}
+
+function updateSelectionStatusBar() {
+    const count = selectedCardPaths.size;
+    const el = document.getElementById('status-selection-count');
+    if (el) {
+        el.textContent = count > 0 ? `${count} selected` : '';
+        el.style.display = count > 0 ? '' : 'none';
+    }
+}
+
+function getItemIndexForCard(card) {
+    const path = card.dataset.path;
+    if (!path) return -1;
+    return vsSortedItems.findIndex(item => item.path === path);
+}
+
 gridContainer.addEventListener('click', (e) => {
     // Star click (check first so stopPropagation prevents card click)
     const star = e.target.closest('.star');
@@ -6971,6 +7035,27 @@ gridContainer.addEventListener('click', (e) => {
     // Media card click
     const mediaCard = e.target.closest('.video-card');
     if (mediaCard) {
+        const isCtrl = e.ctrlKey || e.metaKey;
+        const isShift = e.shiftKey;
+
+        if (isCtrl) {
+            // Toggle this card's selection
+            const idx = getItemIndexForCard(mediaCard);
+            toggleCardSelection(mediaCard, idx);
+            return;
+        }
+
+        if (isShift && lastSelectedCardIndex >= 0) {
+            // Range select from last selected to this card
+            const idx = getItemIndexForCard(mediaCard);
+            if (idx >= 0) {
+                rangeSelectCards(lastSelectedCardIndex, idx);
+            }
+            return;
+        }
+
+        // Normal click — clear selection, open lightbox
+        clearCardSelection();
         openLightbox(mediaCard.dataset.src, mediaCard.dataset.path, mediaCard.dataset.name);
         return;
     }
@@ -10235,6 +10320,20 @@ function showContextMenu(event, card) {
 
     contextMenuTargetCard = card;
     const isFolder = card.classList.contains('folder-card');
+
+    // Multi-select context menu behavior:
+    // If right-clicking an unselected card while others are selected, select only this card.
+    // If right-clicking a selected card, keep the entire selection.
+    if (!isFolder && card.dataset.path) {
+        if (!selectedCardPaths.has(card.dataset.path)) {
+            clearCardSelection();
+            selectedCardPaths.add(card.dataset.path);
+            card.classList.add('selected');
+            lastSelectedCardIndex = getItemIndexForCard(card);
+            updateSelectionStatusBar();
+        }
+    }
+
     const menu = isFolder ? folderContextMenu : contextMenu;
     // Hide the other menu
     const otherMenu = isFolder ? contextMenu : folderContextMenu;
@@ -10906,18 +11005,6 @@ batchRenameApply.addEventListener('click', async () => {
 });
 
 // ── Auto-Tag with AI (CLIP) ──────────────────────────────────────────
-const AUTO_TAG_LABELS = [
-    // Subjects
-    'person', 'people', 'animal', 'cat', 'dog', 'bird', 'fish',
-    'car', 'vehicle', 'building', 'food', 'flower', 'tree',
-    // Scenes
-    'landscape', 'cityscape', 'beach', 'mountain', 'forest',
-    'indoor', 'outdoor', 'night', 'sunset', 'snow', 'underwater',
-    // Styles
-    'black and white', 'colorful', 'minimalist', 'abstract',
-    'close-up', 'aerial view', 'portrait'
-];
-
 const autoTagOverlay = document.getElementById('auto-tag-overlay');
 const autoTagResults = document.getElementById('auto-tag-results');
 const autoTagStatus = document.getElementById('auto-tag-status');
@@ -10935,13 +11022,19 @@ function closeAutoTag() {
     autoTagData = [];
 }
 
-async function ensureLabelEmbeddings() {
-    if (autoTagLabelEmbeddings) return true;
+async function embedTagLabels() {
+    // Always re-embed since tags may have changed since last call
+    await refreshTagsCache();
+
+    if (allTagsCache.length === 0) return false;
+
     autoTagLabelEmbeddings = new Map();
-    for (const label of AUTO_TAG_LABELS) {
+    for (let i = 0; i < allTagsCache.length; i++) {
+        const tag = allTagsCache[i];
+        autoTagStatus.textContent = `Embedding tags... ${i + 1}/${allTagsCache.length}`;
         try {
-            const raw = await window.electronAPI.clipEmbedText(`a photo of ${label}`);
-            if (raw) autoTagLabelEmbeddings.set(label, new Float32Array(raw));
+            const raw = await window.electronAPI.clipEmbedText(`a photo of ${tag.name}`);
+            if (raw) autoTagLabelEmbeddings.set(tag.name, new Float32Array(raw));
         } catch {}
     }
     return autoTagLabelEmbeddings.size > 0;
@@ -10953,6 +11046,13 @@ async function openAutoTag(filePaths) {
     autoTagResults.innerHTML = '';
     autoTagApply.disabled = true;
     autoTagStatus.textContent = 'Checking AI model...';
+
+    // Check if user has any tags
+    await refreshTagsCache();
+    if (allTagsCache.length === 0) {
+        autoTagStatus.textContent = 'No tags found. Create some tags first — auto-tag will match your images against them.';
+        return;
+    }
 
     // Ensure CLIP is loaded
     try {
@@ -10970,11 +11070,11 @@ async function openAutoTag(filePaths) {
         return;
     }
 
-    // Embed all labels
-    autoTagStatus.textContent = 'Preparing label embeddings...';
-    const labelsReady = await ensureLabelEmbeddings();
+    // Embed user's tags as CLIP labels
+    autoTagStatus.textContent = `Embedding ${allTagsCache.length} tag${allTagsCache.length === 1 ? '' : 's'}...`;
+    const labelsReady = await embedTagLabels();
     if (!labelsReady) {
-        autoTagStatus.textContent = 'Failed to generate label embeddings.';
+        autoTagStatus.textContent = 'Failed to generate tag embeddings.';
         return;
     }
 
@@ -11134,19 +11234,10 @@ autoTagApply.addEventListener('click', async () => {
             labelToFiles.get(label).push(fp);
         }
 
-        let appliedCount = 0;
-        const tagColors = ['#6366f1', '#ec4899', '#f59e0b', '#10b981', '#3b82f6', '#8b5cf6', '#ef4444', '#14b8a6'];
-
         for (const [label, filePaths] of labelToFiles) {
-            // Find or create the tag
-            let tag = allTagsCache.find(t => t.name.toLowerCase() === label.toLowerCase());
-            if (!tag) {
-                const color = tagColors[appliedCount % tagColors.length];
-                const result = await window.electronAPI.dbCreateTag(label, null, color);
-                if (result.success && result.data) {
-                    tag = result.data;
-                } else continue;
-            }
+            // Find the existing tag by name
+            const tag = allTagsCache.find(t => t.name.toLowerCase() === label.toLowerCase());
+            if (!tag) continue; // Should not happen since labels come from allTagsCache
 
             // Bulk assign
             const normalizedPaths = filePaths.map(fp => normalizePath(fp));
@@ -11155,7 +11246,6 @@ autoTagApply.addEventListener('click', async () => {
             } else {
                 await window.electronAPI.dbAddTagToFile(normalizedPaths[0], tag.id);
             }
-            appliedCount++;
         }
 
         await refreshTagsCache();
@@ -11171,6 +11261,8 @@ autoTagApply.addEventListener('click', async () => {
 });
 
 async function loadVideos(folderPath, useCache = true, preservedScrollTop = null) {
+    // Clear card selection on folder navigation
+    clearCardSelection();
     // Stop periodic cleanup during folder switch
     stopPeriodicCleanup();
     activeDimensionHydrationToken++;

@@ -23,10 +23,12 @@ const fs = require('fs');
 const DimensionWorkerPool = require('./worker-pool');
 const ThumbnailWorkerPool = require('./thumbnail-pool');
 const HashWorkerPool = require('./hash-pool');
+const ClipPreprocessPool = require('./clip-preprocess-pool');
 const PluginRegistry = require('./plugins/plugin-registry');
 const AppDatabase = require('./database');
-// ClipWorkerPool removed — inference runs directly in the main process
-// to avoid native module ABI issues in Electron worker threads.
+// CLIP inference runs directly in the main process to avoid native module ABI
+// issues in Electron worker threads.  Preprocessing (sharp resize/crop/normalise)
+// is offloaded to a worker pool (ClipPreprocessPool) so it overlaps with inference.
 // image-size: lazy-loaded on first use (saves ~15ms at startup)
 let sizeOf = undefined; // undefined = not yet loaded, null = failed to load
 function getSizeOf() {
@@ -148,7 +150,8 @@ let thumbnailPool = new ThumbnailWorkerPool({ ffmpegPath, ffprobePath });
 let hashPool = new HashWorkerPool();
 markStartup('worker-pools-created');
 // CLIP model state — loaded directly in main process (no worker threads)
-let clipModel = null; // { visionModel, textModel, processor, tokenizer, RawImage, sharp }
+let clipModel = null; // { visionModel, textModel, processor, tokenizer, RawImage, ort }
+let clipPreprocessPool = null;
 
 // Thumbnail cache directories (initialized after userDataPath is set)
 const crypto = require('crypto');
@@ -2809,12 +2812,7 @@ ipcMain.handle('clip-init', async (event) => {
     try {
         if (clipModel) return { success: true };
 
-        const savedReleaseName = process.release.name;
-        process.release = { ...process.release, name: 'electron' };
-
         const transformers = require('@xenova/transformers');
-
-        process.release = { ...process.release, name: savedReleaseName };
 
         const { env, CLIPVisionModelWithProjection, CLIPTextModelWithProjection,
                 AutoProcessor, AutoTokenizer, RawImage } = transformers;
@@ -2843,7 +2841,17 @@ ipcMain.handle('clip-init', async (event) => {
             CLIPTextModelWithProjection.from_pretrained(MODEL_NAME, textOpts),
         ]);
 
-        clipModel = { visionModel, textModel, processor, tokenizer, RawImage };
+        // Grab the ORT module from transformers' own node_modules (native CPU backend).
+        // With the electron hack removed, transformers selects onnxruntime-node (native CPU)
+        // instead of onnxruntime-web (WASM) — ~3-5x faster.
+        const txDir = path.dirname(require.resolve('@xenova/transformers'));
+        const ort = require(path.join(txDir, '..', 'node_modules', 'onnxruntime-node'));
+
+        clipModel = { visionModel, textModel, processor, tokenizer, RawImage, ort };
+
+        // Spin up worker pool for off-main-thread image preprocessing
+        if (!clipPreprocessPool) clipPreprocessPool = new ClipPreprocessPool();
+
         return { success: true };
     } catch (err) {
         clipModel = null;
@@ -2853,7 +2861,7 @@ ipcMain.handle('clip-init', async (event) => {
 });
 
 // Helper: embed a single image file
-// Uses Electron's nativeImage for preprocessing (sharp can't load in the main process).
+// Uses nativeImage as fallback; prefer clipPreprocessPool for batched work.
 // CLIP ViT-B/32 normalization constants (ImageNet)
 const CLIP_MEAN = [0.48145466, 0.4578275, 0.40821073];
 const CLIP_STD  = [0.26862954, 0.26130258, 0.27577711];
@@ -2901,8 +2909,7 @@ function clipPreprocessImage(filePath) {
 const CLIP_PIXELS = CLIP_SIZE * CLIP_SIZE * 3;
 
 async function clipEmbedBatch(pixelDataArray) {
-    const { visionModel } = clipModel;
-    const ort = require('onnxruntime-web');
+    const { visionModel, ort } = clipModel;
     const inputName = visionModel.session.inputNames[0];
     const outputName = visionModel.session.outputNames[0];
 
@@ -2979,11 +2986,17 @@ async function extractMediaKeyframes(filePath, n = 4) {
 // Average multiple frame embeddings into a single L2-normalised vector.
 // Preprocesses all frames, then runs a single batched inference call.
 async function clipEmbedMultiFrame(framePaths) {
-    // Preprocess all frames (sync I/O but fast at 224px)
-    const pixelData = [];
-    for (const fp of framePaths) {
-        const px = clipPreprocessImage(fp);
-        if (px) pixelData.push(px);
+    // Preprocess frames in worker pool (off main thread)
+    let pixelData;
+    if (clipPreprocessPool) {
+        const results = await clipPreprocessPool.preprocessBatch(framePaths);
+        pixelData = results.filter(Boolean);
+    } else {
+        pixelData = [];
+        for (const fp of framePaths) {
+            const px = clipPreprocessImage(fp);
+            if (px) pixelData.push(px);
+        }
     }
     if (pixelData.length === 0) return null;
 
@@ -3106,28 +3119,44 @@ ipcMain.handle('clip-embed-images', async (event, files) => {
         try { sender.send('clip-progress', { current: completed, total: files.length, phase: 'embedding' }); } catch { /* window closed */ }
     }
 
-    // Process static images in batches with look-ahead I/O pipelining
-    // Preprocess next batch while current batch is being inferred
-    function preprocessBatch(batch) {
-        const items = [];
-        for (const file of batch) {
-            try {
-                const source = resolveImageSource(file);
-                const pixels = clipPreprocessImage(source);
-                items.push({ file, pixels });
-            } catch (err) {
-                console.error('clip-embed preprocess error:', file.path, err.message);
-                items.push({ file, pixels: null });
-            }
+    // Process static images in batches with true I/O pipelining:
+    // Preprocess batch N+1 in worker threads while batch N runs ONNX inference on main thread.
+    async function preprocessBatchAsync(batch) {
+        const sources = batch.map(file => resolveImageSource(file));
+        if (clipPreprocessPool) {
+            const pixels = await clipPreprocessPool.preprocessBatch(sources);
+            return batch.map((file, j) => ({ file, pixels: pixels[j] }));
         }
-        return items;
+        // Fallback to synchronous main-thread preprocessing
+        return batch.map((file, j) => {
+            try { return { file, pixels: clipPreprocessImage(sources[j]) }; }
+            catch { return { file, pixels: null }; }
+        });
     }
 
-    for (let i = 0; i < staticFiles.length; i += CLIP_BATCH_SIZE) {
-        const batch = staticFiles.slice(i, i + CLIP_BATCH_SIZE);
+    // Kick off first batch preprocessing immediately
+    let nextBatchIdx = 0;
+    let pendingPreprocess = null;
+    if (staticFiles.length > 0) {
+        const firstBatch = staticFiles.slice(0, CLIP_BATCH_SIZE);
+        pendingPreprocess = preprocessBatchAsync(firstBatch);
+        nextBatchIdx = CLIP_BATCH_SIZE;
+    }
 
-        // Preprocess current batch (I/O + resize)
-        const preprocessed = preprocessBatch(batch);
+    while (pendingPreprocess) {
+        // Start preprocessing the NEXT batch in parallel with current inference
+        let nextPreprocess = null;
+        let currentBatch;
+        if (nextBatchIdx < staticFiles.length) {
+            const nextBatch = staticFiles.slice(nextBatchIdx, nextBatchIdx + CLIP_BATCH_SIZE);
+            nextPreprocess = preprocessBatchAsync(nextBatch);
+            nextBatchIdx += CLIP_BATCH_SIZE;
+        }
+
+        // Await current batch's preprocessing
+        const preprocessed = await pendingPreprocess;
+        currentBatch = preprocessed;
+
         const validPixels = [];
         const validIndices = [];
         for (let j = 0; j < preprocessed.length; j++) {
@@ -3159,8 +3188,10 @@ ipcMain.handle('clip-embed-images', async (event, files) => {
             }
         }
 
-        completed += batch.length;
+        completed += preprocessed.length;
         try { sender.send('clip-progress', { current: completed, total: files.length, phase: 'embedding' }); } catch { /* window closed */ }
+
+        pendingPreprocess = nextPreprocess;
     }
 
     // Build results array in original file order
@@ -3183,7 +3214,7 @@ ipcMain.handle('clip-embed-text', async (event, text) => {
         const inputs = tokenizer(text, { padding: true, truncation: true });
 
         // Bypass textModel._call() — use session.run() directly (same fix as images)
-        const ort = require('onnxruntime-web');
+        const { ort } = clipModel;
         const feeds = {};
         for (const name of textModel.session.inputNames) {
             const t = inputs[name];
@@ -3213,6 +3244,7 @@ ipcMain.handle('clip-status', async () => {
 
 ipcMain.handle('clip-terminate', async () => {
     clipModel = null;
+    if (clipPreprocessPool) { clipPreprocessPool.terminate(); clipPreprocessPool = null; }
     return { success: true };
 });
 

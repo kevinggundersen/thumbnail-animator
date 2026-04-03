@@ -2232,6 +2232,7 @@ async function loadCollectionIntoGrid(collectionId) {
         currentEmbeddings.clear();
         currentTextEmbedding = null;
         cancelEmbeddingScan();
+        _cancelIdlePreEmbedding();
 
         renderItems(sortedItems, null);
         updateBreadcrumbForCollection(collection);
@@ -8818,6 +8819,7 @@ thumbnailQualitySelect.addEventListener('change', () => {
             aiAutoScan = autoScanToggle.checked;
             autoScanLabel.textContent = aiAutoScan ? 'On' : 'Off';
             deferLocalStorageWrite('aiAutoScan', aiAutoScan.toString());
+            if (aiAutoScan) _resetIdleTimer(); else _cancelIdlePreEmbedding();
         });
     }
 
@@ -8996,6 +8998,88 @@ async function scheduleBackgroundEmbedding(items) {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Idle pre-embedding: silently embed uncached files when the user is inactive.
+// ---------------------------------------------------------------------------
+let _idleTimer = null;
+let _idleEmbedAbort = null;
+const IDLE_DELAY_MS = 10000;       // 10s of inactivity before starting
+const IDLE_BATCH_SIZE = 8;
+
+function _resetIdleTimer() {
+    if (_idleTimer) clearTimeout(_idleTimer);
+    // Cancel any in-flight idle embedding
+    if (_idleEmbedAbort) { _idleEmbedAbort.abort(); _idleEmbedAbort = null; }
+    _idleTimer = setTimeout(_startIdlePreEmbedding, IDLE_DELAY_MS);
+}
+
+function _cancelIdlePreEmbedding() {
+    if (_idleTimer) { clearTimeout(_idleTimer); _idleTimer = null; }
+    if (_idleEmbedAbort) { _idleEmbedAbort.abort(); _idleEmbedAbort = null; }
+}
+
+async function _startIdlePreEmbedding() {
+    // Guard conditions
+    if (!aiVisualSearchEnabled || !aiAutoScan) return;
+    if (embeddingScanAbortController && !embeddingScanAbortController.signal.aborted) return;
+    if (_bgScanRunning) return;
+
+    let status;
+    try { status = await window.electronAPI.clipStatus(); } catch { return; }
+    if (!status || !status.loaded) return;
+
+    const mediaItems = (currentItems || []).filter(i => i.type !== 'folder');
+    if (mediaItems.length === 0) return;
+
+    // Find uncached items
+    try {
+        const cached = await getCachedEmbeddings(mediaItems.map(i => ({ path: i.path, mtime: i.mtime || 0 })));
+        for (const [p, emb] of cached) currentEmbeddings.set(p, emb);
+    } catch { /* ignore */ }
+
+    const uncached = mediaItems.filter(i => !currentEmbeddings.has(i.path));
+    if (uncached.length === 0) return;
+
+    _idleEmbedAbort = new AbortController();
+    const signal = _idleEmbedAbort.signal;
+
+    for (let i = 0; i < uncached.length; i += IDLE_BATCH_SIZE) {
+        if (signal.aborted) return;
+
+        const batch = uncached.slice(i, i + IDLE_BATCH_SIZE);
+        try {
+            const results = await window.electronAPI.clipEmbedImages(
+                batch.map(item => ({ path: item.path, mtime: item.mtime || 0, thumbPath: null }))
+            );
+            const toCache = [];
+            for (const r of results) {
+                if (r && r.embedding) {
+                    const emb = new Float32Array(r.embedding);
+                    currentEmbeddings.set(r.path, emb);
+                    const item = mediaItems.find(m => m.path === r.path);
+                    toCache.push({ path: r.path, mtime: item ? (item.mtime || 0) : 0, embedding: r.embedding });
+                }
+            }
+            if (toCache.length > 0) cacheEmbeddings(toCache).catch(() => {});
+        } catch { /* skip */ }
+
+        // Generous yield between batches
+        if (i + IDLE_BATCH_SIZE < uncached.length && !signal.aborted) {
+            await new Promise(r => requestIdleCallback ? requestIdleCallback(r, { timeout: 500 }) : setTimeout(r, 500));
+        }
+    }
+
+    if (!signal.aborted && aiSearchActive && currentTextEmbedding) {
+        applyFilters();
+    }
+    _idleEmbedAbort = null;
+}
+
+// Start listening for user activity to drive idle detection
+['mousemove', 'keydown', 'scroll', 'click', 'pointerdown'].forEach(evt => {
+    window.addEventListener(evt, _resetIdleTimer, { passive: true });
+});
 
 // Zoom slider event listener (throttled layout, instant visual feedback)
 let zoomLayoutTimer = null;
@@ -10739,6 +10823,7 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
         currentEmbeddings.clear();
         currentTextEmbedding = null;
         cancelEmbeddingScan();
+        _cancelIdlePreEmbedding();
 
         renderItems(sortedItems, preservedScrollTop);
 
@@ -10760,6 +10845,9 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
         if (aiVisualSearchEnabled && aiAutoScan) {
             scheduleBackgroundEmbedding(items);
         }
+
+        // Reset idle pre-embedding timer so remaining files get embedded when idle
+        _resetIdleTimer();
 
         // Start watching folder for changes
         await startWatchingFolder(folderPath);

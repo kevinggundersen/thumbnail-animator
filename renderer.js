@@ -1470,6 +1470,8 @@ const includeMovingImagesLabel = document.getElementById('include-moving-images-
 const sortTypeSelect = document.getElementById('sort-type-select');
 const sortOrderSelect = document.getElementById('sort-order-select');
 const thumbnailQualitySelect = document.getElementById('thumbnail-quality-select');
+const hoverScaleSlider = document.getElementById('hover-scale-slider');
+const hoverScaleValue = document.getElementById('hover-scale-value');
 const pauseOnLightboxToggle = document.getElementById('pause-on-lightbox-toggle');
 const pauseOnLightboxLabel = document.getElementById('pause-on-lightbox-label');
 const pauseOnBlurToggle = document.getElementById('pause-on-blur-toggle');
@@ -8679,7 +8681,7 @@ const SETTINGS_EXPORT_KEYS_STRING = [
     'aiVisualSearchEnabled', 'aiModelDownloadConfirmed', 'aiAutoScan',
     'aiSimilarityThreshold', 'aiClusteringMode',
     'videoCacheLimitMB', 'imageCacheLimitMB',
-    'useSystemTrash'
+    'useSystemTrash', 'hoverScale'
 ];
 const SETTINGS_EXPORT_KEYS_JSON = [
     'cardInfoSettings', 'customThemes',
@@ -9259,6 +9261,27 @@ thumbnailQualitySelect.addEventListener('change', () => {
     if (currentFolderPath) {
         loadVideos(currentFolderPath, true, gridContainer.scrollTop);
     }
+});
+
+// Hover expand setting (slider: 100 = no scale, 150 = 1.5x)
+function applyHoverScale(pct) {
+    const scale = pct / 100;
+    const lift = pct <= 100 ? 0 : Math.round((pct - 100) * 0.16);
+    document.documentElement.style.setProperty('--hover-scale', String(scale));
+    document.documentElement.style.setProperty('--hover-lift', `-${lift}px`);
+    if (hoverScaleValue) hoverScaleValue.textContent = scale.toFixed(2) + 'x';
+}
+
+(function initHoverScale() {
+    const saved = parseInt(localStorage.getItem('hoverScale')) || 102;
+    if (hoverScaleSlider) hoverScaleSlider.value = saved;
+    applyHoverScale(saved);
+})();
+
+hoverScaleSlider.addEventListener('input', () => {
+    const val = parseInt(hoverScaleSlider.value);
+    applyHoverScale(val);
+    deferLocalStorageWrite('hoverScale', String(val));
 });
 
 // --- AI Visual Search settings event handlers ---

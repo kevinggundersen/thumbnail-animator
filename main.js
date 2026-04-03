@@ -790,6 +790,7 @@ app.whenReady().then(() => {
     ipcMain.handle('download-update', () => {
         return autoUpdater.downloadUpdate().catch((err) => {
             console.error('Download update failed:', err.message);
+            return { error: err.message };
         });
     });
 
@@ -2146,7 +2147,7 @@ ipcMain.handle('copy-file', async (event, sourcePath, destFolderOrPath, fileName
         let finalPath = destPath;
         if (fs.existsSync(finalPath)) {
             const baseName = path.basename(destPath);
-            const win = BrowserWindow.fromWebContents(event.sender);
+            const win = BrowserWindow.fromWebContents(event.sender) || mainWindow;
             const { response } = await dialog.showMessageBox(win, {
                 type: 'question',
                 buttons: ['Replace', 'Keep Both', 'Skip'],
@@ -2197,7 +2198,7 @@ ipcMain.handle('move-file', async (event, sourcePath, destFolderOrPath, fileName
         // Check if destination already exists — show conflict dialog (same as copy)
         if (fs.existsSync(destPath) && path.normalize(sourcePath) !== path.normalize(destPath)) {
             const baseName = path.basename(destPath);
-            const win = BrowserWindow.fromWebContents(event.sender);
+            const win = BrowserWindow.fromWebContents(event.sender) || mainWindow;
             const { response } = await dialog.showMessageBox(win, {
                 type: 'question',
                 buttons: ['Replace', 'Keep Both', 'Skip'],
@@ -3346,6 +3347,8 @@ ipcMain.handle('undo-file-operation', async () => {
         return { success: true, description: entry.description, canUndo: undoStack.length > 0, canRedo: true };
     } catch (error) {
         console.error('Undo failed:', error);
+        // Restore entry to undo stack so user can retry
+        undoStack.push(entry);
         return { success: false, error: error.message, description: entry.description };
     }
 });
@@ -3382,6 +3385,8 @@ ipcMain.handle('redo-file-operation', async () => {
         return { success: true, description: entry.description, canUndo: true, canRedo: redoStack.length > 0 };
     } catch (error) {
         console.error('Redo failed:', error);
+        // Restore entry to redo stack so user can retry
+        redoStack.push(entry);
         return { success: false, error: error.message, description: entry.description };
     }
 });

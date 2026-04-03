@@ -32,6 +32,8 @@ function initKeyboardShortcuts() {
                 } else if (result.error !== 'Nothing to redo') {
                     showToast(`Redo failed: ${result.error}`, 'error');
                 }
+            }).catch(err => {
+                showToast(`Redo failed: ${friendlyError(err)}`, 'error');
             });
             return;
         }
@@ -50,6 +52,8 @@ function initKeyboardShortcuts() {
                 } else if (result.error !== 'Nothing to undo') {
                     showToast(`Undo failed: ${result.error}`, 'error');
                 }
+            }).catch(err => {
+                showToast(`Undo failed: ${friendlyError(err)}`, 'error');
             });
             return;
         }
@@ -77,7 +81,7 @@ function initKeyboardShortcuts() {
                 closeLightbox();
             } else if (!renameDialog.classList.contains('hidden')) {
                 handleRenameCancel();
-            } else if (!document.getElementById('duplicates-modal').classList.contains('hidden')) {
+            } else if (document.getElementById('duplicates-modal') && !document.getElementById('duplicates-modal').classList.contains('hidden')) {
                 closeDuplicatesModal();
             } else if (!toolsMenuDropdown.classList.contains('hidden')) {
                 toolsMenuDropdown.classList.add('hidden');
@@ -145,6 +149,8 @@ function initKeyboardShortcuts() {
                                         } else {
                                             showToast(`Undo failed: ${undoResult.error}`, 'error');
                                         }
+                                    }).catch(err => {
+                                        showToast(`Undo failed: ${friendlyError(err)}`, 'error');
                                     });
                                 }
                             });
@@ -184,7 +190,7 @@ function initKeyboardShortcuts() {
         }
 
         // Backspace: Go back (when not in input)
-        if (e.key === 'Backspace' && !e.target.tagName === 'INPUT') {
+        if (e.key === 'Backspace' && e.target.tagName !== 'INPUT') {
             if (navigationHistory.canGoBack()) {
                 e.preventDefault();
                 goBack();
@@ -3256,6 +3262,8 @@ function initDuplicateDetection() {
                         } else {
                             showToast(`Undo failed: ${undoResult.error}`, 'error');
                         }
+                    }).catch(err => {
+                        showToast(`Undo failed: ${friendlyError(err)}`, 'error');
                     });
                 }
             });

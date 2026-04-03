@@ -82,6 +82,7 @@ let vsSpacer = null;               // Spacer element that sets total scroll heig
 let vsResizeHandler = null;        // Window resize handler
 let vsDimensionRecalcRafId = null; // RAF ID for coalescing metadata-triggered recalcs
 let vsTagGeneration = 0;           // Incremented on each vsUpdateDOM to cancel stale tag fetches
+let vsGroupHeadersPresent = false; // True when date group headers are in vsSortedItems
 
 // Masonry layout cache for incremental updates
 let vsLayoutCache = {
@@ -205,13 +206,15 @@ function vsCalculatePositions(items, containerWidth, mode, zoom) {
     }
 
     // --- Fast path: scale existing positions when column count and items haven't changed ---
+    // Disable fast path when group headers are present (their height is fixed, not scalable)
     const cache = vsLayoutCache;
     if (
         cache.positions &&
         cache.itemCount === items.length &&
         cache.mode === mode &&
         cache.columns === newColumns &&
-        items.length > 0
+        items.length > 0 &&
+        !vsGroupHeadersPresent
     ) {
         // Column count unchanged -- scale all positions proportionally
         const scaleX = newColumnWidth / cache.columnWidth;
@@ -288,6 +291,24 @@ function vsCalculatePositions(items, containerWidth, mode, zoom) {
             const item = items[i];
             let cardHeight;
 
+            if (item.type === 'group-header') {
+                // Span full width; place at the max column height
+                let maxColH = 0;
+                for (let c = 0; c < columns; c++) {
+                    if (colHeights[c] > maxColH) maxColH = colHeights[c];
+                }
+                const hTop = maxColH > 0 ? maxColH : 0;
+                const hHeight = 42;
+                const hidx = i * 4;
+                positions[hidx]     = 0;
+                positions[hidx + 1] = hTop;
+                positions[hidx + 2] = containerWidth;
+                positions[hidx + 3] = hHeight;
+                columnAssignments[i] = 0;
+                for (let c = 0; c < columns; c++) colHeights[c] = hTop + hHeight + gap;
+                continue;
+            }
+
             if (item.type === 'folder') {
                 cardHeight = columnWidth;
             } else {
@@ -361,6 +382,24 @@ function vsCalculatePositions(items, containerWidth, mode, zoom) {
         for (let i = 0; i < items.length; i++) {
             const item = items[i];
             let cardHeight;
+
+            if (item.type === 'group-header') {
+                // Finish current row if mid-row, then place header at full width
+                if (currentCol > 0) {
+                    rowTop += rowMaxHeight + gap;
+                    rowMaxHeight = 0;
+                    currentCol = 0;
+                }
+                const hHeight = 42;
+                const hidx = i * 4;
+                positions[hidx]     = 0;
+                positions[hidx + 1] = rowTop;
+                positions[hidx + 2] = containerWidth;
+                positions[hidx + 3] = hHeight;
+                rowTop += hHeight + gap;
+                rowMaxHeight = 0;
+                continue;
+            }
 
             if (item.type === 'folder') {
                 cardHeight = columnWidth;
@@ -657,6 +696,24 @@ function vsResetCard(card) {
  * Returns { card, isMedia } matching createCardFromItem's interface.
  */
 function vsPopulateExistingCard(card, item) {
+    if (item.type === 'group-header') {
+        card.className = 'date-group-header';
+        card.dataset.groupKey = item.groupKey;
+        const toggleEl = document.createElement('button');
+        toggleEl.className = 'dgh-toggle';
+        toggleEl.textContent = collapsedDateGroups.has(item.groupKey) ? '▶' : '▼';
+        const labelEl = document.createElement('span');
+        labelEl.className = 'dgh-label';
+        labelEl.textContent = item.label;
+        const countEl = document.createElement('span');
+        countEl.className = 'dgh-count';
+        countEl.textContent = String(item.count);
+        card.appendChild(toggleEl);
+        card.appendChild(labelEl);
+        card.appendChild(countEl);
+        // Click handled by gridContainer delegation (see below)
+        return { card, isMedia: false };
+    }
     if (item.type === 'folder') {
         card.className = 'folder-card';
         card.dataset.folderPath = item.path;
@@ -5499,7 +5556,14 @@ function sortItems(items) {
     const pinnedFiles = [], unpinnedFiles = [];
     for (const f of files) (isFilePinned(f.path) ? pinnedFiles : unpinnedFiles).push(f);
 
-    return pinnedFolders.concat(unpinnedFolders, pinnedFiles, unpinnedFiles);
+    const allFiles = pinnedFiles.concat(unpinnedFiles);
+
+    if (groupByDate && allFiles.length > 0) {
+        vsGroupHeadersPresent = true;
+        return [...pinnedFolders, ...unpinnedFolders, ...injectDateGroupHeaders(allFiles)];
+    }
+    vsGroupHeadersPresent = false;
+    return pinnedFolders.concat(unpinnedFolders, allFiles);
 }
 
 // Function to apply sorting and reload current folder
@@ -5508,7 +5572,7 @@ function applySorting() {
         const previousScrollTop = gridContainer.scrollTop;
         // If sorting by date but items lack mtime (were loaded with skipStats),
         // reload from backend to get file stats
-        const needsStats = sortType === 'date' && currentItems.some(item => item.type !== 'folder' && !item.mtime);
+        const needsStats = (sortType === 'date' || groupByDate) && currentItems.some(item => item.type !== 'folder' && !item.mtime);
         if (needsStats) {
             loadVideos(currentFolderPath, false, previousScrollTop);
             return;
@@ -5530,6 +5594,25 @@ let cardAnimIndex = 0;
 
 // Function to create a card element from an item
 function createCardFromItem(item, skipAnimation = false) {
+    if (item.type === 'group-header') {
+        const card = document.createElement('div');
+        card.className = 'date-group-header';
+        card.dataset.groupKey = item.groupKey;
+        const toggleEl = document.createElement('button');
+        toggleEl.className = 'dgh-toggle';
+        toggleEl.textContent = collapsedDateGroups.has(item.groupKey) ? '▶' : '▼';
+        const labelEl = document.createElement('span');
+        labelEl.className = 'dgh-label';
+        labelEl.textContent = item.label;
+        const countEl = document.createElement('span');
+        countEl.className = 'dgh-count';
+        countEl.textContent = String(item.count);
+        card.appendChild(toggleEl);
+        card.appendChild(labelEl);
+        card.appendChild(countEl);
+        // Click handled by gridContainer delegation (see below)
+        return { card, isMedia: false };
+    }
     if (item.type === 'folder') {
         // Create folder card
         const card = document.createElement('div');
@@ -7349,6 +7432,13 @@ function getItemIndexForCard(card) {
 }
 
 gridContainer.addEventListener('click', (e) => {
+    // Date group header click
+    const groupHeader = e.target.closest('.date-group-header');
+    if (groupHeader && groupHeader.dataset.groupKey) {
+        toggleDateGroup(groupHeader.dataset.groupKey);
+        return;
+    }
+
     // Star click (check first so stopPropagation prevents card click)
     const star = e.target.closest('.star');
     if (star) {
@@ -10769,13 +10859,14 @@ function showContextMenu(event, card) {
         }
     }
 
-    // Show/hide batch rename based on multi-select
+    // Show/hide batch rename + compare based on multi-select
     if (!isFolder) {
+        const selectedCards = document.querySelectorAll('.video-card.selected');
+        const selCount = selectedCards.length;
         const batchRenameItem = menu.querySelector('[data-action="batch-rename"]');
-        if (batchRenameItem) {
-            const selectedCards = document.querySelectorAll('.video-card.selected');
-            batchRenameItem.style.display = selectedCards.length > 1 ? '' : 'none';
-        }
+        if (batchRenameItem) batchRenameItem.style.display = selCount > 1 ? '' : 'none';
+        const compareItem = menu.querySelector('[data-action="compare"]');
+        if (compareItem) compareItem.style.display = (selCount >= 2 && selCount <= 4) ? '' : 'none';
     }
 
     // Show/hide "Find Similar" — only for images when AI visual search is enabled
@@ -11030,6 +11121,20 @@ contextMenu.addEventListener('click', async (e) => {
                 break;
             }
             activateFindSimilar(filePath, fileName);
+            break;
+        }
+
+        case 'compare': {
+            const selCards = document.querySelectorAll('.video-card.selected');
+            const paths = selCards.length >= 2
+                ? Array.from(selCards).map(c => c.dataset.path).filter(Boolean)
+                : [filePath];
+            openCompareMode(paths);
+            break;
+        }
+
+        case 'slideshow': {
+            startSlideshow();
             break;
         }
 
@@ -13026,3 +13131,534 @@ if (tagsTabBtn) {
 refreshTagsCache();
 console.log('[Tags] renderer.js fully loaded, end of file reached');
 
+
+// ==================== SEARCH HISTORY ====================
+(function initSearchHistory() {
+    const SEARCH_HISTORY_KEY = 'searchHistory';
+    const MAX_SEARCH_HISTORY = 10;
+    const dropdown = document.getElementById('search-history-dropdown');
+    if (!dropdown || !searchBox) return;
+
+    function getHistory() {
+        try { return JSON.parse(localStorage.getItem(SEARCH_HISTORY_KEY) || '[]'); } catch { return []; }
+    }
+
+    function saveToHistory(query) {
+        if (!query || !query.trim()) return;
+        let h = getHistory().filter(s => s !== query.trim());
+        h.unshift(query.trim());
+        if (h.length > MAX_SEARCH_HISTORY) h = h.slice(0, MAX_SEARCH_HISTORY);
+        localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(h));
+    }
+
+    function renderDropdown() {
+        const history = getHistory();
+        dropdown.innerHTML = '';
+        if (history.length === 0) { dropdown.classList.add('hidden'); return; }
+
+        history.forEach(q => {
+            const el = document.createElement('div');
+            el.className = 'search-history-item';
+            el.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>';
+            const span = document.createElement('span');
+            span.textContent = q;
+            el.appendChild(span);
+            el.addEventListener('mousedown', ev => {
+                ev.preventDefault();
+                searchBox.value = q;
+                const clearBtn = document.getElementById('search-clear-btn');
+                if (clearBtn) clearBtn.style.display = '';
+                performSearch(q);
+                dropdown.classList.add('hidden');
+            });
+            dropdown.appendChild(el);
+        });
+
+        const clearEl = document.createElement('div');
+        clearEl.className = 'search-history-clear';
+        clearEl.textContent = 'Clear history';
+        clearEl.addEventListener('mousedown', ev => {
+            ev.preventDefault();
+            localStorage.removeItem(SEARCH_HISTORY_KEY);
+            dropdown.classList.add('hidden');
+        });
+        dropdown.appendChild(clearEl);
+        dropdown.classList.remove('hidden');
+    }
+
+    searchBox.addEventListener('focus', () => {
+        if (!searchBox.value) renderDropdown();
+    });
+    searchBox.addEventListener('blur', () => {
+        if (searchBox.value.trim()) saveToHistory(searchBox.value.trim());
+        setTimeout(() => dropdown.classList.add('hidden'), 160);
+    });
+    searchBox.addEventListener('keydown', ev => {
+        if (ev.key === 'Enter' && searchBox.value.trim()) {
+            saveToHistory(searchBox.value.trim());
+            dropdown.classList.add('hidden');
+        } else if (ev.key === 'Escape') {
+            dropdown.classList.add('hidden');
+        }
+    });
+    searchBox.addEventListener('input', () => {
+        if (!searchBox.value) renderDropdown();
+        else dropdown.classList.add('hidden');
+    });
+})();
+
+
+// ==================== DATE GROUP HEADERS ====================
+let groupByDate = false;
+let dateGroupGranularity = 'month';
+const collapsedDateGroups = new Set();
+
+function getDateGroupKey(item) {
+    let date;
+    if (item.mtime) {
+        date = new Date(item.mtime);
+    } else {
+        const m = (item.name || '').match(/(\d{4})[._-](\d{2})[._-](\d{2})/);
+        if (m) date = new Date(+m[1], +m[2] - 1, +m[3]);
+        else return 'unknown';
+    }
+    if (!date || isNaN(date.getTime())) return 'unknown';
+    const y = date.getFullYear();
+    const mo = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    if (dateGroupGranularity === 'year') return String(y);
+    if (dateGroupGranularity === 'month') return `${y}-${mo}`;
+    return `${y}-${mo}-${d}`;
+}
+
+function getDateGroupLabel(key) {
+    if (key === 'unknown') return 'Unknown Date';
+    const parts = key.split('-').map(Number);
+    if (dateGroupGranularity === 'year') return String(parts[0]);
+    if (dateGroupGranularity === 'month') {
+        const d = new Date(parts[0], parts[1] - 1, 1);
+        return d.toLocaleString('default', { month: 'long', year: 'numeric' });
+    }
+    const d = new Date(parts[0], parts[1] - 1, parts[2]);
+    return d.toLocaleDateString('default', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+}
+
+function injectDateGroupHeaders(files) {
+    const groups = new Map();
+    const order = [];
+    for (const f of files) {
+        const k = getDateGroupKey(f);
+        if (!groups.has(k)) { groups.set(k, []); order.push(k); }
+        groups.get(k).push(f);
+    }
+    const result = [];
+    for (const k of order) {
+        const items = groups.get(k);
+        result.push({ type: 'group-header', groupKey: k, label: getDateGroupLabel(k), count: items.length });
+        if (!collapsedDateGroups.has(k)) result.push(...items);
+    }
+    return result;
+}
+
+function toggleDateGroup(groupKey) {
+    if (collapsedDateGroups.has(groupKey)) collapsedDateGroups.delete(groupKey);
+    else collapsedDateGroups.add(groupKey);
+    applySorting();
+}
+
+// Wire up Group by Date button
+let preDateGroupSortType = null;
+(function initDateGrouping() {
+    const btn = document.getElementById('group-by-date-btn');
+    const gran = document.getElementById('date-group-granularity-select');
+    if (!btn || !gran) return;
+
+    btn.addEventListener('click', () => {
+        groupByDate = !groupByDate;
+        btn.classList.toggle('active', groupByDate);
+        gran.classList.toggle('date-group-granularity-hidden', !groupByDate);
+        gran.classList.toggle('date-group-granularity-visible', groupByDate);
+        collapsedDateGroups.clear();
+
+        if (groupByDate) {
+            preDateGroupSortType = sortType;
+            sortType = 'date';
+            if (sortTypeSelect) sortTypeSelect.value = 'date';
+            deferLocalStorageWrite('sortType', sortType);
+        } else if (preDateGroupSortType !== null) {
+            sortType = preDateGroupSortType;
+            if (sortTypeSelect) sortTypeSelect.value = sortType;
+            deferLocalStorageWrite('sortType', sortType);
+            preDateGroupSortType = null;
+        }
+
+        applySorting();
+    });
+
+    gran.addEventListener('change', () => {
+        dateGroupGranularity = gran.value;
+        collapsedDateGroups.clear();
+        if (groupByDate) applySorting();
+    });
+})();
+
+
+// ==================== COMPARE MODE ====================
+let cmoZoomState = { scale: 1, panX: 0, panY: 0 };
+let cmoPanelStates = []; // per-panel zoom state when not synced
+
+function openCompareMode(paths) {
+    if (!paths || paths.length < 2) { showToast('Select 2–4 files to compare', 'info'); return; }
+    if (paths.length > 4) paths = paths.slice(0, 4);
+
+    const overlay = document.getElementById('compare-mode-overlay');
+    const container = document.getElementById('cmo-panels-container');
+    if (!overlay || !container) return;
+
+    cmoZoomState = { scale: 1, panX: 0, panY: 0 };
+    cmoPanelStates = paths.map(() => ({ scale: 1, panX: 0, panY: 0 }));
+    container.innerHTML = '';
+
+    // Set grid layout
+    const n = paths.length;
+    if (n <= 3) {
+        container.style.gridTemplateColumns = Array(n).fill('1fr').join(' ');
+        container.style.gridTemplateRows = '1fr';
+    } else {
+        container.style.gridTemplateColumns = '1fr 1fr';
+        container.style.gridTemplateRows = '1fr 1fr';
+    }
+
+    paths.forEach((p, i) => {
+        const name = p.split(/[\\/]/).pop();
+        const ext = name.split('.').pop().toLowerCase();
+        const isVid = ['mp4','webm','mov','avi','mkv','m4v','ogg'].includes(ext);
+        const item = vsSortedItems.find(it => it.path === p);
+        const src = item ? item.url : 'file:///' + p.replace(/\\/g, '/');
+
+        const panel = document.createElement('div');
+        panel.className = 'cmo-panel';
+
+        const vp = document.createElement('div');
+        vp.className = 'cmo-viewport';
+
+        let media;
+        if (isVid) {
+            media = document.createElement('video');
+            media.autoplay = true;
+            media.loop = true;
+            media.muted = true;
+            media.controls = false;
+        } else {
+            media = document.createElement('img');
+        }
+        media.src = src;
+        media.className = 'cmo-media';
+        vp.appendChild(media);
+
+        // Zoom & pan
+        let isDragging = false;
+        let dragStart = { x: 0, y: 0 };
+
+        function getState() {
+            const syncZoom = document.getElementById('cmo-sync-zoom');
+            return syncZoom && syncZoom.checked ? cmoZoomState : cmoPanelStates[i];
+        }
+        function applyTransform(state) {
+            media.style.transform = `translate(${state.panX}px, ${state.panY}px) scale(${state.scale})`;
+        }
+        function syncAll() {
+            container.querySelectorAll('.cmo-media').forEach(m => {
+                m.style.transform = `translate(${cmoZoomState.panX}px, ${cmoZoomState.panY}px) scale(${cmoZoomState.scale})`;
+            });
+        }
+        function applyOne() { applyTransform(cmoPanelStates[i]); }
+
+        vp.addEventListener('wheel', ev => {
+            ev.preventDefault();
+            const delta = ev.deltaY < 0 ? 1.12 : 1 / 1.12;
+            const syncZoom = document.getElementById('cmo-sync-zoom');
+            if (syncZoom && syncZoom.checked) {
+                cmoZoomState.scale = Math.max(0.1, Math.min(16, cmoZoomState.scale * delta));
+                syncAll();
+            } else {
+                cmoPanelStates[i].scale = Math.max(0.1, Math.min(16, cmoPanelStates[i].scale * delta));
+                applyOne();
+            }
+        }, { passive: false });
+
+        vp.addEventListener('mousedown', ev => {
+            if (ev.button !== 0) return;
+            isDragging = true;
+            dragStart = { x: ev.clientX, y: ev.clientY };
+            ev.preventDefault();
+        });
+        window.addEventListener('mousemove', ev => {
+            if (!isDragging) return;
+            const dx = ev.clientX - dragStart.x;
+            const dy = ev.clientY - dragStart.y;
+            dragStart = { x: ev.clientX, y: ev.clientY };
+            const syncZoom = document.getElementById('cmo-sync-zoom');
+            if (syncZoom && syncZoom.checked) {
+                cmoZoomState.panX += dx;
+                cmoZoomState.panY += dy;
+                syncAll();
+            } else {
+                cmoPanelStates[i].panX += dx;
+                cmoPanelStates[i].panY += dy;
+                applyOne();
+            }
+        });
+        window.addEventListener('mouseup', () => { isDragging = false; });
+
+        const info = document.createElement('div');
+        info.className = 'cmo-panel-info';
+        info.textContent = name;
+        info.title = p;
+
+        panel.appendChild(vp);
+        panel.appendChild(info);
+        container.appendChild(panel);
+    });
+
+    overlay.classList.remove('hidden');
+}
+
+function closeCompareMode() {
+    const overlay = document.getElementById('compare-mode-overlay');
+    if (!overlay) return;
+    overlay.classList.add('hidden');
+    const container = document.getElementById('cmo-panels-container');
+    if (container) {
+        container.querySelectorAll('video').forEach(v => { v.pause(); v.src = ''; });
+        container.innerHTML = '';
+    }
+}
+
+(function initCompareMode() {
+    const closeBtn = document.getElementById('cmo-close-btn');
+    if (closeBtn) closeBtn.addEventListener('click', closeCompareMode);
+
+    const resetBtn = document.getElementById('cmo-reset-zoom-btn');
+    if (resetBtn) resetBtn.addEventListener('click', () => {
+        cmoZoomState = { scale: 1, panX: 0, panY: 0 };
+        cmoPanelStates = cmoPanelStates.map(() => ({ scale: 1, panX: 0, panY: 0 }));
+        const container = document.getElementById('cmo-panels-container');
+        if (container) container.querySelectorAll('.cmo-media').forEach(m => { m.style.transform = ''; });
+    });
+
+    // Escape closes compare mode
+    document.addEventListener('keydown', ev => {
+        const overlay = document.getElementById('compare-mode-overlay');
+        if (!overlay || overlay.classList.contains('hidden')) return;
+        if (ev.key === 'Escape') { ev.stopImmediatePropagation(); closeCompareMode(); }
+    });
+})();
+
+
+// ==================== SLIDESHOW MODE ====================
+let ssActive = false;
+let ssItems = [];
+let ssIndex = 0;
+let ssTimer = null;
+let ssPlaying = true;
+let ssShuffle = false;
+let ssLoop = true;
+let ssInterval = 3000;
+let ssShuffleOrder = [];
+let ssLayerA = true; // which img layer shows current item
+
+function shuffleArray(arr) {
+    for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+}
+
+function startSlideshow() {
+    const items = vsSortedItems.filter(i => i.type !== 'folder' && i.type !== 'group-header' && !i.missing);
+    if (items.length === 0) { showToast('No media to show in slideshow', 'info'); return; }
+    ssItems = items;
+    ssIndex = 0;
+    ssPlaying = true;
+    ssShuffleOrder = items.map((_, k) => k);
+    if (ssShuffle) shuffleArray(ssShuffleOrder);
+
+    const overlay = document.getElementById('slideshow-overlay');
+    if (!overlay) return;
+
+    // Reset images
+    const imgA = document.getElementById('ss-img-a');
+    const imgB = document.getElementById('ss-img-b');
+    const video = document.getElementById('ss-video');
+    if (imgA) { imgA.src = ''; imgA.classList.remove('ss-visible'); }
+    if (imgB) { imgB.src = ''; imgB.classList.remove('ss-visible'); }
+    if (video) { video.pause(); video.src = ''; video.style.display = 'none'; }
+    ssLayerA = true;
+
+    overlay.classList.remove('hidden');
+    ssActive = true;
+    ssShowItem(ssShuffleOrder[ssIndex]);
+    ssUpdateControls();
+    ssScheduleNext();
+}
+
+function stopSlideshow() {
+    ssActive = false;
+    clearTimeout(ssTimer);
+    const overlay = document.getElementById('slideshow-overlay');
+    if (overlay) overlay.classList.add('hidden');
+    const video = document.getElementById('ss-video');
+    if (video) { video.pause(); video.src = ''; video.style.display = 'none'; }
+}
+
+function ssShowItem(idx) {
+    ssIndex = idx;
+    const item = ssItems[idx];
+    if (!item) return;
+
+    const pos = ssShuffleOrder.indexOf(idx) + 1;
+    const counterEl = document.getElementById('ss-counter');
+    const filenameEl = document.getElementById('ss-filename');
+    if (counterEl) counterEl.textContent = `${pos} / ${ssItems.length}`;
+    if (filenameEl) filenameEl.textContent = item.name || '';
+
+    const imgA = document.getElementById('ss-img-a');
+    const imgB = document.getElementById('ss-img-b');
+    const video = document.getElementById('ss-video');
+    if (!imgA || !imgB || !video) return;
+
+    const ext = (item.name || '').split('.').pop().toLowerCase();
+    const isVid = ['mp4','webm','mov','avi','mkv','m4v','ogg'].includes(ext);
+
+    if (isVid) {
+        imgA.classList.remove('ss-visible');
+        imgB.classList.remove('ss-visible');
+        video.style.display = '';
+        video.src = item.url;
+        video.load();
+        video.play().catch(() => {});
+        video.onended = () => { if (ssPlaying) ssNext(); };
+    } else {
+        video.pause();
+        video.src = '';
+        video.style.display = 'none';
+        video.onended = null;
+
+        const curLayer = ssLayerA ? imgA : imgB;
+        const nextLayer = ssLayerA ? imgB : imgA;
+        nextLayer.src = item.url;
+        // Show immediately with crossfade
+        requestAnimationFrame(() => {
+            nextLayer.classList.add('ss-visible');
+            curLayer.classList.remove('ss-visible');
+            ssLayerA = !ssLayerA;
+        });
+    }
+}
+
+function ssNext() {
+    clearTimeout(ssTimer);
+    const pos = ssShuffleOrder.indexOf(ssIndex);
+    let nextPos = pos + 1;
+    if (nextPos >= ssItems.length) {
+        if (!ssLoop) { stopSlideshow(); return; }
+        nextPos = 0;
+    }
+    ssShowItem(ssShuffleOrder[nextPos]);
+    if (ssPlaying) ssScheduleNext();
+}
+
+function ssPrev() {
+    clearTimeout(ssTimer);
+    const pos = ssShuffleOrder.indexOf(ssIndex);
+    let prevPos = pos - 1;
+    if (prevPos < 0) prevPos = ssItems.length - 1;
+    ssShowItem(ssShuffleOrder[prevPos]);
+    if (ssPlaying) ssScheduleNext();
+}
+
+function ssScheduleNext() {
+    clearTimeout(ssTimer);
+    if (!ssPlaying) return;
+    ssTimer = setTimeout(ssNext, ssInterval);
+}
+
+function ssUpdateControls() {
+    const playBtn = document.getElementById('ss-play-btn');
+    const shuffleBtn = document.getElementById('ss-shuffle-btn');
+    const loopBtn = document.getElementById('ss-loop-btn');
+    if (playBtn) {
+        playBtn.classList.toggle('active', ssPlaying);
+        playBtn.innerHTML = ssPlaying
+            ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>'
+            : '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>';
+    }
+    if (shuffleBtn) shuffleBtn.classList.toggle('active', ssShuffle);
+    if (loopBtn) loopBtn.classList.toggle('active', ssLoop);
+}
+
+(function initSlideshow() {
+    const overlay = document.getElementById('slideshow-overlay');
+    if (!overlay) return;
+
+    const playBtn = document.getElementById('ss-play-btn');
+    const prevBtn = document.getElementById('ss-prev-btn');
+    const nextBtn = document.getElementById('ss-next-btn');
+    const closeBtn = document.getElementById('ss-close-btn');
+    const shuffleBtn = document.getElementById('ss-shuffle-btn');
+    const loopBtn = document.getElementById('ss-loop-btn');
+    const speedSel = document.getElementById('ss-speed-select');
+
+    if (closeBtn) closeBtn.addEventListener('click', stopSlideshow);
+    if (prevBtn) prevBtn.addEventListener('click', ssPrev);
+    if (nextBtn) nextBtn.addEventListener('click', ssNext);
+
+    if (playBtn) playBtn.addEventListener('click', () => {
+        ssPlaying = !ssPlaying;
+        if (ssPlaying) ssScheduleNext();
+        else clearTimeout(ssTimer);
+        ssUpdateControls();
+    });
+
+    if (shuffleBtn) shuffleBtn.addEventListener('click', () => {
+        ssShuffle = !ssShuffle;
+        if (ssShuffle) shuffleArray(ssShuffleOrder);
+        else ssShuffleOrder = ssItems.map((_, k) => k);
+        ssUpdateControls();
+    });
+
+    if (loopBtn) loopBtn.addEventListener('click', () => {
+        ssLoop = !ssLoop;
+        ssUpdateControls();
+    });
+
+    if (speedSel) speedSel.addEventListener('change', () => {
+        ssInterval = parseInt(speedSel.value, 10) || 3000;
+        if (ssPlaying) ssScheduleNext();
+    });
+
+    // Keyboard handling (high priority - captures before renderer-features.js)
+    document.addEventListener('keydown', ev => {
+        if (!ssActive || overlay.classList.contains('hidden')) return;
+        if (ev.key === 'Escape') { ev.stopImmediatePropagation(); stopSlideshow(); return; }
+        if (ev.key === 'ArrowRight') { ev.stopImmediatePropagation(); ssNext(); return; }
+        if (ev.key === 'ArrowLeft') { ev.stopImmediatePropagation(); ssPrev(); return; }
+        if (ev.key === ' ') {
+            ev.preventDefault();
+            ev.stopImmediatePropagation();
+            ssPlaying = !ssPlaying;
+            if (ssPlaying) ssScheduleNext(); else clearTimeout(ssTimer);
+            ssUpdateControls();
+        }
+    });
+
+    // Show HUD on mouse move, hide after 2s idle
+    let hudTimeout;
+    const hud = document.getElementById('ss-hud');
+    overlay.addEventListener('mousemove', () => {
+        if (hud) hud.classList.add('ss-hud-visible');
+        clearTimeout(hudTimeout);
+        hudTimeout = setTimeout(() => { if (hud) hud.classList.remove('ss-hud-visible'); }, 2000);
+    });
+})();

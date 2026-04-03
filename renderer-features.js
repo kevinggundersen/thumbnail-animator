@@ -298,6 +298,22 @@ function initKeyboardShortcuts() {
             updateStatusBar();
             return;
         }
+
+        // F5: Start Slideshow
+        if (e.key === 'F5') {
+            e.preventDefault();
+            if (typeof startSlideshow === 'function') startSlideshow();
+            return;
+        }
+
+        // C: Compare selected files (2-4)
+        if ((e.key === 'c' || e.key === 'C') && !e.ctrlKey && !e.metaKey) {
+            if (selectedCardPaths.size >= 2 && selectedCardPaths.size <= 4) {
+                e.preventDefault();
+                if (typeof openCompareMode === 'function') openCompareMode([...selectedCardPaths]);
+            }
+            return;
+        }
     });
 }
 

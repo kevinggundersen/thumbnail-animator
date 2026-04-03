@@ -23,6 +23,7 @@
                 <button id="search-clear-btn" class="search-clear-btn" title="Clear search" style="display:none"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
                 <button id="ai-search-toggle-btn" class="search-box-icon-btn ai-search-toggle-btn" title="AI Visual Search" style="display:none"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L9.5 9.5 2 12l7.5 2.5L12 22l2.5-7.5L22 12l-7.5-2.5z"/></svg></button>
                 <button id="advanced-search-btn" class="search-box-icon-btn" title="Advanced Search"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg></button>
+                <div id="search-history-dropdown" class="search-history-dropdown hidden"></div>
             </div>
             <div class="tools-menu-container">
                 <button id="tools-menu-btn" class="toolbar-icon-btn" title="Tools"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg></button>
@@ -128,6 +129,15 @@
                     <select id="sort-order-select" class="status-bar-select">
                         <option value="ascending">Asc</option>
                         <option value="descending">Desc</option>
+                    </select>
+                </label>
+                <span class="status-separator">|</span>
+                <label class="status-bar-control" id="date-group-control">
+                    <button id="group-by-date-btn" class="filter-btn" title="Group by date"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h18"/><path d="M8 14h.01"/><path d="M12 14h.01"/><path d="M16 14h.01"/><path d="M8 18h.01"/><path d="M12 18h.01"/></svg> Group</button>
+                    <select id="date-group-granularity-select" class="status-bar-select date-group-granularity-hidden" title="Grouping granularity">
+                        <option value="month">Month</option>
+                        <option value="year">Year</option>
+                        <option value="day">Day</option>
                     </select>
                 </label>
                 <span class="status-separator">|</span>
@@ -418,6 +428,8 @@
             <div class="context-menu-item" data-action="tag-file"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"/><circle cx="7.5" cy="7.5" r=".5" fill="currentColor"/></svg> Tags...</div>
             <div class="context-menu-item" data-action="auto-tag"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"/><circle cx="7.5" cy="7.5" r=".5" fill="currentColor"/><path d="m17 13 5 5m-2.5-2.5L17 18"/></svg> Auto-Tag with AI...</div>
             <div class="context-menu-item" data-action="find-similar"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/><path d="M11 8a3 3 0 0 0-3 3"/></svg> Find Similar</div>
+            <div class="context-menu-item" data-action="compare" id="ctx-compare-item"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="9" height="18" rx="1"/><rect x="13" y="3" width="9" height="18" rx="1"/></svg> Compare Selected</div>
+            <div class="context-menu-item" data-action="slideshow"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5,3 19,12 5,21"/></svg> Start Slideshow</div>
             <div class="context-menu-divider"></div>
             <div class="context-menu-item context-menu-item-danger" data-action="delete"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg> Delete</div>
         </div>
@@ -566,6 +578,8 @@
                     <div class="shortcut-row"><kbd>S</kbd><span>Toggle sidebar</span></div>
                     <div class="shortcut-row"><kbd>+</kbd> / <kbd>-</kbd><span>Zoom in/out</span></div>
                     <div class="shortcut-row"><kbd>0</kbd><span>Reset zoom to 100%</span></div>
+                    <div class="shortcut-row"><kbd>F5</kbd><span>Start Slideshow</span></div>
+                    <div class="shortcut-row"><kbd>C</kbd><span>Compare selected (2–4 files)</span></div>
                     <h3>Lightbox</h3>
                     <div class="shortcut-row"><kbd>Left/Right</kbd><span>Previous/Next</span></div>
                     <div class="shortcut-row"><kbd>Escape</kbd><span>Close</span></div>
@@ -1244,6 +1258,53 @@
 
     <!-- Toast notification container -->
     <div id="toast-container" class="toast-container"></div>
+
+    <!-- Compare Mode Overlay -->
+    <div id="compare-mode-overlay" class="compare-mode-overlay hidden">
+        <div class="cmo-header">
+            <span class="cmo-title">Compare</span>
+            <div class="cmo-header-controls">
+                <label class="cmo-sync-label">
+                    <input type="checkbox" id="cmo-sync-zoom" checked>
+                    <span>Sync Zoom</span>
+                </label>
+                <button id="cmo-reset-zoom-btn" class="cmo-ctrl-btn" title="Reset zoom">Reset</button>
+                <button id="cmo-close-btn" class="cmo-close-btn" title="Close (Esc)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+            </div>
+        </div>
+        <div id="cmo-panels-container" class="cmo-panels-container"></div>
+    </div>
+
+    <!-- Slideshow Overlay -->
+    <div id="slideshow-overlay" class="slideshow-overlay hidden">
+        <div class="ss-media-wrap">
+            <img id="ss-img-a" class="ss-media ss-img">
+            <img id="ss-img-b" class="ss-media ss-img ss-layer-b">
+            <video id="ss-video" class="ss-media" style="display:none" playsinline loop></video>
+        </div>
+        <div id="ss-hud" class="ss-hud">
+            <div class="ss-hud-top">
+                <span id="ss-filename" class="ss-filename"></span>
+                <span id="ss-counter" class="ss-counter"></span>
+                <button id="ss-close-btn" class="ss-close-btn" title="Close (Esc)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+            </div>
+            <div class="ss-hud-bottom">
+                <button id="ss-prev-btn" class="ss-nav-btn" title="Previous (←)"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg></button>
+                <div class="ss-controls-center">
+                    <button id="ss-play-btn" class="ss-ctrl-btn active" title="Play/Pause (Space)"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg></button>
+                    <button id="ss-shuffle-btn" class="ss-ctrl-btn" title="Shuffle"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 18h1.4c1.2 0 2.3-.6 3-1.6l6.2-9.2c.7-1 1.8-1.6 3-1.6H22"/><path d="m19 15 3 3-3 3"/><path d="M2 6h1.9c1.2 0 2.3.6 3 1.6l.3.4"/><path d="m19 3 3 3-3 3"/><path d="M11 13.5 13.5 10"/></svg></button>
+                    <button id="ss-loop-btn" class="ss-ctrl-btn active" title="Loop"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17,1 21,5 17,9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7,23 3,19 7,15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></button>
+                    <select id="ss-speed-select" class="ss-speed-select">
+                        <option value="1000">1s</option>
+                        <option value="3000" selected>3s</option>
+                        <option value="5000">5s</option>
+                        <option value="10000">10s</option>
+                    </select>
+                </div>
+                <button id="ss-next-btn" class="ss-nav-btn" title="Next (→)"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg></button>
+            </div>
+        </div>
+    </div>
 
     <!-- Custom confirmation dialog -->
     <div id="confirm-dialog" class="confirm-dialog hidden">

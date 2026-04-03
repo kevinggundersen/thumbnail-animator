@@ -10486,6 +10486,24 @@ contextMenu.addEventListener('click', async (e) => {
             break;
         }
 
+        case 'auto-tag': {
+            const selectedCards = document.querySelectorAll('.video-card.selected');
+            const autoTagPaths = selectedCards.length > 1
+                ? Array.from(selectedCards).map(c => c.dataset.path).filter(Boolean)
+                : [filePath];
+            // Only auto-tag images (CLIP works on images)
+            const imagePaths = autoTagPaths.filter(p => {
+                const ext = p.split('.').pop().toLowerCase();
+                return ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif'].includes(ext);
+            });
+            if (imagePaths.length === 0) {
+                showToast('Auto-tag only works with image files', 'info');
+            } else {
+                openAutoTag(imagePaths);
+            }
+            break;
+        }
+
         case 'remove-from-collection': {
             if (currentCollectionId) {
                 await removeFileFromCollection(currentCollectionId, filePath);
@@ -10884,6 +10902,271 @@ batchRenameApply.addEventListener('click', async () => {
         batchRenameApply.disabled = false;
         batchRenameApply.textContent = 'Rename';
         setStatusActivity('');
+    }
+});
+
+// ── Auto-Tag with AI (CLIP) ──────────────────────────────────────────
+const AUTO_TAG_LABELS = [
+    // Subjects
+    'person', 'people', 'animal', 'cat', 'dog', 'bird', 'fish',
+    'car', 'vehicle', 'building', 'food', 'flower', 'tree',
+    // Scenes
+    'landscape', 'cityscape', 'beach', 'mountain', 'forest',
+    'indoor', 'outdoor', 'night', 'sunset', 'snow', 'underwater',
+    // Styles
+    'black and white', 'colorful', 'minimalist', 'abstract',
+    'close-up', 'aerial view', 'portrait'
+];
+
+const autoTagOverlay = document.getElementById('auto-tag-overlay');
+const autoTagResults = document.getElementById('auto-tag-results');
+const autoTagStatus = document.getElementById('auto-tag-status');
+const autoTagThreshold = document.getElementById('auto-tag-threshold');
+const autoTagThresholdValue = document.getElementById('auto-tag-threshold-value');
+const autoTagApply = document.getElementById('auto-tag-apply');
+
+let autoTagFilePaths = [];
+let autoTagData = []; // [{ path, name, thumbUrl, suggestions: [{ label, score }] }]
+let autoTagLabelEmbeddings = null; // Map<label, Float32Array>
+
+function closeAutoTag() {
+    autoTagOverlay.classList.add('hidden');
+    autoTagFilePaths = [];
+    autoTagData = [];
+}
+
+async function ensureLabelEmbeddings() {
+    if (autoTagLabelEmbeddings) return true;
+    autoTagLabelEmbeddings = new Map();
+    for (const label of AUTO_TAG_LABELS) {
+        try {
+            const raw = await window.electronAPI.clipEmbedText(`a photo of ${label}`);
+            if (raw) autoTagLabelEmbeddings.set(label, new Float32Array(raw));
+        } catch {}
+    }
+    return autoTagLabelEmbeddings.size > 0;
+}
+
+async function openAutoTag(filePaths) {
+    autoTagFilePaths = filePaths;
+    autoTagOverlay.classList.remove('hidden');
+    autoTagResults.innerHTML = '';
+    autoTagApply.disabled = true;
+    autoTagStatus.textContent = 'Checking AI model...';
+
+    // Ensure CLIP is loaded
+    try {
+        const status = await window.electronAPI.clipStatus();
+        if (!status.loaded) {
+            autoTagStatus.textContent = 'Loading AI model...';
+            const init = await window.electronAPI.clipInit();
+            if (!init.success) {
+                autoTagStatus.textContent = 'Could not load AI model. Enable AI search in settings first.';
+                return;
+            }
+        }
+    } catch {
+        autoTagStatus.textContent = 'AI model not available.';
+        return;
+    }
+
+    // Embed all labels
+    autoTagStatus.textContent = 'Preparing label embeddings...';
+    const labelsReady = await ensureLabelEmbeddings();
+    if (!labelsReady) {
+        autoTagStatus.textContent = 'Failed to generate label embeddings.';
+        return;
+    }
+
+    // Get/generate image embeddings
+    autoTagStatus.textContent = `Analyzing ${filePaths.length} file${filePaths.length === 1 ? '' : 's'}...`;
+    autoTagData = [];
+    const BATCH = 8;
+
+    for (let i = 0; i < filePaths.length; i += BATCH) {
+        const batch = filePaths.slice(i, i + BATCH);
+        const items = batch.map(fp => {
+            const item = vsSortedItems.find(it => it.path === fp);
+            return { path: fp, mtime: item ? (item.mtime || 0) : 0, thumbPath: null };
+        });
+
+        // Check current in-memory embeddings first
+        const needsEmbed = [];
+        const embeddings = new Map();
+        for (const it of items) {
+            const cached = currentEmbeddings.get(it.path);
+            if (cached) {
+                embeddings.set(it.path, cached);
+            } else {
+                needsEmbed.push(it);
+            }
+        }
+
+        // Generate missing embeddings
+        if (needsEmbed.length > 0) {
+            try {
+                const results = await window.electronAPI.clipEmbedImages(needsEmbed);
+                for (const r of results) {
+                    if (r && r.embedding) {
+                        const emb = new Float32Array(r.embedding);
+                        embeddings.set(r.path, emb);
+                        currentEmbeddings.set(r.path, emb);
+                    }
+                }
+            } catch {}
+        }
+
+        // Score each file against all labels
+        for (const fp of batch) {
+            const emb = embeddings.get(fp);
+            if (!emb) continue;
+            const suggestions = [];
+            for (const [label, labelEmb] of autoTagLabelEmbeddings) {
+                const score = cosineSimilarity(emb, labelEmb);
+                suggestions.push({ label, score });
+            }
+            suggestions.sort((a, b) => b.score - a.score);
+
+            const name = fp.split(/[\\/]/).pop();
+            const item = vsSortedItems.find(it => it.path === fp);
+            const thumbUrl = item ? item.url : '';
+            autoTagData.push({ path: fp, name, thumbUrl, suggestions });
+        }
+
+        autoTagStatus.textContent = `Analyzing... ${Math.min(i + BATCH, filePaths.length)}/${filePaths.length}`;
+    }
+
+    autoTagStatus.textContent = `Done. ${autoTagData.length} file${autoTagData.length === 1 ? '' : 's'} analyzed.`;
+    renderAutoTagResults();
+}
+
+function renderAutoTagResults() {
+    const threshold = (parseInt(autoTagThreshold.value) || 25) / 100;
+    autoTagResults.innerHTML = '';
+    let totalChecked = 0;
+
+    if (autoTagData.length === 0) {
+        autoTagResults.innerHTML = '<div class="auto-tag-empty">No files could be analyzed.</div>';
+        autoTagApply.disabled = true;
+        return;
+    }
+
+    for (const file of autoTagData) {
+        const matching = file.suggestions.filter(s => s.score >= threshold);
+        if (matching.length === 0) continue;
+
+        const group = document.createElement('div');
+        group.className = 'auto-tag-file-group';
+
+        const header = document.createElement('div');
+        header.className = 'auto-tag-file-header';
+        header.innerHTML = `
+            ${file.thumbUrl ? `<img src="${file.thumbUrl}" alt="">` : ''}
+            <span class="auto-tag-filename" title="${file.name}">${file.name}</span>
+        `;
+        group.appendChild(header);
+
+        const chips = document.createElement('div');
+        chips.className = 'auto-tag-suggestions';
+
+        for (const s of matching) {
+            const pct = Math.round(s.score * 100);
+            const chip = document.createElement('span');
+            chip.className = 'auto-tag-chip selected';
+            chip.dataset.path = file.path;
+            chip.dataset.label = s.label;
+            chip.innerHTML = `${s.label} <span class="auto-tag-conf">${pct}%</span>`;
+            chip.addEventListener('click', () => {
+                chip.classList.toggle('selected');
+                updateAutoTagApplyBtn();
+            });
+            chips.appendChild(chip);
+            totalChecked++;
+        }
+        group.appendChild(chips);
+        autoTagResults.appendChild(group);
+    }
+
+    if (autoTagResults.children.length === 0) {
+        autoTagResults.innerHTML = '<div class="auto-tag-empty">No tags above threshold. Try lowering the confidence slider.</div>';
+    }
+
+    autoTagApply.disabled = totalChecked === 0;
+}
+
+function updateAutoTagApplyBtn() {
+    const selected = autoTagResults.querySelectorAll('.auto-tag-chip.selected');
+    autoTagApply.disabled = selected.length === 0;
+}
+
+autoTagThreshold.addEventListener('input', () => {
+    autoTagThresholdValue.textContent = `${autoTagThreshold.value}%`;
+    renderAutoTagResults();
+});
+
+document.getElementById('auto-tag-close').addEventListener('click', closeAutoTag);
+document.getElementById('auto-tag-cancel').addEventListener('click', closeAutoTag);
+autoTagOverlay.addEventListener('click', (e) => { if (e.target === autoTagOverlay) closeAutoTag(); });
+
+document.getElementById('auto-tag-select-all').addEventListener('click', () => {
+    const chips = autoTagResults.querySelectorAll('.auto-tag-chip');
+    const allSelected = Array.from(chips).every(c => c.classList.contains('selected'));
+    chips.forEach(c => c.classList.toggle('selected', !allSelected));
+    updateAutoTagApplyBtn();
+});
+
+autoTagApply.addEventListener('click', async () => {
+    const selected = autoTagResults.querySelectorAll('.auto-tag-chip.selected');
+    if (selected.length === 0) return;
+
+    autoTagApply.disabled = true;
+    autoTagApply.textContent = 'Applying...';
+
+    try {
+        await refreshTagsCache();
+
+        // Group by label -> collect file paths
+        const labelToFiles = new Map();
+        for (const chip of selected) {
+            const label = chip.dataset.label;
+            const fp = chip.dataset.path;
+            if (!labelToFiles.has(label)) labelToFiles.set(label, []);
+            labelToFiles.get(label).push(fp);
+        }
+
+        let appliedCount = 0;
+        const tagColors = ['#6366f1', '#ec4899', '#f59e0b', '#10b981', '#3b82f6', '#8b5cf6', '#ef4444', '#14b8a6'];
+
+        for (const [label, filePaths] of labelToFiles) {
+            // Find or create the tag
+            let tag = allTagsCache.find(t => t.name.toLowerCase() === label.toLowerCase());
+            if (!tag) {
+                const color = tagColors[appliedCount % tagColors.length];
+                const result = await window.electronAPI.dbCreateTag(label, null, color);
+                if (result.success && result.data) {
+                    tag = result.data;
+                } else continue;
+            }
+
+            // Bulk assign
+            const normalizedPaths = filePaths.map(fp => normalizePath(fp));
+            if (normalizedPaths.length > 1) {
+                await window.electronAPI.dbBulkTagFiles(normalizedPaths, tag.id);
+            } else {
+                await window.electronAPI.dbAddTagToFile(normalizedPaths[0], tag.id);
+            }
+            appliedCount++;
+        }
+
+        await refreshTagsCache();
+        refreshVisibleCardTags();
+        closeAutoTag();
+        showToast(`Applied ${selected.length} tag${selected.length === 1 ? '' : 's'} across ${autoTagFilePaths.length} file${autoTagFilePaths.length === 1 ? '' : 's'}`, 'success');
+    } catch (error) {
+        showToast(`Auto-tag failed: ${friendlyError(error)}`, 'error');
+    } finally {
+        autoTagApply.disabled = false;
+        autoTagApply.textContent = 'Apply Tags';
     }
 });
 

@@ -3565,6 +3565,180 @@ video.blow-up-media {
 #batch-rename-apply:hover { opacity: 0.9; }
 #batch-rename-apply:disabled { opacity: 0.4; cursor: not-allowed; }
 
+/* Auto-Tag with AI Modal */
+.auto-tag-overlay {
+    position: fixed;
+    top: 0; left: 0; width: 100%; height: 100%;
+    background-color: rgba(0, 0, 0, 0.6);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 2500;
+    backdrop-filter: blur(16px);
+}
+.auto-tag-overlay.hidden { display: none; }
+.auto-tag-modal {
+    position: relative;
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-xl);
+    width: 620px;
+    max-width: 90vw;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    animation: modal-enter 0.2s var(--ease-out-expo);
+    overflow: hidden;
+}
+.auto-tag-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px 12px;
+    border-bottom: 1px solid var(--border-subtle);
+}
+.auto-tag-header h3 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-color);
+}
+.auto-tag-controls {
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--border-subtle);
+}
+.auto-tag-threshold-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.auto-tag-threshold-row input[type="range"] {
+    flex: 1;
+    accent-color: var(--accent);
+    height: 4px;
+}
+#auto-tag-threshold-value {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--accent);
+    min-width: 36px;
+    text-align: right;
+}
+.auto-tag-status {
+    padding: 8px 20px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    min-height: 20px;
+}
+.auto-tag-results {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0 20px 12px;
+    min-height: 120px;
+    max-height: 400px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.auto-tag-file-group {
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+}
+.auto-tag-file-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--bg-primary);
+    font-size: 12px;
+    color: var(--text-color);
+    font-weight: 500;
+}
+.auto-tag-file-header img {
+    width: 32px;
+    height: 32px;
+    object-fit: cover;
+    border-radius: 3px;
+    flex-shrink: 0;
+}
+.auto-tag-file-header .auto-tag-filename {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.auto-tag-suggestions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 6px 10px;
+}
+.auto-tag-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    border-radius: 12px;
+    font-size: 11px;
+    cursor: pointer;
+    transition: background 0.1s, opacity 0.1s;
+    border: 1px solid var(--border-subtle);
+    background: var(--bg-primary);
+    color: var(--text-color);
+    user-select: none;
+}
+.auto-tag-chip.selected {
+    background: var(--accent);
+    color: var(--bg-primary);
+    border-color: var(--accent);
+}
+.auto-tag-chip .auto-tag-conf {
+    font-size: 10px;
+    opacity: 0.7;
+}
+.auto-tag-empty {
+    padding: 24px;
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+.auto-tag-footer {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    padding: 12px 20px;
+    border-top: 1px solid var(--border-subtle);
+}
+.auto-tag-footer button {
+    padding: 8px 16px;
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    border: none;
+    transition: background-color var(--duration-normal), opacity var(--duration-normal);
+}
+#auto-tag-cancel {
+    background: transparent;
+    color: var(--text-color);
+    border: 1px solid var(--border-default);
+}
+#auto-tag-cancel:hover { background: var(--bg-hover); }
+#auto-tag-select-all {
+    background: transparent;
+    color: var(--text-color);
+    border: 1px solid var(--border-default);
+}
+#auto-tag-select-all:hover { background: var(--bg-hover); }
+#auto-tag-apply {
+    background: var(--accent);
+    color: var(--bg-primary);
+}
+#auto-tag-apply:hover { opacity: 0.9; }
+#auto-tag-apply:disabled { opacity: 0.4; cursor: not-allowed; }
+
 /* Drives Dropdown Styles */
 .drives-dropdown {
     background-color: var(--bg-secondary);

@@ -2812,10 +2812,10 @@ ipcMain.handle('clip-init', async (event) => {
     try {
         if (clipModel) return { success: true };
 
-        const transformers = require('@xenova/transformers');
+        const transformers = require('@huggingface/transformers');
 
         const { env, CLIPVisionModelWithProjection, CLIPTextModelWithProjection,
-                AutoProcessor, AutoTokenizer, RawImage } = transformers;
+                AutoProcessor, AutoTokenizer, RawImage, Tensor: HfTensor } = transformers;
 
         env.cacheDir = getClipCacheDir();
         env.allowLocalModels = true;
@@ -2841,13 +2841,7 @@ ipcMain.handle('clip-init', async (event) => {
             CLIPTextModelWithProjection.from_pretrained(MODEL_NAME, textOpts),
         ]);
 
-        // Grab the ORT module from transformers' own node_modules (native CPU backend).
-        // With the electron hack removed, transformers selects onnxruntime-node (native CPU)
-        // instead of onnxruntime-web (WASM) — ~3-5x faster.
-        const txDir = path.dirname(require.resolve('@xenova/transformers'));
-        const ort = require(path.join(txDir, '..', 'node_modules', 'onnxruntime-node'));
-
-        clipModel = { visionModel, textModel, processor, tokenizer, RawImage, ort };
+        clipModel = { visionModel, textModel, processor, tokenizer, RawImage, HfTensor };
 
         // Spin up worker pool for off-main-thread image preprocessing
         if (!clipPreprocessPool) clipPreprocessPool = new ClipPreprocessPool();
@@ -2909,9 +2903,7 @@ function clipPreprocessImage(filePath) {
 const CLIP_PIXELS = CLIP_SIZE * CLIP_SIZE * 3;
 
 async function clipEmbedBatch(pixelDataArray) {
-    const { visionModel, ort } = clipModel;
-    const inputName = visionModel.session.inputNames[0];
-    const outputName = visionModel.session.outputNames[0];
+    const { visionModel, HfTensor } = clipModel;
 
     const n = pixelDataArray.length;
     if (n === 0) return [];
@@ -2922,9 +2914,9 @@ async function clipEmbedBatch(pixelDataArray) {
         batchData.set(pixelDataArray[i], i * CLIP_PIXELS);
     }
 
-    const inputTensor = new ort.Tensor('float32', batchData, [n, 3, CLIP_SIZE, CLIP_SIZE]);
-    const output = await visionModel.session.run({ [inputName]: inputTensor });
-    const raw = output[outputName].data;
+    const inputTensor = new HfTensor('float32', batchData, [n, 3, CLIP_SIZE, CLIP_SIZE]);
+    const output = await visionModel({ pixel_values: inputTensor });
+    const raw = output.image_embeds.data;
 
     // The output shape is [N, embeddingDim] — split and L2-normalise each
     const embDim = raw.length / n;
@@ -3210,18 +3202,9 @@ ipcMain.handle('clip-embed-text', async (event, text) => {
     try {
         const { tokenizer, textModel } = clipModel;
 
-        // Tokenize
+        // Tokenize and run through model (high-level API handles tensor conversion)
         const inputs = tokenizer(text, { padding: true, truncation: true });
-
-        // Bypass textModel._call() — use session.run() directly (same fix as images)
-        const { ort } = clipModel;
-        const feeds = {};
-        for (const name of textModel.session.inputNames) {
-            const t = inputs[name];
-            if (t) feeds[name] = new ort.Tensor('int64', t.data, t.dims);
-        }
-
-        const output = await textModel.session.run(feeds);
+        const output = await textModel(inputs);
         const raw = output.text_embeds.data;
 
         // L2-normalise

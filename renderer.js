@@ -1527,6 +1527,9 @@ const cardInfoTagsLabel = document.getElementById('card-info-tags-label');
 const cardInfoTagsHoverToggle = document.getElementById('card-info-tags-hover-toggle');
 const cardInfoTagsHoverLabel = document.getElementById('card-info-tags-hover-label');
 const cardInfoTagsHoverRow = document.getElementById('card-info-tags-hover-row');
+const useSystemTrashToggle = document.getElementById('use-system-trash-toggle');
+const useSystemTrashLabel = document.getElementById('use-system-trash-label');
+let useSystemTrash = localStorage.getItem('useSystemTrash') === 'true';
 const toolsMenuBtn = document.getElementById('tools-menu-btn');
 const toolsMenuDropdown = document.getElementById('tools-menu-dropdown');
 const favoritesList = document.getElementById('favorites-list');
@@ -5522,6 +5525,13 @@ function toggleRememberFolder() {
     }
 }
 
+function toggleUseSystemTrash() {
+    useSystemTrash = useSystemTrashToggle.checked;
+    useSystemTrashLabel.textContent = useSystemTrash ? 'On' : 'Off';
+    deferLocalStorageWrite('useSystemTrash', useSystemTrash.toString());
+    window.electronAPI.setUseSystemTrash(useSystemTrash);
+}
+
 function toggleIncludeMovingImages() {
     includeMovingImages = includeMovingImagesToggle.checked;
 
@@ -8668,7 +8678,8 @@ const SETTINGS_EXPORT_KEYS_STRING = [
     'playbackControls', 'activeTabId',
     'aiVisualSearchEnabled', 'aiModelDownloadConfirmed', 'aiAutoScan',
     'aiSimilarityThreshold', 'aiClusteringMode',
-    'videoCacheLimitMB', 'imageCacheLimitMB'
+    'videoCacheLimitMB', 'imageCacheLimitMB',
+    'useSystemTrash'
 ];
 const SETTINGS_EXPORT_KEYS_JSON = [
     'cardInfoSettings', 'customThemes',
@@ -9137,6 +9148,15 @@ rememberFolderToggle.addEventListener('change', () => {
 includeMovingImagesToggle.addEventListener('change', () => {
     toggleIncludeMovingImages();
 });
+
+// Use system trash toggle event listener
+useSystemTrashToggle.addEventListener('change', () => {
+    toggleUseSystemTrash();
+});
+// Restore system trash setting on startup
+useSystemTrashToggle.checked = useSystemTrash;
+useSystemTrashLabel.textContent = useSystemTrash ? 'On' : 'Off';
+if (useSystemTrash) window.electronAPI.setUseSystemTrash(true);
 
 // Card info toggles
 [cardInfoExtensionToggle, cardInfoResolutionToggle, cardInfoSizeToggle, cardInfoDateToggle, cardInfoDurationToggle, cardInfoStarsToggle, cardInfoAudioToggle, cardInfoFilenameToggle, cardInfoTagsToggle, cardInfoExtensionHoverToggle, cardInfoResolutionHoverToggle, cardInfoSizeHoverToggle, cardInfoDateHoverToggle, cardInfoStarsHoverToggle, cardInfoAudioHoverToggle, cardInfoFilenameHoverToggle, cardInfoTagsHoverToggle]
@@ -11090,29 +11110,34 @@ contextMenu.addEventListener('click', async (e) => {
 
         case 'delete':
             try {
-                if (await showConfirm('Delete File', `Delete "${fileName}"?`, { confirmLabel: 'Delete', danger: true })) {
+                const deleteLabel = useSystemTrash ? 'Move to Recycle Bin' : 'Delete';
+                if (await showConfirm(deleteLabel, `${deleteLabel} "${fileName}"?`, { confirmLabel: deleteLabel, danger: true })) {
                     setStatusActivity(`Deleting ${fileName}...`);
                     const result = await window.electronAPI.deleteFile(filePath);
                     setStatusActivity('');
                     if (result.success) {
-                        showToast(`Deleted "${fileName}"`, 'success', {
-                            duration: 8000,
-                            actionLabel: 'Undo',
-                            actionCallback: () => {
-                                window.electronAPI.undoFileOperation().then(undoResult => {
-                                    if (undoResult.success) {
-                                        showToast(`Restored "${fileName}"`, 'success');
-                                        if (currentFolderPath) {
-                                            invalidateFolderCache(currentFolderPath);
-                                            const st = gridContainer.scrollTop;
-                                            loadVideos(currentFolderPath, false, st);
+                        const toastOpts = result.trashed
+                            ? { duration: 4000 }
+                            : {
+                                duration: 8000,
+                                actionLabel: 'Undo',
+                                actionCallback: () => {
+                                    window.electronAPI.undoFileOperation().then(undoResult => {
+                                        if (undoResult.success) {
+                                            showToast(`Restored "${fileName}"`, 'success');
+                                            if (currentFolderPath) {
+                                                invalidateFolderCache(currentFolderPath);
+                                                const st = gridContainer.scrollTop;
+                                                loadVideos(currentFolderPath, false, st);
+                                            }
+                                        } else {
+                                            showToast(`Undo failed: ${undoResult.error}`, 'error');
                                         }
-                                    } else {
-                                        showToast(`Undo failed: ${undoResult.error}`, 'error');
-                                    }
-                                });
-                            }
-                        });
+                                    });
+                                }
+                            };
+                        const toastMsg = result.trashed ? `Moved "${fileName}" to Recycle Bin` : `Deleted "${fileName}"`;
+                        showToast(toastMsg, 'success', toastOpts);
                         if (currentFolderPath) {
                             invalidateFolderCache(currentFolderPath);
                             const previousScrollTop = gridContainer.scrollTop;

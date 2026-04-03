@@ -3307,6 +3307,8 @@ function initDuplicateDetection() {
             showToast(`Deleted ${successCount} file(s), ${failCount} failed`, 'warning');
         } else if (failCount > 0) {
             showToast(`Failed to delete ${failCount} file(s)`, 'error');
+        } else if (result.trashed) {
+            showToast(`Moved ${count} file(s) to Recycle Bin`, 'success');
         } else {
             showToast(`Deleted ${count} file(s)`, 'success', {
                 duration: 8000,

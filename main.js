@@ -419,6 +419,8 @@ if (fs.existsSync(undoTrashDir)) {
 }
 fs.mkdirSync(undoTrashDir, { recursive: true });
 
+let useSystemTrash = false;
+
 // Undo/Redo operation history
 const undoStack = [];
 const redoStack = [];
@@ -900,6 +902,10 @@ ipcMain.handle('set-cache-limits', (event, videoCacheMB, imageCacheMB) => {
     try {
         fs.writeFileSync(cacheLimitsFile, JSON.stringify({ videoCacheMB, imageCacheMB }));
     } catch { /* non-critical */ }
+});
+
+ipcMain.handle('set-use-system-trash', (event, enabled) => {
+    useSystemTrash = !!enabled;
 });
 
 // Concurrency-limited async pool: runs at most `limit` tasks at a time, preserves result order
@@ -1764,6 +1770,10 @@ ipcMain.handle('batch-rename', async (event, filePaths, patternType, patternOpti
 ipcMain.handle('delete-file', async (event, filePath) => {
     try {
         const basename = path.basename(filePath);
+        if (useSystemTrash) {
+            await shell.trashItem(filePath);
+            return { success: true, trashed: true };
+        }
         const stagingPath = await moveToStaging(filePath);
         pushUndoEntry({
             type: 'delete',
@@ -2912,9 +2922,13 @@ ipcMain.handle('delete-files-batch', async (event, filePaths) => {
     for (let i = 0; i < total; i++) {
         const filePath = filePaths[i];
         try {
-            const stagingPath = await moveToStaging(filePath);
+            if (useSystemTrash) {
+                await shell.trashItem(filePath);
+            } else {
+                const stagingPath = await moveToStaging(filePath);
+                operations.push({ type: 'delete', originalPath: filePath, stagingPath });
+            }
             deleted.push(filePath);
-            operations.push({ type: 'delete', originalPath: filePath, stagingPath });
         } catch (error) {
             failed.push({ path: filePath, error: error.message });
         }
@@ -2922,14 +2936,14 @@ ipcMain.handle('delete-files-batch', async (event, filePaths) => {
             event.sender.send('batch-delete-progress', { current: i + 1, total });
         }
     }
-    if (operations.length > 0) {
+    if (!useSystemTrash && operations.length > 0) {
         pushUndoEntry({
             type: 'batch-delete',
             description: `Delete ${operations.length} file${operations.length > 1 ? 's' : ''}`,
             operations
         });
     }
-    return { deleted, failed };
+    return { deleted, failed, trashed: useSystemTrash };
 });
 
 // Check if ffmpeg is available (renderer can adapt UI accordingly)

@@ -43,6 +43,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     scanDuplicates: (folderPath, options) => ipcRenderer.invoke('scan-duplicates', folderPath, options),
     regroupDuplicates: (hashData, threshold) => ipcRenderer.invoke('regroup-duplicates', hashData, threshold),
     deleteFilesBatch: (filePaths) => ipcRenderer.invoke('delete-files-batch', filePaths),
+    setUseSystemTrash: (enabled) => ipcRenderer.invoke('set-use-system-trash', enabled),
     onBatchDeleteProgress: (callback) => ipcRenderer.on('batch-delete-progress', callback),
     removeBatchDeleteProgressListener: () => ipcRenderer.removeAllListeners('batch-delete-progress'),
     undoFileOperation: () => ipcRenderer.invoke('undo-file-operation'),

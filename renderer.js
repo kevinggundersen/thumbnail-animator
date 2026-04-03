@@ -78,6 +78,7 @@ const VS_BUFFER_PX = 1200;         // Buffer zone for rendering cards ahead of v
 let vsScrollRafId = null;          // RAF ID for scroll handler coalescing
 let vsLastStartIndex = -1;         // Last rendered range start
 let vsLastEndIndex = -1;           // Last rendered range end
+let vsLastScrollCleanupTime = 0;   // Throttle timestamp for proactive media loading during scroll
 let vsSpacer = null;               // Spacer element that sets total scroll height
 let vsResizeHandler = null;        // Window resize handler
 let vsDimensionRecalcRafId = null; // RAF ID for coalescing metadata-triggered recalcs
@@ -834,14 +835,75 @@ function vsOnScroll() {
         if (startIndex !== vsLastStartIndex || endIndex !== vsLastEndIndex) {
             vsUpdateDOM(startIndex, endIndex);
         }
+
+        // Guarantee every card currently in the viewport has media loading.
+        // This bypasses IntersectionObserver entirely — using pre-computed
+        // positions from the Float64Array to check visibility in O(active cards).
+        vsEnsureVisibleMedia(scrollTop, viewportHeight);
     });
 
-    // Debounce cleanup — only run after scrolling settles, not every frame
+    // Throttle cleanup — run periodically during continuous scroll so that
+    // proactiveLoadMedia picks up cards the observer hasn't reached yet
+    const now = Date.now();
+    if (now - vsLastScrollCleanupTime >= OBSERVER_CLEANUP_THROTTLE_MS) {
+        vsLastScrollCleanupTime = now;
+        scheduleCleanupCycle();
+    }
+
+    // Debounce cleanup — also run after scrolling settles, not every frame
     clearTimeout(cleanupScrollTimeout);
     cleanupScrollTimeout = setTimeout(() => {
         invalidateScrollCaches();
         runCleanupCycle();
     }, SCROLL_DEBOUNCE_MS);
+}
+
+/**
+ * Force-load media for any card that is inside the viewport but has no
+ * *working* media element (one whose src is actually set).
+ * Uses pre-computed vsPositions (no DOM measurement, no IntersectionObserver).
+ */
+function vsEnsureVisibleMedia(scrollTop, viewportHeight) {
+    if (!vsPositions) return;
+    const visibleTop = scrollTop;
+    const visibleBottom = scrollTop + viewportHeight;
+
+    for (const [idx, card] of vsActiveCards) {
+        const posIdx = idx * 4;
+        const cardTop = vsPositions[posIdx + 1];
+        const cardBottom = cardTop + vsPositions[posIdx + 3];
+
+        // Skip cards outside the actual viewport (no buffer)
+        if (cardBottom < visibleTop || cardTop > visibleBottom) continue;
+
+        // Skip non-media cards
+        if (!card.classList.contains('video-card')) continue;
+
+        // Skip cards that are actively being created right now
+        if (pendingMediaCreations.has(card)) continue;
+
+        const mediaUrl = card.dataset.src;
+        if (!mediaUrl) continue;
+
+        // Check if the card has a media element with an actual src set.
+        const el = card._mediaEl;
+        if (el && el.src) continue; // media element exists with src — all good
+
+        // Card is visible with no working media — tear down stale state and reload
+        if (el) {
+            if (el.tagName === 'VIDEO') {
+                destroyVideoElement(el);
+                activeVideoCount = Math.max(0, activeVideoCount - 1);
+            } else {
+                destroyImageElement(el);
+                activeImageCount = Math.max(0, activeImageCount - 1);
+            }
+            card._mediaEl = null;
+        }
+        delete card.dataset.hasMedia;
+        mediaToRetry.delete(card);
+        createMediaForCard(card, mediaUrl);
+    }
 }
 
 /**
@@ -6353,11 +6415,7 @@ function createImageForCard(card, imageUrl) {
     
     const img = document.createElement('img');
     img.className = 'media-thumbnail';
-    img.loading = 'lazy';
-    img.decoding = 'async'; // Decode asynchronously for better performance
-    if ('fetchPriority' in img) {
-        img.fetchPriority = 'low';
-    }
+    img.loading = 'eager';
     img.draggable = true;
 
     // Enable dragging images out of the app
@@ -6377,9 +6435,7 @@ function createImageForCard(card, imageUrl) {
         img.height = decodeHeight;
     }
     
-    // Optimize rendering
     img.style.imageRendering = 'auto';
-    img.style.willChange = 'contents';
 
     const requestedThumbSize = Math.max(256, Math.ceil(Math.max(decodeWidth, decodeHeight) * 1.5));
     const thumbMaxSize = Math.min(IMAGE_THUMBNAIL_MAX_EDGE, requestedThumbSize);
@@ -6388,6 +6444,11 @@ function createImageForCard(card, imageUrl) {
         if (!img.isConnected) return;
         img.dataset.sourceMode = mode;
         img.src = src;
+        // After decoding, force Chrome to paint the image. Without this,
+        // the compositor can defer painting indefinitely during scroll.
+        img.decode().then(() => {
+            if (img.isConnected) img.offsetHeight;
+        }).catch(() => {});
     };
     
     // For animated GIFs/WEBPs, capture the first frame as a static snapshot
@@ -6525,9 +6586,13 @@ function createImageForCard(card, imageUrl) {
             .catch(() => {
                 if (!img.isConnected) return;
                 setImageSource(imageUrl, 'original');
+            })
+            .finally(() => {
+                pendingMediaCreations.delete(card);
             });
     } else {
         setImageSource(imageUrl, 'original');
+        pendingMediaCreations.delete(card);
     }
 
     // Upgrade to full-quality image on hover — overlay on top to avoid flash
@@ -6567,7 +6632,9 @@ function createImageForCard(card, imageUrl) {
         card._hoverLeave = onLeave;
     }
 
-    pendingMediaCreations.delete(card);
+    // NOTE: pendingMediaCreations is NOT deleted here. For the async thumbnail
+    // path it is cleared in the .finally() after the src is set. For the sync
+    // path (GIF / original quality) it is cleared right after setImageSource.
     return true;
 }
 
@@ -6885,40 +6952,22 @@ function processEntries(entries) {
     // Sort by distance from viewport center (closest first)
     cardsToLoad.sort((a, b) => a.distance - b.distance);
     
-    // Load media in parallel batches for faster initial loading
-    let loadedInBatch = 0;
+    // Load media for all intersecting cards immediately.
+    // createMediaForCard is lightweight (DOM element + async IPC batch), so no need
+    // to defer via RAF. Deferring caused a race: if vsUpdateDOM recycled a card before
+    // the RAF fired, the closure's stale mediaUrl would load the wrong thumbnail.
     let currentTotal = activeVideoCount + activeImageCount;
     cardsToLoad.forEach(({ card, mediaUrl }) => {
         if (currentTotal >= MAX_TOTAL_MEDIA) {
-            // If at limit, only load if this card is in the preload zone
-            // Only load if in preload zone when at limit
             if (!isCardInPreloadZone(card)) {
-                // Add to retry queue - capacity limited, not an error
                 if (!mediaToRetry.has(card)) {
                     mediaToRetry.set(card, { url: mediaUrl, attempts: 0, nextRetryTime: Date.now(), reason: 'capacity' });
                 }
                 return;
             }
         }
-        
-        // Load multiple items in parallel for faster initial loading
-        // Trust IntersectionObserver - if entry.isIntersecting is true, load immediately
-        // No cooldown check for parallel loading to maximize speed
-        if (loadedInBatch < getEffectiveLoadLimit()) {
-            // Create immediately for parallel batch (no cooldown restriction)
-            createMediaForCard(card, mediaUrl);
-            currentTotal++;
-            loadedInBatch++;
-        } else {
-            // For items beyond parallel limit, still load immediately but use requestAnimationFrame
-            // This ensures smooth loading without blocking
-            requestAnimationFrame(() => {
-                if (card.querySelectorAll('video').length === 0 && 
-                    card.querySelectorAll('img.media-thumbnail').length === 0) {
-                    createMediaForCard(card, mediaUrl);
-                }
-            });
-        }
+        createMediaForCard(card, mediaUrl);
+        currentTotal++;
     });
 
     if (changed) {
@@ -7078,17 +7127,13 @@ function retryPendingVideos() {
 }
 
 // --- Intersection Observer ---
-// IMPORTANT: Using viewport (null) as root is actually correct here!
-// Even though gridContainer scrolls, IntersectionObserver with viewport root
-// will correctly detect when cards enter/exit the visible viewport area.
-// The rootMargin expands the detection zone for preloading.
-// Using gridContainer as root causes issues because entry.boundingClientRect
-// is always relative to viewport, not the root element.
+// Using viewport (null) as root. gridContainer is the scroll container but
+// root:null works because absolutely-positioned cards' viewport rects naturally
+// reflect their scroll position. rootMargin expands the viewport detection zone.
 const observerOptions = {
-    root: null, // Use viewport as root - this works correctly with scrolling containers
-    // rootMargin format: "top right bottom left" - expands viewport for preloading
+    root: null,
     rootMargin: `${PRELOAD_BUFFER_PX}px ${PRELOAD_BUFFER_PX}px ${PRELOAD_BUFFER_PX}px ${PRELOAD_BUFFER_PX}px`,
-    threshold: 0.0 // Trigger as soon as any part intersects
+    threshold: 0.0
 };
 
 // Helper function to aggressively clean up video elements

@@ -1888,6 +1888,7 @@ async function saveCollection(collection) {
         smartCollectionCache.delete(collection.id);
     } catch (e) {
         console.error('Error saving collection:', e);
+        showToast('Failed to save collection', 'error');
     }
 }
 
@@ -1896,14 +1897,19 @@ async function deleteCollection(id) {
         await window.electronAPI.dbDeleteCollection(id);
         collectionsCache = collectionsCache.filter(c => c.id !== id);
         smartCollectionCache.delete(id);
-    } catch {}
+    } catch (e) {
+        console.error('Error deleting collection:', e);
+        showToast('Failed to delete collection', 'error');
+    }
 }
 
 async function getCollectionFiles(collectionId) {
     try {
         const result = await window.electronAPI.dbGetCollectionFiles(collectionId);
         if (result.success) return result.data || [];
-    } catch {}
+    } catch (e) {
+        console.error('Error loading collection files:', e);
+    }
     return [];
 }
 
@@ -1912,7 +1918,10 @@ async function addFilesToCollection(collectionId, filePaths) {
     try {
         const result = await window.electronAPI.dbAddFilesToCollection(collectionId, filePaths);
         if (result.success) return result.data || 0;
-    } catch {}
+    } catch (e) {
+        console.error('Error adding files to collection:', e);
+        showToast('Failed to add files to collection', 'error');
+    }
     return 0;
 }
 
@@ -1924,7 +1933,10 @@ async function removeFileFromCollection(collectionId, filePath) {
         if (normalized !== filePath) {
             await window.electronAPI.dbRemoveFileFromCollection(collectionId, normalized);
         }
-    } catch {}
+    } catch (e) {
+        console.error('Error removing file from collection:', e);
+        showToast('Failed to remove file from collection', 'error');
+    }
 }
 
 async function removeAllMissingFromCollection(collectionId, missingPaths) {
@@ -1932,7 +1944,9 @@ async function removeAllMissingFromCollection(collectionId, missingPaths) {
     try {
         const normalizedMissing = missingPaths.map(p => normalizePath(p));
         await window.electronAPI.dbRemoveFilesFromCollection(collectionId, normalizedMissing);
-    } catch {}
+    } catch (e) {
+        console.error('Error cleaning missing files from collection:', e);
+    }
 }
 
 // Match an item against smart collection filter rules
@@ -8723,11 +8737,14 @@ async function importSettings() {
             localStorage.setItem(key, typeof val === 'string' ? val : JSON.stringify(val));
         }
     }
+    const importErrors = [];
     if (data.json && data.json.pluginStates) {
-        try { await window.electronAPI.syncPluginStatesFromImport(data.json.pluginStates); } catch {}
+        try { await window.electronAPI.syncPluginStatesFromImport(data.json.pluginStates); }
+        catch (e) { importErrors.push('plugin states'); console.error('Import plugin states failed:', e); }
     }
     if (data.collections) {
-        try { await importCollectionsData(data.collections); } catch {}
+        try { await importCollectionsData(data.collections); }
+        catch (e) { importErrors.push('collections'); console.error('Import collections failed:', e); }
     }
     // Import SQLite-stored metadata from exported settings
     try {
@@ -8749,7 +8766,16 @@ async function importSettings() {
         if (data.json && data.json.tags) {
             await window.electronAPI.dbImportTags(data.json.tags);
         }
-    } catch {}
+    } catch (e) {
+        importErrors.push('database metadata');
+        console.error('Import database metadata failed:', e);
+    }
+    if (importErrors.length > 0) {
+        showToast('Some data could not be imported', 'warning', {
+            details: `Failed: ${importErrors.join(', ')}`,
+            duration: 8000
+        });
+    }
     location.reload();
 }
 

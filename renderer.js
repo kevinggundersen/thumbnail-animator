@@ -10259,6 +10259,15 @@ function showContextMenu(event, card) {
         }
     }
 
+    // Show/hide batch rename based on multi-select
+    if (!isFolder) {
+        const batchRenameItem = menu.querySelector('[data-action="batch-rename"]');
+        if (batchRenameItem) {
+            const selectedCards = document.querySelectorAll('.video-card.selected');
+            batchRenameItem.style.display = selectedCards.length > 1 ? '' : 'none';
+        }
+    }
+
     // Inject / refresh plugin menu items (file menus only)
     if (!isFolder) {
         // Remove any previously injected plugin items and their separator
@@ -10360,7 +10369,20 @@ contextMenu.addEventListener('click', async (e) => {
             renameInput.focus();
             renameInput.select();
             break;
-            
+
+        case 'batch-rename': {
+            const selectedCards = document.querySelectorAll('.video-card.selected');
+            const renamePaths = selectedCards.length > 1
+                ? Array.from(selectedCards).map(c => c.dataset.path).filter(Boolean)
+                : [filePath];
+            if (renamePaths.length < 2) {
+                showToast('Select 2 or more files for batch rename', 'info');
+            } else {
+                openBatchRename(renamePaths);
+            }
+            break;
+        }
+
         case 'delete':
             try {
                 if (await showConfirm('Delete File', `Delete "${fileName}"?`, { confirmLabel: 'Delete', danger: true })) {
@@ -10636,6 +10658,217 @@ renameInput.addEventListener('keydown', (e) => {
 renameDialog.addEventListener('click', (e) => {
     if (e.target === renameDialog) {
         handleRenameCancel();
+    }
+});
+
+// ── Batch Rename ─────────────────────────────────────────────────────
+const batchRenameOverlay = document.getElementById('batch-rename-overlay');
+const batchRenameType = document.getElementById('batch-rename-type');
+const batchRenameOptions = document.getElementById('batch-rename-options');
+const batchRenamePreview = document.getElementById('batch-rename-preview');
+const batchRenameError = document.getElementById('batch-rename-error');
+const batchRenameApply = document.getElementById('batch-rename-apply');
+let batchRenameFilePaths = [];
+
+function openBatchRename(filePaths) {
+    batchRenameFilePaths = filePaths;
+    document.getElementById('batch-rename-count').textContent = `(${filePaths.length} files)`;
+    batchRenameOverlay.classList.remove('hidden');
+    batchRenameType.value = 'findReplace';
+    renderBatchRenameOptions();
+    updateBatchRenamePreview();
+}
+
+function closeBatchRename() {
+    batchRenameOverlay.classList.add('hidden');
+    batchRenameFilePaths = [];
+    batchRenameError.classList.add('hidden');
+}
+
+function renderBatchRenameOptions() {
+    const type = batchRenameType.value;
+    let html = '';
+    switch (type) {
+        case 'findReplace':
+            html = `
+                <input type="text" id="br-find" placeholder="Find..." autofocus>
+                <input type="text" id="br-replace" placeholder="Replace with...">
+                <div class="batch-rename-row">
+                    <label><input type="checkbox" id="br-case-sensitive"> Case sensitive</label>
+                    <label><input type="checkbox" id="br-use-regex"> Regex</label>
+                </div>`;
+            break;
+        case 'prefix':
+            html = `<input type="text" id="br-prefix-text" placeholder="Prefix text..." autofocus>`;
+            break;
+        case 'suffix':
+            html = `<input type="text" id="br-suffix-text" placeholder="Suffix text (before extension)..." autofocus>`;
+            break;
+        case 'numbering':
+            html = `
+                <input type="text" id="br-num-template" placeholder="Template, e.g. {name}_{n}" value="{name}_{n}">
+                <div class="batch-rename-row">
+                    <input type="number" id="br-num-start" placeholder="Start" value="1" min="0" style="width:80px">
+                    <input type="number" id="br-num-step" placeholder="Step" value="1" min="1" style="width:80px">
+                    <input type="number" id="br-num-padding" placeholder="Pad" value="2" min="1" max="10" style="width:80px">
+                </div>`;
+            break;
+    }
+    batchRenameOptions.innerHTML = html;
+
+    // Attach input listeners for live preview
+    batchRenameOptions.querySelectorAll('input').forEach(input => {
+        input.addEventListener('input', updateBatchRenamePreview);
+        input.addEventListener('change', updateBatchRenamePreview);
+    });
+
+    // Focus the first input
+    const first = batchRenameOptions.querySelector('input[type="text"], input[type="number"]');
+    if (first) requestAnimationFrame(() => first.focus());
+}
+
+function getBatchRenamePatternOptions() {
+    const type = batchRenameType.value;
+    switch (type) {
+        case 'findReplace':
+            return {
+                find: (document.getElementById('br-find')?.value) || '',
+                replace: (document.getElementById('br-replace')?.value) || '',
+                caseSensitive: document.getElementById('br-case-sensitive')?.checked || false,
+                useRegex: document.getElementById('br-use-regex')?.checked || false
+            };
+        case 'prefix':
+            return { text: document.getElementById('br-prefix-text')?.value || '' };
+        case 'suffix':
+            return { text: document.getElementById('br-suffix-text')?.value || '' };
+        case 'numbering':
+            return {
+                template: document.getElementById('br-num-template')?.value || '{name}_{n}',
+                start: parseInt(document.getElementById('br-num-start')?.value) || 1,
+                step: parseInt(document.getElementById('br-num-step')?.value) || 1,
+                padding: parseInt(document.getElementById('br-num-padding')?.value) || 1
+            };
+        default:
+            return {};
+    }
+}
+
+function computeNewName(fileName, index, type, opts) {
+    const ext = fileName.lastIndexOf('.') !== -1 ? fileName.slice(fileName.lastIndexOf('.')) : '';
+    const baseName = ext ? fileName.slice(0, fileName.lastIndexOf('.')) : fileName;
+
+    switch (type) {
+        case 'prefix':
+            return (opts.text || '') + fileName;
+        case 'suffix':
+            return baseName + (opts.text || '') + ext;
+        case 'numbering': {
+            const num = (opts.start || 1) + index * (opts.step || 1);
+            const padded = String(num).padStart(opts.padding || 1, '0');
+            const template = opts.template || '{name}_{n}';
+            return template.replace('{name}', baseName).replace('{n}', padded) + ext;
+        }
+        case 'findReplace': {
+            if (!opts.find) return fileName;
+            const flags = opts.caseSensitive ? 'g' : 'gi';
+            if (opts.useRegex) {
+                try {
+                    return fileName.replace(new RegExp(opts.find, flags), opts.replace || '');
+                } catch { return fileName; }
+            }
+            const escaped = opts.find.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            return fileName.replace(new RegExp(escaped, flags), opts.replace || '');
+        }
+        default:
+            return fileName;
+    }
+}
+
+function updateBatchRenamePreview() {
+    const type = batchRenameType.value;
+    const opts = getBatchRenamePatternOptions();
+
+    const rows = [];
+    const newNames = new Set();
+    let hasConflict = false;
+    let hasChange = false;
+
+    for (let i = 0; i < batchRenameFilePaths.length; i++) {
+        const fp = batchRenameFilePaths[i];
+        const oldName = fp.split(/[\\/]/).pop();
+        const newName = computeNewName(oldName, i, type, opts);
+        const unchanged = oldName === newName;
+        const duplicate = newNames.has(newName.toLowerCase());
+        const empty = !newName || !newName.trim();
+        const conflict = duplicate || empty;
+
+        if (!unchanged) hasChange = true;
+        if (conflict) hasConflict = true;
+        newNames.add(newName.toLowerCase());
+
+        rows.push({ oldName, newName, unchanged, conflict });
+    }
+
+    let html = '<table><thead><tr><th>Original</th><th>New Name</th></tr></thead><tbody>';
+    for (const r of rows) {
+        const cls = r.conflict ? ' class="conflict"' : r.unchanged ? ' class="unchanged"' : '';
+        html += `<tr${cls}><td>${r.oldName}</td><td class="new-name">${r.newName || '<em>empty</em>'}</td></tr>`;
+    }
+    html += '</tbody></table>';
+    batchRenamePreview.innerHTML = html;
+
+    if (hasConflict) {
+        batchRenameError.textContent = 'Some names conflict (duplicates or empty). Fix before applying.';
+        batchRenameError.classList.remove('hidden');
+    } else {
+        batchRenameError.classList.add('hidden');
+    }
+
+    batchRenameApply.disabled = hasConflict || !hasChange;
+}
+
+batchRenameType.addEventListener('change', () => {
+    renderBatchRenameOptions();
+    updateBatchRenamePreview();
+});
+
+document.getElementById('batch-rename-close').addEventListener('click', closeBatchRename);
+document.getElementById('batch-rename-cancel').addEventListener('click', closeBatchRename);
+batchRenameOverlay.addEventListener('click', (e) => { if (e.target === batchRenameOverlay) closeBatchRename(); });
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !batchRenameOverlay.classList.contains('hidden')) {
+        closeBatchRename();
+    }
+});
+
+batchRenameApply.addEventListener('click', async () => {
+    const type = batchRenameType.value;
+    const opts = getBatchRenamePatternOptions();
+    batchRenameApply.disabled = true;
+    batchRenameApply.textContent = 'Renaming...';
+
+    try {
+        setStatusActivity('Batch renaming...');
+        const result = await window.electronAPI.batchRename(batchRenameFilePaths, type, opts);
+        setStatusActivity('');
+
+        if (result.success) {
+            closeBatchRename();
+            showToast(`Renamed ${result.successCount} of ${result.totalCount} files`, 'success');
+            if (currentFolderPath) {
+                invalidateFolderCache(currentFolderPath);
+                const previousScrollTop = gridContainer.scrollTop;
+                await loadVideos(currentFolderPath, false, previousScrollTop);
+            }
+        } else {
+            showToast(`Batch rename failed: ${result.error}`, 'error');
+        }
+    } catch (error) {
+        showToast(`Batch rename failed: ${friendlyError(error)}`, 'error');
+    } finally {
+        batchRenameApply.disabled = false;
+        batchRenameApply.textContent = 'Rename';
+        setStatusActivity('');
     }
 });
 

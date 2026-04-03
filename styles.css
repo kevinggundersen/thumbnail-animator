@@ -3386,6 +3386,185 @@ video.blow-up-media {
     opacity: 0.9;
 }
 
+/* Batch Rename Modal */
+.batch-rename-modal {
+    position: relative;
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-xl);
+    width: 580px;
+    max-width: 90vw;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    animation: modal-enter 0.2s var(--ease-out-expo);
+    overflow: hidden;
+}
+#batch-rename-overlay {
+    position: fixed;
+    top: 0; left: 0; width: 100%; height: 100%;
+    background-color: rgba(0, 0, 0, 0.6);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 2500;
+    backdrop-filter: blur(16px);
+}
+#batch-rename-overlay.hidden { display: none; }
+.batch-rename-modal .modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px 12px;
+    border-bottom: 1px solid var(--border-subtle);
+}
+.batch-rename-modal .modal-header h3 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-color);
+}
+.batch-rename-body {
+    padding: 16px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    overflow-y: auto;
+    flex: 1;
+    min-height: 0;
+}
+.batch-rename-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 6px;
+    display: block;
+}
+.batch-rename-select {
+    width: 100%;
+    padding: 7px 10px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-default);
+    background: var(--bg-primary);
+    color: var(--text-color);
+    font-size: 13px;
+    outline: none;
+}
+.batch-rename-select:focus {
+    border-color: var(--accent);
+}
+.batch-rename-options {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 10px;
+}
+.batch-rename-options input[type="text"],
+.batch-rename-options input[type="number"] {
+    width: 100%;
+    padding: 7px 10px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-default);
+    background: var(--bg-primary);
+    color: var(--text-color);
+    font-size: 13px;
+    outline: none;
+    box-sizing: border-box;
+}
+.batch-rename-options input:focus {
+    border-color: var(--accent);
+}
+.batch-rename-options .batch-rename-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+.batch-rename-options .batch-rename-row input { flex: 1; }
+.batch-rename-options label {
+    font-size: 12px;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    cursor: pointer;
+}
+.batch-rename-preview-wrapper {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+.batch-rename-preview {
+    flex: 1;
+    min-height: 120px;
+    max-height: 260px;
+    overflow-y: auto;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    background: var(--bg-primary);
+}
+.batch-rename-preview table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+.batch-rename-preview th {
+    text-align: left;
+    padding: 6px 10px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--border-subtle);
+    position: sticky;
+    top: 0;
+    background: var(--bg-primary);
+}
+.batch-rename-preview td {
+    padding: 4px 10px;
+    color: var(--text-color);
+    border-bottom: 1px solid var(--border-subtle);
+    word-break: break-all;
+}
+.batch-rename-preview tr.conflict td { color: var(--color-danger, #ef4444); }
+.batch-rename-preview tr.unchanged td { color: var(--text-secondary); opacity: 0.6; }
+.batch-rename-preview td.new-name { font-weight: 500; }
+.batch-rename-error {
+    padding: 0 20px 8px;
+    font-size: 12px;
+    color: var(--color-danger, #ef4444);
+}
+.batch-rename-error.hidden { display: none; }
+.batch-rename-modal .modal-footer {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    padding: 12px 20px;
+    border-top: 1px solid var(--border-subtle);
+}
+.batch-rename-modal .modal-footer button {
+    padding: 8px 16px;
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    border: none;
+    transition: background-color var(--duration-normal), opacity var(--duration-normal);
+}
+#batch-rename-cancel {
+    background: transparent;
+    color: var(--text-color);
+    border: 1px solid var(--border-default);
+}
+#batch-rename-cancel:hover { background: var(--bg-hover); }
+#batch-rename-apply {
+    background: var(--accent);
+    color: var(--bg-primary);
+}
+#batch-rename-apply:hover { opacity: 0.9; }
+#batch-rename-apply:disabled { opacity: 0.4; cursor: not-allowed; }
+
 /* Drives Dropdown Styles */
 .drives-dropdown {
     background-color: var(--bg-secondary);

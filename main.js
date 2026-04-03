@@ -1596,6 +1596,124 @@ ipcMain.handle('rename-file', async (event, filePath, newName) => {
     }
 });
 
+ipcMain.handle('batch-rename', async (event, filePaths, patternType, patternOptions) => {
+    try {
+        const results = [];
+        const operations = [];
+        const renamedPairs = [];
+
+        // Compute all new names first for validation
+        const planned = [];
+        for (let i = 0; i < filePaths.length; i++) {
+            const fp = filePaths[i];
+            const dir = path.dirname(fp);
+            const ext = path.extname(fp);
+            const baseName = path.basename(fp, ext);
+            let newName;
+
+            switch (patternType) {
+                case 'prefix':
+                    newName = patternOptions.text + path.basename(fp);
+                    break;
+                case 'suffix':
+                    newName = baseName + patternOptions.text + ext;
+                    break;
+                case 'numbering': {
+                    const num = (patternOptions.start || 1) + i * (patternOptions.step || 1);
+                    const padded = String(num).padStart(patternOptions.padding || 1, '0');
+                    const template = patternOptions.template || '{name}_{n}';
+                    newName = template.replace('{name}', baseName).replace('{n}', padded) + ext;
+                    break;
+                }
+                case 'findReplace': {
+                    const flags = patternOptions.caseSensitive ? 'g' : 'gi';
+                    const useRegex = patternOptions.useRegex;
+                    const fullName = path.basename(fp);
+                    if (useRegex) {
+                        try {
+                            const regex = new RegExp(patternOptions.find, flags);
+                            newName = fullName.replace(regex, patternOptions.replace || '');
+                        } catch (e) {
+                            return { success: false, error: `Invalid regex: ${e.message}` };
+                        }
+                    } else {
+                        // Escape special regex chars for literal search
+                        const escaped = patternOptions.find.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                        const regex = new RegExp(escaped, flags);
+                        newName = fullName.replace(regex, patternOptions.replace || '');
+                    }
+                    break;
+                }
+                default:
+                    return { success: false, error: `Unknown pattern type: ${patternType}` };
+            }
+
+            // Validate
+            if (newName !== path.basename(newName)) {
+                return { success: false, error: `Invalid name "${newName}" contains path separators` };
+            }
+            if (!newName || newName.trim() === '') {
+                return { success: false, error: `Pattern produces empty name for "${path.basename(fp)}"` };
+            }
+
+            const newPath = path.join(dir, newName);
+            planned.push({ oldPath: fp, newPath, newName });
+        }
+
+        // Check for duplicates within the batch
+        const newPaths = new Set();
+        for (const p of planned) {
+            if (newPaths.has(p.newPath.toLowerCase())) {
+                return { success: false, error: `Duplicate name in batch: "${p.newName}"` };
+            }
+            newPaths.add(p.newPath.toLowerCase());
+        }
+
+        // Check for conflicts with existing files (excluding files being renamed)
+        const oldPathSet = new Set(filePaths.map(fp => fp.toLowerCase()));
+        for (const p of planned) {
+            if (p.oldPath === p.newPath) continue; // Same name, skip
+            if (!oldPathSet.has(p.newPath.toLowerCase()) && fs.existsSync(p.newPath)) {
+                return { success: false, error: `"${p.newName}" already exists on disk` };
+            }
+        }
+
+        // Execute renames
+        for (const p of planned) {
+            if (p.oldPath === p.newPath) {
+                results.push({ oldPath: p.oldPath, newPath: p.newPath, skipped: true });
+                continue;
+            }
+            try {
+                await fs.promises.rename(p.oldPath, p.newPath);
+                operations.push({ type: 'rename', oldPath: p.oldPath, newPath: p.newPath });
+                renamedPairs.push({ oldPath: p.oldPath, newPath: p.newPath });
+                results.push({ oldPath: p.oldPath, newPath: p.newPath, success: true });
+            } catch (err) {
+                results.push({ oldPath: p.oldPath, newPath: p.newPath, success: false, error: err.message });
+            }
+        }
+
+        // Update database references for successfully renamed files
+        if (renamedPairs.length > 0) {
+            try { appDb.updateFilePaths(renamedPairs); } catch (e) {
+                console.error('Failed to update DB paths after batch rename:', e);
+            }
+            pushUndoEntry({
+                type: 'rename',
+                description: `Batch rename ${renamedPairs.length} file${renamedPairs.length === 1 ? '' : 's'}`,
+                operations
+            });
+        }
+
+        const successCount = results.filter(r => r.success).length;
+        return { success: true, results, successCount, totalCount: filePaths.length };
+    } catch (error) {
+        console.error('Error in batch rename:', error);
+        return { success: false, error: error.message };
+    }
+});
+
 ipcMain.handle('delete-file', async (event, filePath) => {
     try {
         const basename = path.basename(filePath);

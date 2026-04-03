@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     setCacheLimits: (videoMB, imageMB) => ipcRenderer.invoke('set-cache-limits', videoMB, imageMB),
     revealInExplorer: (filePath) => ipcRenderer.invoke('reveal-in-explorer', filePath),
     renameFile: (filePath, newName) => ipcRenderer.invoke('rename-file', filePath, newName),
+    batchRename: (filePaths, patternType, patternOptions) => ipcRenderer.invoke('batch-rename', filePaths, patternType, patternOptions),
     deleteFile: (filePath) => ipcRenderer.invoke('delete-file', filePath),
     openUrl: (url) => ipcRenderer.invoke('open-url', url),
     openWithDefault: (filePath) => ipcRenderer.invoke('open-with-default', filePath),

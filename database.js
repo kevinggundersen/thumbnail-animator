@@ -648,6 +648,36 @@ class AppDatabase {
         return suggestions.slice(0, 15);
     }
 
+    // ── File path migration (for batch rename) ────────────────────────
+
+    updateFilePaths(pathPairs) {
+        const tx = this.db.transaction((pairs) => {
+            for (const { oldPath, newPath } of pairs) {
+                // Ratings
+                const rating = this._stmts.getRating.get(oldPath);
+                if (rating) {
+                    this._stmts.setRating.run(newPath, rating.rating);
+                    this._stmts.deleteRating.run(oldPath);
+                }
+                // Pins
+                const pinned = this._stmts.isPinned.get(oldPath);
+                if (pinned) {
+                    this._stmts.removePin.run(oldPath);
+                    this._stmts.addPin.run(newPath);
+                }
+                // File tags — re-insert with new path, then delete old
+                const tags = this._stmts.getTagsForFile.all(oldPath);
+                for (const t of tags) {
+                    this._stmts.addTagToFile.run(newPath, t.id, Date.now());
+                    this._stmts.removeTagFromFile.run(oldPath, t.id);
+                }
+                // Collection files
+                this.db.prepare('UPDATE collection_files SET file_path = ? WHERE file_path = ?').run(newPath, oldPath);
+            }
+        });
+        tx(pathPairs);
+    }
+
     // ── Migration ────────────────────────────────────────────────────────
 
     runMigration(data) {

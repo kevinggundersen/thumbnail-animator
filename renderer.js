@@ -1398,20 +1398,36 @@ const fileConflictRemember = document.getElementById('file-conflict-remember');
 const fileConflictSkip = document.getElementById('file-conflict-skip');
 const fileConflictKeepBoth = document.getElementById('file-conflict-keep-both');
 const fileConflictReplace = document.getElementById('file-conflict-replace');
+const conflictSourceThumb = document.getElementById('conflict-source-thumb');
+const conflictExistingThumb = document.getElementById('conflict-existing-thumb');
+const conflictSourceMeta = document.getElementById('conflict-source-meta');
+const conflictExistingMeta = document.getElementById('conflict-existing-meta');
 let _conflictResolve = null;
 
 /**
- * Show a file conflict resolution dialog.
+ * Show a file conflict resolution dialog with side-by-side comparison.
  * @param {string} fileName - Name of the conflicting file
+ * @param {string} sourcePath - Full path of the source file being copied/moved
+ * @param {string} destPath - Full path of the existing file at the destination
  * @param {boolean} showRemember - Show "Apply to all" checkbox (for batch ops)
  * @returns {Promise<{resolution: 'replace'|'keep-both'|'skip', applyToAll: boolean}>}
  */
-function showFileConflictDialog(fileName, showRemember = false) {
-    fileConflictMessage.textContent = `"${fileName}" already exists in this location. What would you like to do?`;
+function showFileConflictDialog(fileName, sourcePath, destPath, showRemember = false) {
+    fileConflictMessage.textContent = `"${fileName}" already exists in this location.`;
     fileConflictRemember.checked = false;
     fileConflictRememberLabel.classList.toggle('hidden', !showRemember);
+
+    // Clear previous comparison content (keep the label spans)
+    _clearConflictPane(conflictSourceThumb);
+    _clearConflictPane(conflictExistingThumb);
+    conflictSourceMeta.innerHTML = '';
+    conflictExistingMeta.innerHTML = '';
+
     fileConflictDialog.classList.remove('hidden');
     fileConflictKeepBoth.focus();
+
+    // Populate thumbnails and metadata asynchronously
+    _populateConflictComparison(sourcePath, destPath);
 
     return new Promise(resolve => {
         if (_conflictResolve) _conflictResolve({ resolution: 'skip', applyToAll: false });
@@ -1419,8 +1435,97 @@ function showFileConflictDialog(fileName, showRemember = false) {
     });
 }
 
+function _clearConflictPane(thumbEl) {
+    // Pause and remove any media, but keep the label span
+    const label = thumbEl.querySelector('.conflict-file-label');
+    thumbEl.querySelectorAll('img, video').forEach(el => {
+        if (el.tagName === 'VIDEO') { el.pause(); el.removeAttribute('src'); el.load(); }
+        el.remove();
+    });
+}
+
+async function _populateConflictComparison(sourcePath, destPath) {
+    // Load thumbnails immediately from file paths
+    _loadConflictThumb(conflictSourceThumb, sourcePath);
+    _loadConflictThumb(conflictExistingThumb, destPath);
+
+    // Fetch metadata for both files in parallel
+    try {
+        const [srcResult, dstResult] = await Promise.all([
+            window.electronAPI.getFileInfo(sourcePath),
+            window.electronAPI.getFileInfo(destPath)
+        ]);
+        // Dialog may have been closed while loading — bail out
+        if (fileConflictDialog.classList.contains('hidden')) return;
+
+        const srcInfo = srcResult.success ? srcResult.info : null;
+        const dstInfo = dstResult.success ? dstResult.info : null;
+
+        _renderConflictMeta(conflictSourceMeta, srcInfo, dstInfo);
+        _renderConflictMeta(conflictExistingMeta, dstInfo, srcInfo);
+    } catch {
+        // Silently fail — dialog still works without metadata
+    }
+}
+
+function _loadConflictThumb(container, filePath) {
+    const fileUrl = 'file:///' + filePath.replace(/\\/g, '/');
+    const type = getFileType(filePath);
+    if (type === 'image') {
+        const img = document.createElement('img');
+        img.src = fileUrl;
+        img.draggable = false;
+        container.appendChild(img);
+    } else {
+        const vid = document.createElement('video');
+        vid.src = fileUrl;
+        vid.muted = true;
+        vid.preload = 'metadata';
+        container.appendChild(vid);
+    }
+}
+
+function _renderConflictMeta(container, info, otherInfo) {
+    container.innerHTML = '';
+    if (!info) return;
+
+    const rows = [
+        { label: 'Name', value: info.name },
+        { label: 'Size', value: info.sizeFormatted, cls: _compareSizeClass(info, otherInfo) },
+        { label: 'Modified', value: new Date(info.modified).toLocaleString(), cls: _compareDateClass(info, otherInfo) },
+    ];
+    if (info.width && info.height) {
+        rows.push({ label: 'Dimensions', value: `${info.width} × ${info.height}` });
+    }
+
+    for (const row of rows) {
+        const div = document.createElement('div');
+        div.className = 'conflict-meta-row';
+        div.innerHTML = `<span class="conflict-meta-label">${row.label}</span><span class="conflict-meta-value${row.cls ? ' ' + row.cls : ''}">${row.value}</span>`;
+        container.appendChild(div);
+    }
+}
+
+function _compareSizeClass(info, other) {
+    if (!other || info.size === other.size) return '';
+    return info.size > other.size ? 'conflict-larger' : 'conflict-smaller';
+}
+
+function _compareDateClass(info, other) {
+    if (!other) return '';
+    const a = new Date(info.modified).getTime();
+    const b = new Date(other.modified).getTime();
+    if (a === b) return '';
+    return a > b ? 'conflict-newer' : 'conflict-older';
+}
+
 function _closeConflictDialog(resolution) {
     fileConflictDialog.classList.add('hidden');
+    // Clean up media elements
+    _clearConflictPane(conflictSourceThumb);
+    _clearConflictPane(conflictExistingThumb);
+    conflictSourceMeta.innerHTML = '';
+    conflictExistingMeta.innerHTML = '';
     if (_conflictResolve) {
         const resolve = _conflictResolve;
         _conflictResolve = null;
@@ -8013,7 +8118,7 @@ async function copyFilesToFolder(filePaths, destFolder) {
             let result = await window.electronAPI.copyFile(filePath, destFolder, fileName);
             if (result.conflict) {
                 const resolution = savedResolution
-                    || (await showFileConflictDialog(result.fileName, i < filePaths.length - 1));
+                    || (await showFileConflictDialog(result.fileName, filePath, result.destPath, i < filePaths.length - 1));
                 if (resolution.applyToAll) savedResolution = resolution;
                 result = await window.electronAPI.copyFile(filePath, destFolder, fileName, resolution.resolution);
             }

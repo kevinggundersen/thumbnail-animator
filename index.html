@@ -1370,9 +1370,24 @@
     </div>
 
     <div id="file-conflict-dialog" class="confirm-dialog hidden">
-        <div class="confirm-dialog-content">
+        <div class="confirm-dialog-content conflict-dialog-wide">
             <h3>File Already Exists</h3>
             <p id="file-conflict-message"></p>
+            <div class="conflict-comparison">
+                <div class="conflict-file-pane">
+                    <div class="conflict-thumbnail-wrapper" id="conflict-source-thumb">
+                        <span class="conflict-file-label">Source</span>
+                    </div>
+                    <div class="conflict-file-meta" id="conflict-source-meta"></div>
+                </div>
+                <div class="conflict-vs-divider"><span>VS</span></div>
+                <div class="conflict-file-pane">
+                    <div class="conflict-thumbnail-wrapper" id="conflict-existing-thumb">
+                        <span class="conflict-file-label">Existing</span>
+                    </div>
+                    <div class="conflict-file-meta" id="conflict-existing-meta"></div>
+                </div>
+            </div>
             <label id="file-conflict-remember-label" class="file-conflict-remember hidden">
                 <input type="checkbox" id="file-conflict-remember"> Apply to all remaining conflicts
             </label>

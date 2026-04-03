@@ -2521,7 +2521,7 @@ async function _moveFilesBatch(filePaths, destFolder, progressOffset, progressTo
             let result = await window.electronAPI.moveFile(filePath, destFolder, fileName);
             if (result.conflict) {
                 const resolution = savedResolution
-                    || (await showFileConflictDialog(result.fileName, i < filePaths.length - 1));
+                    || (await showFileConflictDialog(result.fileName, filePath, result.destPath, i < filePaths.length - 1));
                 if (resolution.applyToAll) savedResolution = resolution;
                 result = await window.electronAPI.moveFile(filePath, destFolder, fileName, resolution.resolution);
             }

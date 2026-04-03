@@ -2357,7 +2357,7 @@ ipcMain.handle('copy-file', async (event, sourcePath, destFolderOrPath, fileName
         let finalPath = destPath;
         if (fs.existsSync(finalPath)) {
             if (!conflictResolution) {
-                return { conflict: true, fileName: path.basename(destPath) };
+                return { conflict: true, fileName: path.basename(destPath), destPath };
             }
             if (conflictResolution === 'skip') {
                 return { success: true, skipped: true };
@@ -2397,7 +2397,7 @@ ipcMain.handle('move-file', async (event, sourcePath, destFolderOrPath, fileName
         let finalPath = destPath;
         if (fs.existsSync(destPath) && path.normalize(sourcePath) !== path.normalize(destPath)) {
             if (!conflictResolution) {
-                return { conflict: true, fileName: path.basename(destPath) };
+                return { conflict: true, fileName: path.basename(destPath), destPath };
             }
             if (conflictResolution === 'skip') {
                 return { success: true, skipped: true };

@@ -6843,6 +6843,117 @@ video.blow-up-media {
     opacity: 0.9;
 }
 
+/* --- File Conflict: Side-by-Side Comparison --- */
+.conflict-dialog-wide {
+    min-width: 560px;
+    max-width: 660px;
+    max-width: min(660px, calc(100vw - 40px));
+}
+
+.conflict-comparison {
+    display: flex;
+    gap: var(--space-3);
+    margin-bottom: var(--space-4);
+}
+
+.conflict-file-pane {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+}
+
+.conflict-thumbnail-wrapper {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 1;
+    background: var(--bg-primary);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--border-subtle);
+}
+
+.conflict-thumbnail-wrapper img,
+.conflict-thumbnail-wrapper video {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+}
+
+.conflict-file-label {
+    position: absolute;
+    top: var(--space-2);
+    left: var(--space-2);
+    padding: 2px 8px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-radius: var(--radius-sm);
+    background: rgba(0, 0, 0, 0.55);
+    color: rgba(255, 255, 255, 0.85);
+    backdrop-filter: blur(4px);
+    z-index: 1;
+}
+
+.conflict-vs-divider {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    flex-shrink: 0;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+}
+
+.conflict-file-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.conflict-meta-row {
+    display: flex;
+    gap: var(--space-2);
+    font-size: 11px;
+    line-height: 1.4;
+}
+
+.conflict-meta-label {
+    color: var(--text-tertiary);
+    flex-shrink: 0;
+    min-width: 58px;
+}
+
+.conflict-meta-value {
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.conflict-meta-value.conflict-newer {
+    color: var(--success, #4ecf71);
+}
+
+.conflict-meta-value.conflict-larger {
+    color: var(--success, #4ecf71);
+}
+
+.conflict-meta-value.conflict-older {
+    color: var(--text-tertiary);
+}
+
+.conflict-meta-value.conflict-smaller {
+    color: var(--text-tertiary);
+}
+
 /* ===== Toast Notifications ===== */
 .toast-container {
     position: fixed;

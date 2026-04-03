@@ -3485,34 +3485,48 @@ ipcMain.handle('undo-file-operation', async () => {
         return { success: false, error: 'Nothing to undo' };
     }
     const entry = undoStack.pop();
+    const completedOps = [];
     try {
-        // Process operations in reverse order
         for (let i = entry.operations.length - 1; i >= 0; i--) {
             const op = entry.operations[i];
             switch (op.type) {
                 case 'rename':
-                    if (!fs.existsSync(op.newPath)) throw new Error(`File "${path.basename(op.newPath)}" no longer exists`);
-                    if (fs.existsSync(op.oldPath)) throw new Error(`"${path.basename(op.oldPath)}" already exists`);
                     await fs.promises.rename(op.newPath, op.oldPath);
                     break;
                 case 'delete':
-                    if (!fs.existsSync(op.stagingPath)) throw new Error(`Staged file for "${path.basename(op.originalPath)}" is missing`);
                     await restoreFromStaging(op.stagingPath, op.originalPath);
                     break;
-                case 'move':
-                    if (!fs.existsSync(op.destPath)) throw new Error(`File "${path.basename(op.destPath)}" no longer exists`);
+                case 'move': {
                     const parentDir = path.dirname(op.sourcePath);
-                    if (!fs.existsSync(parentDir)) await fs.promises.mkdir(parentDir, { recursive: true });
-                    if (fs.existsSync(op.sourcePath)) throw new Error(`"${path.basename(op.sourcePath)}" already exists at original location`);
+                    await fs.promises.mkdir(parentDir, { recursive: true });
                     await safeMove(op.destPath, op.sourcePath);
                     break;
+                }
             }
+            completedOps.push(op);
         }
         redoStack.push(entry);
         return { success: true, description: entry.description, canUndo: undoStack.length > 0, canRedo: true };
     } catch (error) {
         console.error('Undo failed:', error);
-        // Restore entry to undo stack so user can retry
+        // Roll back already-completed operations to restore consistent state
+        for (const op of completedOps) {
+            try {
+                switch (op.type) {
+                    case 'rename':
+                        await fs.promises.rename(op.oldPath, op.newPath);
+                        break;
+                    case 'delete':
+                        op.stagingPath = await moveToStaging(op.originalPath);
+                        break;
+                    case 'move':
+                        await safeMove(op.sourcePath, op.destPath);
+                        break;
+                }
+            } catch (rollbackErr) {
+                console.error('Undo rollback failed for op:', op.type, rollbackErr);
+            }
+        }
         undoStack.push(entry);
         return { success: false, error: error.message, description: entry.description };
     }
@@ -3524,33 +3538,48 @@ ipcMain.handle('redo-file-operation', async () => {
         return { success: false, error: 'Nothing to redo' };
     }
     const entry = redoStack.pop();
+    const completedOps = [];
     try {
-        // Process operations in forward order
         for (const op of entry.operations) {
             switch (op.type) {
                 case 'rename':
-                    if (!fs.existsSync(op.oldPath)) throw new Error(`File "${path.basename(op.oldPath)}" no longer exists`);
-                    if (fs.existsSync(op.newPath)) throw new Error(`"${path.basename(op.newPath)}" already exists`);
                     await fs.promises.rename(op.oldPath, op.newPath);
                     break;
                 case 'delete':
-                    if (!fs.existsSync(op.originalPath)) throw new Error(`File "${path.basename(op.originalPath)}" no longer exists`);
                     op.stagingPath = await moveToStaging(op.originalPath);
                     break;
-                case 'move':
-                    if (!fs.existsSync(op.sourcePath)) throw new Error(`File "${path.basename(op.sourcePath)}" no longer exists`);
+                case 'move': {
                     const destDir = path.dirname(op.destPath);
-                    if (!fs.existsSync(destDir)) await fs.promises.mkdir(destDir, { recursive: true });
-                    if (fs.existsSync(op.destPath)) throw new Error(`"${path.basename(op.destPath)}" already exists at destination`);
+                    await fs.promises.mkdir(destDir, { recursive: true });
                     await safeMove(op.sourcePath, op.destPath);
                     break;
+                }
             }
+            completedOps.push(op);
         }
         undoStack.push(entry);
         return { success: true, description: entry.description, canUndo: true, canRedo: redoStack.length > 0 };
     } catch (error) {
         console.error('Redo failed:', error);
-        // Restore entry to redo stack so user can retry
+        // Roll back already-completed operations to restore consistent state
+        for (let i = completedOps.length - 1; i >= 0; i--) {
+            const op = completedOps[i];
+            try {
+                switch (op.type) {
+                    case 'rename':
+                        await fs.promises.rename(op.newPath, op.oldPath);
+                        break;
+                    case 'delete':
+                        await restoreFromStaging(op.stagingPath, op.originalPath);
+                        break;
+                    case 'move':
+                        await safeMove(op.destPath, op.sourcePath);
+                        break;
+                }
+            } catch (rollbackErr) {
+                console.error('Redo rollback failed for op:', op.type, rollbackErr);
+            }
+        }
         redoStack.push(entry);
         return { success: false, error: error.message, description: entry.description };
     }

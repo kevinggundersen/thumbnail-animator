@@ -6012,10 +6012,21 @@ function renderItems(items, preservedScrollTop = null) {
     gridContainer.classList.remove('grid');
 
     if (items.length === 0) {
-        const emptyMsg = document.createElement('p');
-        emptyMsg.style.cssText = 'grid-column: 1/-1; text-align: center;';
-        emptyMsg.textContent = 'No folders or supported media found.';
-        gridContainer.appendChild(emptyMsg);
+        const emptyDiv = document.createElement('div');
+        emptyDiv.className = 'grid-empty-state';
+        if (currentCollectionId) {
+            const collection = collectionsCache.find(c => c.id === currentCollectionId);
+            const isSmart = collection && collection.type === 'smart';
+            emptyDiv.innerHTML = `
+                <p class="grid-empty-title">This collection is empty</p>
+                <p class="grid-empty-hint">${isSmart
+                    ? 'Try editing the filter rules or adding more source folders.'
+                    : 'Drag files here or right-click files to add them.'}</p>
+            `;
+        } else {
+            emptyDiv.innerHTML = '<p class="grid-empty-title">No folders or supported media found.</p>';
+        }
+        gridContainer.appendChild(emptyDiv);
         updateItemCount();
         return;
     }

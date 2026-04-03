@@ -8018,14 +8018,18 @@ video.ss-media {
     background: rgba(255,255,255,0.2);
     color: #fff;
 }
-/* Explicit SVG icon colors — needed because currentColor with rgba() can be unreliable */
+/* Explicit SVG icon sizing and colors — currentColor with rgba() is unreliable */
+#ss-shuffle-btn svg, #ss-loop-btn svg, #ss-play-btn svg {
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+    overflow: visible;
+}
 #ss-shuffle-btn svg, #ss-loop-btn svg {
-    display: block;
-    stroke: rgba(255,255,255,0.7);
+    stroke: rgba(255,255,255,0.75);
     fill: none;
 }
 #ss-play-btn svg {
-    display: block;
     fill: rgba(255,255,255,0.85);
     stroke: none;
 }

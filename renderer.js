@@ -13591,8 +13591,8 @@ function ssUpdateControls() {
     if (playBtn) {
         playBtn.classList.toggle('active', ssPlaying);
         playBtn.innerHTML = ssPlaying
-            ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>'
-            : '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>';
+            ? '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>'
+            : '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>';
     }
     if (shuffleBtn) shuffleBtn.classList.toggle('active', ssShuffle);
     if (loopBtn) loopBtn.classList.toggle('active', ssLoop);

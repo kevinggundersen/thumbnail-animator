@@ -11086,15 +11086,14 @@ contextMenu.addEventListener('click', async (e) => {
             const autoTagPaths = selectedCards.length > 1
                 ? Array.from(selectedCards).map(c => c.dataset.path).filter(Boolean)
                 : [filePath];
-            // Only auto-tag images (CLIP works on images)
-            const imagePaths = autoTagPaths.filter(p => {
+            const supportedPaths = autoTagPaths.filter(p => {
                 const ext = p.split('.').pop().toLowerCase();
-                return ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif'].includes(ext);
+                return ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif', 'mp4', 'webm', 'mov', 'avi', 'mkv', 'm4v', 'ogg'].includes(ext);
             });
-            if (imagePaths.length === 0) {
-                showToast('Auto-tag only works with image files', 'info');
+            if (supportedPaths.length === 0) {
+                showToast('Auto-tag only works with image or video files', 'info');
             } else {
-                openAutoTag(imagePaths);
+                openAutoTag(supportedPaths);
             }
             break;
         }
@@ -11575,7 +11574,7 @@ async function openAutoTag(filePaths) {
     // Check if user has any tags
     await refreshTagsCache();
     if (allTagsCache.length === 0) {
-        autoTagStatus.textContent = 'No tags found. Create some tags first — auto-tag will match your images against them.';
+        autoTagStatus.textContent = 'No tags found. Create some tags first — auto-tag will match your files against them.';
         return;
     }
 
@@ -11654,7 +11653,12 @@ async function openAutoTag(filePaths) {
 
             const name = fp.split(/[\\/]/).pop();
             const item = vsSortedItems.find(it => it.path === fp);
-            const thumbUrl = item ? item.url : '';
+            let thumbUrl = '';
+            if (item) {
+                thumbUrl = item.type === 'video'
+                    ? ((await requestVideoPosterUrl(fp)) || '')
+                    : (item.url || '');
+            }
             autoTagData.push({ path: fp, name, thumbUrl, suggestions });
         }
 

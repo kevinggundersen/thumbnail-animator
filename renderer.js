@@ -630,14 +630,16 @@ function vsUpdateDOM(startIndex, endIndex) {
  * Reset a recycled card to a blank state.
  */
 function vsResetCard(card) {
+    // Revoke any GIF overlay blob URLs before removing children
+    const overlay = card.querySelector('.gif-static-overlay');
+    if (overlay && overlay._blobUrl) URL.revokeObjectURL(overlay._blobUrl);
+
     // Remove all children
     while (card.firstChild) card.removeChild(card.firstChild);
 
     // Clear dataset
     const dataset = card.dataset;
-    for (const key of Object.keys(dataset)) {
-        delete dataset[key];
-    }
+    for (const key in dataset) delete dataset[key];
 
     // Reset classes
     card.className = '';
@@ -4701,8 +4703,7 @@ function applyAspectRatioToCard(card, aspectRatioName, aspectRatioSource) {
     if (gridContainer.classList.contains('masonry') && card.style.width) {
         const cardWidth = parseFloat(card.style.width);
         if (cardWidth > 0) {
-            const aspectRatio = ASPECT_RATIOS.find(ar => ar.name === aspectRatioName);
-            const aspectRatioValue = aspectRatio ? aspectRatio.ratio : (16 / 9);
+            const aspectRatioValue = vsGetAspectRatioValue(aspectRatioName);
             const newHeight = Math.max(50, cardWidth / aspectRatioValue);
             card.style.height = `${newHeight}px`;
         }
@@ -4810,10 +4811,7 @@ function layoutMasonry() {
             if (card.style.display === 'none') {
                 return;
             }
-            
-            card.style.position = 'absolute';
-            card.style.width = `${columnWidth}px`;
-            
+
             let cardHeight;
             if (card.classList.contains('folder-card')) {
                 cardHeight = columnWidth;
@@ -4833,12 +4831,7 @@ function layoutMasonry() {
                     aspectRatioName = '16:9';
                 }
                 
-                const aspectRatio = ASPECT_RATIOS.find(ar => ar.name === aspectRatioName);
-                if (!aspectRatio) {
-                    console.warn('Aspect ratio not found for:', aspectRatioName, 'defaulting to 16:9');
-                    aspectRatioName = '16:9';
-                }
-                const aspectRatioValue = aspectRatio ? aspectRatio.ratio : (16 / 9);
+                const aspectRatioValue = vsGetAspectRatioValue(aspectRatioName);
                 
                 cardHeight = columnWidth / aspectRatioValue;
                 
@@ -4852,17 +4845,12 @@ function layoutMasonry() {
                 cardHeight = 50;
             }
             
-            card.style.height = `${cardHeight}px`;
-            card.style.paddingBottom = '0';
-            card.style.opacity = '1';
-            card.style.visibility = 'visible';
-            
             const shortestColumnIndex = getShortestColumnIndex(columnHeights);
             const left = shortestColumnIndex * (columnWidth + gap);
             const top = columnHeights[shortestColumnIndex];
-            
-            card.style.left = `${left}px`;
-            card.style.top = `${top}px`;
+
+            // Batch all style writes into a single cssText assignment
+            card.style.cssText = `position:absolute;width:${columnWidth}px;height:${cardHeight}px;padding-bottom:0;opacity:1;visibility:visible;left:${left}px;top:${top}px`;
             columnHeights[shortestColumnIndex] += cardHeight + gap;
         });
         
@@ -5485,7 +5473,7 @@ function renderItemsProgressive(items) {
         // Check each card's position relative to viewport
         cardsToCheck.forEach(card => {
             if (isCardInPreloadZone(card)) {
-                const cardRect = card.getBoundingClientRect();
+                const cardRect = getCachedCardRect(card);
                 const cardCenterY = cardRect.top + (cardRect.height / 2);
                 const distance = Math.abs(cardCenterY - bounds.centerY);
                 cardsToLoadNow.push({ card, mediaUrl: card.dataset.src, distance });
@@ -5824,17 +5812,23 @@ function createImageForCard(card, imageUrl) {
                 const ctx = canvas.getContext('2d');
                 ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
                 const overlay = document.createElement('img');
-                overlay.src = canvas.toDataURL('image/jpeg', 0.7);
                 overlay.className = 'gif-static-overlay';
                 overlay.draggable = false;
-                // Mark the card as having an animated image with overlay
-                img.dataset.hasOverlay = 'true';
-                const info = card.querySelector('.video-info');
-                card.insertBefore(overlay, info);
-                // If lightbox or blur pausing is active, show overlay immediately
-                if ((isLightboxOpen && pauseOnLightbox) || (isWindowBlurred && pauseOnBlur)) {
-                    overlay.classList.add('visible');
-                }
+                // Use async toBlob to avoid blocking the main thread
+                canvas.toBlob((blob) => {
+                    if (!blob || !card.isConnected) return;
+                    const blobUrl = URL.createObjectURL(blob);
+                    overlay.src = blobUrl;
+                    overlay._blobUrl = blobUrl; // Track for cleanup
+                    // Mark the card as having an animated image with overlay
+                    img.dataset.hasOverlay = 'true';
+                    const info = card.querySelector('.video-info');
+                    card.insertBefore(overlay, info);
+                    // If lightbox or blur pausing is active, show overlay immediately
+                    if ((isLightboxOpen && pauseOnLightbox) || (isWindowBlurred && pauseOnBlur)) {
+                        overlay.classList.add('visible');
+                    }
+                }, 'image/jpeg', 0.7);
             } catch (e) {
                 // Ignore cross-origin or other canvas errors
             }
@@ -6324,7 +6318,7 @@ function proactiveLoadMedia() {
     
     cardsNeedingMedia.forEach(card => {
         if (isCardInPreloadZone(card)) {
-            const cardRect = card.getBoundingClientRect();
+            const cardRect = getCachedCardRect(card);
             const cardCenterY = cardRect.top + (cardRect.height / 2);
             const distance = Math.abs(cardCenterY - bounds.centerY);
             cardsToLoad.push({ card, mediaUrl: card.dataset.src, distance });
@@ -6564,7 +6558,10 @@ function destroyImageElement(img) {
     // Also remove the static overlay if this is an animated image
     if (parent && img.dataset.hasOverlay) {
         const overlay = parent.querySelector('.gif-static-overlay');
-        if (overlay) overlay.remove();
+        if (overlay) {
+            if (overlay._blobUrl) URL.revokeObjectURL(overlay._blobUrl);
+            overlay.remove();
+        }
     }
 
     // Clean up GIF progress bar animation
@@ -12047,6 +12044,7 @@ async function refreshTagsCache() {
 // ── File-tag cache (mirrors star-rating in-memory pattern) ──────────────────
 
 let fileTagsCache = new Map(); // Map<normalizedPath, Tag[]>
+const FILE_TAGS_CACHE_MAX = 5000;
 
 async function warmFileTagsCache(filePaths) {
     if (!filePaths.length) return;
@@ -12059,6 +12057,15 @@ async function warmFileTagsCache(filePaths) {
             // Mark files with no tags so we don't refetch
             for (const fp of filePaths) {
                 if (!fileTagsCache.has(fp)) fileTagsCache.set(fp, []);
+            }
+            // Evict oldest entries if cache exceeds limit
+            if (fileTagsCache.size > FILE_TAGS_CACHE_MAX) {
+                const excess = fileTagsCache.size - FILE_TAGS_CACHE_MAX;
+                const iter = fileTagsCache.keys();
+                for (let i = 0; i < excess; i++) {
+                    const key = iter.next().value;
+                    if (key !== undefined) fileTagsCache.delete(key);
+                }
             }
         }
     } catch {}

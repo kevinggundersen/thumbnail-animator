@@ -2551,9 +2551,6 @@ button:hover {
     opacity: 0;
     pointer-events: none;
     transition: opacity 0.15s ease;
-    will-change: opacity;
-    backface-visibility: hidden;
-    transform: translateZ(0);
     image-rendering: auto;
 }
 

@@ -260,9 +260,12 @@ const ThemeManager = {
             el.classList.remove('light-theme');
         }
 
-        // Invalidate masonry style cache if available (defined in renderer.js)
+        // Invalidate style caches if available (defined in renderer.js)
         if (typeof invalidateMasonryStyleCache === 'function') {
             invalidateMasonryStyleCache();
+        }
+        if (typeof invalidateVsStyleCache === 'function') {
+            invalidateVsStyleCache();
         }
 
         // Update Electron title bar overlay colors

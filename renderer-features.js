@@ -114,7 +114,7 @@ function initKeyboardShortcuts() {
                     }
                 } else {
                     const url = card.dataset.src;
-                    const path = card.dataset.filePath;
+                    const path = card.dataset.path;
                     const name = card.querySelector('.video-info')?.textContent || '';
                     if (url) openLightbox(url, path, name);
                 }
@@ -127,7 +127,7 @@ function initKeyboardShortcuts() {
             e.preventDefault();
             const card = visibleCards[focusedCardIndex];
             if (card && !card.classList.contains('folder-card')) {
-                const path = card.dataset.filePath;
+                const path = card.dataset.path;
                 const name = card.querySelector('.video-info')?.textContent || '';
                 if (path && await showConfirm('Delete File', `Delete "${name}"?`, { confirmLabel: 'Delete', danger: true })) {
                     setStatusActivity(`Deleting ${name}...`);
@@ -176,7 +176,7 @@ function initKeyboardShortcuts() {
             e.preventDefault();
             const card = visibleCards[focusedCardIndex];
             if (card && !card.classList.contains('folder-card')) {
-                const path = card.dataset.filePath;
+                const path = card.dataset.path;
                 const name = card.querySelector('.video-info')?.textContent || '';
                 if (path) {
                     renamePendingFile = { filePath: path, fileName: name };
@@ -255,7 +255,7 @@ function initKeyboardShortcuts() {
             const card = visibleCards[focusedCardIndex];
             if (card && !card.classList.contains('folder-card')) {
                 const url = card.dataset.src;
-                const filePath = card.dataset.filePath;
+                const filePath = card.dataset.path;
                 const name = card.querySelector('.video-info')?.textContent || '';
                 if (url) openLightbox(url, filePath, name);
             }
@@ -1516,6 +1516,7 @@ function initZoom() {
 
 function applyZoom() {
     invalidateMasonryStyleCache();
+    if (typeof invalidateVsStyleCache === 'function') invalidateVsStyleCache();
     const scale = zoomLevel / 100;
     // Update CSS variable for zoom
     document.documentElement.style.setProperty('--zoom-level', zoomLevel);
@@ -1555,6 +1556,7 @@ function initTheme() {
 function applyTheme() {
     // Theme is now managed by ThemeManager in themes.js
     invalidateMasonryStyleCache();
+    if (typeof invalidateVsStyleCache === 'function') invalidateVsStyleCache();
 }
 
 // ==================== THUMBNAIL QUALITY ====================
@@ -2244,20 +2246,12 @@ function updateCardStars(card, rating, filePath) {
     // Update visibility class based on rating
     starContainer.classList.toggle('has-rating', rating > 0);
 
-    // Clear and rebuild stars
+    // Clear and rebuild stars (click handling is delegated from gridContainer, no per-star listeners needed)
     starContainer.innerHTML = '';
     for (let i = 1; i <= 5; i++) {
         const star = document.createElement('span');
         star.className = `star ${i <= rating ? 'active' : ''}`;
         star.innerHTML = i <= rating ? iconFilled('star', 16, 'var(--warning)') : icon('star', 16);
-        star.style.pointerEvents = 'auto';
-        star.style.cursor = 'pointer';
-        star.addEventListener('click', (e) => {
-            e.stopPropagation();
-            e.preventDefault();
-            const current = getFileRating(filePath);
-            setFileRating(filePath, current === i ? 0 : i);
-        });
         starContainer.appendChild(star);
     }
 
@@ -2328,7 +2322,7 @@ function updateCardRating(filePath, rating) {
     // Find all cards - try multiple selectors and path formats
     const allCards = gridContainer.querySelectorAll('.video-card:not(.folder-card)');
     allCards.forEach(card => {
-        const cardPath = card.dataset.path || card.dataset.filePath;
+        const cardPath = card.dataset.path;
         if (cardPath) {
             const normalizedCardPath = cardPath.replace(/\\/g, '/');
             // Match exact path or normalized path (case-insensitive)

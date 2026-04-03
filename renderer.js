@@ -170,16 +170,26 @@ function vsGetAspectRatioValue(name) {
  *  - If container width changed but column count stayed the same, scale widths proportionally
  *  - Full recalculation only when column count, item count, mode, or items change
  */
+// Cached computed style values for vsCalculatePositions — invalidated alongside masonry style cache
+let cachedVsStyles = null;
+function invalidateVsStyleCache() { cachedVsStyles = null; }
+function getVsStyles() {
+    if (cachedVsStyles) return cachedVsStyles;
+    const rootStyles = getComputedStyle(document.documentElement);
+    const gridStyles = getComputedStyle(gridContainer);
+    cachedVsStyles = {
+        gap: parseInt(rootStyles.getPropertyValue('--gap')) || 16,
+        paddingLeft: parseInt(gridStyles.paddingLeft) || 0,
+        paddingTop: parseInt(gridStyles.paddingTop) || 0,
+        paddingBottom: parseInt(gridStyles.paddingBottom) || 0,
+    };
+    return cachedVsStyles;
+}
+
 function vsCalculatePositions(items, containerWidth, mode, zoom) {
     const perfStart = perfTest.start();
 
-    // Get gap from CSS variable
-    const rootStyles = getComputedStyle(document.documentElement);
-    const gap = parseInt(rootStyles.getPropertyValue('--gap')) || 16;
-    const gridStyles = getComputedStyle(gridContainer);
-    const paddingLeft = parseInt(gridStyles.paddingLeft) || 0;
-    const paddingTop = parseInt(gridStyles.paddingTop) || 0;
-    const paddingBottom = parseInt(gridStyles.paddingBottom) || 0;
+    const { gap, paddingLeft, paddingTop, paddingBottom } = getVsStyles();
     const availableWidth = containerWidth - (paddingLeft * 2);
 
     // Calculate what the column count would be for this zoom/width/mode
@@ -539,7 +549,7 @@ function vsUpdateDOM(startIndex, endIndex) {
         // Populate card with item data
         const { card: newCard, isMedia } = card
             ? vsPopulateExistingCard(card, item)
-            : createCardFromItem(item);
+            : createCardFromItem(item, true);
 
         if (!card) {
             card = newCard;
@@ -554,7 +564,6 @@ function vsUpdateDOM(startIndex, endIndex) {
         card.style.paddingBottom = '0';
         card.style.opacity = '1';
         card.style.visibility = 'visible';
-        card.style.animation = 'none'; // Disable enter animation for recycled cards
         card._vsLeft = left;
         card._vsTop = top;
         card._vsWidth = width;
@@ -586,8 +595,8 @@ function vsUpdateDOM(startIndex, endIndex) {
             const tagCards = [];
             for (let i = startIndex; i < endIndex; i++) {
                 const card = vsActiveCards.get(i);
-                if (card && card.classList.contains('video-card') && card.dataset.filePath) {
-                    const np = normalizePath(card.dataset.filePath);
+                if (card && card.classList.contains('video-card') && card.dataset.path) {
+                    const np = normalizePath(card.dataset.path);
                     if (!fileTagsCache.has(np)) {
                         needTagPaths.push(np);
                     }
@@ -599,7 +608,7 @@ function vsUpdateDOM(startIndex, endIndex) {
                 warmFileTagsCache(needTagPaths).then(() => {
                     if (gen !== vsTagGeneration) return; // stale scroll
                     tagCards.forEach(c => {
-                        if (c.dataset.filePath) updateCardTagBadges(c);
+                        if (c.dataset.path) updateCardTagBadges(c);
                     });
                 });
             } else {
@@ -663,7 +672,6 @@ function vsPopulateExistingCard(card, item) {
         card.className = 'video-card';
         card.dataset.src = item.url;
         card.dataset.path = item.path;
-        card.dataset.filePath = item.path;
         card.dataset.name = item.name;
         card.dataset.searchText = item.name.toLowerCase();
         card.dataset.mediaType = item.type;
@@ -686,8 +694,6 @@ function vsPopulateExistingCard(card, item) {
             applyAspectRatioToCard(card, aspectRatioName, 'prescanned');
             card.dataset.width = item.width;
             card.dataset.height = item.height;
-            card.dataset.mediaWidth = item.width;
-            card.dataset.mediaHeight = item.height;
             createResolutionLabel(card, item.width, item.height);
         } else {
             applyAspectRatioToCard(card, '16:9', 'fallback');
@@ -2805,8 +2811,6 @@ function applyUpdatedDimensionsToVisibleCards(updatedPaths) {
         applyAspectRatioToCard(card, aspectRatioName, 'hydrated');
         card.dataset.width = item.width;
         card.dataset.height = item.height;
-        card.dataset.mediaWidth = item.width;
-        card.dataset.mediaHeight = item.height;
         card.dataset.mtime = String(item.mtime || 0);
         if (item.size > 0) card.dataset.fileSize = String(item.size);
         else delete card.dataset.fileSize;
@@ -2918,10 +2922,15 @@ async function getPluginMenuItems() {
 }
 
 // Normalize path for consistent cache lookups (handle Windows path variations)
+const _normalizeCache = new Map();
 function normalizePath(path) {
     if (!path) return path;
-    // Normalize separators and remove trailing separators
-    return path.replace(/\\/g, '/').replace(/\/+$/, '') || path;
+    let result = _normalizeCache.get(path);
+    if (result !== undefined) return result;
+    result = path.replace(/\\/g, '/').replace(/\/+$/, '') || path;
+    _normalizeCache.set(path, result);
+    if (_normalizeCache.size > 20000) _normalizeCache.clear();
+    return result;
 }
 
 // ============================================================================
@@ -3558,15 +3567,16 @@ function ensureCleanupScrollListener() {
 
 function performCleanupCheck() {
     const perfStart = perfTest.start();
-    // Check all media cards and clean up media that aren't intersecting
-    const allCards = gridContainer.querySelectorAll('.video-card');
-    if (allCards.length === 0) {
+
+    // Use vsActiveCards when virtual scrolling is active (avoids full DOM traversal)
+    const cardSource = vsEnabled ? Array.from(vsActiveCards.values()) : Array.from(gridContainer.querySelectorAll('.video-card'));
+    if (cardSource.length === 0) {
         perfTest.end('performCleanupCheck', perfStart, { cardCount: 0, detail: 'empty' });
         return;
     }
-    
+
     let cleaned = false;
-    
+
     // Calculate viewport bounds with a buffer zone for cleanup
     // Media outside this buffer zone will be cleaned up aggressively
     // Use same buffer as PRELOAD_BUFFER_PX for consistency
@@ -3574,34 +3584,32 @@ function performCleanupCheck() {
     const viewportBottom = window.innerHeight + PRELOAD_BUFFER_PX;
     const viewportLeft = -PRELOAD_BUFFER_PX;
     const viewportRight = window.innerWidth + PRELOAD_BUFFER_PX
-    
-    // Query all media elements once - maintain local arrays to avoid redundant DOM queries
-    let allVideos = Array.from(gridContainer.querySelectorAll('video'));
-    let allImages = Array.from(gridContainer.querySelectorAll('img.media-thumbnail'));
+
+    // Build card → media map by iterating known cards (shallow querySelector per card)
+    const cardMediaMap = new Map();
+    let allVideos = [];
+    let allImages = [];
+    for (const card of cardSource) {
+        if (!card.classList.contains('video-card')) continue;
+        const videos = card.querySelectorAll('video');
+        const images = card.querySelectorAll('img.media-thumbnail');
+        if (videos.length > 0 || images.length > 0) {
+            const vArr = Array.from(videos);
+            const iArr = Array.from(images);
+            cardMediaMap.set(card, { videos: vArr, images: iArr });
+            allVideos.push(...vArr);
+            allImages.push(...iArr);
+        }
+    }
 
     if (allVideos.length === 0 && allImages.length === 0) {
-        perfTest.end('performCleanupCheck', perfStart, { cardCount: allCards.length, detail: 'no media' });
+        perfTest.end('performCleanupCheck', perfStart, { cardCount: cardSource.length, detail: 'no media' });
         return;
-    }
-
-    // Build a map of card -> { videos, images } for fast lookup
-    const cardMediaMap = new Map();
-    for (const video of allVideos) {
-        const card = video.closest('.video-card');
-        if (!card) continue;
-        if (!cardMediaMap.has(card)) cardMediaMap.set(card, { videos: [], images: [] });
-        cardMediaMap.get(card).videos.push(video);
-    }
-    for (const img of allImages) {
-        const card = img.closest('.video-card');
-        if (!card) continue;
-        if (!cardMediaMap.has(card)) cardMediaMap.set(card, { videos: [], images: [] });
-        cardMediaMap.get(card).images.push(img);
     }
 
     const cardsWithMedia = Array.from(cardMediaMap.keys());
     if (cardsWithMedia.length === 0) {
-        perfTest.end('performCleanupCheck', perfStart, { cardCount: allCards.length, detail: 'no active cards' });
+        perfTest.end('performCleanupCheck', perfStart, { cardCount: cardSource.length, detail: 'no active cards' });
         return;
     }
 
@@ -3949,19 +3957,9 @@ const folderPreviewCache = new Map(); // folderPath → { urls: string[], ts: nu
 const folderPreviewRequests = new Map(); // folderPath → Promise (in-flight dedup)
 const FOLDER_PREVIEW_CACHE_TTL = 120000; // 2 minutes
 
-// Optimized function to get media counts with caching
+// Return already-tracked incremental counters (no DOM traversal needed)
 function getMediaCounts() {
-    const now = Date.now();
-    if (now - cachedMediaCounts.timestamp < MEDIA_COUNT_CACHE_TTL) {
-        return { videos: cachedMediaCounts.videos, images: cachedMediaCounts.images };
-    }
-    
-    // Update cache
-    cachedMediaCounts.videos = gridContainer.querySelectorAll('video').length;
-    cachedMediaCounts.images = gridContainer.querySelectorAll('img.media-thumbnail').length;
-    cachedMediaCounts.timestamp = now;
-    
-    return { videos: cachedMediaCounts.videos, images: cachedMediaCounts.images };
+    return { videos: activeVideoCount, images: activeImageCount };
 }
 
 // Optimized function to get viewport bounds with caching
@@ -3992,6 +3990,16 @@ function setCachedUrl(cache, key, value, maxEntries = 500) {
             cache.delete(firstKey);
         }
     }
+}
+
+// Promote a cache entry to most-recently-used (for LRU eviction with setCachedUrl)
+function getCachedUrl(cache, key) {
+    const value = cache.get(key);
+    if (value !== undefined) {
+        cache.delete(key);
+        cache.set(key, value);
+    }
+    return value;
 }
 
 function getImageThumbnailCacheKey(filePath, maxSize) {
@@ -4066,8 +4074,9 @@ function _enqueueThumbnailRequest(type, filePath, maxSize) {
 
 function requestImageThumbnailUrl(filePath, maxSize) {
     const key = getImageThumbnailCacheKey(filePath, maxSize);
-    if (imageThumbnailUrlCache.has(key)) {
-        return Promise.resolve(imageThumbnailUrlCache.get(key));
+    const cachedImgUrl = getCachedUrl(imageThumbnailUrlCache, key);
+    if (cachedImgUrl !== undefined) {
+        return Promise.resolve(cachedImgUrl);
     }
     if (imageThumbnailRequests.has(key)) {
         return imageThumbnailRequests.get(key);
@@ -4089,8 +4098,9 @@ function requestImageThumbnailUrl(filePath, maxSize) {
 }
 
 function requestVideoPosterUrl(filePath) {
-    if (videoPosterUrlCache.has(filePath)) {
-        return Promise.resolve(videoPosterUrlCache.get(filePath));
+    const cachedPosterUrl = getCachedUrl(videoPosterUrlCache, filePath);
+    if (cachedPosterUrl !== undefined) {
+        return Promise.resolve(cachedPosterUrl);
     }
     if (videoPosterRequests.has(filePath)) {
         return videoPosterRequests.get(filePath);
@@ -4457,7 +4467,7 @@ function onCardInfoSettingsChanged() {
 }
 
 function getMediaItemForCard(card) {
-    const path = card.dataset.filePath || card.dataset.path;
+    const path = card.dataset.path;
     if (!path) return null;
     if (typeof card._vsItemIndex === 'number' && vsSortedItems[card._vsItemIndex]) {
         const it = vsSortedItems[card._vsItemIndex];
@@ -4577,13 +4587,13 @@ function refreshAllVisibleMediaCardInfo() {
         const dur = video && isFinite(video.duration) && video.duration > 0 ? video.duration : null;
 
         syncCardMetaRow(card, item, dur);
-        syncStarRatingOnCard(card, item?.path || card.dataset.path || card.dataset.filePath);
+        syncStarRatingOnCard(card, item?.path || card.dataset.path);
         if (!cardInfoSettings.duration && typeof hideScrubber === 'function') {
             hideScrubber(card);
         }
 
-        const w = item?.width || parseInt(card.dataset.mediaWidth || card.dataset.width || '0', 10);
-        const h = item?.height || parseInt(card.dataset.mediaHeight || card.dataset.height || '0', 10);
+        const w = item?.width || parseInt(card.dataset.width || '0', 10);
+        const h = item?.height || parseInt(card.dataset.height || '0', 10);
         createResolutionLabel(card, w, h);
 
         // Toggle extension label visibility
@@ -4644,8 +4654,8 @@ function createResolutionLabel(card, width, height) {
     const aspectRatio = calculateAspectRatio(width, height);
     chip.textContent = `${width}\u00d7${height} \u2022 ${aspectRatio}`;
 
-    card.dataset.mediaWidth = width;
-    card.dataset.mediaHeight = height;
+    card.dataset.width = width;
+    card.dataset.height = height;
 }
 
 // Apply aspect ratio to card.
@@ -5157,13 +5167,13 @@ function sortItems(items) {
         return sortOrder === 'ascending' ? comparison : -comparison;
     });
 
-    // Partition pinned items to top of each group
-    const pinnedFolders = folders.filter(f => isFilePinned(f.path));
-    const unpinnedFolders = folders.filter(f => !isFilePinned(f.path));
-    const pinnedFiles = files.filter(f => isFilePinned(f.path));
-    const unpinnedFiles = files.filter(f => !isFilePinned(f.path));
+    // Partition pinned items to top of each group (single pass)
+    const pinnedFolders = [], unpinnedFolders = [];
+    for (const f of folders) (isFilePinned(f.path) ? pinnedFolders : unpinnedFolders).push(f);
+    const pinnedFiles = [], unpinnedFiles = [];
+    for (const f of files) (isFilePinned(f.path) ? pinnedFiles : unpinnedFiles).push(f);
 
-    return [...pinnedFolders, ...unpinnedFolders, ...pinnedFiles, ...unpinnedFiles];
+    return pinnedFolders.concat(unpinnedFolders, pinnedFiles, unpinnedFiles);
 }
 
 // Function to apply sorting and reload current folder
@@ -5193,13 +5203,15 @@ function applySorting() {
 let cardAnimIndex = 0;
 
 // Function to create a card element from an item
-function createCardFromItem(item) {
+function createCardFromItem(item, skipAnimation = false) {
     if (item.type === 'folder') {
         // Create folder card
         const card = document.createElement('div');
         card.className = 'folder-card';
-        card.style.animation = `card-enter 0.3s var(--ease-out-expo) ${Math.min(cardAnimIndex * 20, 600)}ms backwards`;
-        cardAnimIndex++;
+        if (!skipAnimation) {
+            card.style.animation = `card-enter 0.3s var(--ease-out-expo) ${Math.min(cardAnimIndex * 20, 600)}ms backwards`;
+            cardAnimIndex++;
+        }
         card.dataset.folderPath = item.path;
         card.dataset.searchText = item.name.toLowerCase();
 
@@ -5221,11 +5233,12 @@ function createCardFromItem(item) {
         // Create media card
         const card = document.createElement('div');
         card.className = 'video-card';
-        card.style.animation = `card-enter 0.3s var(--ease-out-expo) ${Math.min(cardAnimIndex * 20, 600)}ms backwards`;
-        cardAnimIndex++;
+        if (!skipAnimation) {
+            card.style.animation = `card-enter 0.3s var(--ease-out-expo) ${Math.min(cardAnimIndex * 20, 600)}ms backwards`;
+            cardAnimIndex++;
+        }
         card.dataset.src = item.url;
-        card.dataset.path = item.path; // Store file path for context menu actions and star ratings
-        card.dataset.filePath = item.path; // Keep for backward compatibility
+        card.dataset.path = item.path;
         card.dataset.name = item.name;
         card.dataset.searchText = item.name.toLowerCase();
         card.dataset.mediaType = item.type;
@@ -5252,8 +5265,6 @@ function createCardFromItem(item) {
             // Store dimensions on card for later use
             card.dataset.width = item.width;
             card.dataset.height = item.height;
-            card.dataset.mediaWidth = item.width; // Keep for backward compatibility
-            card.dataset.mediaHeight = item.height; // Keep for backward compatibility
             // Create resolution label immediately
             createResolutionLabel(card, item.width, item.height);
         }
@@ -5264,8 +5275,6 @@ function createCardFromItem(item) {
             applyAspectRatioToCard(card, aspectRatioName, 'prescanned');
             card.dataset.width = item.width;
             card.dataset.height = item.height;
-            card.dataset.mediaWidth = item.width;
-            card.dataset.mediaHeight = item.height;
             createResolutionLabel(card, item.width, item.height);
         }
 
@@ -5601,7 +5610,7 @@ shortcutsOverlay.addEventListener('click', (e) => {
 
 async function resolveGifDuration(card, imageUrl) {
     if (card.dataset.gifDuration) return;
-    const filePath = card.dataset.filePath;
+    const filePath = card.dataset.path;
     const mtime = Number(card.dataset.mtime || 0);
 
     // Try cache first
@@ -5711,7 +5720,7 @@ function createImageForCard(card, imageUrl) {
 
     // Enable dragging images out of the app
     img.addEventListener('dragstart', (e) => {
-        const filePath = card.dataset.filePath;
+        const filePath = card.dataset.path;
         if (filePath) {
             e.dataTransfer.effectAllowed = 'copyMove';
             e.dataTransfer.setData('text/plain', filePath);
@@ -5762,11 +5771,11 @@ function createImageForCard(card, imageUrl) {
             card.dataset.height = img.naturalHeight;
 
             // Create resolution label if not already created
-            if (!card.dataset.mediaWidth) {
+            if (!card.dataset.width) {
                 createResolutionLabel(card, img.naturalWidth, img.naturalHeight);
             }
 
-            if (updateItemDimensionsByPath(card.dataset.filePath, img.naturalWidth, img.naturalHeight)) {
+            if (updateItemDimensionsByPath(card.dataset.path, img.naturalWidth, img.naturalHeight)) {
                 if (currentFolderPath) {
                     updateInMemoryFolderCaches(currentFolderPath, currentItems);
                 }
@@ -5774,10 +5783,10 @@ function createImageForCard(card, imageUrl) {
             }
 
             // Cache discovered dimensions for future visits
-            if (card.dataset.filePath && !card.dataset.dimCached) {
+            if (card.dataset.path && !card.dataset.dimCached) {
                 card.dataset.dimCached = '1';
                 cacheDimensions([{
-                    path: card.dataset.filePath,
+                    path: card.dataset.path,
                     mtime: Number(card.dataset.mtime || 0),
                     width: img.naturalWidth,
                     height: img.naturalHeight
@@ -5858,8 +5867,8 @@ function createImageForCard(card, imageUrl) {
     card.insertBefore(img, info);
     card.dataset.hasMedia = '1';
 
-    if (card.dataset.filePath && !isGif && !isOriginalQuality) {
-        requestImageThumbnailUrl(card.dataset.filePath, thumbMaxSize)
+    if (card.dataset.path && !isGif && !isOriginalQuality) {
+        requestImageThumbnailUrl(card.dataset.path, thumbMaxSize)
             .then(url => {
                 if (!img.isConnected) return;
                 setImageSource(url || imageUrl, url ? 'thumb' : 'original');
@@ -5950,8 +5959,8 @@ function createVideoForCard(card, videoUrl) {
     
     const video = document.createElement('video');
     video.className = 'media-thumbnail';
-    if (card.dataset.filePath && videoPosterUrlCache.has(card.dataset.filePath)) {
-        video.poster = videoPosterUrlCache.get(card.dataset.filePath);
+    if (card.dataset.path && videoPosterUrlCache.has(card.dataset.path)) {
+        video.poster = videoPosterUrlCache.get(card.dataset.path);
     }
     video.src = videoUrl;
     video.muted = true;
@@ -5965,8 +5974,8 @@ function createVideoForCard(card, videoUrl) {
     video.draggable = true;
 
     // Request a thumbnail poster from ffmpeg (non-blocking)
-    if (hasFfmpegAvailable && card.dataset.filePath) {
-        requestVideoPosterUrl(card.dataset.filePath).then(url => {
+    if (hasFfmpegAvailable && card.dataset.path) {
+        requestVideoPosterUrl(card.dataset.path).then(url => {
             if (url && video.isConnected) {
                 video.poster = url;
             }
@@ -5975,7 +5984,7 @@ function createVideoForCard(card, videoUrl) {
     
     // Add dragstart handler to enable dragging videos
     video.addEventListener('dragstart', (e) => {
-        const filePath = card.dataset.filePath;
+        const filePath = card.dataset.path;
         if (filePath) {
             e.dataTransfer.effectAllowed = 'copyMove';
             e.dataTransfer.setData('text/plain', filePath);
@@ -6009,7 +6018,7 @@ function createVideoForCard(card, videoUrl) {
             // Create resolution label
             createResolutionLabel(card, video.videoWidth, video.videoHeight);
 
-            if (updateItemDimensionsByPath(card.dataset.filePath, video.videoWidth, video.videoHeight)) {
+            if (updateItemDimensionsByPath(card.dataset.path, video.videoWidth, video.videoHeight)) {
                 if (currentFolderPath) {
                     updateInMemoryFolderCaches(currentFolderPath, currentItems);
                 }
@@ -6017,10 +6026,10 @@ function createVideoForCard(card, videoUrl) {
             }
 
             // Cache discovered dimensions for future visits
-            if (card.dataset.filePath && !card.dataset.dimCached) {
+            if (card.dataset.path && !card.dataset.dimCached) {
                 card.dataset.dimCached = '1';
                 cacheDimensions([{
-                    path: card.dataset.filePath,
+                    path: card.dataset.path,
                     mtime: Number(card.dataset.mtime || 0),
                     width: video.videoWidth,
                     height: video.videoHeight
@@ -6226,11 +6235,9 @@ function processEntries(entries) {
     
     // Load media in parallel batches for faster initial loading
     let loadedInBatch = 0;
+    let currentTotal = activeVideoCount + activeImageCount;
     cardsToLoad.forEach(({ card, mediaUrl }) => {
-        const { videos: currentVideoCount, images: currentImageCount } = getMediaCounts();
-        const totalMediaCount = currentVideoCount + currentImageCount;
-        
-        if (totalMediaCount >= MAX_TOTAL_MEDIA) {
+        if (currentTotal >= MAX_TOTAL_MEDIA) {
             // If at limit, only load if this card is in the preload zone
             // Only load if in preload zone when at limit
             if (!isCardInPreloadZone(card)) {
@@ -6248,6 +6255,7 @@ function processEntries(entries) {
         if (loadedInBatch < getEffectiveLoadLimit()) {
             // Create immediately for parallel batch (no cooldown restriction)
             createMediaForCard(card, mediaUrl);
+            currentTotal++;
             loadedInBatch++;
         } else {
             // For items beyond parallel limit, still load immediately but use requestAnimationFrame
@@ -6704,23 +6712,31 @@ function updateStatusBarSelection(card) {
     }
 
     const name = card.dataset.name || '';
-    const w = card.dataset.width || card.dataset.mediaWidth;
-    const h = card.dataset.height || card.dataset.mediaHeight;
+    const w = card.dataset.width;
+    const h = card.dataset.height;
     const parts = [name];
     if (w && h) parts.push(`${w}x${h}`);
     statusSelectionInfo.textContent = parts.join(' \u2014 ');
 }
 
+// L2-normalize a vector in-place (or return new Float32Array). After normalization,
+// cosine similarity = dot product, saving 2 magnitude computations per comparison.
+function l2Normalize(vec) {
+    let mag = 0;
+    for (let i = 0; i < vec.length; i++) mag += vec[i] * vec[i];
+    mag = Math.sqrt(mag);
+    if (mag === 0) return vec;
+    const result = new Float32Array(vec.length);
+    for (let i = 0; i < vec.length; i++) result[i] = vec[i] / mag;
+    return result;
+}
+
+// Fast cosine similarity for pre-normalized vectors (dot product only)
 function cosineSimilarity(a, b) {
-    let dot = 0, magA = 0, magB = 0;
+    let dot = 0;
     const len = Math.min(a.length, b.length);
-    for (let i = 0; i < len; i++) {
-        dot  += a[i] * b[i];
-        magA += a[i] * a[i];
-        magB += b[i] * b[i];
-    }
-    const denom = Math.sqrt(magA) * Math.sqrt(magB);
-    return denom === 0 ? 0 : dot / denom;
+    for (let i = 0; i < len; i++) dot += a[i] * b[i];
+    return dot;
 }
 
 /**
@@ -6806,11 +6822,16 @@ function applyFilters() {
         }
         if (!matchesFilter) return false;
 
+        // Cache rating once for reuse in star filter, advanced search, and sort
+        const needsRating = starFilterActive || advancedSearchFilters.starRating !== null;
+        if (needsRating && item.type !== 'folder' && item.path) {
+            item._cachedRating = getFileRating(item.path);
+        }
+
         // Star filter (independent toggle)
         if (starFilterActive) {
             if (item.type === 'folder') return false;
-            const rating = getFileRating(item.path);
-            if (rating <= 0) return false;
+            if ((item._cachedRating || 0) <= 0) return false;
         }
 
         // Tag filter
@@ -6821,17 +6842,13 @@ function applyFilters() {
 
         // Advanced search filters
         if (advancedSearchFilters.width || advancedSearchFilters.height) {
-            const width = item.width;
-            const height = item.height;
-            if (advancedSearchFilters.width && width !== advancedSearchFilters.width) return false;
-            if (advancedSearchFilters.height && height !== advancedSearchFilters.height) return false;
+            if (advancedSearchFilters.width && item.width !== advancedSearchFilters.width) return false;
+            if (advancedSearchFilters.height && item.height !== advancedSearchFilters.height) return false;
         }
 
         if (advancedSearchFilters.aspectRatio) {
-            const width = item.width;
-            const height = item.height;
-            if (width && height) {
-                const ratio = width / height;
+            if (item.width && item.height) {
+                const ratio = item.width / item.height;
                 const targetRatio = parseAspectRatio(advancedSearchFilters.aspectRatio);
                 if (Math.abs(ratio - targetRatio) > 0.1) return false;
             } else {
@@ -6840,8 +6857,7 @@ function applyFilters() {
         }
 
         if (advancedSearchFilters.starRating !== null && item.path) {
-            const rating = getFileRating(item.path);
-            if (rating < advancedSearchFilters.starRating) return false;
+            if ((item._cachedRating || 0) < advancedSearchFilters.starRating) return false;
         }
 
         return true;
@@ -6854,8 +6870,8 @@ function applyFilters() {
             if (a.type === 'folder' && b.type === 'folder') return 0;
             if (a.type === 'folder') return 1;
             if (b.type === 'folder') return -1;
-            const aRating = getFileRating(a.path);
-            const bRating = getFileRating(b.path);
+            const aRating = a._cachedRating || 0;
+            const bRating = b._cachedRating || 0;
             return starSortOrder === 'asc' ? aRating - bRating : bRating - aRating;
         });
     }
@@ -6874,12 +6890,17 @@ function applyFilters() {
         sortedFiltered = applyVisualClustering(sortedFiltered);
     }
 
-    // Partition pinned items to top (mirrors sortItems logic)
-    const pinnedFolders = sortedFiltered.filter(f => f.type === 'folder' && isFilePinned(f.path));
-    const unpinnedFolders = sortedFiltered.filter(f => f.type === 'folder' && !isFilePinned(f.path));
-    const pinnedFiles = sortedFiltered.filter(f => f.type !== 'folder' && isFilePinned(f.path));
-    const unpinnedFiles = sortedFiltered.filter(f => f.type !== 'folder' && !isFilePinned(f.path));
-    sortedFiltered = [...pinnedFolders, ...unpinnedFolders, ...pinnedFiles, ...unpinnedFiles];
+    // Partition pinned items to top (single pass instead of 4x filter)
+    {
+        const pinnedFolders = [], unpinnedFolders = [], pinnedFiles = [], unpinnedFiles = [];
+        for (const item of sortedFiltered) {
+            const isFolder = item.type === 'folder';
+            const pinned = isFilePinned(item.path);
+            if (isFolder) (pinned ? pinnedFolders : unpinnedFolders).push(item);
+            else (pinned ? pinnedFiles : unpinnedFiles).push(item);
+        }
+        sortedFiltered = pinnedFolders.concat(unpinnedFolders, pinnedFiles, unpinnedFiles);
+    }
 
     // Update virtual scrolling with filtered items
     if (vsEnabled) {
@@ -6897,7 +6918,7 @@ function performSearch(searchQuery) {
         if (aiVisualSearchEnabled && aiSearchActive && searchQuery.trim()) {
             try {
                 const embedding = await window.electronAPI.clipEmbedText(searchQuery.trim());
-                currentTextEmbedding = embedding ? new Float32Array(embedding) : null;
+                currentTextEmbedding = embedding ? l2Normalize(new Float32Array(embedding)) : null;
             } catch {
                 currentTextEmbedding = null;
             }
@@ -8933,7 +8954,7 @@ async function scheduleBackgroundEmbedding(items) {
     // Load cached embeddings from IndexedDB
     try {
         const cached = await getCachedEmbeddings(mediaItems.map(i => ({ path: i.path, mtime: i.mtime || 0 })));
-        for (const [p, emb] of cached) currentEmbeddings.set(p, emb);
+        for (const [p, emb] of cached) currentEmbeddings.set(p, l2Normalize(emb));
     } catch { /* ignore cache errors */ }
 
     const uncached = mediaItems.filter(i => !currentEmbeddings.has(i.path));
@@ -8973,7 +8994,7 @@ async function scheduleBackgroundEmbedding(items) {
             const toCache = [];
             for (const r of results) {
                 if (r && r.embedding) {
-                    const emb = new Float32Array(r.embedding);
+                    const emb = l2Normalize(new Float32Array(r.embedding));
                     currentEmbeddings.set(r.path, emb);
                     const item = mediaItems.find(m => m.path === r.path);
                     toCache.push({ path: r.path, mtime: item ? (item.mtime || 0) : 0, embedding: r.embedding });
@@ -9035,7 +9056,7 @@ async function _startIdlePreEmbedding() {
     // Find uncached items
     try {
         const cached = await getCachedEmbeddings(mediaItems.map(i => ({ path: i.path, mtime: i.mtime || 0 })));
-        for (const [p, emb] of cached) currentEmbeddings.set(p, emb);
+        for (const [p, emb] of cached) currentEmbeddings.set(p, l2Normalize(emb));
     } catch { /* ignore */ }
 
     const uncached = mediaItems.filter(i => !currentEmbeddings.has(i.path));
@@ -9055,7 +9076,7 @@ async function _startIdlePreEmbedding() {
             const toCache = [];
             for (const r of results) {
                 if (r && r.embedding) {
-                    const emb = new Float32Array(r.embedding);
+                    const emb = l2Normalize(new Float32Array(r.embedding));
                     currentEmbeddings.set(r.path, emb);
                     const item = mediaItems.find(m => m.path === r.path);
                     toCache.push({ path: r.path, mtime: item ? (item.mtime || 0) : 0, embedding: r.embedding });
@@ -10205,7 +10226,7 @@ function showContextMenu(event, card) {
     otherMenu.classList.add('hidden');
 
     // Update pin/unpin label dynamically
-    const itemPath = isFolder ? card.dataset.folderPath : card.dataset.filePath;
+    const itemPath = isFolder ? card.dataset.folderPath : card.dataset.path;
     const pinned = isFilePinned(itemPath);
     const pinLabel = menu.querySelector('.pin-label');
     if (pinLabel) pinLabel.textContent = pinned ? 'Unpin' : 'Pin to Top';
@@ -10306,7 +10327,7 @@ contextMenu.addEventListener('click', async (e) => {
     const action = e.target.closest('.context-menu-item')?.dataset.action || e.target.dataset.action;
     if (!action || !contextMenuTargetCard) return;
 
-    const filePath = contextMenuTargetCard.dataset.filePath;
+    const filePath = contextMenuTargetCard.dataset.path;
     if (!filePath) return;
 
     // Store the file name before hiding the menu (since we clear contextMenuTargetCard)
@@ -10413,7 +10434,7 @@ contextMenu.addEventListener('click', async (e) => {
             // Gather selected files (multi-select support)
             const selectedCards = document.querySelectorAll('.video-card.selected');
             const paths = selectedCards.length > 1
-                ? Array.from(selectedCards).map(c => c.dataset.filePath).filter(Boolean)
+                ? Array.from(selectedCards).map(c => c.dataset.path).filter(Boolean)
                 : [filePath];
             showAddToCollectionSubmenu(paths, e.clientX || e.pageX || 200, e.clientY || e.pageY || 200);
             break;
@@ -10422,7 +10443,7 @@ contextMenu.addEventListener('click', async (e) => {
         case 'tag-file': {
             const selectedCards = document.querySelectorAll('.video-card.selected');
             const tagPaths = selectedCards.length > 1
-                ? Array.from(selectedCards).map(c => c.dataset.filePath).filter(Boolean)
+                ? Array.from(selectedCards).map(c => c.dataset.path).filter(Boolean)
                 : [filePath];
             openTagPicker(tagPaths);
             break;
@@ -11344,7 +11365,7 @@ if (typeof CommandPalette !== 'undefined') {
         // File Actions (require focused card -- dispatch keyboard events to reuse existing handlers)
         { id: 'file.rename', label: 'Rename File', category: 'File', shortcut: 'F2', keywords: ['rename', 'name'], when: () => focusedCardIndex >= 0, action: () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'F2', bubbles: true })) },
         { id: 'file.delete', label: 'Delete File', category: 'File', shortcut: 'Delete', keywords: ['delete', 'remove', 'trash'], when: () => focusedCardIndex >= 0, action: () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true })) },
-        { id: 'file.reveal', label: 'Reveal in File Explorer', category: 'File', keywords: ['reveal', 'explorer', 'show', 'finder'], when: () => focusedCardIndex >= 0, action: () => { const card = visibleCards[focusedCardIndex]; if (card) { const fp = card.dataset.filePath; if (fp) window.electronAPI.revealInExplorer(fp); } } },
+        { id: 'file.reveal', label: 'Reveal in File Explorer', category: 'File', keywords: ['reveal', 'explorer', 'show', 'finder'], when: () => focusedCardIndex >= 0, action: () => { const card = visibleCards[focusedCardIndex]; if (card) { const fp = card.dataset.path; if (fp) window.electronAPI.revealInExplorer(fp); } } },
 
         // Tools
         { id: 'tools.organize', label: 'Organize Files', category: 'Tools', keywords: ['organize', 'move', 'sort', 'folder'], action: () => document.getElementById('organize-btn').click() },
@@ -11428,7 +11449,7 @@ function invalidateFileTagsCache(filePath) {
 // ── Tag badges on cards ──────────────────────────────────────────────────────
 
 function updateCardTagBadges(card) {
-    const filePath = card.dataset.filePath;
+    const filePath = card.dataset.path;
     if (!filePath) return;
     if (!cardInfoSettings.tags) {
         const existing = card.querySelector('.card-tags');
@@ -11590,7 +11611,7 @@ async function refreshVisibleCardTags() {
         cards = Array.from(document.querySelectorAll('.video-card'));
     }
     const paths = cards
-        .map(c => c.dataset.filePath)
+        .map(c => c.dataset.path)
         .filter(Boolean)
         .map(normalizePath);
     if (paths.length > 0) await warmFileTagsCache(paths);

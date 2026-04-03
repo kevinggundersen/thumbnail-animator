@@ -4364,6 +4364,24 @@ window.addEventListener('DOMContentLoaded', async () => {
         sortOrder = 'ascending'; // Default
     }
     
+    // Restore group-by-date preference
+    const savedGroupByDate = localStorage.getItem('groupByDate');
+    if (savedGroupByDate === 'true') {
+        groupByDate = true;
+        const gbdBtn = document.getElementById('group-by-date-btn');
+        const gbdGran = document.getElementById('date-group-granularity-select');
+        if (gbdBtn) gbdBtn.classList.add('active');
+        if (gbdGran) {
+            gbdGran.classList.remove('date-group-granularity-hidden');
+            gbdGran.classList.add('date-group-granularity-visible');
+        }
+        const savedGranularity = localStorage.getItem('dateGroupGranularity');
+        if (savedGranularity && ['year', 'month', 'day'].includes(savedGranularity)) {
+            dateGroupGranularity = savedGranularity;
+            if (gbdGran) gbdGran.value = savedGranularity;
+        }
+    }
+
     // Note: UI will be updated by switchToTab when tabs are loaded
     
     // Only restore last folder if remembering is enabled

@@ -797,6 +797,7 @@ class AppDatabase {
     // ── Lifecycle ────────────────────────────────────────────────────────
 
     close() {
+        try { this.db.pragma('wal_checkpoint(TRUNCATE)'); } catch {}
         this.db.close();
     }
 }

@@ -9017,7 +9017,8 @@ const SETTINGS_EXPORT_KEYS_STRING = [
     'aiSimilarityThreshold', 'aiClusteringMode',
     'videoCacheLimitMB', 'imageCacheLimitMB',
     'useSystemTrash', 'hoverScale', 'hoverScaleWithZoom',
-    'hoverScaleAt50', 'hoverScaleAt100', 'hoverScaleAt200'
+    'hoverScaleAt50', 'hoverScaleAt100', 'hoverScaleAt200',
+    'groupByDate', 'dateGroupGranularity', 'recursiveSearch'
 ];
 const SETTINGS_EXPORT_KEYS_JSON = [
     'cardInfoSettings', 'customThemes',
@@ -13863,6 +13864,7 @@ let preDateGroupSortType = null;
         gran.classList.toggle('date-group-granularity-hidden', !groupByDate);
         gran.classList.toggle('date-group-granularity-visible', groupByDate);
         collapsedDateGroups.clear();
+        deferLocalStorageWrite('groupByDate', String(groupByDate));
 
         if (groupByDate) {
             preDateGroupSortType = sortType;
@@ -13882,6 +13884,7 @@ let preDateGroupSortType = null;
     gran.addEventListener('change', () => {
         dateGroupGranularity = gran.value;
         collapsedDateGroups.clear();
+        deferLocalStorageWrite('dateGroupGranularity', dateGroupGranularity);
         if (groupByDate) applySorting();
     });
 })();

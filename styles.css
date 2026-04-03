@@ -6977,6 +6977,18 @@ video.blow-up-media {
 }
 .tag-picker-item-check svg { display: none; }
 .tag-picker-item.active .tag-picker-item-check svg { display: block; }
+.tag-picker-item.partial .tag-picker-item-check {
+    background: var(--accent);
+    border-color: var(--accent);
+    opacity: 0.55;
+}
+.tag-picker-item.partial .tag-picker-item-check svg { display: block; }
+.tag-picker-file-count {
+    font-size: 11px;
+    color: var(--text-secondary);
+    font-weight: 400;
+    margin-left: 8px;
+}
 .tag-picker-item-name {
     flex: 1;
     font-size: 13px;

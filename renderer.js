@@ -11500,6 +11500,9 @@ async function openTagPicker(filePaths) {
     searchInput.value = '';
     searchInput.focus();
 
+    const countEl = document.getElementById('tag-picker-file-count');
+    if (countEl) countEl.textContent = filePaths.length > 1 ? ` (${filePaths.length} files)` : '';
+
     await refreshTagsCache();
     await renderTagPickerList();
     await renderTagPickerSuggestions();
@@ -11514,12 +11517,27 @@ async function renderTagPickerList(filter) {
     const list = document.getElementById('tag-picker-list');
     list.innerHTML = '';
 
-    // Get tags currently on the first file (for checkmark state)
-    let currentTags = new Set();
-    if (tagPickerFilePaths.length > 0) {
+    const totalFiles = tagPickerFilePaths.length;
+    const isMulti = totalFiles > 1;
+
+    // Build a map of tagId -> count of files that have it
+    let tagCounts = new Map();
+    if (totalFiles > 0) {
         try {
-            const result = await window.electronAPI.dbGetTagsForFile(normalizePath(tagPickerFilePaths[0]));
-            if (result.success && result.data) currentTags = new Set(result.data.map(t => t.id));
+            if (isMulti) {
+                const normalizedPaths = tagPickerFilePaths.map(fp => normalizePath(fp));
+                const result = await window.electronAPI.dbGetTagsForFiles(normalizedPaths);
+                if (result.success && result.data) {
+                    for (const tags of Object.values(result.data)) {
+                        for (const t of tags) tagCounts.set(t.id, (tagCounts.get(t.id) || 0) + 1);
+                    }
+                }
+            } else {
+                const result = await window.electronAPI.dbGetTagsForFile(normalizePath(tagPickerFilePaths[0]));
+                if (result.success && result.data) {
+                    for (const t of result.data) tagCounts.set(t.id, 1);
+                }
+            }
         } catch {}
     }
 
@@ -11540,8 +11558,11 @@ async function renderTagPickerList(filter) {
                 if (result.success && result.data) {
                     await refreshTagsCache();
                     // Auto-assign to files
-                    for (const fp of tagPickerFilePaths) {
-                        await window.electronAPI.dbAddTagToFile(normalizePath(fp), result.data.id);
+                    const normalizedPaths = tagPickerFilePaths.map(fp => normalizePath(fp));
+                    if (isMulti) {
+                        await window.electronAPI.dbBulkTagFiles(normalizedPaths, result.data.id);
+                    } else {
+                        await window.electronAPI.dbAddTagToFile(normalizedPaths[0], result.data.id);
                     }
                     document.getElementById('tag-picker-search').value = '';
                     await renderTagPickerList();
@@ -11552,25 +11573,44 @@ async function renderTagPickerList(filter) {
         list.appendChild(createItem);
     }
 
+    const checkSvg = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>`;
+    const dashSvg = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3"><line x1="6" y1="12" x2="18" y2="12"/></svg>`;
+
     for (const tag of tags) {
+        const count = tagCounts.get(tag.id) || 0;
+        const isAll = count === totalFiles;
+        const isPartial = count > 0 && count < totalFiles;
+        const stateClass = isAll ? ' active' : isPartial ? ' partial' : '';
+        const icon = isPartial ? dashSvg : checkSvg;
+
         const item = document.createElement('div');
-        item.className = 'tag-picker-item' + (currentTags.has(tag.id) ? ' active' : '');
+        item.className = 'tag-picker-item' + stateClass;
         item.innerHTML = `
-            <div class="tag-picker-item-check"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg></div>
+            <div class="tag-picker-item-check">${icon}</div>
             <span class="tag-picker-item-dot" style="background:${tag.color || '#6366f1'}"></span>
             <span class="tag-picker-item-name">${tag.name}</span>
         `;
         item.addEventListener('click', async () => {
-            const isActive = item.classList.contains('active');
-            for (const fp of tagPickerFilePaths) {
-                const normalized = normalizePath(fp);
-                if (isActive) {
-                    await window.electronAPI.dbRemoveTagFromFile(normalized, tag.id);
+            const wasAll = item.classList.contains('active');
+            const normalizedPaths = tagPickerFilePaths.map(fp => normalizePath(fp));
+
+            if (wasAll) {
+                // Remove from all files
+                if (isMulti) {
+                    await window.electronAPI.dbBulkRemoveTagFromFiles(normalizedPaths, tag.id);
                 } else {
-                    await window.electronAPI.dbAddTagToFile(normalized, tag.id);
+                    await window.electronAPI.dbRemoveTagFromFile(normalizedPaths[0], tag.id);
+                }
+            } else {
+                // Add to all files (covers both partial and unchecked)
+                if (isMulti) {
+                    await window.electronAPI.dbBulkTagFiles(normalizedPaths, tag.id);
+                } else {
+                    await window.electronAPI.dbAddTagToFile(normalizedPaths[0], tag.id);
                 }
             }
-            item.classList.toggle('active');
+            // Re-render to get accurate state
+            await renderTagPickerList(filter);
             refreshVisibleCardTags();
         });
         list.appendChild(item);

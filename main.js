@@ -2927,13 +2927,19 @@ ipcMain.handle('delete-files-batch', async (event, filePaths) => {
     const deleted = [];
     const failed = [];
     const operations = [];
-    for (const filePath of filePaths) {
+    const total = filePaths.length;
+    const shouldReport = total > 10;
+    for (let i = 0; i < total; i++) {
+        const filePath = filePaths[i];
         try {
             const stagingPath = await moveToStaging(filePath);
             deleted.push(filePath);
             operations.push({ type: 'delete', originalPath: filePath, stagingPath });
         } catch (error) {
             failed.push({ path: filePath, error: error.message });
+        }
+        if (shouldReport && (i % 5 === 4 || i === total - 1)) {
+            event.sender.send('batch-delete-progress', { current: i + 1, total });
         }
     }
     if (operations.length > 0) {

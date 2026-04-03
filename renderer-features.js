@@ -3285,7 +3285,15 @@ function initDuplicateDetection() {
         deleteBtn.disabled = true;
         deleteBtn.textContent = 'Deleting...';
 
+        if (count > 10) {
+            showProgress(0, count, `Deleting ${count} files...`);
+            window.electronAPI.onBatchDeleteProgress((_e, data) => {
+                updateProgress(data.current, data.total);
+            });
+        }
         const result = await window.electronAPI.deleteFilesBatch([...duplicateMarkedForDeletion]);
+        window.electronAPI.removeBatchDeleteProgressListener();
+        hideProgress();
         const failCount = result.failed ? result.failed.length : 0;
         const successCount = count - failCount;
         if (failCount > 0 && successCount > 0) {

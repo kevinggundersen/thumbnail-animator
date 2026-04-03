@@ -8184,3 +8184,17 @@ video.ss-media {
     background: #1a1a1e;
     color: #fff;
 }
+
+/* ── Marquee drag-to-select ────────────────────────────────────────── */
+.marquee-selection-rect {
+    position: absolute;
+    border: 1px solid var(--accent-color);
+    background: rgba(232, 164, 74, 0.15);
+    pointer-events: none;
+    z-index: 100;
+    border-radius: 2px;
+}
+#grid-container.marquee-dragging {
+    user-select: none;
+    cursor: crosshair;
+}

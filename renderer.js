@@ -1042,6 +1042,7 @@ function vsUpdateItems(items, options = {}) {
  */
 function vsCleanup() {
     vsEnabled = false;
+    cancelMarquee();
 
     if (vsScrollRafId) {
         cancelAnimationFrame(vsScrollRafId);
@@ -7474,6 +7475,20 @@ let currentHoveredCard = null;
 const selectedCardPaths = new Set();
 let lastSelectedCardIndex = -1; // index into vsSortedItems for shift-click range
 
+// ── Marquee (drag-to-select) state ──────────────────────────────────
+let marqueeActive = false;
+let marqueePending = false;       // mousedown recorded, waiting for dead-zone
+let marqueeStartClientX = 0;     // client coords at mousedown
+let marqueeStartClientY = 0;
+let marqueeStartContentX = 0;    // content coords (scroll-adjusted)
+let marqueeStartContentY = 0;
+let marqueeElement = null;        // the rectangle div
+let marqueeCtrlHeld = false;
+let marqueePreSelection = null;   // Set snapshot for Ctrl+drag
+let marqueeRafId = null;
+let marqueeJustFinished = false;
+let marqueeAutoScrollId = null;
+
 function clearCardSelection() {
     if (selectedCardPaths.size === 0) return;
     selectedCardPaths.clear();
@@ -7529,7 +7544,185 @@ function getItemIndexForCard(card) {
     return vsSortedItems.findIndex(item => item.path === path);
 }
 
+// ── Marquee (drag-to-select) ────────────────────────────────────────
+
+function marqueeClientToContent(clientX, clientY) {
+    const rect = gridContainer.getBoundingClientRect();
+    return {
+        x: clientX - rect.left,
+        y: clientY - rect.top + gridContainer.scrollTop
+    };
+}
+
+function marqueeGetRect(cx, cy) {
+    const cur = marqueeClientToContent(cx, cy);
+    const x1 = Math.min(marqueeStartContentX, cur.x);
+    const y1 = Math.min(marqueeStartContentY, cur.y);
+    const x2 = Math.max(marqueeStartContentX, cur.x);
+    const y2 = Math.max(marqueeStartContentY, cur.y);
+    return { left: x1, top: y1, right: x2, bottom: y2 };
+}
+
+function marqueeUpdateRect(clientX, clientY) {
+    if (!marqueeElement) return;
+    const containerRect = gridContainer.getBoundingClientRect();
+    const cur = marqueeClientToContent(clientX, clientY);
+    // Position the div in content space (absolute inside grid-container)
+    const x1 = Math.min(marqueeStartContentX, cur.x);
+    const y1 = Math.min(marqueeStartContentY, cur.y);
+    const x2 = Math.max(marqueeStartContentX, cur.x);
+    const y2 = Math.max(marqueeStartContentY, cur.y);
+    marqueeElement.style.left = x1 + 'px';
+    marqueeElement.style.top = y1 + 'px';
+    marqueeElement.style.width = (x2 - x1) + 'px';
+    marqueeElement.style.height = (y2 - y1) + 'px';
+}
+
+function marqueeComputeSelection(clientX, clientY) {
+    if (!vsPositions || !vsSortedItems.length) return;
+    const sel = marqueeGetRect(clientX, clientY);
+    // Rebuild selection
+    selectedCardPaths.clear();
+    if (marqueeCtrlHeld && marqueePreSelection) {
+        for (const p of marqueePreSelection) selectedCardPaths.add(p);
+    }
+    for (let i = 0; i < vsSortedItems.length; i++) {
+        const item = vsSortedItems[i];
+        if (!item.path || item.type === 'folder' || item.type === 'group-header') continue;
+        const idx = i * 4;
+        const cL = vsPositions[idx];
+        const cT = vsPositions[idx + 1];
+        const cR = cL + vsPositions[idx + 2];
+        const cB = cT + vsPositions[idx + 3];
+        if (!(sel.right < cL || sel.left > cR || sel.bottom < cT || sel.top > cB)) {
+            selectedCardPaths.add(item.path);
+        }
+    }
+    // Update visible card DOM
+    vsActiveCards.forEach((card) => {
+        if (card.dataset.path) {
+            card.classList.toggle('selected', selectedCardPaths.has(card.dataset.path));
+        }
+    });
+    updateSelectionStatusBar();
+}
+
+function marqueeStartAutoScroll(clientY) {
+    if (marqueeAutoScrollId) return;
+    const EDGE = 50, MAX_SPEED = 15;
+    function step() {
+        if (!marqueeActive) { marqueeAutoScrollId = null; return; }
+        const rect = gridContainer.getBoundingClientRect();
+        let speed = 0;
+        if (clientY < rect.top + EDGE) {
+            speed = -MAX_SPEED * (1 - Math.max(0, clientY - rect.top) / EDGE);
+        } else if (clientY > rect.bottom - EDGE) {
+            speed = MAX_SPEED * (1 - Math.max(0, rect.bottom - clientY) / EDGE);
+        }
+        if (Math.abs(speed) > 0.5) {
+            gridContainer.scrollTop += speed;
+        }
+        marqueeAutoScrollId = requestAnimationFrame(step);
+    }
+    marqueeAutoScrollId = requestAnimationFrame(step);
+}
+
+function marqueeStopAutoScroll() {
+    if (marqueeAutoScrollId) {
+        cancelAnimationFrame(marqueeAutoScrollId);
+        marqueeAutoScrollId = null;
+    }
+}
+
+function marqueeOnMouseMove(e) {
+    if (!marqueePending && !marqueeActive) return;
+    const dx = e.clientX - marqueeStartClientX;
+    const dy = e.clientY - marqueeStartClientY;
+
+    if (marqueePending) {
+        if (Math.abs(dx) < 5 && Math.abs(dy) < 5) return; // dead zone
+        // Activate marquee
+        marqueePending = false;
+        marqueeActive = true;
+        gridContainer.classList.add('marquee-dragging');
+        marqueeElement = document.createElement('div');
+        marqueeElement.className = 'marquee-selection-rect';
+        gridContainer.appendChild(marqueeElement);
+    }
+
+    marqueeUpdateRect(e.clientX, e.clientY);
+
+    // Auto-scroll near edges
+    marqueeStopAutoScroll();
+    const containerRect = gridContainer.getBoundingClientRect();
+    if (e.clientY < containerRect.top + 50 || e.clientY > containerRect.bottom - 50) {
+        marqueeStartAutoScroll(e.clientY);
+    }
+
+    // Throttle intersection via rAF
+    if (!marqueeRafId) {
+        const cx = e.clientX, cy = e.clientY;
+        marqueeRafId = requestAnimationFrame(() => {
+            marqueeRafId = null;
+            if (marqueeActive) marqueeComputeSelection(cx, cy);
+        });
+    }
+}
+
+function marqueeOnMouseUp(e) {
+    document.removeEventListener('mousemove', marqueeOnMouseMove);
+    document.removeEventListener('mouseup', marqueeOnMouseUp);
+    marqueeStopAutoScroll();
+
+    if (marqueeActive) {
+        marqueeComputeSelection(e.clientX, e.clientY);
+        if (marqueeElement && marqueeElement.parentNode) {
+            marqueeElement.remove();
+        }
+        marqueeElement = null;
+        gridContainer.classList.remove('marquee-dragging');
+        marqueeActive = false;
+        if (marqueeRafId) { cancelAnimationFrame(marqueeRafId); marqueeRafId = null; }
+        // Suppress the click event that follows mouseup
+        marqueeJustFinished = true;
+        requestAnimationFrame(() => { marqueeJustFinished = false; });
+    }
+    marqueePending = false;
+    marqueePreSelection = null;
+}
+
+function cancelMarquee() {
+    if (!marqueeActive && !marqueePending) return;
+    document.removeEventListener('mousemove', marqueeOnMouseMove);
+    document.removeEventListener('mouseup', marqueeOnMouseUp);
+    marqueeStopAutoScroll();
+    if (marqueeRafId) { cancelAnimationFrame(marqueeRafId); marqueeRafId = null; }
+    if (marqueeElement && marqueeElement.parentNode) marqueeElement.remove();
+    marqueeElement = null;
+    gridContainer.classList.remove('marquee-dragging');
+    // Restore pre-selection if Ctrl was held
+    if (marqueeCtrlHeld && marqueePreSelection) {
+        selectedCardPaths.clear();
+        for (const p of marqueePreSelection) selectedCardPaths.add(p);
+        vsActiveCards.forEach((card) => {
+            if (card.dataset.path) {
+                card.classList.toggle('selected', selectedCardPaths.has(card.dataset.path));
+            }
+        });
+        updateSelectionStatusBar();
+    }
+    marqueeActive = false;
+    marqueePending = false;
+    marqueePreSelection = null;
+}
+
 gridContainer.addEventListener('click', (e) => {
+    // Suppress click after marquee drag
+    if (marqueeJustFinished) {
+        marqueeJustFinished = false;
+        return;
+    }
+
     // Date group header click
     const groupHeader = e.target.closest('.date-group-header');
     if (groupHeader && groupHeader.dataset.groupKey) {
@@ -7595,9 +7788,28 @@ gridContainer.addEventListener('click', (e) => {
     }
 });
 
-// Prevent middle-click auto-scroll on cards
+// Prevent middle-click auto-scroll on cards + marquee drag-to-select
 gridContainer.addEventListener('mousedown', (e) => {
     if (e.button === 1 && e.target.closest('.video-card, .folder-card')) {
+        e.preventDefault();
+        return;
+    }
+    // Marquee: left-click on empty grid space
+    if (e.button === 0 && !e.target.closest('.video-card, .folder-card, .date-group-header, .star')) {
+        marqueeCtrlHeld = e.ctrlKey || e.metaKey;
+        if (marqueeCtrlHeld) {
+            marqueePreSelection = new Set(selectedCardPaths);
+        } else {
+            clearCardSelection();
+        }
+        marqueeStartClientX = e.clientX;
+        marqueeStartClientY = e.clientY;
+        const content = marqueeClientToContent(e.clientX, e.clientY);
+        marqueeStartContentX = content.x;
+        marqueeStartContentY = content.y;
+        marqueePending = true;
+        document.addEventListener('mousemove', marqueeOnMouseMove);
+        document.addEventListener('mouseup', marqueeOnMouseUp);
         e.preventDefault();
     }
 });
@@ -7640,6 +7852,7 @@ gridContainer.addEventListener('auxclick', (e) => {
 });
 
 gridContainer.addEventListener('mouseover', (e) => {
+    if (marqueeActive) return;
     const card = e.target.closest('.video-card');
     if (card && card !== currentHoveredCard) {
         if (card.dataset.mediaType === 'video') {
@@ -7687,6 +7900,7 @@ gridContainer.addEventListener('mouseover', (e) => {
 let _scrubRafPending = false;
 
 gridContainer.addEventListener('mousemove', (e) => {
+    if (marqueeActive) return;
     if (!currentHoveredCard || !currentHoveredCard._scrubbing) return;
     const card = currentHoveredCard;
     const video = card.querySelector('video');

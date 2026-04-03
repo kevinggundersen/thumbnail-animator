@@ -85,6 +85,8 @@ function initKeyboardShortcuts() {
                 closeDuplicatesModal();
             } else if (!toolsMenuDropdown.classList.contains('hidden')) {
                 toolsMenuDropdown.classList.add('hidden');
+            } else if (marqueeActive || marqueePending) {
+                cancelMarquee();
             } else if (selectedCardPaths.size > 0) {
                 clearCardSelection();
             }

@@ -1802,7 +1802,7 @@ let recentFiles = []; // Array of { path, name, url, type, timestamp }
 // Track tabs
 let tabs = []; // Array of { id, path, name, sortType, sortOrder }
 let activeTabId = null;
-let tabIdCounter = 0;
+let tabIdCounter = 1;
 
 // Track lightbox navigation
 let currentLightboxIndex = -1;
@@ -3341,7 +3341,7 @@ function updateInMemoryFolderCaches(folderPath, items) {
     const normalizedPath = normalizePath(folderPath);
     const timestamp = Date.now();
 
-    if (activeTabId) {
+    if (activeTabId != null) {
         tabContentCache.set(activeTabId, {
             items,
             path: normalizedPath,
@@ -3458,7 +3458,8 @@ async function hydrateMissingDimensionsInBackground(folderPath, items) {
 
             if (shouldReapplyFilters) {
                 applyFilters();
-            } else if (layoutMode === 'masonry') {
+            } else {
+                vsLayoutCache.itemCount = 0; // Invalidate cache so new dimensions are used
                 vsRecalculate();
             }
         }
@@ -6175,7 +6176,7 @@ function updateSorting() {
     sortOrder = sortOrderSelect.value;
     
     // Save to active tab instead of global localStorage
-    if (activeTabId) {
+    if (activeTabId != null) {
         const tab = tabs.find(t => t.id === activeTabId);
         if (tab) {
             tab.sortType = sortType;
@@ -7430,6 +7431,11 @@ function applyFilters() {
         }
         if (!matchesSearch) return false;
 
+        // Exclude pinned items from AI search results (they're irrelevant to the query)
+        if (aiVisualSearchEnabled && aiSearchActive && currentTextEmbedding && query !== '' && item.type !== 'folder' && isFilePinned(item.path)) {
+            return false;
+        }
+
         // Type filter
         let matchesFilter = true;
         if (currentFilter === 'video') {
@@ -8327,20 +8333,20 @@ selectFolderBtn.addEventListener('click', async () => {
             deferLocalStorageWrite('lastFolderPath', folderPath);
         }
         // Update current tab if it exists and has no path, otherwise create new tab
-        if (activeTabId) {
+        if (activeTabId != null) {
             const tab = tabs.find(t => t.id === activeTabId);
             if (tab && !tab.path) {
                 // Update empty tab
                 tab.path = folderPath;
-                tab.name = folderPath.split(/[/\\]/).pop();
+                tab.name = folderPath.split(/[/\\]/).filter(Boolean).pop();
                 saveTabs();
                 renderTabs();
             } else {
                 // Create new tab
-                createTab(folderPath, folderPath.split(/[/\\]/).pop());
+                createTab(folderPath, folderPath.split(/[/\\]/).filter(Boolean).pop());
             }
         } else {
-            createTab(folderPath, folderPath.split(/[/\\]/).pop());
+            createTab(folderPath, folderPath.split(/[/\\]/).filter(Boolean).pop());
         }
         // Use setTimeout to yield control back to event loop, making button responsive
         setTimeout(() => {
@@ -8772,7 +8778,7 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
             const normalizedPath = normalizePath(folderPath);
             
             // Check tab cache
-            if (activeTabId) {
+            if (activeTabId != null) {
                 const tabCache = tabContentCache.get(activeTabId);
                 if (tabCache) {
                     const cachePathNormalized = normalizePath(tabCache.path);
@@ -8834,7 +8840,7 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
         }
         
         // Update current tab
-        updateCurrentTab(folderPath, folderPath.split(/[/\\]/).pop());
+        updateCurrentTab(folderPath, folderPath.split(/[/\\]/).filter(Boolean).pop());
         
         updateBreadcrumb(folderPath);
         searchBox.value = ''; // Clear search when navigating
@@ -9711,7 +9717,7 @@ hoverScaleZ200.addEventListener('input', () => {
     if (autoScanToggle) autoScanToggle.checked = aiAutoScan;
     if (autoScanLabel)  autoScanLabel.textContent = aiAutoScan ? 'On' : 'Off';
     if (thresholdSlider) thresholdSlider.value = Math.round(aiSimilarityThreshold * 100);
-    if (thresholdValue)  thresholdValue.textContent = aiSimilarityThreshold.toFixed(2);
+    if (thresholdValue)  thresholdValue.textContent = `${clipScoreToDisplayPct(aiSimilarityThreshold)}%`;
     if (clusteringSelect) clusteringSelect.value = aiClusteringMode;
 
     function setAiStatusDot(state) {
@@ -9914,7 +9920,7 @@ hoverScaleZ200.addEventListener('input', () => {
     if (thresholdSlider) {
         thresholdSlider.addEventListener('input', () => {
             aiSimilarityThreshold = parseInt(thresholdSlider.value, 10) / 100;
-            thresholdValue.textContent = aiSimilarityThreshold.toFixed(2);
+            thresholdValue.textContent = `${clipScoreToDisplayPct(aiSimilarityThreshold)}%`;
             deferLocalStorageWrite('aiSimilarityThreshold', aiSimilarityThreshold.toString());
             if (aiSearchActive && currentTextEmbedding) applyFilters();
         });
@@ -11826,6 +11832,8 @@ async function handleRenameConfirm() {
             renameDialog.classList.add('hidden');
             renamePendingFile = null;
             showToast(`Renamed to "${newName}"`, 'success');
+            // Refresh in-memory ratings/pins so the new path inherits metadata
+            await Promise.all([loadRatings(), loadPins()]);
             if (currentFolderPath) {
                 invalidateFolderCache(currentFolderPath);
                 const previousScrollTop = gridContainer.scrollTop;
@@ -12236,6 +12244,11 @@ async function openAutoTag(filePaths) {
     renderAutoTagResults();
 }
 
+// Map raw CLIP cosine similarity (typically 0.15–0.40) to a 0–100% display scale
+function clipScoreToDisplayPct(score) {
+    return Math.round(Math.min(100, Math.max(0, (score - 0.15) / 0.25 * 100)));
+}
+
 function renderAutoTagResults() {
     const threshold = (parseInt(autoTagThreshold.value) || 25) / 100;
     autoTagResults.innerHTML = '';
@@ -12266,7 +12279,7 @@ function renderAutoTagResults() {
         chips.className = 'auto-tag-suggestions';
 
         for (const s of matching) {
-            const pct = Math.round(s.score * 100);
+            const pct = clipScoreToDisplayPct(s.score);
             const chip = document.createElement('span');
             chip.className = 'auto-tag-chip selected';
             chip.dataset.path = file.path;
@@ -12296,7 +12309,7 @@ function updateAutoTagApplyBtn() {
 }
 
 autoTagThreshold.addEventListener('input', () => {
-    autoTagThresholdValue.textContent = `${autoTagThreshold.value}%`;
+    autoTagThresholdValue.textContent = `${clipScoreToDisplayPct(parseInt(autoTagThreshold.value) / 100)}%`;
     renderAutoTagResults();
 });
 
@@ -12383,7 +12396,7 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
         
         // Quick check if we have cached data
         let hasCache = false;
-        if (activeTabId) {
+        if (activeTabId != null) {
             const tabCache = tabContentCache.get(activeTabId);
             if (tabCache) {
                 const cachePathNormalized = normalizePath(tabCache.path);
@@ -12450,7 +12463,7 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
             };
 
             // Check tab cache first (fastest)
-            if (activeTabId) {
+            if (activeTabId != null) {
                 const tabCache = tabContentCache.get(activeTabId);
                 if (tabCache) {
                     const cachePathNormalized = normalizePath(tabCache.path);

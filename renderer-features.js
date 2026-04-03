@@ -1008,7 +1008,7 @@ function saveTabs() {
 
 // Snapshot the current tab's DOM into a DocumentFragment for instant restore
 function snapshotCurrentTabDom() {
-    if (!activeTabId || gridContainer.children.length === 0) return;
+    if (activeTabId == null || gridContainer.children.length === 0) return;
     // Capture scroll BEFORE moving children (moving empties the container and resets scrollTop)
     const scrollTop = gridContainer.scrollTop || window.scrollY || 0;
     // Save per-folder scroll position for the current folder in this tab
@@ -1066,7 +1066,7 @@ function createTab(path, name, collectionId = null) {
     const tab = {
         id: tabIdCounter++,
         path: path || null,
-        name: name || (path ? path.split(/[/\\]/).pop() : 'Home'),
+        name: name || (path ? path.split(/[/\\]/).filter(Boolean).pop() : 'Home'),
         sortType: sortType || 'name', // Use current sorting or default
         sortOrder: sortOrder || 'ascending', // Use current order or default
         historyPaths: [],
@@ -1097,10 +1097,10 @@ function closeTab(tabId) {
     tabContentCache.delete(tabId);
     tabs = tabs.filter(t => t.id !== tabId);
     if (activeTabId === tabId) {
-        activeTabId = tabs[0]?.id || null;
+        activeTabId = tabs[0]?.id ?? null;
     }
     // switchToTab already calls saveTabs() + renderTabs(), so skip them here
-    if (activeTabId) {
+    if (activeTabId != null) {
         switchToTab(activeTabId);
     } else {
         saveTabs();
@@ -1217,11 +1217,11 @@ function switchToTab(tabId) {
 }
 
 function updateCurrentTab(path, name) {
-    if (!activeTabId) return;
+    if (activeTabId == null) return;
     const tab = tabs.find(t => t.id === activeTabId);
     if (tab) {
         tab.path = path;
-        tab.name = name || (path ? path.split(/[/\\]/).pop() : 'Home');
+        tab.name = name || (path ? path.split(/[/\\]/).filter(Boolean).pop() : 'Home');
         // Track collection state on tab
         tab.collectionId = currentCollectionId || null;
         // Preserve sorting preferences when updating tab
@@ -2548,6 +2548,8 @@ async function moveFilesToFolder(filePaths, destFolder) {
     hideProgress();
 
     if (success > 0) {
+        // Refresh in-memory ratings/pins so moved files keep their metadata
+        await Promise.all([loadRatings(), loadPins()]);
         await navigateToFolder(currentFolderPath);
     }
     if (failed > 0 && success > 0) {
@@ -2610,6 +2612,7 @@ async function organizeByDate() {
     }
 
     hideProgress();
+    await Promise.all([loadRatings(), loadPins()]);
     await navigateToFolder(currentFolderPath);
     if (totalFailed > 0) {
         showToast(`Organized files: ${totalSuccess} moved, ${totalFailed} failed`, 'warning');
@@ -2653,6 +2656,7 @@ async function organizeByType() {
     }
 
     hideProgress();
+    await Promise.all([loadRatings(), loadPins()]);
     await navigateToFolder(currentFolderPath);
     if (totalFailed > 0) {
         showToast(`Organized files: ${totalSuccess} moved, ${totalFailed} failed`, 'warning');

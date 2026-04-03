@@ -1671,6 +1671,9 @@ ipcMain.handle('rename-file', async (event, filePath, newName) => {
         }
         
         await fs.promises.rename(filePath, newPath);
+        try { appDb.updateFilePaths([{ oldPath: filePath, newPath }]); } catch (e) {
+            console.error('Failed to update DB paths after rename:', e);
+        }
         pushUndoEntry({
             type: 'rename',
             description: `Rename "${path.basename(filePath)}" → "${newName}"`,
@@ -2416,6 +2419,11 @@ ipcMain.handle('move-file', async (event, sourcePath, destFolderOrPath, fileName
         }
 
         await safeMove(sourcePath, finalPath);
+        if (path.normalize(sourcePath) !== path.normalize(finalPath)) {
+            try { appDb.updateFilePaths([{ oldPath: sourcePath, newPath: finalPath }]); } catch (e) {
+                console.error('Failed to update DB paths after move:', e);
+            }
+        }
         pushUndoEntry({
             type: 'move',
             description: `Move "${path.basename(sourcePath)}"`,

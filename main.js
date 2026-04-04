@@ -158,6 +158,82 @@ markStartup('worker-pools-created');
 let clipModel = null; // { visionModel, textModel, processor, tokenizer, RawImage, ort }
 let clipPreprocessPool = null;
 
+// Native-ONNX CLIP inference worker (wraps the native-scanner NAPI addon in a
+// Node worker_thread). Rust NAPI addons are ABI-safe across worker threads,
+// unlike onnxruntime-node, so inference happens off the main process.
+let clipInferenceWorker = null;
+let clipNativeReady = false;
+let _clipInferenceReqId = 0;
+const _clipInferenceReqs = new Map(); // id -> {resolve, reject}
+
+function ensureClipInferenceWorker() {
+    if (clipInferenceWorker) return clipInferenceWorker;
+    try {
+        const { Worker } = require('worker_threads');
+        clipInferenceWorker = new Worker(path.join(__dirname, 'clip-inference-worker.js'));
+        clipInferenceWorker.on('message', (msg) => {
+            if (!msg || !msg.type) return;
+            if (msg.type === 'embed-batch-result') {
+                const entry = _clipInferenceReqs.get(msg.id);
+                if (entry) { _clipInferenceReqs.delete(msg.id); entry.resolve(msg.embeddings); }
+            } else if (msg.type === 'embed-error') {
+                const entry = _clipInferenceReqs.get(msg.id);
+                if (entry) { _clipInferenceReqs.delete(msg.id); entry.reject(new Error(msg.error)); }
+            }
+        });
+        clipInferenceWorker.on('error', (err) => { console.error('[clip-worker] error:', err); });
+        clipInferenceWorker.on('exit', (code) => {
+            if (code !== 0) console.warn('[clip-worker] exited code=' + code);
+            clipInferenceWorker = null;
+            clipNativeReady = false;
+            for (const [, e] of _clipInferenceReqs) e.reject(new Error('clip worker exited'));
+            _clipInferenceReqs.clear();
+        });
+    } catch (err) {
+        console.warn('[clip-worker] failed to spawn:', err.message);
+        clipInferenceWorker = null;
+    }
+    return clipInferenceWorker;
+}
+
+function clipWorkerInit(visionPath, textPath, threads) {
+    const worker = ensureClipInferenceWorker();
+    if (!worker) return Promise.resolve(false);
+    return new Promise((resolve) => {
+        const onMsg = (msg) => {
+            if (msg && msg.type === 'init-result') {
+                worker.off('message', onMsg);
+                clipNativeReady = !!msg.ok;
+                if (!msg.ok) console.warn('[clip-worker] init failed:', msg.error);
+                resolve(!!msg.ok);
+            }
+        };
+        worker.on('message', onMsg);
+        worker.postMessage({ type: 'init', visionPath, textPath, threads: threads || 4 });
+    });
+}
+
+function clipWorkerEmbedBatch(batchData, n) {
+    if (!clipInferenceWorker || !clipNativeReady) return Promise.reject(new Error('clip worker not ready'));
+    const id = ++_clipInferenceReqId;
+    return new Promise((resolve, reject) => {
+        _clipInferenceReqs.set(id, { resolve, reject });
+        clipInferenceWorker.postMessage(
+            { type: 'embed-batch', id, batchData, n },
+            [batchData.buffer]
+        );
+    });
+}
+
+function clipWorkerEmbedTextTokens(inputIds, attentionMask, batchSize) {
+    if (!clipInferenceWorker || !clipNativeReady) return Promise.reject(new Error('clip worker not ready'));
+    const id = ++_clipInferenceReqId;
+    return new Promise((resolve, reject) => {
+        _clipInferenceReqs.set(id, { resolve, reject });
+        clipInferenceWorker.postMessage({ type: 'embed-text-tokens', id, inputIds, attentionMask, batchSize });
+    });
+}
+
 // Thumbnail cache directories (initialized after userDataPath is set)
 const crypto = require('crypto');
 let videoThumbDir = null;
@@ -3402,6 +3478,35 @@ ipcMain.handle('clip-init', async (event) => {
         // Spin up worker pool for off-main-thread image preprocessing
         if (!clipPreprocessPool) clipPreprocessPool = new ClipPreprocessPool();
 
+        // Native Rust CLIP: load ONNX sessions inside a Node worker_thread.
+        // Bypasses onnxruntime-node's ABI-incompat-with-workers problem entirely:
+        // the Rust NAPI addon loads cleanly in any JS thread, so inference runs
+        // fully off the main process.
+        if (nativeScanner && nativeScanner.clipInit) {
+            try {
+                const cacheDir = getClipCacheDir();
+                const modelRoot = path.join(cacheDir, 'Xenova', 'clip-vit-base-patch32', 'onnx');
+                const pick = (base) => {
+                    const q = path.join(modelRoot, `${base}_quantized.onnx`);
+                    const f = path.join(modelRoot, `${base}.onnx`);
+                    return fs.existsSync(q) ? q : (fs.existsSync(f) ? f : null);
+                };
+                const visionPath = pick('vision_model');
+                const textPath = pick('text_model');
+                if (visionPath && textPath) {
+                    const t0 = Date.now();
+                    const ok = await clipWorkerInit(visionPath, textPath, 4);
+                    if (ok) {
+                        console.log(`[clip] native ONNX sessions loaded in worker in ${Date.now() - t0}ms`);
+                    }
+                } else {
+                    console.warn('[clip] native load skipped: model files not found on disk');
+                }
+            } catch (e) {
+                console.warn('[clip] native load failed, falling back to onnxruntime-node:', e.message);
+            }
+        }
+
         return { success: true };
     } catch (err) {
         clipModel = null;
@@ -3459,22 +3564,40 @@ function clipPreprocessImage(filePath) {
 const CLIP_PIXELS = CLIP_SIZE * CLIP_SIZE * 3;
 
 async function clipEmbedBatch(pixelDataArray) {
-    const { visionModel, HfTensor } = clipModel;
-
     const n = pixelDataArray.length;
     if (n === 0) return [];
 
-    // Concatenate into a single [N, 3, 224, 224] tensor
+    // Concatenate into a single flat Float32Array.
     const batchData = new Float32Array(n * CLIP_PIXELS);
     for (let i = 0; i < n; i++) {
         batchData.set(pixelDataArray[i], i * CLIP_PIXELS);
     }
 
+    // Fast path: native Rust ONNX runtime inside a Node worker_thread.
+    // Inference runs fully off the main process — Node event loop stays responsive.
+    if (clipNativeReady && clipInferenceWorker) {
+        try {
+            const flat = await clipWorkerEmbedBatch(batchData, n);
+            const embDim = flat.length / n;
+            const results = new Array(n);
+            for (let i = 0; i < n; i++) {
+                const offset = i * embDim;
+                const emb = new Array(embDim);
+                for (let j = 0; j < embDim; j++) emb[j] = flat[offset + j];
+                results[i] = emb;
+            }
+            return results;
+        } catch (e) {
+            console.warn('[clip] native worker inference failed, falling back to onnxruntime-node:', e.message);
+        }
+    }
+
+    // Fallback: onnxruntime-node via @huggingface/transformers
+    const { visionModel, HfTensor } = clipModel;
     const inputTensor = new HfTensor('float32', batchData, [n, 3, CLIP_SIZE, CLIP_SIZE]);
     const output = await visionModel({ pixel_values: inputTensor });
     const raw = output.image_embeds.data;
 
-    // The output shape is [N, embeddingDim] — split and L2-normalise each
     const embDim = raw.length / n;
     const results = [];
     for (let i = 0; i < n; i++) {
@@ -3768,12 +3891,32 @@ ipcMain.handle('clip-embed-text', async (event, text) => {
     try {
         const { tokenizer, textModel } = clipModel;
 
-        // Tokenize and run through model (high-level API handles tensor conversion)
+        // Tokenize (fast, JS-side). Native addon handles inference below.
         const inputs = tokenizer(text, { padding: true, truncation: true });
+
+        // Native path: pass tokenized tensors to the Rust worker for inference
+        if (clipNativeReady && clipInferenceWorker) {
+            try {
+                const ids = inputs.input_ids;
+                const mask = inputs.attention_mask;
+                const dims = ids.dims; // [batch, seq_len]
+                const batchSize = dims[0];
+                const idsArr = Array.from(ids.data, v => Number(v));
+                const maskArr = Array.from(mask.data, v => Number(v));
+                const flat = await clipWorkerEmbedTextTokens(idsArr, maskArr, batchSize);
+                const embDim = flat.length / batchSize;
+                const out = new Array(embDim);
+                for (let j = 0; j < embDim; j++) out[j] = flat[j];
+                return out;
+            } catch (e) {
+                console.warn('[clip] native text inference failed, falling back to onnxruntime-node:', e.message);
+            }
+        }
+
+        // Fallback: onnxruntime-node
         const output = await textModel(inputs);
         const raw = output.text_embeds.data;
 
-        // L2-normalise
         let mag = 0;
         for (let i = 0; i < raw.length; i++) mag += raw[i] * raw[i];
         mag = Math.sqrt(mag) || 1;
@@ -3788,12 +3931,18 @@ ipcMain.handle('clip-embed-text', async (event, text) => {
 });
 
 ipcMain.handle('clip-status', async () => {
-    return { loaded: !!clipModel };
+    return { loaded: !!clipModel, native: clipNativeReady };
 });
 
 ipcMain.handle('clip-terminate', async () => {
     clipModel = null;
     if (clipPreprocessPool) { clipPreprocessPool.terminate(); clipPreprocessPool = null; }
+    if (clipInferenceWorker) {
+        try { clipInferenceWorker.postMessage({ type: 'shutdown' }); } catch {}
+        try { clipInferenceWorker.terminate(); } catch {}
+        clipInferenceWorker = null;
+        clipNativeReady = false;
+    }
     return { success: true };
 });
 

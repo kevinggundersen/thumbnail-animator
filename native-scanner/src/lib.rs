@@ -819,3 +819,184 @@ pub fn generate_image_thumbnails(requests: Vec<ThumbnailRequest>) -> Vec<Thumbna
         })
         .collect()
 }
+
+// ── Native CLIP inference (ONNX Runtime via `ort` crate) ───────────────────
+//
+// Loads CLIP vision + text ONNX sessions directly inside this native addon.
+// Inference runs in ONNX Runtime's internal thread pool, so calls from Node.js
+// never block the JS event loop while the model is crunching.
+//
+// Since this is a proper Rust NAPI module (not onnxruntime-node), it can be
+// invoked from Node worker_threads without the ABI conflicts that forced the
+// original in-process JS path.
+
+use once_cell::sync::Lazy;
+use std::sync::Mutex;
+
+struct ClipSessions {
+    vision: Option<ort::session::Session>,
+    text: Option<ort::session::Session>,
+}
+
+static CLIP_SESSIONS: Lazy<Mutex<ClipSessions>> =
+    Lazy::new(|| Mutex::new(ClipSessions { vision: None, text: None }));
+
+const CLIP_IMAGE_SIZE: usize = 224;
+const CLIP_CHANNELS: usize = 3;
+const CLIP_PIXEL_COUNT: usize = CLIP_IMAGE_SIZE * CLIP_IMAGE_SIZE * CLIP_CHANNELS;
+
+fn build_session(path: &str, intra_threads: usize) -> Result<ort::session::Session> {
+    use ort::session::{Session, builder::GraphOptimizationLevel};
+    Session::builder()
+        .map_err(|e| Error::from_reason(format!("ort builder: {}", e)))?
+        .with_optimization_level(GraphOptimizationLevel::Level3)
+        .map_err(|e| Error::from_reason(format!("ort opt-level: {}", e)))?
+        .with_intra_threads(intra_threads)
+        .map_err(|e| Error::from_reason(format!("ort threads: {}", e)))?
+        .commit_from_file(path)
+        .map_err(|e| Error::from_reason(format!("ort load '{}': {}", path, e)))
+}
+
+/// Load the CLIP vision + text ONNX sessions from disk.
+///
+/// Both paths should point to the *.onnx files produced by Hugging Face's
+/// Xenova/clip-vit-base-patch32 export (vision_model.onnx / text_model.onnx).
+/// Returns true on success.
+#[napi]
+pub fn clip_init(vision_model_path: String, text_model_path: String, intra_threads: Option<u32>) -> Result<bool> {
+    let threads = intra_threads.unwrap_or(4).max(1) as usize;
+    let vision = build_session(&vision_model_path, threads)?;
+    let text = build_session(&text_model_path, threads)?;
+    let mut state = CLIP_SESSIONS.lock().map_err(|_| Error::from_reason("clip state poisoned"))?;
+    state.vision = Some(vision);
+    state.text = Some(text);
+    Ok(true)
+}
+
+/// True if both CLIP sessions have been loaded.
+#[napi]
+pub fn clip_is_loaded() -> bool {
+    CLIP_SESSIONS
+        .lock()
+        .map(|s| s.vision.is_some() && s.text.is_some())
+        .unwrap_or(false)
+}
+
+/// Free the CLIP sessions (drops them + their GPU/CPU memory).
+#[napi]
+pub fn clip_unload() -> bool {
+    if let Ok(mut state) = CLIP_SESSIONS.lock() {
+        state.vision = None;
+        state.text = None;
+        true
+    } else {
+        false
+    }
+}
+
+fn l2_normalize_row(row: &mut [f32]) {
+    let mut mag: f32 = 0.0;
+    for &v in row.iter() { mag += v * v; }
+    let mag = mag.sqrt().max(1e-12);
+    for v in row.iter_mut() { *v /= mag; }
+}
+
+/// Run CLIP vision model on a batch of preprocessed pixel tensors.
+///
+/// `pixel_data` must contain `n * 3 * 224 * 224` f32 values in CHW layout,
+/// already normalized with the CLIP mean/std. The result is `n` L2-normalized
+/// embeddings concatenated into one Float32Array of length `n * embed_dim`.
+#[napi]
+pub fn clip_embed_image_batch(pixel_data: napi::bindgen_prelude::Float32Array, n: u32) -> Result<napi::bindgen_prelude::Float32Array> {
+    use ndarray::Array4;
+    use ort::value::Tensor;
+
+    let n = n as usize;
+    if n == 0 {
+        return Ok(napi::bindgen_prelude::Float32Array::new(Vec::new()));
+    }
+    let expected = n * CLIP_PIXEL_COUNT;
+    if pixel_data.len() != expected {
+        return Err(Error::from_reason(format!(
+            "pixel_data length {} does not match expected {}", pixel_data.len(), expected
+        )));
+    }
+
+    let mut state = CLIP_SESSIONS.lock().map_err(|_| Error::from_reason("clip state poisoned"))?;
+    let session = state.vision.as_mut().ok_or_else(|| Error::from_reason("clip vision model not loaded"))?;
+
+    // Copy into a shaped ndarray [n, 3, 224, 224]
+    let data_vec: Vec<f32> = pixel_data.as_ref().to_vec();
+    let arr = Array4::from_shape_vec((n, CLIP_CHANNELS, CLIP_IMAGE_SIZE, CLIP_IMAGE_SIZE), data_vec)
+        .map_err(|e| Error::from_reason(format!("shape: {}", e)))?;
+
+    let tensor = Tensor::from_array(arr)
+        .map_err(|e| Error::from_reason(format!("tensor: {}", e)))?;
+
+    let outputs = session.run(ort::inputs!["pixel_values" => tensor])
+        .map_err(|e| Error::from_reason(format!("run: {}", e)))?;
+
+    // CLIP vision exports a single output: image_embeds (shape [N, D])
+    let (_shape, raw) = outputs[0].try_extract_tensor::<f32>()
+        .map_err(|e| Error::from_reason(format!("extract: {}", e)))?;
+    let mut out = raw.to_vec();
+
+    // L2-normalize per row in place
+    let embed_dim = out.len() / n;
+    for i in 0..n {
+        let start = i * embed_dim;
+        l2_normalize_row(&mut out[start..start + embed_dim]);
+    }
+
+    Ok(napi::bindgen_prelude::Float32Array::new(out))
+}
+
+/// Run CLIP text model on pre-tokenized inputs.
+///
+/// The Xenova CLIP text model only exposes a single `input_ids` input
+/// (attention_mask is baked into the exported graph via an eos-based fallback).
+/// `_attention_mask` is accepted for API stability but unused.
+/// Tokenization itself is still done in JS via @huggingface/transformers — only
+/// the ONNX inference is native.
+#[napi]
+pub fn clip_embed_text_tokens(
+    input_ids: Vec<i64>,
+    _attention_mask: Vec<i64>,
+    batch_size: u32,
+) -> Result<napi::bindgen_prelude::Float32Array> {
+    use ndarray::Array2;
+    use ort::value::Tensor;
+
+    let n = batch_size as usize;
+    if n == 0 || input_ids.is_empty() {
+        return Ok(napi::bindgen_prelude::Float32Array::new(Vec::new()));
+    }
+    let seq_len = input_ids.len() / n;
+    if seq_len * n != input_ids.len() {
+        return Err(Error::from_reason("input_ids length not a multiple of batch_size"));
+    }
+
+    let mut state = CLIP_SESSIONS.lock().map_err(|_| Error::from_reason("clip state poisoned"))?;
+    let session = state.text.as_mut().ok_or_else(|| Error::from_reason("clip text model not loaded"))?;
+
+    let ids_arr = Array2::from_shape_vec((n, seq_len), input_ids)
+        .map_err(|e| Error::from_reason(format!("ids shape: {}", e)))?;
+
+    let ids_tensor = Tensor::from_array(ids_arr)
+        .map_err(|e| Error::from_reason(format!("ids tensor: {}", e)))?;
+
+    let outputs = session.run(ort::inputs!["input_ids" => ids_tensor])
+        .map_err(|e| Error::from_reason(format!("run: {}", e)))?;
+
+    let (_shape, raw) = outputs[0].try_extract_tensor::<f32>()
+        .map_err(|e| Error::from_reason(format!("extract: {}", e)))?;
+    let mut out = raw.to_vec();
+
+    let embed_dim = out.len() / n;
+    for i in 0..n {
+        let start = i * embed_dim;
+        l2_normalize_row(&mut out[start..start + embed_dim]);
+    }
+
+    Ok(napi::bindgen_prelude::Float32Array::new(out))
+}

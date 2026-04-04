@@ -4883,6 +4883,161 @@ function _enqueueThumbnailRequest(type, filePath, maxSize) {
     });
 }
 
+// ── Off-thread image decoder + ImageBitmap LRU cache ──────────────────
+// createImageBitmap runs in a worker, so decoding never blocks the main thread.
+// Decoded bitmaps are cached; scrolling back to previously-seen cards is instant.
+
+const BITMAP_CACHE_MAX = 300; // ~150MB at typical card sizes
+const _bitmapCache = new Map(); // url -> { bitmap, w, h, lru }
+let _bitmapCacheLru = 0;
+let _decodeWorker = null;
+let _decodeNextId = 0;
+const _decodePending = new Map(); // id -> {resolve, reject}
+const _decodeUrlInFlight = new Map(); // url -> Promise<ImageBitmap> (dedup concurrent requests)
+
+function getDecodeWorker() {
+    if (_decodeWorker) return _decodeWorker;
+    try {
+        _decodeWorker = new Worker('image-decode-worker.js');
+        _decodeWorker.onmessage = (e) => {
+            const msg = e.data;
+            if (!msg) return;
+            const entry = _decodePending.get(msg.id);
+            if (!entry) return;
+            _decodePending.delete(msg.id);
+            if (msg.type === 'decoded') entry.resolve(msg.bitmap);
+            else entry.reject(new Error(msg.error || 'decode failed'));
+        };
+        _decodeWorker.onerror = (err) => { console.error('image-decode-worker error:', err); };
+    } catch (e) {
+        console.warn('Failed to spawn image decode worker:', e);
+        _decodeWorker = null;
+    }
+    return _decodeWorker;
+}
+
+/** Decode an image URL to ImageBitmap off-thread. Returns Promise<ImageBitmap|null>. */
+function decodeImageOffThread(url, maxWidth = 0, maxHeight = 0) {
+    // Dedup concurrent decodes of the same URL
+    const existing = _decodeUrlInFlight.get(url);
+    if (existing) return existing;
+
+    const worker = getDecodeWorker();
+    if (!worker) return Promise.resolve(null);
+
+    const id = ++_decodeNextId;
+    const promise = new Promise((resolve, reject) => {
+        _decodePending.set(id, { resolve, reject });
+        worker.postMessage({ type: 'decode', id, url, maxWidth, maxHeight });
+    }).finally(() => { _decodeUrlInFlight.delete(url); });
+
+    _decodeUrlInFlight.set(url, promise);
+    return promise;
+}
+
+// Stats for diagnostics
+let _bitmapStats = { hits: 0, misses: 0, decodes: 0, decodeMs: 0, evictions: 0, lastPrint: 0 };
+function _bitmapDiag() {
+    const total = _bitmapStats.hits + _bitmapStats.misses;
+    if (total - _bitmapStats.lastPrint < 50) return;
+    _bitmapStats.lastPrint = total;
+    const avgMs = _bitmapStats.decodes ? (_bitmapStats.decodeMs / _bitmapStats.decodes).toFixed(1) : 'n/a';
+    console.log(
+        `[bitmap-cache] cached=${_bitmapCache.size}/${BITMAP_CACHE_MAX} ` +
+        `hits=${_bitmapStats.hits} misses=${_bitmapStats.misses} ` +
+        `decodes=${_bitmapStats.decodes} (avg ${avgMs}ms) evictions=${_bitmapStats.evictions}`
+    );
+}
+
+function getCachedBitmap(url) {
+    const entry = _bitmapCache.get(url);
+    if (!entry) { _bitmapStats.misses++; _bitmapDiag(); return null; }
+    _bitmapStats.hits++;
+    _bitmapDiag();
+    entry.lru = ++_bitmapCacheLru;
+    return entry;
+}
+
+/** Clear all cached bitmaps (called on folder navigation to free GPU memory). */
+function clearBitmapCache() {
+    for (const entry of _bitmapCache.values()) {
+        try { entry.bitmap.close(); } catch {}
+    }
+    _bitmapCache.clear();
+}
+
+function putCachedBitmap(url, bitmap) {
+    if (!bitmap) return;
+    const existing = _bitmapCache.get(url);
+    if (existing) {
+        // Close the old one to free GPU memory
+        try { existing.bitmap.close(); } catch {}
+    }
+    _bitmapCache.set(url, {
+        bitmap,
+        w: bitmap.width,
+        h: bitmap.height,
+        lru: ++_bitmapCacheLru
+    });
+    // Evict oldest if over limit
+    if (_bitmapCache.size > BITMAP_CACHE_MAX) {
+        let oldestUrl = null, oldestLru = Infinity;
+        for (const [k, v] of _bitmapCache) {
+            if (v.lru < oldestLru) { oldestLru = v.lru; oldestUrl = k; }
+        }
+        if (oldestUrl) {
+            const victim = _bitmapCache.get(oldestUrl);
+            try { victim.bitmap.close(); } catch {}
+            _bitmapCache.delete(oldestUrl);
+            _bitmapStats.evictions++;
+        }
+    }
+}
+
+/**
+ * Prefetch an image into the bitmap cache without displaying it.
+ * Idempotent; safe to call multiple times. Returns a promise that resolves when cached.
+ */
+function prefetchImageBitmap(url, maxWidth = 0, maxHeight = 0) {
+    if (!url) return Promise.resolve(null);
+    // Don't touch stats here — this is prefetching, not a cache hit/miss query
+    if (_bitmapCache.has(url)) return Promise.resolve(_bitmapCache.get(url).bitmap);
+    const t0 = performance.now();
+    return decodeImageOffThread(url, maxWidth, maxHeight).then(bitmap => {
+        _bitmapStats.decodes++;
+        _bitmapStats.decodeMs += performance.now() - t0;
+        if (bitmap) putCachedBitmap(url, bitmap);
+        return bitmap;
+    }).catch(() => null);
+}
+
+/**
+ * Draw a cached or freshly-decoded bitmap to a canvas context.
+ * Returns true if drawn synchronously (cache hit), false if drawing async.
+ */
+function drawBitmapToCanvas(canvas, url, onDrawn) {
+    const cached = getCachedBitmap(url);
+    const ctx = canvas.getContext('2d', { alpha: false });
+    if (cached) {
+        ctx.drawImage(cached.bitmap, 0, 0, canvas.width, canvas.height);
+        if (onDrawn) onDrawn(true, cached.w, cached.h);
+        return true;
+    }
+    // Async path
+    decodeImageOffThread(url, canvas.width, canvas.height).then(bitmap => {
+        if (!bitmap) { if (onDrawn) onDrawn(false, 0, 0); return; }
+        putCachedBitmap(url, bitmap);
+        // Redraw if still connected (card may have been recycled)
+        if (canvas.isConnected) {
+            ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+            if (onDrawn) onDrawn(true, bitmap.width, bitmap.height);
+        } else {
+            if (onDrawn) onDrawn(false, bitmap.width, bitmap.height);
+        }
+    }).catch(() => { if (onDrawn) onDrawn(false, 0, 0); });
+    return false;
+}
+
 function requestImageThumbnailUrl(filePath, maxSize) {
     const key = getImageThumbnailCacheKey(filePath, maxSize);
     const cachedImgUrl = getCachedUrl(imageThumbnailUrlCache, key);
@@ -6740,17 +6895,22 @@ function createImageForCard(card, imageUrl) {
         requestImageThumbnailUrl(card.dataset.path, thumbMaxSize)
             .then(url => {
                 if (!img.isConnected) return;
-                setImageSource(url || imageUrl, url ? 'thumb' : 'original');
+                const finalUrl = url || imageUrl;
+                setImageSource(finalUrl, url ? 'thumb' : 'original');
+                // Fire-and-forget: decode bitmap into cache for fast redraw next scroll
+                prefetchImageBitmap(finalUrl, decodeWidth, decodeHeight);
             })
             .catch(() => {
                 if (!img.isConnected) return;
                 setImageSource(imageUrl, 'original');
+                prefetchImageBitmap(imageUrl, decodeWidth, decodeHeight);
             })
             .finally(() => {
                 pendingMediaCreations.delete(card);
             });
     } else {
         setImageSource(imageUrl, 'original');
+        if (!isGif) prefetchImageBitmap(imageUrl, decodeWidth, decodeHeight);
         pendingMediaCreations.delete(card);
     }
 
@@ -13069,6 +13229,8 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
     activeDimensionHydrationToken++;
     // Cancel any in-flight streaming scan from a previous folder
     if (typeof cancelActiveStream === 'function') cancelActiveStream();
+    // Free bitmap cache from the previous folder — releases GPU memory
+    if (typeof clearBitmapCache === 'function') clearBitmapCache();
     // Clear duplicate highlights from previous folder
     if (typeof clearDuplicateHighlights === 'function') clearDuplicateHighlights();
     

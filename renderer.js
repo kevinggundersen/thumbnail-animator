@@ -12988,6 +12988,69 @@ autoTagApply.addEventListener('click', async () => {
     }
 });
 
+// ── Streaming folder scan ────────────────────────────────────────────
+// Subscribes to IPC chunks from main, dispatches to callbacks.
+// Only one stream can be active at a time; calling this cancels the previous.
+
+let _activeScanId = null;
+let _streamChunkHandler = null;
+
+function cancelActiveStream() {
+    _activeScanId = null;
+    if (_streamChunkHandler) {
+        try { window.electronAPI.removeScanFolderChunkListener(); } catch {}
+        _streamChunkHandler = null;
+    }
+}
+
+/**
+ * Start a streaming folder scan.
+ * callbacks: { onItems(folders, items), onDimensions(dims), onComplete(ok) }
+ */
+function scanFolderStreaming(folderPath, options, callbacks) {
+    // Cancel any previous stream
+    cancelActiveStream();
+
+    const handler = (_event, chunk) => {
+        // Drop chunks from stale streams (user switched folders)
+        if (chunk.scanId && _activeScanId && chunk.scanId !== _activeScanId) return;
+
+        if (chunk.phase === 'items') {
+            if (callbacks.onItems) callbacks.onItems(chunk.folders || [], chunk.items || []);
+        } else if (chunk.phase === 'dimensions') {
+            if (callbacks.onDimensions) callbacks.onDimensions(chunk.dims || []);
+        } else if (chunk.phase === 'complete') {
+            if (callbacks.onComplete) callbacks.onComplete(!chunk.error, chunk.error);
+            if (_activeScanId === chunk.scanId) cancelActiveStream();
+        }
+    };
+
+    _streamChunkHandler = handler;
+    window.electronAPI.onScanFolderChunk(handler);
+
+    // Fire the IPC; the returned scanId binds subsequent chunks.
+    window.electronAPI.scanFolderStream(folderPath, options).then(result => {
+        if (result && result.scanId) _activeScanId = result.scanId;
+    }).catch(err => {
+        console.error('scanFolderStream error:', err);
+        cancelActiveStream();
+        if (callbacks.onComplete) callbacks.onComplete(false, err.message);
+    });
+}
+
+// Debounce layout recalcs triggered by dimension updates during streaming.
+let _streamingLayoutTimer = null;
+function scheduleStreamingLayoutRefresh() {
+    if (_streamingLayoutTimer) return;
+    _streamingLayoutTimer = setTimeout(() => {
+        _streamingLayoutTimer = null;
+        if (vsEnabled) {
+            vsLayoutCache.itemCount = 0;
+            vsRecalculate();
+        }
+    }, 120);
+}
+
 async function loadVideos(folderPath, useCache = true, preservedScrollTop = null) {
     // Clear find-similar state on folder navigation (silent reset, no re-render)
     if (findSimilarActive) {
@@ -13004,6 +13067,8 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
     // Stop periodic cleanup during folder switch
     stopPeriodicCleanup();
     activeDimensionHydrationToken++;
+    // Cancel any in-flight streaming scan from a previous folder
+    if (typeof cancelActiveStream === 'function') cancelActiveStream();
     // Clear duplicate highlights from previous folder
     if (typeof clearDuplicateHighlights === 'function') clearDuplicateHighlights();
     
@@ -13114,32 +13179,85 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
             }
         }
         
-        // If not cached, scan folder
+        // If not cached, scan folder via STREAMING path:
+        // items arrive immediately, dimensions trickle in as background chunks.
         if (!items) {
             // Yield control before starting scan to keep UI responsive
             await yieldToEventLoop();
-            
+
             // Keep stats when needed for sorting or enabled card metadata chips.
             const skipStats = sortType === 'name' && !cardInfoSettings.fileSize && !cardInfoSettings.date;
-            // Only block on dimension scans when the active filters require them.
-            const scanImageDimensions = hasDimensionDependentFilters();
-            const scanVideoDimensions = hasDimensionDependentFilters();
+            // Request dimensions when the layout or filters depend on them.
+            const scanImageDimensions = hasDimensionDependentFilters() || layoutMode === 'masonry';
+            const scanVideoDimensions = hasDimensionDependentFilters() || layoutMode === 'masonry';
             const scanPerfStart = perfTest.start();
-            items = await window.electronAPI.scanFolder(folderPath, { skipStats, scanImageDimensions, scanVideoDimensions, recursive: recursiveSearchEnabled });
-            perfTest.end('scanFolder (IPC)', scanPerfStart, { itemCount: items ? items.length : 0 });
 
-            // Yield control after scan completes
+            // Use streaming scan if available (falls back to invoke if the API is missing).
+            if (window.electronAPI.scanFolderStream && window.electronAPI.onScanFolderChunk) {
+                items = await new Promise((resolve) => {
+                    let initialItems = null;
+                    let itemByPath = null;
+                    let resolved = false;
+                    const safeResolve = (val) => { if (!resolved) { resolved = true; resolve(val); } };
+                    scanFolderStreaming(folderPath, {
+                        skipStats,
+                        scanImageDimensions,
+                        scanVideoDimensions,
+                        recursive: recursiveSearchEnabled
+                    }, {
+                        onItems: (folders, files) => {
+                            initialItems = [...folders, ...files];
+                            itemByPath = new Map();
+                            for (const it of initialItems) {
+                                if (it.path) itemByPath.set(it.path, it);
+                            }
+                            // Resolve the outer promise immediately so the rest of loadVideos
+                            // can render items while dimensions arrive in the background.
+                            safeResolve(initialItems);
+                        },
+                        onDimensions: (dims) => {
+                            if (!itemByPath) return;
+                            for (const d of dims) {
+                                const item = itemByPath.get(d.path);
+                                if (item) { item.width = d.width; item.height = d.height; }
+                            }
+                            scheduleStreamingLayoutRefresh();
+                        },
+                        onComplete: (ok) => {
+                            // Final refresh to pick up any lingering dimensions
+                            scheduleStreamingLayoutRefresh();
+                            if (ok && initialItems) {
+                                // Re-cache with complete dimensions
+                                const dimEntries = initialItems.filter(
+                                    i => i.type !== 'folder' && i.width && i.height
+                                ).map(i => ({
+                                    path: i.path, mtime: i.mtime || 0, width: i.width, height: i.height
+                                }));
+                                cacheDimensions(dimEntries).catch(() => {});
+                                storeFolderInIndexedDB(folderPath, initialItems).catch(() => {});
+                                updateInMemoryFolderCaches(folderPath, initialItems);
+                            }
+                            // Safety net: if stream errored before first chunk, unblock the outer promise
+                            safeResolve(initialItems || []);
+                        }
+                    });
+                });
+            } else {
+                // Fallback: non-streaming (original synchronous path)
+                items = await window.electronAPI.scanFolder(folderPath, {
+                    skipStats, scanImageDimensions, scanVideoDimensions,
+                    recursive: recursiveSearchEnabled
+                });
+            }
+            perfTest.end('scanFolder (IPC stream)', scanPerfStart, { itemCount: items ? items.length : 0 });
+
+            // Yield control after initial chunk arrives
             await yieldToEventLoop();
-            
-            // Cache the results (use normalized path for consistency)
-            updateInMemoryFolderCaches(folderPath, items);
-            
-            // Store in IndexedDB for persistence (async, don't wait)
-            storeFolderInIndexedDB(folderPath, items).catch(() => {
-                // Ignore errors, IndexedDB is optional
-            });
 
-            // Cache any newly scanned dimensions for future visits
+            // Initial cache (dimensions may still be streaming; onComplete re-caches)
+            updateInMemoryFolderCaches(folderPath, items);
+
+            // Initial dimension cache pass (best-effort; onComplete re-runs with full data)
             const dimensionEntries = items.filter(
                 item => item.type !== 'folder' && item.width && item.height
             ).map(item => ({
@@ -13148,7 +13266,7 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
                 width: item.width,
                 height: item.height
             }));
-            cacheDimensions(dimensionEntries).catch(() => {});
+            if (dimensionEntries.length > 0) cacheDimensions(dimensionEntries).catch(() => {});
             
             // Clean up old cache entries (keep cache size reasonable)
             if (folderCache.size > 50) {

@@ -339,10 +339,12 @@ button:active:not(:disabled):not(.lightbox-nav-btn) {
     min-width: 0;
 }
 
+.folder-sidebar:not(.collapsed) {
+    min-width: var(--sidebar-min-width, 180px) !important;
+    max-width: var(--sidebar-max-width, 500px) !important;
+}
 .folder-sidebar {
     width: 260px;
-    min-width: 180px;
-    max-width: 500px;
     background-color: var(--bg-secondary);
     border-right: 1px solid var(--border-subtle);
     display: flex;
@@ -3078,8 +3080,8 @@ video.blow-up-media {
     /* Remove max-width/max-height to allow consistent zoom scaling */
     width: auto;
     height: auto;
-    max-width: 90vw;
-    max-height: 90vh;
+    max-width: var(--lightbox-max-w, 90vw);
+    max-height: var(--lightbox-max-h, 90vh);
     border-radius: 8px;
     /* Rounded corners */
     box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
@@ -6176,8 +6178,8 @@ video.blow-up-media {
 /* ==================== CUSTOM MEDIA CONTROLS ==================== */
 
 #lightbox-gif-canvas {
-    max-width: 90vw;
-    max-height: 90vh;
+    max-width: var(--lightbox-max-w, 90vw);
+    max-height: var(--lightbox-max-h, 90vh);
     object-fit: contain;
 }
 
@@ -8325,4 +8327,170 @@ video.ss-media {
 #grid-container.marquee-dragging {
     user-select: none;
     cursor: crosshair;
+}
+
+/* ── Keyboard Shortcut Remapping UI ──────────────────────────────── */
+.shortcut-categories {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+.shortcut-category h4 {
+    margin: 0 0 8px 0;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-secondary, #888);
+}
+.shortcut-row-editable {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 8px;
+    border-radius: 6px;
+    transition: background var(--duration-fast, 0.1s);
+}
+.shortcut-row-editable:hover {
+    background: var(--surface-hover, rgba(255,255,255,0.04));
+}
+.shortcut-action-name {
+    flex: 1;
+    font-size: 13px;
+    color: var(--text-primary, #ececf0);
+}
+.shortcut-key-display {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    padding: 3px 8px;
+    border-radius: 4px;
+    border: 1px solid transparent;
+    transition: border-color var(--duration-fast, 0.1s);
+    min-width: 80px;
+    justify-content: center;
+}
+.shortcut-key-display:hover {
+    border-color: var(--border-color, #333);
+}
+.shortcut-key-display kbd {
+    font-size: 12px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    background: var(--surface-color, #222);
+    border: 1px solid var(--border-color, #333);
+    color: var(--text-primary, #ececf0);
+    font-family: inherit;
+}
+.shortcut-key-display.recording {
+    border-color: var(--accent-color, #e8a44a);
+    animation: shortcut-pulse 1s ease-in-out infinite;
+}
+.shortcut-key-display.recording kbd {
+    background: var(--accent-color, #e8a44a);
+    color: #000;
+    border-color: var(--accent-color, #e8a44a);
+}
+@keyframes shortcut-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(232, 164, 74, 0.3); }
+    50% { box-shadow: 0 0 0 4px rgba(232, 164, 74, 0.15); }
+}
+.shortcut-reset-btn {
+    background: none;
+    border: none;
+    color: var(--text-secondary, #888);
+    cursor: pointer;
+    font-size: 11px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    opacity: 0;
+    transition: opacity var(--duration-fast, 0.1s);
+}
+.shortcut-row-editable:hover .shortcut-reset-btn {
+    opacity: 1;
+}
+.shortcut-reset-btn:hover {
+    color: var(--accent-color, #e8a44a);
+    background: rgba(232, 164, 74, 0.1);
+}
+.shortcut-conflict-warning {
+    font-size: 11px;
+    color: #ff6b6b;
+    padding: 4px 8px;
+    background: rgba(255, 107, 107, 0.1);
+    border-radius: 4px;
+    margin-top: 4px;
+}
+
+/* ── Extension Colors Editor ─────────────────────────────────────── */
+.extension-colors-editor {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+    gap: 8px;
+}
+.ext-color-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    background: var(--surface-color, #1a1a1e);
+}
+.ext-color-item label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary, #ececf0);
+    text-transform: uppercase;
+    min-width: 40px;
+}
+.ext-color-item input[type="color"] {
+    width: 28px;
+    height: 28px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    background: none;
+    padding: 0;
+}
+.ext-color-item input[type="color"]::-webkit-color-swatch-wrapper {
+    padding: 2px;
+}
+.ext-color-item input[type="color"]::-webkit-color-swatch {
+    border-radius: 3px;
+    border: 1px solid rgba(255,255,255,0.1);
+}
+
+/* ── Advanced Settings Sub-group ─────────────────────────────────── */
+.settings-sub-group {
+    padding-left: 12px;
+    border-left: 2px solid var(--border-color, #333);
+    margin: 8px 0;
+}
+.settings-sub-group.hidden {
+    display: none;
+}
+.settings-advanced-details summary {
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.settings-advanced-details summary::before {
+    content: '\25b6';
+    font-size: 10px;
+    transition: transform var(--duration-fast, 0.1s);
+}
+.settings-advanced-details[open] summary::before {
+    transform: rotate(90deg);
+}
+
+/* ── Reduce Motion ───────────────────────────────────────────────── */
+body.reduce-motion,
+body.reduce-motion *,
+body.reduce-motion *::before,
+body.reduce-motion *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
 }

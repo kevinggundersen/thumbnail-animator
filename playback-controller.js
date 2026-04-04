@@ -526,7 +526,7 @@ class MediaControlBar {
         this._hideTimer = null;
         this._isDragging = false;
         this._isVisible = true;
-        this._hideDelay = 3000;
+        this._hideDelay = parseInt(localStorage.getItem('controlBarHideDelay')) || 3000;
 
         // Cache DOM references
         this._playBtn = containerEl.querySelector('.mc-play-btn');
@@ -544,7 +544,10 @@ class MediaControlBar {
         this._volumeSlider = containerEl.querySelector('.mc-volume-slider');
         this._volumeGroup = containerEl.querySelector('.mc-volume-group');
 
-        this._speedValues = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2];
+        try {
+            const customSpeeds = JSON.parse(localStorage.getItem('playbackSpeeds'));
+            this._speedValues = Array.isArray(customSpeeds) && customSpeeds.length ? customSpeeds.sort((a,b) => a - b) : [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2];
+        } catch { this._speedValues = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2]; }
         this._speedIndex = 3; // 1x
 
         this._bindEvents();
@@ -717,7 +720,25 @@ class MediaControlBar {
         }
     }
 
+    /** Reload speed values from localStorage (called when user changes playback speed options) */
+    reloadSpeeds() {
+        try {
+            const customSpeeds = JSON.parse(localStorage.getItem('playbackSpeeds'));
+            if (Array.isArray(customSpeeds) && customSpeeds.length) {
+                this._speedValues = customSpeeds.sort((a, b) => a - b);
+            }
+        } catch { /* keep current */ }
+        // Re-sync index to current speed
+        if (this._controller) {
+            const cur = this._controller.getSpeed();
+            this._speedIndex = this._speedValues.indexOf(cur);
+            if (this._speedIndex < 0) this._speedIndex = this._speedValues.indexOf(1) || 0;
+        }
+    }
+
     _cycleSpeed() {
+        // Re-read speeds in case they changed
+        this.reloadSpeeds();
         this._speedIndex = (this._speedIndex + 1) % this._speedValues.length;
         const speed = this._speedValues[this._speedIndex];
         if (this._controller) this._controller.setSpeed(speed);

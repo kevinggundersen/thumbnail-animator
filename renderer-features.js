@@ -31,8 +31,8 @@ function initKeyboardShortcuts() {
             return;
         }
 
-        // Ctrl/Cmd + Shift + Z or Ctrl/Cmd + Y: Redo file operation
-        if ((e.ctrlKey || e.metaKey) && ((e.shiftKey && e.key === 'Z') || e.key === 'y')) {
+        // Redo file operation
+        if (matchesShortcut(e, 'redo') || ((e.ctrlKey || e.metaKey) && e.key === 'y')) {
             e.preventDefault();
             window.electronAPI.redoFileOperation().then(result => {
                 if (result.success) {
@@ -51,8 +51,8 @@ function initKeyboardShortcuts() {
             return;
         }
 
-        // Ctrl/Cmd + Z: Undo file operation
-        if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+        // Undo file operation
+        if (matchesShortcut(e, 'undo')) {
             e.preventDefault();
             window.electronAPI.undoFileOperation().then(result => {
                 if (result.success) {
@@ -71,16 +71,16 @@ function initKeyboardShortcuts() {
             return;
         }
 
-        // Ctrl/Cmd + F: Focus search
-        if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+        // Focus search
+        if (matchesShortcut(e, 'search')) {
             e.preventDefault();
             searchBox.focus();
             searchBox.select();
             return;
         }
 
-        // Ctrl/Cmd + O: Open folder
-        if ((e.ctrlKey || e.metaKey) && e.key === 'o') {
+        // Open folder
+        if (matchesShortcut(e, 'openFolder')) {
             e.preventDefault();
             selectFolderBtn.click();
             return;
@@ -106,15 +106,15 @@ function initKeyboardShortcuts() {
             return;
         }
 
-        // Arrow keys: Navigate thumbnails
-        if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+        // Arrow keys: Navigate thumbnails (always use direct key check — not remappable)
+        if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
             e.preventDefault();
             navigateCards(e.key);
             return;
         }
 
-        // Enter: Open focused card
-        if (e.key === 'Enter' && focusedCardIndex >= 0) {
+        // Open focused card
+        if (matchesShortcut(e, 'openCard') && focusedCardIndex >= 0) {
             e.preventDefault();
             const card = visibleCards[focusedCardIndex];
             if (card) {
@@ -139,8 +139,8 @@ function initKeyboardShortcuts() {
             return;
         }
 
-        // Delete: Delete focused file
-        if (e.key === 'Delete' && focusedCardIndex >= 0) {
+        // Delete focused file
+        if (matchesShortcut(e, 'deleteCard') && focusedCardIndex >= 0) {
             e.preventDefault();
             const card = visibleCards[focusedCardIndex];
             if (card && !card.classList.contains('folder-card')) {
@@ -188,8 +188,8 @@ function initKeyboardShortcuts() {
             return;
         }
 
-        // F2: Rename focused file
-        if (e.key === 'F2' && focusedCardIndex >= 0) {
+        // Rename focused file
+        if (matchesShortcut(e, 'rename') && focusedCardIndex >= 0) {
             e.preventDefault();
             const card = visibleCards[focusedCardIndex];
             if (card && !card.classList.contains('folder-card')) {
@@ -206,8 +206,8 @@ function initKeyboardShortcuts() {
             return;
         }
 
-        // Backspace: Go back (when not in input)
-        if (e.key === 'Backspace' && e.target.tagName !== 'INPUT') {
+        // Go back
+        if (matchesShortcut(e, 'goBack') && e.target.tagName !== 'INPUT') {
             if (navigationHistory.canGoBack()) {
                 e.preventDefault();
                 goBack();
@@ -215,59 +215,49 @@ function initKeyboardShortcuts() {
             return;
         }
 
-        // Ctrl/Cmd + B: Go back
-        if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
+        // Go back (alt binding)
+        if (matchesShortcut(e, 'goBackAlt')) {
             e.preventDefault();
-            if (navigationHistory.canGoBack()) {
-                goBack();
-            }
+            if (navigationHistory.canGoBack()) goBack();
             return;
         }
 
-        // Ctrl/Cmd + Shift + B: Go forward
-        if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'B') {
+        // Go forward
+        if (matchesShortcut(e, 'goForward')) {
             e.preventDefault();
-            if (navigationHistory.canGoForward()) {
-                goForward();
-            }
+            if (navigationHistory.canGoForward()) goForward();
             return;
         }
 
-        // Number keys: Switch filters
-        if (e.key >= '1' && e.key <= '3') {
-            const filterMap = { '1': 'all', '2': 'video', '3': 'image' };
-            const filter = filterMap[e.key];
-            if (filter) {
-                e.preventDefault();
-                switchFilter(filter);
-            }
-            return;
-        }
+        // Filters
+        if (matchesShortcut(e, 'filterAll')) { e.preventDefault(); switchFilter('all'); return; }
+        if (matchesShortcut(e, 'filterVideo')) { e.preventDefault(); switchFilter('video'); return; }
+        if (matchesShortcut(e, 'filterImage')) { e.preventDefault(); switchFilter('image'); return; }
 
-        // ?: Toggle keyboard shortcuts cheat sheet
-        if (e.key === '?' || (e.shiftKey && e.key === '/')) {
+        // Toggle keyboard shortcuts cheat sheet
+        if (matchesShortcut(e, 'showShortcuts')) {
             e.preventDefault();
             toggleShortcutsOverlay();
             return;
         }
 
-        // G: Toggle grid/masonry layout
-        if (e.key === 'g' || e.key === 'G') {
+        // Toggle grid/masonry layout
+        if (matchesShortcut(e, 'toggleLayout')) {
             e.preventDefault();
             layoutModeToggle.checked = !layoutModeToggle.checked;
             switchLayoutMode();
             return;
         }
 
-        // S: Toggle sidebar
-        if (e.key === 's' || e.key === 'S') {
+        // Toggle sidebar
+        if (matchesShortcut(e, 'collapseSidebar')) {
             e.preventDefault();
             setSidebarCollapsed(!sidebarCollapsed);
             return;
         }
 
-        // Space: Open lightbox for focused card
-        if (e.key === ' ' && focusedCardIndex >= 0) {
+        // Open lightbox for focused card
+        if (matchesShortcut(e, 'lightboxOpen') && focusedCardIndex >= 0) {
             e.preventDefault();
             const card = visibleCards[focusedCardIndex];
             if (card && !card.classList.contains('folder-card')) {
@@ -279,8 +269,8 @@ function initKeyboardShortcuts() {
             return;
         }
 
-        // + / =: Zoom in
-        if (e.key === '+' || e.key === '=') {
+        // Zoom in
+        if (matchesShortcut(e, 'zoomIn')) {
             e.preventDefault();
             const newZoom = Math.min(200, zoomLevel + 10);
             zoomSlider.value = newZoom;
@@ -291,8 +281,8 @@ function initKeyboardShortcuts() {
             return;
         }
 
-        // -: Zoom out
-        if (e.key === '-') {
+        // Zoom out
+        if (matchesShortcut(e, 'zoomOut')) {
             e.preventDefault();
             const newZoom = Math.max(50, zoomLevel - 10);
             zoomSlider.value = newZoom;
@@ -303,8 +293,8 @@ function initKeyboardShortcuts() {
             return;
         }
 
-        // 0: Reset zoom
-        if (e.key === '0' && !e.ctrlKey && !e.metaKey) {
+        // Reset zoom
+        if (matchesShortcut(e, 'zoomReset')) {
             e.preventDefault();
             zoomSlider.value = 100;
             zoomLevel = 100;
@@ -314,15 +304,15 @@ function initKeyboardShortcuts() {
             return;
         }
 
-        // F5: Start Slideshow
-        if (e.key === 'F5') {
+        // Start Slideshow
+        if (matchesShortcut(e, 'slideshow')) {
             e.preventDefault();
             if (typeof startSlideshow === 'function') startSlideshow();
             return;
         }
 
-        // C: Compare selected files (2-4)
-        if ((e.key === 'c' || e.key === 'C') && !e.ctrlKey && !e.metaKey) {
+        // Compare selected files (2-4)
+        if (matchesShortcut(e, 'compare')) {
             if (selectedCardPaths.size >= 2 && selectedCardPaths.size <= 4) {
                 e.preventDefault();
                 if (typeof openCompareMode === 'function') openCompareMode([...selectedCardPaths]);
@@ -824,7 +814,7 @@ function promptFavGroupName(callback, defaultValue = '') {
 // ==================== RECENT FILES ====================
 async function loadRecentFiles() {
     try {
-        const result = await window.electronAPI.dbGetRecentFiles();
+        const result = await window.electronAPI.dbGetRecentFiles(recentFilesLimitSetting);
         if (result.success && result.data) {
             // SQLite only stores {path, addedAt}. Derive name/type/url for rendering.
             recentFiles = result.data.map(r => {
@@ -869,9 +859,9 @@ function addRecentFile(path, name, url, type) {
         timestamp: Date.now()
     });
     // Keep only last 50
-    recentFiles = recentFiles.slice(0, 50);
+    recentFiles = recentFiles.slice(0, recentFilesLimitSetting);
     // Persist to SQLite
-    window.electronAPI.dbAddRecentFile({ path, addedAt: Date.now() });
+    window.electronAPI.dbAddRecentFile({ path, addedAt: Date.now() }, recentFilesLimitSetting);
     renderRecentFiles();
 }
 
@@ -3185,29 +3175,27 @@ function initNewFeatures() {
                 return;
             }
 
-            if (e.key === 'ArrowLeft') {
+            if (matchesShortcut(e, 'lb_prev')) {
                 e.preventDefault();
                 navigateLightbox('prev');
-            } else if (e.key === 'ArrowRight') {
+            } else if (matchesShortcut(e, 'lb_next')) {
                 e.preventDefault();
                 navigateLightbox('next');
-            } else if (e.key === ',' || e.key === '<') {
-                // Previous frame
+            } else if (matchesShortcut(e, 'lb_prevFrame')) {
                 e.preventDefault();
                 if (activePlaybackController) activePlaybackController.stepFrame('prev');
-            } else if (e.key === '.' || e.key === '>') {
-                // Next frame
+            } else if (matchesShortcut(e, 'lb_nextFrame')) {
                 e.preventDefault();
                 if (activePlaybackController) activePlaybackController.stepFrame('next');
-            } else if (e.key === ' ') {
-                // Space: toggle play/pause
+            } else if (matchesShortcut(e, 'lb_playPause')) {
                 e.preventDefault();
                 if (activePlaybackController) activePlaybackController.togglePlay();
-            } else if (e.key === '[') {
-                // Speed down
+            } else if (matchesShortcut(e, 'lb_speedDown')) {
                 e.preventDefault();
                 if (activePlaybackController && mediaControlBarInstance) {
-                    const speeds = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2];
+                    let speeds;
+                    try { speeds = JSON.parse(localStorage.getItem('playbackSpeeds')); } catch {}
+                    if (!Array.isArray(speeds) || !speeds.length) speeds = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2];
                     const cur = activePlaybackController.getSpeed();
                     const idx = speeds.indexOf(cur);
                     if (idx > 0) {
@@ -3215,11 +3203,12 @@ function initNewFeatures() {
                         mediaControlBarInstance.syncState({ speed: speeds[idx - 1] });
                     }
                 }
-            } else if (e.key === ']') {
-                // Speed up
+            } else if (matchesShortcut(e, 'lb_speedUp')) {
                 e.preventDefault();
                 if (activePlaybackController && mediaControlBarInstance) {
-                    const speeds = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2];
+                    let speeds;
+                    try { speeds = JSON.parse(localStorage.getItem('playbackSpeeds')); } catch {}
+                    if (!Array.isArray(speeds) || !speeds.length) speeds = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2];
                     const cur = activePlaybackController.getSpeed();
                     const idx = speeds.indexOf(cur);
                     if (idx < speeds.length - 1) {

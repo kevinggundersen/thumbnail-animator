@@ -179,9 +179,9 @@ class AppDatabase {
         this._stmts.deleteFavoriteItems = this.db.prepare('DELETE FROM favorite_items');
 
         // Recent files
-        this._stmts.getRecentFiles = this.db.prepare('SELECT path, timestamp FROM recent_files ORDER BY timestamp DESC LIMIT 50');
+        this._stmts.getRecentFiles = this.db.prepare('SELECT path, timestamp FROM recent_files ORDER BY timestamp DESC LIMIT ?');
         this._stmts.upsertRecentFile = this.db.prepare('INSERT OR REPLACE INTO recent_files (path, timestamp) VALUES (?, ?)');
-        this._stmts.trimRecentFiles = this.db.prepare('DELETE FROM recent_files WHERE id NOT IN (SELECT id FROM recent_files ORDER BY timestamp DESC LIMIT 50)');
+        this._stmts.trimRecentFiles = this.db.prepare('DELETE FROM recent_files WHERE id NOT IN (SELECT id FROM recent_files ORDER BY timestamp DESC LIMIT ?)');
         this._stmts.clearRecentFiles = this.db.prepare('DELETE FROM recent_files');
 
         // Collections
@@ -351,16 +351,16 @@ class AppDatabase {
 
     // ── Recent files ─────────────────────────────────────────────────────
 
-    getRecentFiles() {
-        return this._stmts.getRecentFiles.all().map(r => ({
+    getRecentFiles(limit = 50) {
+        return this._stmts.getRecentFiles.all(limit).map(r => ({
             path: r.path,
             addedAt: r.timestamp
         }));
     }
 
-    addRecentFile(entry) {
+    addRecentFile(entry, limit = 50) {
         this._stmts.upsertRecentFile.run(entry.path, entry.addedAt || Date.now());
-        this._stmts.trimRecentFiles.run();
+        this._stmts.trimRecentFiles.run(limit);
     }
 
     clearRecentFiles() {

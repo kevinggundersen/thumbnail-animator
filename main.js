@@ -231,7 +231,7 @@ async function generateVideoThumbnail(filePath) {
 
             // Get video duration to pick a good frame
             const duration = await getVideoDuration(filePath);
-            const seekTime = duration ? Math.min(duration * 0.25, 10) : 1;
+            const seekTime = duration ? Math.min(duration * mainVideoThumbSeekPct, 10) : 1;
 
             const result = await new Promise((resolve) => {
                 execFile(ffmpegPath, [
@@ -239,7 +239,7 @@ async function generateVideoThumbnail(filePath) {
                     '-i', filePath,
                     '-vframes', '1',
                     '-q:v', '6',
-                    '-vf', 'scale=320:-2',
+                    '-vf', `scale=${mainVideoThumbWidth}:-2`,
                     '-y',
                     thumbPath
                 ], { timeout: 10000 }, (err) => {
@@ -991,7 +991,19 @@ async function asyncPool(limit, items, fn) {
     return Promise.all(results);
 }
 
-const IO_CONCURRENCY_LIMIT = 20;
+let IO_CONCURRENCY_LIMIT = 20;
+
+// ── Runtime settings from renderer ──
+let mainVideoThumbWidth = 320;
+let mainVideoThumbSeekPct = 0.25;
+
+ipcMain.handle('update-main-setting', (event, key, value) => {
+    switch (key) {
+        case 'ioConcurrency': IO_CONCURRENCY_LIMIT = parseInt(value) || 20; break;
+        case 'videoThumbWidth': mainVideoThumbWidth = parseInt(value) || 320; break;
+        case 'videoThumbSeekPct': mainVideoThumbSeekPct = parseFloat(value) / 100 || 0.25; break;
+    }
+});
 
 // Core folder scan logic extracted for reuse by collections
 async function scanFolderInternal(folderPath, options = {}) {
@@ -1294,7 +1306,7 @@ function getFolderPreviewCachePath(folderPath) {
     return path.join(folderPreviewDir, createThumbCacheKey(folderPath, 0, 'folder-preview') + '.json');
 }
 
-ipcMain.handle('get-folder-preview', async (event, folderPath) => {
+ipcMain.handle('get-folder-preview', async (event, folderPath, previewCount) => {
     const startTime = performance.now();
     try {
         // Check folder mtime for cache invalidation
@@ -1308,16 +1320,17 @@ ipcMain.handle('get-folder-preview', async (event, folderPath) => {
 
         // Check disk cache
         const cachePath = getFolderPreviewCachePath(folderPath);
+        const effectiveCount = previewCount || 4;
         try {
             const cacheData = JSON.parse(await fs.promises.readFile(cachePath, 'utf8'));
-            if (cacheData.folderMtime === folderMtime && Array.isArray(cacheData.results)) {
+            if (cacheData.folderMtime === folderMtime && Array.isArray(cacheData.results) && (cacheData.count || 4) >= effectiveCount) {
                 logPerf('get-folder-preview', startTime, { cached: 1, count: cacheData.results.length });
-                return cacheData.results;
+                return cacheData.results.slice(0, effectiveCount);
             }
         } catch { /* cache miss */ }
 
         // Peek for media files
-        const files = await peekFolderMedia(folderPath, 4);
+        const files = await peekFolderMedia(folderPath, effectiveCount);
         if (files.length === 0) {
             // Cache the empty result too
             fs.promises.mkdir(folderPreviewDir, { recursive: true }).then(() =>
@@ -1350,7 +1363,7 @@ ipcMain.handle('get-folder-preview', async (event, folderPath) => {
 
         // Write cache in the background
         fs.promises.mkdir(folderPreviewDir, { recursive: true }).then(() =>
-            fs.promises.writeFile(cachePath, JSON.stringify({ folderMtime, results }))
+            fs.promises.writeFile(cachePath, JSON.stringify({ folderMtime, results, count: effectiveCount }))
         ).catch(() => {});
 
         logPerf('get-folder-preview', startTime, { cached: 0, count: results.length });
@@ -3788,12 +3801,12 @@ ipcMain.handle('db-save-favorites', (event, favObj) => {
 });
 
 // Recent files
-ipcMain.handle('db-get-recent-files', () => {
-    try { return { success: true, data: appDb.getRecentFiles() }; }
+ipcMain.handle('db-get-recent-files', (event, limit) => {
+    try { return { success: true, data: appDb.getRecentFiles(limit || 50) }; }
     catch (e) { return { success: false, error: e.message }; }
 });
-ipcMain.handle('db-add-recent-file', (event, entry) => {
-    try { appDb.addRecentFile(entry); return { success: true }; }
+ipcMain.handle('db-add-recent-file', (event, entry, limit) => {
+    try { appDb.addRecentFile(entry, limit || 50); return { success: true }; }
     catch (e) { return { success: false, error: e.message }; }
 });
 ipcMain.handle('db-clear-recent-files', () => {

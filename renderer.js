@@ -1,14 +1,14 @@
 
 // ============================================================================
 // CONFIGURATION CONSTANTS - Adjust these values to fine-tune performance
+// User-configurable values are `let` and hydrated from localStorage below.
 // ============================================================================
 
 // Media Loading Configuration
-const MAX_VIDEOS = 120; // Max concurrent videos
-const MAX_IMAGES = 120; // Max concurrent images
-const MAX_TOTAL_MEDIA = MAX_VIDEOS + MAX_IMAGES; // Total media limit
-const PARALLEL_LOAD_LIMIT = 10; // Load up to N items in parallel for faster initial load
-const PRELOAD_BUFFER_PX = 1000; // Preload content N pixels before it enters viewport
+let MAX_VIDEOS = 120; // Max concurrent videos
+let MAX_IMAGES = 120; // Max concurrent images
+let PARALLEL_LOAD_LIMIT = 10; // Load up to N items in parallel for faster initial load
+let PRELOAD_BUFFER_PX = 1000; // Preload content N pixels before it enters viewport
 
 // Scale parallel load limit based on zoom level - at lower zoom, more cards are visible
 function getEffectiveLoadLimit() {
@@ -22,28 +22,28 @@ const CLEANUP_IDLE_INTERVAL_MS = 200; // Low-frequency safety cleanup while idle
 const VIEWPORT_CACHE_TTL = 100; // Cache viewport bounds for N ms
 const MEDIA_COUNT_CACHE_TTL = 50; // Cache media counts for N ms
 const CARD_RECT_CACHE_TTL = 34; // Short-lived rect cache for hot scroll/cleanup paths
-const IMAGE_THUMBNAIL_MAX_EDGE = 768; // Cap cached image thumbs to a practical grid size
+let IMAGE_THUMBNAIL_MAX_EDGE = 768; // Cap cached image thumbs to a practical grid size
 const BACKGROUND_DIMENSION_SCAN_CHUNK_SIZE = 2000; // Larger chunks = fewer layout recalculations
 
 // Progressive Rendering Configuration
-const PROGRESSIVE_RENDER_THRESHOLD = 1000; // Use progressive rendering for N+ items
+let PROGRESSIVE_RENDER_THRESHOLD = 1000; // Use progressive rendering for N+ items
 const PROGRESSIVE_RENDER_CHUNK_SIZE = 50; // Render N items per frame
 const PROGRESSIVE_RENDER_INITIAL_CHUNK = 100; // Render first N items immediately
 
 // Scroll & Observer Configuration
-const SCROLL_DEBOUNCE_MS = 150; // Debounce cleanup after scroll stops (ms)
+let SCROLL_DEBOUNCE_MS = 150; // Debounce cleanup after scroll stops (ms)
 const OBSERVER_CLEANUP_THROTTLE_MS = 300; // Throttle IntersectionObserver cleanup — safety net only, processEntries handles per-card cleanup directly
 
 // Retry Configuration
-const MAX_RETRY_ATTEMPTS = 5; // Maximum number of retry attempts per card
-const RETRY_INITIAL_DELAY_MS = 500; // Initial retry delay (ms)
+let MAX_RETRY_ATTEMPTS = 5; // Maximum number of retry attempts per card
+let RETRY_INITIAL_DELAY_MS = 500; // Initial retry delay (ms)
 const RETRY_BACKOFF_MULTIPLIER = 2; // Exponential backoff multiplier
-const RETRY_MAX_DELAY_MS = 5000; // Maximum delay between retries (ms)
+let RETRY_MAX_DELAY_MS = 5000; // Maximum delay between retries (ms)
 
 // Cache Configuration
-const FOLDER_CACHE_TTL = 30000; // Tab cache TTL (30 seconds)
+let FOLDER_CACHE_TTL = 30000; // Tab cache TTL (30 seconds)
 const GLOBAL_CACHE_TTL = 60000; // Global folder cache TTL (60 seconds)
-const INDEXEDDB_CACHE_TTL = 3600000; // IndexedDB persistent cache TTL (1 hour)
+let INDEXEDDB_CACHE_TTL = 3600000; // IndexedDB persistent cache TTL (1 hour)
 
 // IndexedDB Configuration
 const DB_NAME = 'ThumbnailAnimatorCache';
@@ -55,6 +55,113 @@ const EMBEDDING_STORE = 'embeddingCache';
 const EMBEDDING_VERSION = 'v2'; // bump when embedding method changes (invalidates cached embeddings)
 const COLLECTIONS_STORE = 'collections';
 const COLLECTION_FILES_STORE = 'collectionFiles';
+
+// Virtual scroll tuning (configurable)
+let VS_BUFFER_PX = 1200; // Buffer zone for rendering cards ahead of viewport
+let VS_MAX_POOL_SIZE = 150; // Max recycled cards to keep
+
+// Layout tuning (configurable)
+let gridGapSetting = 12; // Grid gap in px (CSS --gap)
+let minCardWidthSetting = 220; // Minimum card width in px
+let cardAspectRatioSetting = '16:9'; // Default card aspect ratio
+
+// Animation tuning (configurable)
+let animationSpeedSetting = 'normal'; // off, fast, normal, relaxed, slow
+let reduceMotionSetting = false;
+
+// Lightbox tuning
+let lightboxMaxZoomSetting = 500;
+let lightboxViewportSetting = 90; // % of viewport
+let blowUpDelaySetting = 250; // ms hold delay
+
+// Slideshow default
+let defaultSlideshowSpeed = 3000;
+
+// Database / history limits
+let recentFilesLimitSetting = 50;
+let maxUndoHistorySetting = 30;
+let tagSuggestionsLimitSetting = 10;
+let searchHistoryLimitSetting = 10;
+
+// Sidebar limits
+let sidebarMinWidthSetting = 180;
+let sidebarMaxWidthSetting = 500;
+
+// Folder preview
+let folderPreviewCountSetting = 4;
+let folderPreviewSizeSetting = 192;
+
+// ============================================================================
+// Hydrate configurable constants from localStorage
+// ============================================================================
+(function hydrateSettings() {
+    const _int = (key, fallback) => { const v = localStorage.getItem(key); return v !== null ? parseInt(v, 10) : fallback; };
+    const _str = (key, fallback) => localStorage.getItem(key) || fallback;
+    const _bool = (key, fallback) => { const v = localStorage.getItem(key); return v !== null ? v === 'true' : fallback; };
+
+    // Performance profile
+    const profile = _str('perfProfile', 'medium');
+    if (profile === 'low') {
+        MAX_VIDEOS = 60; MAX_IMAGES = 60; PARALLEL_LOAD_LIMIT = 5;
+        VS_BUFFER_PX = 600; VS_MAX_POOL_SIZE = 75;
+    } else if (profile === 'high') {
+        MAX_VIDEOS = 200; MAX_IMAGES = 200; PARALLEL_LOAD_LIMIT = 20;
+        VS_BUFFER_PX = 2000; VS_MAX_POOL_SIZE = 250;
+    } else if (profile === 'custom') {
+        const maxMedia = _int('maxMedia', 120);
+        MAX_VIDEOS = maxMedia; MAX_IMAGES = maxMedia;
+        PARALLEL_LOAD_LIMIT = _int('parallelLoad', 10);
+        VS_BUFFER_PX = _int('vsBuffer', 1200);
+        VS_MAX_POOL_SIZE = _int('vsPoolSize', 150);
+        SCROLL_DEBOUNCE_MS = _int('scrollDebounce', 150);
+        PROGRESSIVE_RENDER_THRESHOLD = _int('progressiveThreshold', 1000);
+    }
+    // Individual overrides (always apply even for presets if explicitly set)
+    IMAGE_THUMBNAIL_MAX_EDGE = _int('imageThumbMaxEdge', IMAGE_THUMBNAIL_MAX_EDGE);
+
+    // Cache TTLs
+    FOLDER_CACHE_TTL = _int('folderCacheTTL', FOLDER_CACHE_TTL);
+    INDEXEDDB_CACHE_TTL = _int('idbCacheTTL', INDEXEDDB_CACHE_TTL);
+
+    // Retry
+    MAX_RETRY_ATTEMPTS = _int('retryAttempts', MAX_RETRY_ATTEMPTS);
+    RETRY_INITIAL_DELAY_MS = _int('retryInitialDelay', RETRY_INITIAL_DELAY_MS);
+    RETRY_MAX_DELAY_MS = _int('retryMaxDelay', RETRY_MAX_DELAY_MS);
+
+    // Layout
+    gridGapSetting = _int('gridGap', 12);
+    minCardWidthSetting = _int('minCardWidth', 220);
+    cardAspectRatioSetting = _str('cardAspectRatio', '16:9');
+
+    // Animation
+    animationSpeedSetting = _str('animationSpeed', 'normal');
+    reduceMotionSetting = _bool('reduceMotion', false);
+
+    // Lightbox
+    lightboxMaxZoomSetting = _int('lightboxMaxZoom', 500);
+    lightboxViewportSetting = _int('lightboxViewport', 90);
+    blowUpDelaySetting = _int('blowUpDelay', 250);
+
+    // Slideshow
+    defaultSlideshowSpeed = _int('defaultSlideshowSpeed', 3000);
+
+    // Database / history
+    recentFilesLimitSetting = _int('recentFilesLimit', 50);
+    maxUndoHistorySetting = _int('maxUndoHistory', 30);
+    tagSuggestionsLimitSetting = _int('tagSuggestionsLimit', 10);
+    searchHistoryLimitSetting = _int('searchHistoryLimit', 10);
+
+    // Sidebar
+    sidebarMinWidthSetting = _int('sidebarMinWidth', 180);
+    sidebarMaxWidthSetting = _int('sidebarMaxWidth', 500);
+
+    // Folder preview
+    folderPreviewCountSetting = _int('folderPreviewCount', 4);
+    folderPreviewSizeSetting = _int('folderPreviewSize', 192);
+})();
+
+// Derived after hydration
+let MAX_TOTAL_MEDIA = MAX_VIDEOS + MAX_IMAGES;
 
 // ============================================================================
 // END CONFIGURATION CONSTANTS
@@ -73,8 +180,7 @@ let vsPositions = null;            // Float64Array: [left0, top0, width0, height
 let vsTotalHeight = 0;             // Total computed height of all content
 let vsActiveCards = new Map();     // Map<itemIndex, HTMLElement> - currently rendered cards
 let vsRecyclePool = [];            // Pool of detached card DOM nodes for reuse
-const VS_MAX_POOL_SIZE = 150;      // Max recycled cards to keep
-const VS_BUFFER_PX = 1200;         // Buffer zone for rendering cards ahead of viewport
+// VS_MAX_POOL_SIZE and VS_BUFFER_PX are defined and hydrated in the config block above
 let vsScrollRafId = null;          // RAF ID for scroll handler coalescing
 let vsLastStartIndex = -1;         // Last rendered range start
 let vsLastEndIndex = -1;           // Last rendered range end
@@ -180,7 +286,7 @@ function getVsStyles() {
     const rootStyles = getComputedStyle(document.documentElement);
     const gridStyles = getComputedStyle(gridContainer);
     cachedVsStyles = {
-        gap: parseInt(rootStyles.getPropertyValue('--gap')) || 16,
+        gap: (() => { const v = parseInt(rootStyles.getPropertyValue('--gap')); return isNaN(v) ? 16 : v; })(),
         paddingLeft: parseInt(gridStyles.paddingLeft) || 0,
         paddingTop: parseInt(gridStyles.paddingTop) || 0,
         paddingBottom: parseInt(gridStyles.paddingBottom) || 0,
@@ -197,11 +303,13 @@ function vsCalculatePositions(items, containerWidth, mode, zoom) {
     // Calculate what the column count would be for this zoom/width/mode
     let newColumns, newColumnWidth;
     if (mode === 'masonry') {
-        const minColumnWidth = 250 * (zoom / 100);
+        const baseMinWidth = Math.max(minCardWidthSetting, 120); // Use configurable minimum
+        const minColumnWidth = baseMinWidth * (zoom / 100);
         newColumns = Math.max(1, Math.floor((availableWidth + gap) / (minColumnWidth + gap)));
         newColumnWidth = (availableWidth - gap * (newColumns - 1)) / newColumns;
     } else {
-        const gridMinWidth = 220 * (zoom / 100);
+        const baseMinWidth = Math.max(minCardWidthSetting, 120); // Use configurable minimum
+        const gridMinWidth = baseMinWidth * (zoom / 100);
         newColumns = Math.max(1, Math.floor((availableWidth + gap) / (gridMinWidth + gap)));
         newColumnWidth = (availableWidth - gap * (newColumns - 1)) / newColumns;
     }
@@ -3963,7 +4071,7 @@ function initSidebarResize() {
         const clientX = e.clientX;
         requestAnimationFrame(() => {
             _resizeRafPending = false;
-            const newWidth = Math.min(500, Math.max(180, clientX));
+            const newWidth = Math.min(sidebarMaxWidthSetting, Math.max(sidebarMinWidthSetting, clientX));
             folderSidebar.style.width = newWidth + 'px';
             sidebarWidth = newWidth;
         });
@@ -4178,7 +4286,7 @@ const contextMenu = document.getElementById('context-menu');
 let contextMenuTargetCard = null;
 
 // Blow-Up Preview (right-click hold)
-const BLOW_UP_HOLD_DELAY = 250;
+const BLOW_UP_HOLD_DELAY = blowUpDelaySetting;
 let blowUpHoldTimer = null;
 let blowUpActive = false;
 let blowUpTargetCard = null;
@@ -4835,7 +4943,7 @@ function requestFolderPreview(folderPath) {
         return folderPreviewRequests.get(folderPath);
     }
 
-    const request = window.electronAPI.getFolderPreview(folderPath)
+    const request = window.electronAPI.getFolderPreview(folderPath, folderPreviewCountSetting)
         .then(results => {
             const urls = results.filter(r => r.url).map(r => r.url);
             folderPreviewCache.set(folderPath, { urls, ts: Date.now() });
@@ -4877,11 +4985,18 @@ async function loadFolderPreview(card) {
 
         const grid = document.createElement('div');
         grid.className = 'folder-preview-grid';
-        if (urls.length <= 3) {
-            grid.classList.add(`folder-preview-${urls.length}`);
+        const count = Math.min(urls.length, folderPreviewCountSetting);
+        if (count <= 3) {
+            grid.classList.add(`folder-preview-${count}`);
+        } else {
+            // Dynamic grid: compute columns/rows for 4+ images
+            const cols = Math.ceil(Math.sqrt(count));
+            const rows = Math.ceil(count / cols);
+            grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+            grid.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
         }
 
-        for (const url of urls.slice(0, 4)) {
+        for (const url of urls.slice(0, count)) {
             const cell = document.createElement('div');
             cell.className = 'folder-preview-cell';
             cell.style.backgroundImage = `url("${url.replace(/"/g, '\\"')}")`;
@@ -4943,14 +5058,14 @@ function getFileType(url) {
     return 'video'; // Default to video for unknown types
 }
 
-// Color mapping for file extensions
-const EXTENSION_COLORS = {
+// Color mapping for file extensions (user-customizable)
+const DEFAULT_EXTENSION_COLORS = {
     // Video formats
     'MP4': '#ff6b6b',   // Red
     'WEBM': '#4ecdc4',  // Teal
     'OGG': '#95e1d3',   // Light teal
     'MOV': '#f38181',   // Light red
-    
+
     // Image formats
     'GIF': '#a8e6cf',   // Light green
     'JPG': '#ffd93d',   // Yellow
@@ -4960,10 +5075,15 @@ const EXTENSION_COLORS = {
     'BMP': '#9b59b6',   // Purple
     'SVG': '#ff9ff3',   // Pink
 };
+let extensionColors = { ...DEFAULT_EXTENSION_COLORS };
+try {
+    const saved = localStorage.getItem('extensionColors');
+    if (saved) Object.assign(extensionColors, JSON.parse(saved));
+} catch { /* use defaults */ }
 
 // Helper function to get color for extension
 function getExtensionColor(extension) {
-    return EXTENSION_COLORS[extension] || '#888888'; // Default gray for unknown extensions
+    return extensionColors[extension] || '#888888'; // Default gray for unknown extensions
 }
 
 // Helper function to convert hex to rgba with opacity
@@ -5408,7 +5528,7 @@ function getMasonryStyles() {
     const rootStyles = getComputedStyle(document.documentElement);
     const gridStyles = getComputedStyle(gridContainer);
     cachedMasonryStyles = {
-        gap: parseInt(rootStyles.getPropertyValue('--gap')) || 16,
+        gap: (() => { const v = parseInt(rootStyles.getPropertyValue('--gap')); return isNaN(v) ? 16 : v; })(),
         paddingLeft: parseInt(gridStyles.paddingLeft) || 0,
         paddingTop: parseInt(gridStyles.paddingTop) || 0,
         paddingBottom: parseInt(gridStyles.paddingBottom) || 0,
@@ -9137,12 +9257,33 @@ const SETTINGS_EXPORT_KEYS_STRING = [
     'videoCacheLimitMB', 'imageCacheLimitMB',
     'useSystemTrash', 'hoverScale', 'hoverScaleWithZoom',
     'hoverScaleAt50', 'hoverScaleAt100', 'hoverScaleAt200',
-    'groupByDate', 'dateGroupGranularity', 'recursiveSearch'
+    'groupByDate', 'dateGroupGranularity', 'recursiveSearch',
+    // Phase 2: Grid layout
+    'gridGap', 'minCardWidth', 'cardAspectRatio',
+    // Phase 3: Animation
+    'animationSpeed', 'reduceMotion',
+    // Phase 5: Playback
+    'controlBarHideDelay', 'defaultSlideshowSpeed', 'videoThumbSeekPct',
+    // Phase 6: AI
+    'aiIdleDelay', 'aiBatchSize', 'aiVideoFrameCount',
+    // Phase 7: Performance
+    'perfProfile', 'maxMedia', 'parallelLoad', 'vsBuffer', 'vsPoolSize',
+    'scrollDebounce', 'progressiveThreshold',
+    'folderCacheTTL', 'idbCacheTTL',
+    'imageThumbMaxEdge', 'videoThumbWidth',
+    'lightboxMaxZoom', 'lightboxViewport', 'blowUpDelay',
+    'recentFilesLimit', 'maxUndoHistory', 'tagSuggestionsLimit', 'searchHistoryLimit',
+    // Phase 8: Niche
+    'ioConcurrency', 'clipWorkerCount',
+    'retryAttempts', 'retryInitialDelay', 'retryMaxDelay',
+    'sidebarMinWidth', 'sidebarMaxWidth',
+    'folderPreviewCount', 'folderPreviewSize',
 ];
 const SETTINGS_EXPORT_KEYS_JSON = [
     'cardInfoSettings', 'customThemes',
     'tabs', 'sidebarExpandedNodes', 'pluginStates',
-    'folderSortPrefs'
+    'folderSortPrefs',
+    'extensionColors', 'keyboardShortcuts', 'playbackSpeeds',
 ];
 
 function showSettingsDataStatus(message, type) {
@@ -9217,7 +9358,7 @@ async function exportSettings() {
             window.electronAPI.dbGetAllRatings(),
             window.electronAPI.dbGetAllPinned(),
             window.electronAPI.dbGetFavorites(),
-            window.electronAPI.dbGetRecentFiles(),
+            window.electronAPI.dbGetRecentFiles(recentFilesLimitSetting),
             window.electronAPI.dbExportTags()
         ]);
         if (ratingsResult.success) data.json.fileRatings = ratingsResult.data;
@@ -9297,7 +9438,7 @@ async function importSettings() {
         if (data.json && data.json.recentFiles) {
             await window.electronAPI.dbClearRecentFiles();
             for (const entry of data.json.recentFiles) {
-                await window.electronAPI.dbAddRecentFile(entry);
+                await window.electronAPI.dbAddRecentFile(entry, recentFilesLimitSetting);
             }
         }
         if (data.json && data.json.tags) {
@@ -10278,8 +10419,8 @@ async function scheduleBackgroundEmbedding(items) {
 // ---------------------------------------------------------------------------
 let _idleTimer = null;
 let _idleEmbedAbort = null;
-const IDLE_DELAY_MS = 10000;       // 10s of inactivity before starting
-const IDLE_BATCH_SIZE = 8;
+let IDLE_DELAY_MS = parseInt(localStorage.getItem('aiIdleDelay')) || 10000;
+let IDLE_BATCH_SIZE = parseInt(localStorage.getItem('aiBatchSize')) || 8;
 
 function _resetIdleTimer() {
     if (_idleTimer) clearTimeout(_idleTimer);
@@ -10422,7 +10563,7 @@ function calculateFitZoomLevel(naturalWidth, naturalHeight) {
     // Inverse of exponential zoom curve: fitScale = 1.06^((zoomLevel - 100) / 5)
     const zoomLevel = 100 + 5 * Math.log(fitScale) / Math.log(1.06);
     // Snap to nearest step of 5, cap at slider max
-    return Math.min(Math.round(zoomLevel / 5) * 5, 500);
+    return Math.min(Math.round(zoomLevel / 5) * 5, lightboxMaxZoomSetting);
 }
 
 /** Helper: display a static (non-animated) image in the lightbox */
@@ -10993,7 +11134,7 @@ function handleLightboxWheel(e) {
     
     // Determine zoom direction
     const zoomDelta = e.deltaY > 0 ? -10 : 10;
-    const newZoomLevel = Math.max(30, Math.min(500, currentZoomLevel + zoomDelta));
+    const newZoomLevel = Math.max(30, Math.min(lightboxMaxZoomSetting, currentZoomLevel + zoomDelta));
     
     // Get mouse position for zooming at pointer
     const mouseX = e.clientX;
@@ -13839,7 +13980,7 @@ console.log('[Tags] renderer.js fully loaded, end of file reached');
 // ==================== SEARCH HISTORY ====================
 (function initSearchHistory() {
     const SEARCH_HISTORY_KEY = 'searchHistory';
-    const MAX_SEARCH_HISTORY = 10;
+    const MAX_SEARCH_HISTORY = searchHistoryLimitSetting;
     const dropdown = document.getElementById('search-history-dropdown');
     if (!dropdown || !searchBox) return;
 
@@ -14368,3 +14509,584 @@ function ssUpdateControls() {
         hudTimeout = setTimeout(() => { if (hud) hud.classList.remove('ss-hud-visible'); }, 2000);
     });
 })();
+
+// ============================================================================
+// KEYBOARD SHORTCUT REMAPPING SYSTEM
+// ============================================================================
+const DEFAULT_SHORTCUTS = {
+    undo:           { key: 'z', ctrl: true, label: 'Undo', category: 'File Actions' },
+    redo:           { key: 'z', ctrl: true, shift: true, label: 'Redo', category: 'File Actions' },
+    search:         { key: 'f', ctrl: true, label: 'Search', category: 'Navigation' },
+    openFolder:     { key: 'o', ctrl: true, label: 'Open folder', category: 'Navigation' },
+    openCard:       { key: 'Enter', label: 'Open selected card', category: 'Navigation' },
+    deleteCard:     { key: 'Delete', label: 'Delete file', category: 'File Actions' },
+    rename:         { key: 'F2', label: 'Rename file', category: 'File Actions' },
+    goBack:         { key: 'Backspace', label: 'Go back', category: 'Navigation' },
+    goBackAlt:      { key: 'b', ctrl: true, label: 'Go back (alt)', category: 'Navigation' },
+    goForward:      { key: 'b', ctrl: true, shift: true, label: 'Go forward', category: 'Navigation' },
+    filterAll:      { key: '1', label: 'Show all', category: 'Filters' },
+    filterVideo:    { key: '2', label: 'Videos only', category: 'Filters' },
+    filterImage:    { key: '3', label: 'Images only', category: 'Filters' },
+    showShortcuts:  { key: '?', label: 'Show shortcuts', category: 'View' },
+    toggleLayout:   { key: 'g', label: 'Toggle grid/masonry', category: 'View' },
+    collapseSidebar:{ key: 's', label: 'Toggle sidebar', category: 'View' },
+    lightboxOpen:   { key: ' ', label: 'Open lightbox', category: 'File Actions' },
+    zoomIn:         { key: '+', label: 'Zoom in', category: 'View' },
+    zoomOut:        { key: '-', label: 'Zoom out', category: 'View' },
+    zoomReset:      { key: '0', label: 'Reset zoom', category: 'View' },
+    slideshow:      { key: 'F5', label: 'Start slideshow', category: 'View' },
+    compare:        { key: 'c', label: 'Compare selected', category: 'View' },
+    commandPalette: { key: 'p', ctrl: true, label: 'Command palette', category: 'Navigation' },
+    lb_prev:        { key: 'ArrowLeft', label: 'Previous', category: 'Lightbox' },
+    lb_next:        { key: 'ArrowRight', label: 'Next', category: 'Lightbox' },
+    lb_prevFrame:   { key: ',', label: 'Previous frame', category: 'Lightbox' },
+    lb_nextFrame:   { key: '.', label: 'Next frame', category: 'Lightbox' },
+    lb_playPause:   { key: ' ', label: 'Play / Pause', category: 'Lightbox' },
+    lb_speedDown:   { key: '[', label: 'Speed down', category: 'Lightbox' },
+    lb_speedUp:     { key: ']', label: 'Speed up', category: 'Lightbox' },
+};
+
+// Merge user overrides over defaults
+let userShortcutOverrides = {};
+try {
+    const saved = localStorage.getItem('keyboardShortcuts');
+    if (saved) userShortcutOverrides = JSON.parse(saved);
+} catch { /* use defaults */ }
+
+function getShortcut(actionId) {
+    const def = DEFAULT_SHORTCUTS[actionId];
+    if (!def) return null;
+    const override = userShortcutOverrides[actionId];
+    if (override) return { ...def, ...override };
+    return def;
+}
+
+function matchesShortcut(e, actionId) {
+    const sc = getShortcut(actionId);
+    if (!sc) return false;
+    const wantCtrl = !!sc.ctrl;
+    const wantAlt = !!sc.alt;
+    const hasCtrl = e.ctrlKey || e.metaKey;
+    if (wantCtrl !== hasCtrl) return false;
+    if (wantAlt !== e.altKey) return false;
+
+    const eKey = e.key;
+    const scKey = sc.key;
+    const wantShift = !!sc.shift;
+
+    // Characters that inherently require Shift to produce — skip strict shift check for these
+    const shiftProducedChars = new Set(['?', '+', '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '{', '}', '|', ':', '"', '<', '>', '~']);
+
+    // For shortcuts that use modifier keys (ctrl/alt), enforce shift strictly
+    // For plain key shortcuts, be lenient about shift — allow e.g. Shift+C when shortcut is 'c'
+    if (wantCtrl || wantAlt) {
+        // With modifiers: shift must match exactly
+        if (wantShift !== e.shiftKey) return false;
+    } else if (wantShift) {
+        // Shortcut explicitly wants shift but user didn't press it
+        if (!e.shiftKey) return false;
+    }
+    // If shortcut doesn't want shift: allow shift for shift-produced chars and case-insensitive letters
+
+    // Special key aliases
+    if (scKey === ' ' && eKey === ' ') return true;
+    if (scKey === '?' && (eKey === '?' || eKey === '/')) return true;
+    if (scKey === '+' && (eKey === '+' || eKey === '=')) return true;
+    if (scKey === '-' && eKey === '-') return true;
+
+    // Case-insensitive match for letters, exact match for everything else
+    if (eKey.toLowerCase() === scKey.toLowerCase()) return true;
+    return false;
+}
+
+function shortcutToString(actionId) {
+    const sc = getShortcut(actionId);
+    if (!sc) return '';
+    const parts = [];
+    if (sc.ctrl) parts.push('Ctrl');
+    if (sc.shift) parts.push('Shift');
+    if (sc.alt) parts.push('Alt');
+    const keyDisplay = {
+        ' ': 'Space', 'ArrowLeft': 'Left', 'ArrowRight': 'Right',
+        'ArrowUp': 'Up', 'ArrowDown': 'Down', 'Enter': 'Enter',
+        'Backspace': 'Backspace', 'Delete': 'Delete', 'Escape': 'Esc',
+        '?': '?', '+': '+', '-': '-', '0': '0',
+        ',': ',', '.': '.', '[': '[', ']': ']',
+    };
+    const display = keyDisplay[sc.key] || sc.key.toUpperCase();
+    parts.push(display);
+    return parts.join('+');
+}
+
+function saveShortcuts() {
+    deferLocalStorageWrite('keyboardShortcuts', JSON.stringify(userShortcutOverrides));
+    rebuildShortcutsOverlay();
+    renderShortcutSettings();
+}
+
+// ── Shortcut Settings UI ──
+let recordingActionId = null;
+let recordingHandler = null;
+
+function renderShortcutSettings() {
+    const container = document.getElementById('shortcut-categories');
+    if (!container) return;
+    container.innerHTML = '';
+
+    // Group by category
+    const categories = {};
+    for (const [id, def] of Object.entries(DEFAULT_SHORTCUTS)) {
+        const cat = def.category || 'Other';
+        if (!categories[cat]) categories[cat] = [];
+        categories[cat].push(id);
+    }
+
+    for (const [catName, actionIds] of Object.entries(categories)) {
+        const catDiv = document.createElement('div');
+        catDiv.className = 'shortcut-category';
+        const h4 = document.createElement('h4');
+        h4.textContent = catName;
+        catDiv.appendChild(h4);
+
+        for (const actionId of actionIds) {
+            const sc = getShortcut(actionId);
+            const row = document.createElement('div');
+            row.className = 'shortcut-row-editable';
+
+            const nameSpan = document.createElement('span');
+            nameSpan.className = 'shortcut-action-name';
+            nameSpan.textContent = sc.label;
+
+            const keyDisplay = document.createElement('div');
+            keyDisplay.className = 'shortcut-key-display';
+            keyDisplay.dataset.action = actionId;
+            const kbd = document.createElement('kbd');
+            kbd.textContent = shortcutToString(actionId);
+            keyDisplay.appendChild(kbd);
+            keyDisplay.addEventListener('click', () => startShortcutRecording(actionId, keyDisplay));
+
+            const resetBtn = document.createElement('button');
+            resetBtn.className = 'shortcut-reset-btn';
+            resetBtn.textContent = 'Reset';
+            resetBtn.addEventListener('click', () => {
+                delete userShortcutOverrides[actionId];
+                saveShortcuts();
+            });
+
+            row.appendChild(nameSpan);
+            row.appendChild(keyDisplay);
+            // Only show reset if overridden
+            if (userShortcutOverrides[actionId]) row.appendChild(resetBtn);
+
+            catDiv.appendChild(row);
+        }
+        container.appendChild(catDiv);
+    }
+}
+
+function startShortcutRecording(actionId, displayEl) {
+    // Cancel previous recording
+    stopShortcutRecording();
+
+    recordingActionId = actionId;
+    displayEl.classList.add('recording');
+    displayEl.querySelector('kbd').textContent = 'Press a key...';
+
+    recordingHandler = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.key === 'Escape') { stopShortcutRecording(); renderShortcutSettings(); return; }
+        // Ignore bare modifier keys
+        if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) return;
+
+        const newBinding = { key: e.key };
+        if (e.ctrlKey || e.metaKey) newBinding.ctrl = true;
+        if (e.shiftKey) newBinding.shift = true;
+        if (e.altKey) newBinding.alt = true;
+
+        // Conflict detection
+        const conflictId = findShortcutConflict(actionId, newBinding);
+        if (conflictId) {
+            // Swap: give the conflicting action our old binding
+            const oldBinding = getShortcut(actionId);
+            userShortcutOverrides[conflictId] = { key: oldBinding.key };
+            if (oldBinding.ctrl) userShortcutOverrides[conflictId].ctrl = true;
+            if (oldBinding.shift) userShortcutOverrides[conflictId].shift = true;
+            if (oldBinding.alt) userShortcutOverrides[conflictId].alt = true;
+        }
+
+        userShortcutOverrides[actionId] = newBinding;
+        stopShortcutRecording();
+        saveShortcuts();
+    };
+
+    document.addEventListener('keydown', recordingHandler, true);
+}
+
+function stopShortcutRecording() {
+    if (recordingHandler) {
+        document.removeEventListener('keydown', recordingHandler, true);
+        recordingHandler = null;
+    }
+    recordingActionId = null;
+    document.querySelectorAll('.shortcut-key-display.recording').forEach(el => el.classList.remove('recording'));
+}
+
+function findShortcutConflict(excludeId, binding) {
+    for (const [id, def] of Object.entries(DEFAULT_SHORTCUTS)) {
+        if (id === excludeId) continue;
+        // Same category context check: lightbox shortcuts don't conflict with grid shortcuts
+        if (def.category !== DEFAULT_SHORTCUTS[excludeId]?.category) continue;
+        const sc = getShortcut(id);
+        if (sc.key.toLowerCase() === binding.key.toLowerCase() &&
+            !!sc.ctrl === !!binding.ctrl &&
+            !!sc.shift === !!binding.shift &&
+            !!sc.alt === !!binding.alt) {
+            return id;
+        }
+    }
+    return null;
+}
+
+// Reset all shortcuts
+document.getElementById('reset-all-shortcuts-btn')?.addEventListener('click', () => {
+    userShortcutOverrides = {};
+    saveShortcuts();
+});
+
+// ── Dynamic Shortcuts Help Overlay ──
+function rebuildShortcutsOverlay() {
+    const body = document.getElementById('shortcuts-body-dynamic');
+    if (!body) return;
+    body.innerHTML = '';
+
+    const categories = {};
+    for (const [id, def] of Object.entries(DEFAULT_SHORTCUTS)) {
+        const cat = def.category || 'Other';
+        if (!categories[cat]) categories[cat] = [];
+        categories[cat].push(id);
+    }
+
+    // Split into two columns
+    const catEntries = Object.entries(categories);
+    const mid = Math.ceil(catEntries.length / 2);
+    for (let col = 0; col < 2; col++) {
+        const colDiv = document.createElement('div');
+        colDiv.className = 'shortcuts-column';
+        const start = col === 0 ? 0 : mid;
+        const end = col === 0 ? mid : catEntries.length;
+        for (let i = start; i < end; i++) {
+            const [catName, actionIds] = catEntries[i];
+            const h3 = document.createElement('h3');
+            h3.textContent = catName;
+            colDiv.appendChild(h3);
+            for (const actionId of actionIds) {
+                const sc = getShortcut(actionId);
+                const row = document.createElement('div');
+                row.className = 'shortcut-row';
+                const kbd = document.createElement('kbd');
+                kbd.textContent = shortcutToString(actionId);
+                const span = document.createElement('span');
+                span.textContent = sc.label;
+                row.appendChild(kbd);
+                row.appendChild(span);
+                colDiv.appendChild(row);
+            }
+        }
+        body.appendChild(colDiv);
+    }
+}
+rebuildShortcutsOverlay();
+
+// ============================================================================
+// NEW SETTINGS HANDLERS
+// ============================================================================
+
+// ── Utility: simple range-value wiring ──
+function wireRangeDisplay(inputId, displayId, suffix, storageKey, onChangeCb) {
+    const input = document.getElementById(inputId);
+    const display = document.getElementById(displayId);
+    if (!input || !display) return;
+    const saved = localStorage.getItem(storageKey);
+    if (saved !== null) input.value = saved;
+    display.textContent = input.value + suffix;
+    input.addEventListener('input', () => {
+        display.textContent = input.value + suffix;
+        deferLocalStorageWrite(storageKey, input.value);
+        if (onChangeCb) onChangeCb(parseInt(input.value, 10));
+    });
+}
+
+function wireSelectStorage(selectId, storageKey, onChangeCb) {
+    const sel = document.getElementById(selectId);
+    if (!sel) return;
+    const saved = localStorage.getItem(storageKey);
+    if (saved !== null) sel.value = saved;
+    sel.addEventListener('change', () => {
+        deferLocalStorageWrite(storageKey, sel.value);
+        if (onChangeCb) onChangeCb(sel.value);
+    });
+}
+
+// ── Phase 2: Grid Layout ──
+wireRangeDisplay('grid-gap-slider', 'grid-gap-value', 'px', 'gridGap', (val) => {
+    gridGapSetting = val;
+    document.documentElement.style.setProperty('--gap', val + 'px');
+    invalidateVsStyleCache();
+    if (typeof applySorting === 'function') applySorting();
+});
+
+wireRangeDisplay('min-card-width-slider', 'min-card-width-value', 'px', 'minCardWidth', (val) => {
+    minCardWidthSetting = val;
+    if (typeof applySorting === 'function') applySorting();
+});
+
+wireSelectStorage('card-aspect-select', 'cardAspectRatio', (val) => {
+    cardAspectRatioSetting = val;
+    if (typeof applySorting === 'function') applySorting();
+});
+
+// ── Phase 3: Animation & Reduce Motion ──
+function applyAnimationSpeed(speed) {
+    const root = document.documentElement.style;
+    const multipliers = { off: 0, fast: 0.5, normal: 1, relaxed: 1.67, slow: 2.67 };
+    const m = multipliers[speed] ?? 1;
+    root.setProperty('--duration-fast', (0.1 * m) + 's');
+    root.setProperty('--duration-normal', (0.15 * m) + 's');
+    root.setProperty('--duration-slow', (0.25 * m) + 's');
+}
+wireSelectStorage('animation-speed-select', 'animationSpeed', (val) => {
+    animationSpeedSetting = val;
+    applyAnimationSpeed(val);
+});
+applyAnimationSpeed(animationSpeedSetting);
+
+(function initReduceMotion() {
+    const toggle = document.getElementById('reduce-motion-toggle');
+    const label = document.getElementById('reduce-motion-label');
+    if (!toggle) return;
+    toggle.checked = reduceMotionSetting;
+    if (label) label.textContent = reduceMotionSetting ? 'On' : 'Off';
+    if (reduceMotionSetting) document.body.classList.add('reduce-motion');
+    toggle.addEventListener('change', () => {
+        reduceMotionSetting = toggle.checked;
+        if (label) label.textContent = toggle.checked ? 'On' : 'Off';
+        document.body.classList.toggle('reduce-motion', toggle.checked);
+        deferLocalStorageWrite('reduceMotion', String(toggle.checked));
+    });
+})();
+
+// ── Phase 4: Extension Colors Editor ──
+(function initExtensionColorEditor() {
+    const container = document.getElementById('extension-colors-editor');
+    if (!container) return;
+    const exts = Object.keys(DEFAULT_EXTENSION_COLORS);
+    for (const ext of exts) {
+        const item = document.createElement('div');
+        item.className = 'ext-color-item';
+        const lbl = document.createElement('label');
+        lbl.textContent = ext;
+        const input = document.createElement('input');
+        input.type = 'color';
+        input.value = extensionColors[ext] || DEFAULT_EXTENSION_COLORS[ext];
+        input.dataset.ext = ext;
+        input.addEventListener('input', () => {
+            extensionColors[ext] = input.value;
+            deferLocalStorageWrite('extensionColors', JSON.stringify(extensionColors));
+            // Re-render visible extension labels
+            document.querySelectorAll('.card-extension').forEach(el => {
+                if (el.textContent.trim().toUpperCase() === ext) {
+                    el.style.backgroundColor = hexToRgba(input.value, 0.87);
+                }
+            });
+        });
+        item.appendChild(lbl);
+        item.appendChild(input);
+        container.appendChild(item);
+    }
+    document.getElementById('reset-extension-colors-btn')?.addEventListener('click', () => {
+        extensionColors = { ...DEFAULT_EXTENSION_COLORS };
+        localStorage.removeItem('extensionColors');
+        container.querySelectorAll('input[type="color"]').forEach(inp => {
+            inp.value = DEFAULT_EXTENSION_COLORS[inp.dataset.ext] || '#888888';
+        });
+        // Refresh all visible extension labels
+        if (typeof applySorting === 'function') applySorting();
+    });
+})();
+
+// ── Phase 5: Playback ──
+(function initControlBarDelay() {
+    const input = document.getElementById('control-bar-hide-delay');
+    const display = document.getElementById('control-bar-hide-delay-value');
+    if (!input || !display) return;
+    const saved = localStorage.getItem('controlBarHideDelay');
+    if (saved !== null) input.value = saved;
+    const update = () => { display.textContent = (parseInt(input.value) / 1000) + 's'; };
+    input.addEventListener('input', () => {
+        update();
+        deferLocalStorageWrite('controlBarHideDelay', input.value);
+    });
+    update();
+})();
+
+wireSelectStorage('default-slideshow-speed', 'defaultSlideshowSpeed', (val) => {
+    defaultSlideshowSpeed = parseInt(val, 10);
+});
+
+wireRangeDisplay('video-thumb-seek', 'video-thumb-seek-value', '%', 'videoThumbSeekPct', (val) => {
+    if (window.electronAPI?.updateMainSetting) window.electronAPI.updateMainSetting('videoThumbSeekPct', val);
+});
+
+// Playback speed options
+(function initPlaybackSpeeds() {
+    const input = document.getElementById('playback-speeds-input');
+    if (!input) return;
+    const saved = localStorage.getItem('playbackSpeeds');
+    if (saved) {
+        try { input.value = JSON.parse(saved).join(','); } catch {}
+    }
+    input.addEventListener('change', () => {
+        const speeds = input.value.split(',').map(s => parseFloat(s.trim())).filter(n => !isNaN(n) && n > 0);
+        if (speeds.length > 0) {
+            deferLocalStorageWrite('playbackSpeeds', JSON.stringify(speeds));
+        }
+    });
+})();
+
+// ── Phase 6: AI Settings ──
+(function initAiIdleDelay() {
+    const input = document.getElementById('ai-idle-delay');
+    const display = document.getElementById('ai-idle-delay-value');
+    if (!input || !display) return;
+    const saved = localStorage.getItem('aiIdleDelay');
+    if (saved !== null) input.value = saved;
+    const update = () => { display.textContent = (parseInt(input.value) / 1000) + 's'; };
+    input.addEventListener('input', () => {
+        update();
+        IDLE_DELAY_MS = parseInt(input.value, 10);
+        deferLocalStorageWrite('aiIdleDelay', input.value);
+    });
+    update();
+})();
+
+wireSelectStorage('ai-batch-size', 'aiBatchSize', (val) => { IDLE_BATCH_SIZE = parseInt(val, 10); });
+wireSelectStorage('ai-video-frames', 'aiVideoFrameCount');
+
+// ── Phase 7: Performance ──
+(function initPerfProfile() {
+    const profileSel = document.getElementById('perf-profile');
+    const customPanel = document.getElementById('perf-custom-sliders');
+    if (!profileSel) return;
+
+    const saved = localStorage.getItem('perfProfile');
+    if (saved) profileSel.value = saved;
+    if (customPanel) customPanel.classList.toggle('hidden', profileSel.value !== 'custom');
+
+    profileSel.addEventListener('change', () => {
+        deferLocalStorageWrite('perfProfile', profileSel.value);
+        if (customPanel) customPanel.classList.toggle('hidden', profileSel.value !== 'custom');
+    });
+})();
+
+wireRangeDisplay('perf-max-media', 'perf-max-media-value', '', 'maxMedia', (val) => { MAX_VIDEOS = val; MAX_IMAGES = val; MAX_TOTAL_MEDIA = val * 2; });
+wireRangeDisplay('perf-parallel-load', 'perf-parallel-load-value', '', 'parallelLoad', (val) => { PARALLEL_LOAD_LIMIT = val; });
+wireRangeDisplay('perf-vs-buffer', 'perf-vs-buffer-value', 'px', 'vsBuffer', (val) => { VS_BUFFER_PX = val; });
+wireRangeDisplay('perf-pool-size', 'perf-pool-size-value', '', 'vsPoolSize', (val) => { VS_MAX_POOL_SIZE = val; });
+wireRangeDisplay('perf-scroll-debounce', 'perf-scroll-debounce-value', 'ms', 'scrollDebounce', (val) => { SCROLL_DEBOUNCE_MS = val; });
+wireRangeDisplay('perf-progressive-threshold', 'perf-progressive-threshold-value', '', 'progressiveThreshold', (val) => { PROGRESSIVE_RENDER_THRESHOLD = val; });
+
+wireSelectStorage('folder-cache-ttl', 'folderCacheTTL', (val) => { FOLDER_CACHE_TTL = parseInt(val, 10); });
+wireSelectStorage('idb-cache-ttl', 'idbCacheTTL', (val) => { INDEXEDDB_CACHE_TTL = parseInt(val, 10); });
+wireSelectStorage('image-thumb-max-edge', 'imageThumbMaxEdge', (val) => { IMAGE_THUMBNAIL_MAX_EDGE = parseInt(val, 10); });
+wireSelectStorage('video-thumb-width', 'videoThumbWidth', (val) => {
+    if (window.electronAPI?.updateMainSetting) window.electronAPI.updateMainSetting('videoThumbWidth', val);
+});
+
+// Lightbox
+wireRangeDisplay('lightbox-max-zoom', 'lightbox-max-zoom-value', '%', 'lightboxMaxZoom', (val) => {
+    lightboxMaxZoomSetting = val;
+    const lbSlider = document.getElementById('lightbox-zoom-slider');
+    if (lbSlider) lbSlider.max = val;
+});
+wireRangeDisplay('lightbox-viewport', 'lightbox-viewport-value', '%', 'lightboxViewport', (val) => {
+    lightboxViewportSetting = val;
+    // Apply viewport usage via CSS variables
+    document.documentElement.style.setProperty('--lightbox-max-w', val + 'vw');
+    document.documentElement.style.setProperty('--lightbox-max-h', val + 'vh');
+});
+wireRangeDisplay('blow-up-delay', 'blow-up-delay-value', 'ms', 'blowUpDelay', (val) => { blowUpDelaySetting = val; });
+
+// Limits
+wireRangeDisplay('recent-files-limit', 'recent-files-limit-value', '', 'recentFilesLimit', (val) => { recentFilesLimitSetting = val; });
+wireRangeDisplay('max-undo-history', 'max-undo-history-value', '', 'maxUndoHistory', (val) => { maxUndoHistorySetting = val; });
+wireRangeDisplay('tag-suggestions-limit', 'tag-suggestions-limit-value', '', 'tagSuggestionsLimit', (val) => { tagSuggestionsLimitSetting = val; });
+wireRangeDisplay('search-history-limit', 'search-history-limit-value', '', 'searchHistoryLimit', (val) => { searchHistoryLimitSetting = val; });
+
+// ── Phase 8: Niche settings ──
+wireRangeDisplay('io-concurrency', 'io-concurrency-value', '', 'ioConcurrency', (val) => {
+    if (window.electronAPI?.updateMainSetting) window.electronAPI.updateMainSetting('ioConcurrency', val);
+});
+wireSelectStorage('clip-worker-count', 'clipWorkerCount');
+wireRangeDisplay('retry-attempts', 'retry-attempts-value', '', 'retryAttempts', (val) => { MAX_RETRY_ATTEMPTS = val; });
+wireRangeDisplay('retry-initial-delay', 'retry-initial-delay-value', 'ms', 'retryInitialDelay', (val) => { RETRY_INITIAL_DELAY_MS = val; });
+wireRangeDisplay('retry-max-delay', 'retry-max-delay-value', 'ms', 'retryMaxDelay', (val) => { RETRY_MAX_DELAY_MS = val; });
+wireRangeDisplay('sidebar-min-width', 'sidebar-min-width-value', 'px', 'sidebarMinWidth', (val) => {
+    sidebarMinWidthSetting = val;
+    document.documentElement.style.setProperty('--sidebar-min-width', val + 'px');
+    // Clamp current sidebar width to new limits
+    const cur = parseInt(folderSidebar.style.width) || sidebarWidth;
+    if (cur < val) {
+        folderSidebar.style.width = val + 'px';
+        sidebarWidth = val;
+        deferLocalStorageWrite('sidebarWidth', String(val));
+    }
+});
+wireRangeDisplay('sidebar-max-width', 'sidebar-max-width-value', 'px', 'sidebarMaxWidth', (val) => {
+    sidebarMaxWidthSetting = val;
+    document.documentElement.style.setProperty('--sidebar-max-width', val + 'px');
+    // Clamp current sidebar width to new limits
+    const cur = parseInt(folderSidebar.style.width) || sidebarWidth;
+    if (cur > val) {
+        folderSidebar.style.width = val + 'px';
+        sidebarWidth = val;
+        deferLocalStorageWrite('sidebarWidth', String(val));
+    }
+});
+wireSelectStorage('folder-preview-count', 'folderPreviewCount', (val) => {
+    folderPreviewCountSetting = parseInt(val, 10);
+    // Clear cached previews so folders re-fetch with new count
+    folderPreviewCache.clear();
+    // Remove existing preview grids so they re-render on next scroll
+    document.querySelectorAll('.folder-card[data-preview-loaded="1"]').forEach(card => {
+        const grid = card.querySelector('.folder-preview-grid');
+        if (grid) grid.remove();
+        delete card.dataset.previewLoaded;
+    });
+});
+wireSelectStorage('folder-preview-size', 'folderPreviewSize', (val) => { folderPreviewSizeSetting = parseInt(val, 10); });
+
+// ── Reset All Settings ──
+document.getElementById('reset-all-settings-btn')?.addEventListener('click', async () => {
+    const confirmed = await showConfirm('Reset All Settings', 'This will restore every setting to its default value and reload the app.', { confirmLabel: 'Reset', danger: true });
+    if (confirmed) {
+        localStorage.clear();
+        location.reload();
+    }
+});
+
+// ── CSS Variable Hydration on startup ──
+(function hydrateCSSVariables() {
+    const root = document.documentElement.style;
+    root.setProperty('--gap', gridGapSetting + 'px');
+    root.setProperty('--sidebar-min-width', sidebarMinWidthSetting + 'px');
+    root.setProperty('--sidebar-max-width', sidebarMaxWidthSetting + 'px');
+    root.setProperty('--lightbox-max-w', lightboxViewportSetting + 'vw');
+    root.setProperty('--lightbox-max-h', lightboxViewportSetting + 'vh');
+    // Sync lightbox zoom slider max
+    const lbSlider = document.getElementById('lightbox-zoom-slider');
+    if (lbSlider) lbSlider.max = lightboxMaxZoomSetting;
+})();
+
+// Initialize shortcut settings tab
+renderShortcutSettings();

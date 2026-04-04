@@ -38,7 +38,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     scanFileDimensions: (files) => ipcRenderer.invoke('scan-file-dimensions', files),
     hasFfmpeg: () => ipcRenderer.invoke('has-ffmpeg'),
     generateThumbnailBatch: (items) => ipcRenderer.invoke('generate-thumbnails-batch', items),
-    getFolderPreview: (folderPath) => ipcRenderer.invoke('get-folder-preview', folderPath),
+    getFolderPreview: (folderPath, previewCount) => ipcRenderer.invoke('get-folder-preview', folderPath, previewCount),
     // Duplicate detection
     scanDuplicates: (folderPath, options) => ipcRenderer.invoke('scan-duplicates', folderPath, options),
     regroupDuplicates: (hashData, threshold) => ipcRenderer.invoke('regroup-duplicates', hashData, threshold),
@@ -117,8 +117,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     dbGetFavorites: () => ipcRenderer.invoke('db-get-favorites'),
     dbSaveFavorites: (favObj) => ipcRenderer.invoke('db-save-favorites', favObj),
     // Recent files
-    dbGetRecentFiles: () => ipcRenderer.invoke('db-get-recent-files'),
-    dbAddRecentFile: (entry) => ipcRenderer.invoke('db-add-recent-file', entry),
+    dbGetRecentFiles: (limit) => ipcRenderer.invoke('db-get-recent-files', limit),
+    dbAddRecentFile: (entry, limit) => ipcRenderer.invoke('db-add-recent-file', entry, limit),
     dbClearRecentFiles: () => ipcRenderer.invoke('db-clear-recent-files'),
     // Collections
     dbGetAllCollections: () => ipcRenderer.invoke('db-get-all-collections'),
@@ -151,5 +151,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     dbImportTags: (data) => ipcRenderer.invoke('db-import-tags', data),
     // Menu commands from application menu
     onMenuCommand: (callback) => ipcRenderer.on('menu-command', (_e, command) => callback(command)),
-    removeMenuCommandListener: () => ipcRenderer.removeAllListeners('menu-command')
+    removeMenuCommandListener: () => ipcRenderer.removeAllListeners('menu-command'),
+    updateMainSetting: (key, value) => ipcRenderer.invoke('update-main-setting', key, value)
 });

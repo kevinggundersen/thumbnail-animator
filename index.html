@@ -607,6 +607,8 @@
                     <button class="settings-tab" data-tab="ai-search">AI Search</button>
                     <button class="settings-tab" data-tab="tags">Tags</button>
                     <button class="settings-tab" data-tab="data">Data</button>
+                    <button class="settings-tab" data-tab="shortcuts">Shortcuts</button>
+                    <button class="settings-tab" data-tab="advanced">Advanced</button>
                     <div class="settings-tabs-section-header">Community</div>
                     <button class="settings-tab" data-tab="plugins">Plugins</button>
                 </div>
@@ -718,6 +720,45 @@
                                 </div>
                             </div>
                         </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Grid Gap</div>
+                                    <div class="settings-item-description">Spacing between cards in the grid.</div>
+                                </div>
+                                <div class="settings-range-wrap">
+                                    <input type="range" id="grid-gap-slider" min="0" max="32" value="12" step="2" class="settings-range">
+                                    <span id="grid-gap-value" class="settings-range-value">12px</span>
+                                </div>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Minimum Card Width</div>
+                                    <div class="settings-item-description">Smallest allowed card width in the grid.</div>
+                                </div>
+                                <div class="settings-range-wrap">
+                                    <input type="range" id="min-card-width-slider" min="120" max="400" value="220" step="10" class="settings-range">
+                                    <span id="min-card-width-value" class="settings-range-value">220px</span>
+                                </div>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Card Aspect Ratio</div>
+                                    <div class="settings-item-description">Default aspect ratio for card thumbnails.</div>
+                                </div>
+                                <select id="card-aspect-select" class="settings-select">
+                                    <option value="16:9" selected>16:9</option>
+                                    <option value="4:3">4:3</option>
+                                    <option value="3:2">3:2</option>
+                                    <option value="1:1">1:1</option>
+                                    <option value="auto">Auto (actual ratio)</option>
+                                </select>
+                            </label>
+                        </div>
                     </div>
                     <!-- Appearance Tab -->
                     <div class="settings-tab-content" data-tab="appearance">
@@ -768,6 +809,41 @@
                                 <button id="theme-editor-cancel" class="settings-action-btn">Cancel</button>
                             </div>
                         </div>
+
+                        <div class="theme-section-header" style="margin-top: 20px;">Animation</div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Animation Speed</div>
+                                    <div class="settings-item-description">Global speed of UI transitions and animations.</div>
+                                </div>
+                                <select id="animation-speed-select" class="settings-select">
+                                    <option value="off">Off</option>
+                                    <option value="fast">Fast</option>
+                                    <option value="normal" selected>Normal</option>
+                                    <option value="relaxed">Relaxed</option>
+                                    <option value="slow">Slow</option>
+                                </select>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Reduce Motion</div>
+                                    <div class="settings-item-description">Disable all animations and transitions for accessibility.</div>
+                                </div>
+                                <div class="toggle-switch">
+                                    <input type="checkbox" id="reduce-motion-toggle">
+                                    <span class="toggle-slider"></span>
+                                </div>
+                                <span class="toggle-label" id="reduce-motion-label">Off</span>
+                            </label>
+                        </div>
+
+                        <div class="theme-section-header" style="margin-top: 20px;">Extension Colors</div>
+                        <p class="settings-data-description">Customize the badge color shown for each file type.</p>
+                        <div id="extension-colors-editor" class="extension-colors-editor"></div>
+                        <button id="reset-extension-colors-btn" class="settings-action-btn" style="margin-top: 8px;">Reset Colors</button>
                     </div>
                     <!-- Card Info Tab -->
                     <div class="settings-tab-content" data-tab="card-info">
@@ -1090,6 +1166,48 @@
                                 </div>
                             </div>
                         </div>
+
+                        <div class="settings-data-section-title" style="margin-top: 24px;">Background Processing</div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Idle Embedding Delay</div>
+                                    <div class="settings-item-description">Seconds of inactivity before background AI embedding starts.</div>
+                                </div>
+                                <div class="settings-range-wrap">
+                                    <input type="range" id="ai-idle-delay" min="5000" max="60000" value="10000" step="1000" class="settings-range">
+                                    <span id="ai-idle-delay-value" class="settings-range-value">10s</span>
+                                </div>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Embedding Batch Size</div>
+                                    <div class="settings-item-description">Files processed per idle batch. Higher = faster but uses more resources.</div>
+                                </div>
+                                <select id="ai-batch-size" class="settings-select">
+                                    <option value="2">2</option>
+                                    <option value="4">4</option>
+                                    <option value="8" selected>8</option>
+                                    <option value="16">16</option>
+                                </select>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Video Embedding Frames</div>
+                                    <div class="settings-item-description">Frames extracted per video for AI embedding. More = better accuracy, slower.</div>
+                                </div>
+                                <select id="ai-video-frames" class="settings-select">
+                                    <option value="1">1</option>
+                                    <option value="2">2</option>
+                                    <option value="4" selected>4</option>
+                                    <option value="8">8</option>
+                                </select>
+                            </label>
+                        </div>
                     </div>
                     <!-- Playback Tab -->
                     <div class="settings-tab-content" data-tab="playback">
@@ -1170,6 +1288,56 @@
                                     <span class="toggle-slider"></span>
                                 </div>
                                 <span class="toggle-label" id="hover-scrub-label">On</span>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Control Bar Auto-Hide</div>
+                                    <div class="settings-item-description">Delay before playback controls fade out.</div>
+                                </div>
+                                <div class="settings-range-wrap">
+                                    <input type="range" id="control-bar-hide-delay" min="1000" max="10000" value="3000" step="500" class="settings-range">
+                                    <span id="control-bar-hide-delay-value" class="settings-range-value">3s</span>
+                                </div>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Default Slideshow Speed</div>
+                                    <div class="settings-item-description">Default interval between slides when starting a slideshow.</div>
+                                </div>
+                                <select id="default-slideshow-speed" class="settings-select">
+                                    <option value="1000">1 second</option>
+                                    <option value="2000">2 seconds</option>
+                                    <option value="3000" selected>3 seconds</option>
+                                    <option value="5000">5 seconds</option>
+                                    <option value="8000">8 seconds</option>
+                                    <option value="10000">10 seconds</option>
+                                    <option value="15000">15 seconds</option>
+                                </select>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Video Thumbnail Position</div>
+                                    <div class="settings-item-description">Where in the video to capture the thumbnail frame.</div>
+                                </div>
+                                <div class="settings-range-wrap">
+                                    <input type="range" id="video-thumb-seek" min="0" max="100" value="25" step="5" class="settings-range">
+                                    <span id="video-thumb-seek-value" class="settings-range-value">25%</span>
+                                </div>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Playback Speed Options</div>
+                                    <div class="settings-item-description">Comma-separated speed multipliers (e.g. 0.25,0.5,1,2,4).</div>
+                                </div>
+                                <input type="text" id="playback-speeds-input" class="settings-input" value="0.25,0.5,0.75,1,1.25,1.5,2" placeholder="0.25,0.5,0.75,1,1.25,1.5,2" style="width: 200px;">
                             </label>
                         </div>
                     </div>
@@ -1253,6 +1421,398 @@
                             </div>
                         </div>
                     </div>
+
+                    <!-- Shortcuts Tab -->
+                    <div class="settings-tab-content" data-tab="shortcuts">
+                        <div class="settings-content-heading">Keyboard Shortcuts</div>
+                        <p class="settings-data-description">Click a shortcut's key to rebind it. Press Escape to cancel recording.</p>
+                        <div class="shortcut-categories" id="shortcut-categories">
+                            <!-- Dynamically populated by renderer.js -->
+                        </div>
+                        <div style="margin-top: 16px; display: flex; gap: 8px;">
+                            <button id="reset-all-shortcuts-btn" class="settings-action-btn">Reset All to Defaults</button>
+                        </div>
+                    </div>
+
+                    <!-- Advanced Tab -->
+                    <div class="settings-tab-content" data-tab="advanced">
+                        <div class="settings-content-heading">Advanced</div>
+
+                        <div class="settings-data-section-title">Performance Profile</div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Profile</div>
+                                    <div class="settings-item-description">Preset performance tuning. Custom unlocks individual sliders.</div>
+                                </div>
+                                <select id="perf-profile" class="settings-select">
+                                    <option value="low">Low (less memory)</option>
+                                    <option value="medium" selected>Medium (balanced)</option>
+                                    <option value="high">High (more resources)</option>
+                                    <option value="custom">Custom</option>
+                                </select>
+                            </label>
+                        </div>
+
+                        <div id="perf-custom-sliders" class="settings-sub-group hidden">
+                            <div class="settings-item">
+                                <label class="settings-label">
+                                    <div class="settings-item-info">
+                                        <div class="settings-item-title">Max Concurrent Media</div>
+                                        <div class="settings-item-description">Maximum videos + images loaded at once.</div>
+                                    </div>
+                                    <div class="settings-range-wrap">
+                                        <input type="range" id="perf-max-media" min="30" max="300" value="120" step="10" class="settings-range">
+                                        <span id="perf-max-media-value" class="settings-range-value">120</span>
+                                    </div>
+                                </label>
+                            </div>
+                            <div class="settings-item">
+                                <label class="settings-label">
+                                    <div class="settings-item-info">
+                                        <div class="settings-item-title">Parallel Load Limit</div>
+                                        <div class="settings-item-description">Items loaded simultaneously on scroll.</div>
+                                    </div>
+                                    <div class="settings-range-wrap">
+                                        <input type="range" id="perf-parallel-load" min="2" max="30" value="10" step="1" class="settings-range">
+                                        <span id="perf-parallel-load-value" class="settings-range-value">10</span>
+                                    </div>
+                                </label>
+                            </div>
+                            <div class="settings-item">
+                                <label class="settings-label">
+                                    <div class="settings-item-info">
+                                        <div class="settings-item-title">Virtual Scroll Buffer</div>
+                                        <div class="settings-item-description">Pixels of off-screen content to pre-render.</div>
+                                    </div>
+                                    <div class="settings-range-wrap">
+                                        <input type="range" id="perf-vs-buffer" min="400" max="3000" value="1200" step="100" class="settings-range">
+                                        <span id="perf-vs-buffer-value" class="settings-range-value">1200px</span>
+                                    </div>
+                                </label>
+                            </div>
+                            <div class="settings-item">
+                                <label class="settings-label">
+                                    <div class="settings-item-info">
+                                        <div class="settings-item-title">Card Pool Size</div>
+                                        <div class="settings-item-description">Recycled DOM card nodes kept in memory.</div>
+                                    </div>
+                                    <div class="settings-range-wrap">
+                                        <input type="range" id="perf-pool-size" min="50" max="400" value="150" step="10" class="settings-range">
+                                        <span id="perf-pool-size-value" class="settings-range-value">150</span>
+                                    </div>
+                                </label>
+                            </div>
+                            <div class="settings-item">
+                                <label class="settings-label">
+                                    <div class="settings-item-info">
+                                        <div class="settings-item-title">Scroll Debounce</div>
+                                        <div class="settings-item-description">Delay after scrolling stops before cleanup runs.</div>
+                                    </div>
+                                    <div class="settings-range-wrap">
+                                        <input type="range" id="perf-scroll-debounce" min="50" max="500" value="150" step="10" class="settings-range">
+                                        <span id="perf-scroll-debounce-value" class="settings-range-value">150ms</span>
+                                    </div>
+                                </label>
+                            </div>
+                            <div class="settings-item">
+                                <label class="settings-label">
+                                    <div class="settings-item-info">
+                                        <div class="settings-item-title">Progressive Render Threshold</div>
+                                        <div class="settings-item-description">Item count that triggers chunked rendering.</div>
+                                    </div>
+                                    <div class="settings-range-wrap">
+                                        <input type="range" id="perf-progressive-threshold" min="200" max="5000" value="1000" step="100" class="settings-range">
+                                        <span id="perf-progressive-threshold-value" class="settings-range-value">1000</span>
+                                    </div>
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="settings-data-section-title" style="margin-top: 24px;">Cache Timing</div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Folder Cache TTL</div>
+                                    <div class="settings-item-description">How long folder listings are cached before refreshing.</div>
+                                </div>
+                                <select id="folder-cache-ttl" class="settings-select">
+                                    <option value="15000">15 seconds</option>
+                                    <option value="30000" selected>30 seconds</option>
+                                    <option value="60000">1 minute</option>
+                                    <option value="120000">2 minutes</option>
+                                </select>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">IndexedDB Cache TTL</div>
+                                    <div class="settings-item-description">How long persistent caches are kept before expiring.</div>
+                                </div>
+                                <select id="idb-cache-ttl" class="settings-select">
+                                    <option value="1800000">30 minutes</option>
+                                    <option value="3600000" selected>1 hour</option>
+                                    <option value="14400000">4 hours</option>
+                                    <option value="86400000">24 hours</option>
+                                </select>
+                            </label>
+                        </div>
+
+                        <div class="settings-data-section-title" style="margin-top: 24px;">Thumbnail Quality</div>
+                        <p class="settings-data-description">Changing these requires clearing the thumbnail cache to take effect.</p>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Image Thumbnail Max Edge</div>
+                                    <div class="settings-item-description">Maximum pixel dimension for cached image thumbnails.</div>
+                                </div>
+                                <select id="image-thumb-max-edge" class="settings-select">
+                                    <option value="384">384px (fastest)</option>
+                                    <option value="512">512px</option>
+                                    <option value="768" selected>768px (balanced)</option>
+                                    <option value="1024">1024px</option>
+                                    <option value="1536">1536px (sharpest)</option>
+                                </select>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Video Thumbnail Width</div>
+                                    <div class="settings-item-description">Width of generated video thumbnail frames.</div>
+                                </div>
+                                <select id="video-thumb-width" class="settings-select">
+                                    <option value="160">160px (fastest)</option>
+                                    <option value="240">240px</option>
+                                    <option value="320" selected>320px (balanced)</option>
+                                    <option value="480">480px (sharpest)</option>
+                                </select>
+                            </label>
+                        </div>
+
+                        <div class="settings-data-section-title" style="margin-top: 24px;">Lightbox</div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Max Zoom Level</div>
+                                    <div class="settings-item-description">Maximum zoom in the fullscreen viewer.</div>
+                                </div>
+                                <div class="settings-range-wrap">
+                                    <input type="range" id="lightbox-max-zoom" min="500" max="2000" value="500" step="100" class="settings-range">
+                                    <span id="lightbox-max-zoom-value" class="settings-range-value">500%</span>
+                                </div>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Viewport Usage</div>
+                                    <div class="settings-item-description">How much of the screen the fullscreen viewer uses.</div>
+                                </div>
+                                <div class="settings-range-wrap">
+                                    <input type="range" id="lightbox-viewport" min="70" max="100" value="90" step="1" class="settings-range">
+                                    <span id="lightbox-viewport-value" class="settings-range-value">90%</span>
+                                </div>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Expand Hold Delay</div>
+                                    <div class="settings-item-description">How long to hold a card before it expands into the viewer.</div>
+                                </div>
+                                <div class="settings-range-wrap">
+                                    <input type="range" id="blow-up-delay" min="100" max="1000" value="250" step="50" class="settings-range">
+                                    <span id="blow-up-delay-value" class="settings-range-value">250ms</span>
+                                </div>
+                            </label>
+                        </div>
+
+                        <div class="settings-data-section-title" style="margin-top: 24px;">Limits</div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Recent Files Limit</div>
+                                    <div class="settings-item-description">Maximum entries in the recent files list.</div>
+                                </div>
+                                <div class="settings-range-wrap">
+                                    <input type="range" id="recent-files-limit" min="10" max="200" value="50" step="10" class="settings-range">
+                                    <span id="recent-files-limit-value" class="settings-range-value">50</span>
+                                </div>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Max Undo History</div>
+                                    <div class="settings-item-description">How many file operations can be undone.</div>
+                                </div>
+                                <div class="settings-range-wrap">
+                                    <input type="range" id="max-undo-history" min="10" max="100" value="30" step="5" class="settings-range">
+                                    <span id="max-undo-history-value" class="settings-range-value">30</span>
+                                </div>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Tag Suggestions Limit</div>
+                                    <div class="settings-item-description">Max tag suggestions shown when adding tags.</div>
+                                </div>
+                                <div class="settings-range-wrap">
+                                    <input type="range" id="tag-suggestions-limit" min="5" max="30" value="10" step="1" class="settings-range">
+                                    <span id="tag-suggestions-limit-value" class="settings-range-value">10</span>
+                                </div>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Search History Limit</div>
+                                    <div class="settings-item-description">Max saved search queries.</div>
+                                </div>
+                                <div class="settings-range-wrap">
+                                    <input type="range" id="search-history-limit" min="5" max="50" value="10" step="5" class="settings-range">
+                                    <span id="search-history-limit-value" class="settings-range-value">10</span>
+                                </div>
+                            </label>
+                        </div>
+
+                        <details class="settings-advanced-details" style="margin-top: 24px;">
+                            <summary class="settings-data-section-title" style="cursor: pointer;">Niche / Internal</summary>
+
+                            <div class="settings-data-section-title" style="margin-top: 12px;">Worker &amp; IO</div>
+                            <p class="settings-data-description">Changes here require an app restart to take effect.</p>
+                            <div class="settings-item">
+                                <label class="settings-label">
+                                    <div class="settings-item-info">
+                                        <div class="settings-item-title">IO Concurrency Limit</div>
+                                        <div class="settings-item-description">Max parallel filesystem operations.</div>
+                                    </div>
+                                    <div class="settings-range-wrap">
+                                        <input type="range" id="io-concurrency" min="5" max="50" value="20" step="1" class="settings-range">
+                                        <span id="io-concurrency-value" class="settings-range-value">20</span>
+                                    </div>
+                                </label>
+                            </div>
+                            <div class="settings-item">
+                                <label class="settings-label">
+                                    <div class="settings-item-info">
+                                        <div class="settings-item-title">CLIP Worker Count</div>
+                                        <div class="settings-item-description">AI preprocessing threads. Auto uses CPU core count.</div>
+                                    </div>
+                                    <select id="clip-worker-count" class="settings-select">
+                                        <option value="auto" selected>Auto</option>
+                                        <option value="1">1</option>
+                                        <option value="2">2</option>
+                                        <option value="3">3</option>
+                                        <option value="4">4</option>
+                                    </select>
+                                </label>
+                            </div>
+
+                            <div class="settings-data-section-title" style="margin-top: 12px;">Retry Behavior</div>
+                            <div class="settings-item">
+                                <label class="settings-label">
+                                    <div class="settings-item-info">
+                                        <div class="settings-item-title">Max Retry Attempts</div>
+                                        <div class="settings-item-description">Retries for failed thumbnail loads.</div>
+                                    </div>
+                                    <div class="settings-range-wrap">
+                                        <input type="range" id="retry-attempts" min="1" max="10" value="5" step="1" class="settings-range">
+                                        <span id="retry-attempts-value" class="settings-range-value">5</span>
+                                    </div>
+                                </label>
+                            </div>
+                            <div class="settings-item">
+                                <label class="settings-label">
+                                    <div class="settings-item-info">
+                                        <div class="settings-item-title">Retry Initial Delay</div>
+                                        <div class="settings-item-description">First retry wait time.</div>
+                                    </div>
+                                    <div class="settings-range-wrap">
+                                        <input type="range" id="retry-initial-delay" min="100" max="2000" value="500" step="100" class="settings-range">
+                                        <span id="retry-initial-delay-value" class="settings-range-value">500ms</span>
+                                    </div>
+                                </label>
+                            </div>
+                            <div class="settings-item">
+                                <label class="settings-label">
+                                    <div class="settings-item-info">
+                                        <div class="settings-item-title">Retry Max Delay</div>
+                                        <div class="settings-item-description">Maximum wait between retries.</div>
+                                    </div>
+                                    <div class="settings-range-wrap">
+                                        <input type="range" id="retry-max-delay" min="1000" max="15000" value="5000" step="500" class="settings-range">
+                                        <span id="retry-max-delay-value" class="settings-range-value">5000ms</span>
+                                    </div>
+                                </label>
+                            </div>
+
+                            <div class="settings-data-section-title" style="margin-top: 12px;">Sidebar</div>
+                            <div class="settings-item">
+                                <label class="settings-label">
+                                    <div class="settings-item-info">
+                                        <div class="settings-item-title">Sidebar Min Width</div>
+                                        <div class="settings-item-description">Minimum sidebar drag width.</div>
+                                    </div>
+                                    <div class="settings-range-wrap">
+                                        <input type="range" id="sidebar-min-width" min="120" max="250" value="180" step="10" class="settings-range">
+                                        <span id="sidebar-min-width-value" class="settings-range-value">180px</span>
+                                    </div>
+                                </label>
+                            </div>
+                            <div class="settings-item">
+                                <label class="settings-label">
+                                    <div class="settings-item-info">
+                                        <div class="settings-item-title">Sidebar Max Width</div>
+                                        <div class="settings-item-description">Maximum sidebar drag width.</div>
+                                    </div>
+                                    <div class="settings-range-wrap">
+                                        <input type="range" id="sidebar-max-width" min="400" max="800" value="500" step="10" class="settings-range">
+                                        <span id="sidebar-max-width-value" class="settings-range-value">500px</span>
+                                    </div>
+                                </label>
+                            </div>
+
+                            <div class="settings-data-section-title" style="margin-top: 12px;">Folder Preview</div>
+                            <div class="settings-item">
+                                <label class="settings-label">
+                                    <div class="settings-item-info">
+                                        <div class="settings-item-title">Preview Image Count</div>
+                                        <div class="settings-item-description">Thumbnails shown on folder cards.</div>
+                                    </div>
+                                    <select id="folder-preview-count" class="settings-select">
+                                        <option value="1">1</option>
+                                        <option value="2">2</option>
+                                        <option value="4" selected>4</option>
+                                        <option value="9">9</option>
+                                        <option value="16">16</option>
+                                    </select>
+                                </label>
+                            </div>
+                            <div class="settings-item">
+                                <label class="settings-label">
+                                    <div class="settings-item-info">
+                                        <div class="settings-item-title">Preview Thumbnail Size</div>
+                                        <div class="settings-item-description">Size of folder preview thumbnails.</div>
+                                    </div>
+                                    <select id="folder-preview-size" class="settings-select">
+                                        <option value="96">96px</option>
+                                        <option value="128">128px</option>
+                                        <option value="192" selected>192px</option>
+                                        <option value="256">256px</option>
+                                    </select>
+                                </label>
+                            </div>
+                        </details>
+
+                        <div style="margin-top: 24px;">
+                            <button id="reset-all-settings-btn" class="settings-action-btn">Reset All Settings to Defaults</button>
+                        </div>
+                    </div>
+
                 </div>
             </div>
         </div>

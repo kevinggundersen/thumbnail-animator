@@ -2541,7 +2541,7 @@ ipcMain.handle('watch-folder', async (event, folderPath) => {
             ignored: /(^|[\/\\])\../, // ignore dotfiles
             persistent: true,
             ignoreInitial: true,
-            depth: 99, // Watch recursively up to 99 levels deep
+            depth: 10, // Watch recursively (10 levels covers virtually all real folder structures)
             awaitWriteFinish: {
                 stabilityThreshold: 100, // Wait 100ms after file stops changing
                 pollInterval: 100 // Check every 100ms
@@ -2553,28 +2553,16 @@ ipcMain.handle('watch-folder', async (event, folderPath) => {
             atomic: 200
         });
 
-        // Wait for watcher to be ready before returning success
-        try {
-            await new Promise((resolve, reject) => {
-                const timeout = setTimeout(() => {
-                    reject(new Error('Watcher initialization timeout'));
-                }, 10000); // 10 second timeout
-
-                watcher.on('ready', () => {
-                    clearTimeout(timeout);
-                    resolve();
-                });
-
-                watcher.on('error', (error) => {
-                    clearTimeout(timeout);
-                    reject(error);
-                });
-            });
-        } catch (initError) {
-            // Clean up the watcher if initialization failed to prevent zombie watchers
-            await watcher.close().catch(() => {});
-            throw initError;
-        }
+        // Don't block IPC waiting for watcher init — start watching in background.
+        // Watcher events will fire once ready; errors are logged.
+        watcher.on('error', (error) => {
+            console.error('Watcher error for', normalizedPath, error);
+        });
+        watcher.on('ready', () => {
+            if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.webContents.send('watcher-ready', normalizedPath);
+            }
+        });
 
         // Debounce/dedup watcher events to coalesce duplicate notifications
         // Windows ReadDirectoryChangesW can fire multiple events for single file changes
@@ -2782,14 +2770,19 @@ ipcMain.handle('scan-file-dimensions', async (event, files) => {
 
 // ==================== DUPLICATE DETECTION ====================
 
+// Popcount lookup table (byte -> number of set bits)
+const POPCOUNT_TABLE = new Uint8Array(256);
+for (let i = 0; i < 256; i++) {
+    POPCOUNT_TABLE[i] = POPCOUNT_TABLE[i >> 1] + (i & 1);
+}
+
 function hammingDistance(hex1, hex2) {
-    const b1 = BigInt('0x' + hex1);
-    const b2 = BigInt('0x' + hex2);
-    let xor = b1 ^ b2;
+    const buf1 = Buffer.from(hex1, 'hex');
+    const buf2 = Buffer.from(hex2, 'hex');
+    const len = Math.min(buf1.length, buf2.length);
     let dist = 0;
-    while (xor > 0n) {
-        dist += Number(xor & 1n);
-        xor >>= 1n;
+    for (let i = 0; i < len; i++) {
+        dist += POPCOUNT_TABLE[buf1[i] ^ buf2[i]];
     }
     return dist;
 }
@@ -2897,25 +2890,57 @@ ipcMain.handle('scan-duplicates', async (event, folderPath, options = {}) => {
             perceptualFiles.push({ ...file, perceptualHash: h.perceptualHash });
         }
 
-        // Union-find grouping for perceptual similarity
+        // Union-find with path compression + union-by-rank
         const parent = new Map();
+        const rank = new Map();
         const find = (x) => {
-            if (!parent.has(x)) parent.set(x, x);
-            if (parent.get(x) !== x) parent.set(x, find(parent.get(x)));
-            return parent.get(x);
+            if (!parent.has(x)) { parent.set(x, x); rank.set(x, 0); }
+            let root = x;
+            while (parent.get(root) !== root) root = parent.get(root);
+            // Path compression (iterative)
+            while (parent.get(x) !== root) {
+                const next = parent.get(x);
+                parent.set(x, root);
+                x = next;
+            }
+            return root;
         };
         const union = (a, b) => {
             const ra = find(a);
             const rb = find(b);
-            if (ra !== rb) parent.set(ra, rb);
+            if (ra === rb) return;
+            const rankA = rank.get(ra) || 0;
+            const rankB = rank.get(rb) || 0;
+            if (rankA < rankB) { parent.set(ra, rb); }
+            else if (rankA > rankB) { parent.set(rb, ra); }
+            else { parent.set(rb, ra); rank.set(ra, rankA + 1); }
         };
 
+        // Pre-convert all hashes to Buffers once to avoid repeated hex parsing
+        const hashBuffers = perceptualFiles.map(f => Buffer.from(f.perceptualHash, 'hex'));
+
+        // Pairwise comparison (yield to event loop every 50K comparisons to stay responsive)
+        const totalComparisons = (perceptualFiles.length * (perceptualFiles.length - 1)) / 2;
+        let compCount = 0;
         for (let i = 0; i < perceptualFiles.length; i++) {
+            const buf1 = hashBuffers[i];
             for (let j = i + 1; j < perceptualFiles.length; j++) {
-                const dist = hammingDistance(perceptualFiles[i].perceptualHash, perceptualFiles[j].perceptualHash);
+                const buf2 = hashBuffers[j];
+                const len = Math.min(buf1.length, buf2.length);
+                let dist = 0;
+                for (let k = 0; k < len; k++) {
+                    dist += POPCOUNT_TABLE[buf1[k] ^ buf2[k]];
+                    if (dist > threshold) break; // Early exit
+                }
                 if (dist <= threshold) {
                     union(perceptualFiles[i].path, perceptualFiles[j].path);
                 }
+                compCount++;
+            }
+            // Yield every 50K comparisons so the main process stays responsive
+            if (compCount > 50000) {
+                compCount = 0;
+                await new Promise(resolve => setImmediate(resolve));
             }
         }
 
@@ -2989,22 +3014,43 @@ ipcMain.handle('regroup-duplicates', async (event, hashData, newThreshold) => {
             perceptualFiles.push(file);
         }
 
-        // Union-find grouping for perceptual similarity
+        // Union-find with path compression + union-by-rank
         const parent = new Map();
+        const rank = new Map();
         const find = (x) => {
-            if (!parent.has(x)) parent.set(x, x);
-            if (parent.get(x) !== x) parent.set(x, find(parent.get(x)));
-            return parent.get(x);
+            if (!parent.has(x)) { parent.set(x, x); rank.set(x, 0); }
+            let root = x;
+            while (parent.get(root) !== root) root = parent.get(root);
+            while (parent.get(x) !== root) {
+                const next = parent.get(x);
+                parent.set(x, root);
+                x = next;
+            }
+            return root;
         };
         const union = (a, b) => {
             const ra = find(a);
             const rb = find(b);
-            if (ra !== rb) parent.set(ra, rb);
+            if (ra === rb) return;
+            const rankA = rank.get(ra) || 0;
+            const rankB = rank.get(rb) || 0;
+            if (rankA < rankB) { parent.set(ra, rb); }
+            else if (rankA > rankB) { parent.set(rb, ra); }
+            else { parent.set(rb, ra); rank.set(ra, rankA + 1); }
         };
 
+        // Pre-convert hashes to Buffers + inline comparison with early exit
+        const hashBuffers = perceptualFiles.map(f => Buffer.from(f.perceptualHash, 'hex'));
         for (let i = 0; i < perceptualFiles.length; i++) {
+            const buf1 = hashBuffers[i];
             for (let j = i + 1; j < perceptualFiles.length; j++) {
-                const dist = hammingDistance(perceptualFiles[i].perceptualHash, perceptualFiles[j].perceptualHash);
+                const buf2 = hashBuffers[j];
+                const len = Math.min(buf1.length, buf2.length);
+                let dist = 0;
+                for (let k = 0; k < len; k++) {
+                    dist += POPCOUNT_TABLE[buf1[k] ^ buf2[k]];
+                    if (dist > newThreshold) break;
+                }
                 if (dist <= newThreshold) {
                     union(perceptualFiles[i].path, perceptualFiles[j].path);
                 }
@@ -3770,23 +3816,32 @@ ipcMain.handle('db-set-meta', (event, key, value) => {
     catch (e) { return { success: false, error: e.message }; }
 });
 
+// IPC result caches for frequently-fetched full-table queries
+const _ipcCache = { ratings: null, pinned: null, tags: null, collections: null };
+
 // Ratings
 ipcMain.handle('db-get-all-ratings', () => {
-    try { return { success: true, data: appDb.getAllRatings() }; }
+    try {
+        if (!_ipcCache.ratings) _ipcCache.ratings = { success: true, data: appDb.getAllRatings() };
+        return _ipcCache.ratings;
+    }
     catch (e) { return { success: false, error: e.message }; }
 });
 ipcMain.handle('db-set-rating', (event, filePath, rating) => {
-    try { appDb.setRating(filePath, rating); return { success: true }; }
+    try { appDb.setRating(filePath, rating); _ipcCache.ratings = null; return { success: true }; }
     catch (e) { return { success: false, error: e.message }; }
 });
 
 // Pins
 ipcMain.handle('db-get-all-pinned', () => {
-    try { return { success: true, data: appDb.getAllPinned() }; }
+    try {
+        if (!_ipcCache.pinned) _ipcCache.pinned = { success: true, data: appDb.getAllPinned() };
+        return _ipcCache.pinned;
+    }
     catch (e) { return { success: false, error: e.message }; }
 });
 ipcMain.handle('db-set-pinned', (event, filePath, pinned) => {
-    try { appDb.setPinned(filePath, pinned); return { success: true }; }
+    try { appDb.setPinned(filePath, pinned); _ipcCache.pinned = null; return { success: true }; }
     catch (e) { return { success: false, error: e.message }; }
 });
 
@@ -3816,7 +3871,10 @@ ipcMain.handle('db-clear-recent-files', () => {
 
 // Collections
 ipcMain.handle('db-get-all-collections', () => {
-    try { return { success: true, data: appDb.getAllCollections() }; }
+    try {
+        if (!_ipcCache.collections) _ipcCache.collections = { success: true, data: appDb.getAllCollections() };
+        return _ipcCache.collections;
+    }
     catch (e) { return { success: false, error: e.message }; }
 });
 ipcMain.handle('db-get-collection', (event, id) => {
@@ -3824,11 +3882,11 @@ ipcMain.handle('db-get-collection', (event, id) => {
     catch (e) { return { success: false, error: e.message }; }
 });
 ipcMain.handle('db-save-collection', (event, col) => {
-    try { return { success: true, data: appDb.saveCollection(col) }; }
+    try { _ipcCache.collections = null; return { success: true, data: appDb.saveCollection(col) }; }
     catch (e) { return { success: false, error: e.message }; }
 });
 ipcMain.handle('db-delete-collection', (event, id) => {
-    try { appDb.deleteCollection(id); return { success: true }; }
+    try { appDb.deleteCollection(id); _ipcCache.collections = null; return { success: true }; }
     catch (e) { return { success: false, error: e.message }; }
 });
 ipcMain.handle('db-get-collection-files', (event, collectionId) => {
@@ -3850,19 +3908,22 @@ ipcMain.handle('db-remove-files-from-collection', (event, collectionId, filePath
 
 // Tags
 ipcMain.handle('db-create-tag', (event, name, description, color) => {
-    try { return { success: true, data: appDb.createTag(name, description, color) }; }
+    try { _ipcCache.tags = null; return { success: true, data: appDb.createTag(name, description, color) }; }
     catch (e) { return { success: false, error: e.message }; }
 });
 ipcMain.handle('db-update-tag', (event, id, updates) => {
-    try { return { success: true, data: appDb.updateTag(id, updates) }; }
+    try { _ipcCache.tags = null; return { success: true, data: appDb.updateTag(id, updates) }; }
     catch (e) { return { success: false, error: e.message }; }
 });
 ipcMain.handle('db-delete-tag', (event, id) => {
-    try { appDb.deleteTag(id); return { success: true }; }
+    try { appDb.deleteTag(id); _ipcCache.tags = null; return { success: true }; }
     catch (e) { return { success: false, error: e.message }; }
 });
 ipcMain.handle('db-get-all-tags', () => {
-    try { return { success: true, data: appDb.getAllTags() }; }
+    try {
+        if (!_ipcCache.tags) _ipcCache.tags = { success: true, data: appDb.getAllTags() };
+        return _ipcCache.tags;
+    }
     catch (e) { return { success: false, error: e.message }; }
 });
 ipcMain.handle('db-get-tag', (event, id) => {

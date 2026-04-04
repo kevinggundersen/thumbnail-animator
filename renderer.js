@@ -1149,15 +1149,15 @@ function vsUpdateItems(items, options = {}) {
                 keptCards.set(newIdx, card);
             } else {
                 // This item was filtered out — destroy and recycle
-                if (card.dataset.hasMedia) {
-                    card.querySelectorAll('video').forEach(v => {
-                        destroyVideoElement(v);
+                const mediaEl = card._mediaEl;
+                if (mediaEl) {
+                    if (mediaEl.tagName === 'VIDEO') {
+                        destroyVideoElement(mediaEl);
                         activeVideoCount = Math.max(0, activeVideoCount - 1);
-                    });
-                    card.querySelectorAll('img.media-thumbnail').forEach(img => {
-                        destroyImageElement(img);
+                    } else {
+                        destroyImageElement(mediaEl);
                         activeImageCount = Math.max(0, activeImageCount - 1);
-                    });
+                    }
                 }
                 pendingMediaCreations.delete(card);
                 mediaToRetry.delete(card);
@@ -1178,16 +1178,16 @@ function vsUpdateItems(items, options = {}) {
     } else {
         // --- Full teardown path for folder navigation ---
         for (const [itemIdx, card] of vsActiveCards) {
-            const videos = card.querySelectorAll('video');
-            const images = card.querySelectorAll('img.media-thumbnail');
-            videos.forEach(video => {
-                destroyVideoElement(video);
-                activeVideoCount = Math.max(0, activeVideoCount - 1);
-            });
-            images.forEach(img => {
-                destroyImageElement(img);
-                activeImageCount = Math.max(0, activeImageCount - 1);
-            });
+            const mediaEl = card._mediaEl;
+            if (mediaEl) {
+                if (mediaEl.tagName === 'VIDEO') {
+                    destroyVideoElement(mediaEl);
+                    activeVideoCount = Math.max(0, activeVideoCount - 1);
+                } else {
+                    destroyImageElement(mediaEl);
+                    activeImageCount = Math.max(0, activeImageCount - 1);
+                }
+            }
             observer.unobserve(card);
             card.remove();
             if (vsRecyclePool.length < VS_MAX_POOL_SIZE) {
@@ -1247,10 +1247,11 @@ function vsCleanup() {
 
     // Clean up active cards
     for (const [, card] of vsActiveCards) {
-        const videos = card.querySelectorAll('video');
-        const images = card.querySelectorAll('img.media-thumbnail');
-        videos.forEach(video => destroyVideoElement(video));
-        images.forEach(img => destroyImageElement(img));
+        const mediaEl = card._mediaEl;
+        if (mediaEl) {
+            if (mediaEl.tagName === 'VIDEO') destroyVideoElement(mediaEl);
+            else destroyImageElement(mediaEl);
+        }
         observer.unobserve(card);
     }
     vsActiveCards.clear();
@@ -4392,20 +4393,20 @@ function performCleanupCheck() {
     const viewportLeft = -PRELOAD_BUFFER_PX;
     const viewportRight = window.innerWidth + PRELOAD_BUFFER_PX
 
-    // Build card → media map by iterating known cards (shallow querySelector per card)
+    // Build card → media map using cached _mediaEl reference (no DOM queries)
     const cardMediaMap = new Map();
     let allVideos = [];
     let allImages = [];
     for (const card of cardSource) {
         if (!card.classList.contains('video-card')) continue;
-        const videos = card.querySelectorAll('video');
-        const images = card.querySelectorAll('img.media-thumbnail');
-        if (videos.length > 0 || images.length > 0) {
-            const vArr = Array.from(videos);
-            const iArr = Array.from(images);
-            cardMediaMap.set(card, { videos: vArr, images: iArr });
-            allVideos.push(...vArr);
-            allImages.push(...iArr);
+        const mediaEl = card._mediaEl;
+        if (!mediaEl) continue;
+        if (mediaEl.tagName === 'VIDEO') {
+            cardMediaMap.set(card, { videos: [mediaEl], images: [] });
+            allVideos.push(mediaEl);
+        } else {
+            cardMediaMap.set(card, { videos: [], images: [mediaEl] });
+            allImages.push(mediaEl);
         }
     }
 
@@ -6345,10 +6346,11 @@ function renderItems(items, preservedScrollTop = null) {
     // Batch unobserve and cleanup
     cardsArray.forEach(card => {
         observer.unobserve(card);
-        const videos = card.querySelectorAll('video');
-        const images = card.querySelectorAll('img.media-thumbnail');
-        videos.forEach(video => destroyVideoElement(video));
-        images.forEach(img => destroyImageElement(img));
+        const mediaEl = card._mediaEl;
+        if (mediaEl) {
+            if (mediaEl.tagName === 'VIDEO') destroyVideoElement(mediaEl);
+            else destroyImageElement(mediaEl);
+        }
     });
 
     // Reset counters
@@ -7019,27 +7021,17 @@ function processEntries(entries) {
     entries.forEach(entry => {
         if (!entry.isIntersecting) {
             const card = entry.target;
-            const videos = card.querySelectorAll('video');
-            const images = card.querySelectorAll('img.media-thumbnail');
-            
-            if (videos.length > 0) {
-                videos.forEach(video => {
-                    destroyVideoElement(video);
+            const mediaEl = card._mediaEl;
+            if (mediaEl) {
+                if (mediaEl.tagName === 'VIDEO') {
+                    destroyVideoElement(mediaEl);
                     activeVideoCount = Math.max(0, activeVideoCount - 1);
-                    pendingMediaCreations.delete(card);
-                    mediaToRetry.delete(card);
-                });
-                changed = true;
-                lastCleanupTime = now;
-            }
-            
-            if (images.length > 0) {
-                images.forEach(img => {
-                    destroyImageElement(img);
+                } else {
+                    destroyImageElement(mediaEl);
                     activeImageCount = Math.max(0, activeImageCount - 1);
-                    pendingMediaCreations.delete(card);
-                    mediaToRetry.delete(card);
-                });
+                }
+                pendingMediaCreations.delete(card);
+                mediaToRetry.delete(card);
                 changed = true;
                 lastCleanupTime = now;
             }
@@ -7070,29 +7062,8 @@ function processEntries(entries) {
                 return;
             }
 
-            const videos = card.querySelectorAll('video');
-            const images = card.querySelectorAll('img.media-thumbnail');
-
-            // Remove any duplicate videos first
-            if (videos.length > 1) {
-                for (let i = 1; i < videos.length; i++) {
-                    destroyVideoElement(videos[i]);
-                    activeVideoCount = Math.max(0, activeVideoCount - 1);
-                    changed = true;
-                }
-            }
-            
-            // Remove any duplicate images first
-            if (images.length > 1) {
-                for (let i = 1; i < images.length; i++) {
-                    destroyImageElement(images[i]);
-                    activeImageCount = Math.max(0, activeImageCount - 1);
-                    changed = true;
-                }
-            }
-            
             // If no media exists and not pending, add to load queue
-            if (videos.length === 0 && images.length === 0 && !pendingMediaCreations.has(card)) {
+            if (!card._mediaEl && !pendingMediaCreations.has(card)) {
                 // Use IntersectionObserver entry data for accurate positioning
                 // entry.boundingClientRect is relative to viewport
                 // Calculate distance from viewport center for prioritization
@@ -7214,11 +7185,7 @@ function retryPendingVideos() {
             continue;
         }
         
-        const videos = card.querySelectorAll('video');
-        const images = card.querySelectorAll('img.media-thumbnail');
-        const hasMedia = videos.length > 0 || images.length > 0;
-        
-        if (hasMedia) {
+        if (card._mediaEl) {
             // Media already loaded, remove from retry queue
             cardsToRemove.push(card);
             continue;
@@ -7927,17 +7894,35 @@ function marqueeUpdateRect(clientX, clientY) {
 function marqueeComputeSelection(clientX, clientY) {
     if (!vsPositions || !vsSortedItems.length) return;
     const sel = marqueeGetRect(clientX, clientY);
+    const itemCount = vsSortedItems.length;
+
     // Rebuild selection
     selectedCardPaths.clear();
     if (marqueeCtrlHeld && marqueePreSelection) {
         for (const p of marqueePreSelection) selectedCardPaths.add(p);
     }
-    for (let i = 0; i < vsSortedItems.length; i++) {
+
+    // Binary search for first item whose bottom edge (top + height) >= sel.top
+    let lo = 0, hi = itemCount - 1;
+    while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        const midIdx = mid * 4;
+        if (vsPositions[midIdx + 1] + vsPositions[midIdx + 3] < sel.top) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+
+    // Iterate only items in the Y range of the marquee rectangle
+    for (let i = lo; i < itemCount; i++) {
+        const idx = i * 4;
+        const cT = vsPositions[idx + 1];
+        if (cT > sel.bottom) break; // Past the marquee — done
+
         const item = vsSortedItems[i];
         if (!item.path || item.type === 'folder' || item.type === 'group-header') continue;
-        const idx = i * 4;
         const cL = vsPositions[idx];
-        const cT = vsPositions[idx + 1];
         const cR = cL + vsPositions[idx + 2];
         const cB = cT + vsPositions[idx + 3];
         if (!(sel.right < cL || sel.left > cR || sel.bottom < cT || sel.top > cB)) {

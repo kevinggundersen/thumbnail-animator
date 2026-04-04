@@ -172,7 +172,7 @@ class AnimatedImagePlaybackController extends MediaPlaybackController {
         this._canvas = canvas;
         this._ctx = canvas.getContext('2d');
         this._frames = [];
-        this._composited = []; // pre-rendered offscreen canvases for GPU-accelerated draw
+        this._composited = []; // pre-rendered offscreen canvases (sparse for large GIFs)
         this._frameTimeline = []; // cumulative time at end of each frame (ms)
         this._totalDuration = 0;
         this._currentFrame = 0;
@@ -188,9 +188,20 @@ class AnimatedImagePlaybackController extends MediaPlaybackController {
         this._format = 'gif'; // 'gif' or 'webp'
         this._preRenderedUpTo = -1; // highest frame index composited into _tempCtx
 
+        // Sliding window: for GIFs with many frames, only keep a window of canvases in memory
+        this._useWindow = false;          // enabled for large GIFs (> WINDOW_THRESHOLD)
+        this._windowAhead = 32;           // pre-render this many frames ahead of playhead
+        this._windowBehind = 8;           // keep this many frames behind playhead
+        this._keyframeInterval = 32;      // save compositing state every N frames
+        this._keyframes = [];             // sparse array: index -> ImageData snapshot of _tempCtx
+        this._compositedCount = 0;        // track how many canvases are alive
+
         // ready resolves when decode is complete (sync for GIF, async for WebP)
         this.ready = this._decode(buffer);
     }
+
+    /** Threshold: GIFs with more frames than this use sliding window */
+    static WINDOW_THRESHOLD = 64;
 
     /** Detect format from magic bytes and dispatch to the right decoder */
     async _decode(buffer) {
@@ -235,8 +246,13 @@ class AnimatedImagePlaybackController extends MediaPlaybackController {
             });
             this._totalDuration = cumulative;
 
-            // Show first frame immediately via putImageData, then pre-render rest async
+            // Enable sliding window for large GIFs to save memory
+            this._useWindow = this._frames.length > AnimatedImagePlaybackController.WINDOW_THRESHOLD;
             this._composited = new Array(this._frames.length);
+            this._keyframes = new Array(this._frames.length);
+            this._compositedCount = 0;
+
+            // Show first frame immediately via putImageData, then pre-render rest async
             this._preRenderRange(0, 1); // composite frame 0
             this._showFrame(0);
             this._emit('loadedmetadata', { duration: this.duration });
@@ -301,7 +317,12 @@ class AnimatedImagePlaybackController extends MediaPlaybackController {
             this._tempCanvas.height = this._gifHeight;
             this._tempCtx = this._tempCanvas.getContext('2d');
 
+            // Enable sliding window for large animated WebPs
+            this._useWindow = this._frames.length > AnimatedImagePlaybackController.WINDOW_THRESHOLD;
             this._composited = new Array(this._frames.length);
+            this._keyframes = new Array(this._frames.length);
+            this._compositedCount = 0;
+
             this._preRenderRange(0, 1);
             this._showFrame(0);
             this._emit('loadedmetadata', { duration: this.duration });
@@ -333,11 +354,22 @@ class AnimatedImagePlaybackController extends MediaPlaybackController {
             const imageData = new ImageData(patch, dims.width, dims.height);
             this._tempCtx.putImageData(imageData, dims.left, dims.top);
 
-            const snap = document.createElement('canvas');
-            snap.width = this._gifWidth;
-            snap.height = this._gifHeight;
-            snap.getContext('2d').drawImage(this._tempCanvas, 0, 0);
-            this._composited[i] = snap;
+            // Save keyframe snapshot for efficient seeking (only in windowed mode)
+            if (this._useWindow && i % this._keyframeInterval === 0) {
+                this._keyframes[i] = this._tempCtx.getImageData(0, 0, this._gifWidth, this._gifHeight);
+            }
+
+            if (!this._composited[i]) {
+                const snap = document.createElement('canvas');
+                snap.width = this._gifWidth;
+                snap.height = this._gifHeight;
+                snap.getContext('2d').drawImage(this._tempCanvas, 0, 0);
+                this._composited[i] = snap;
+                this._compositedCount++;
+            } else {
+                // Reuse existing canvas
+                this._composited[i].getContext('2d').drawImage(this._tempCanvas, 0, 0);
+            }
         }
         const lastDone = Math.min(end, this._frames.length) - 1;
         if (lastDone > this._preRenderedUpTo) {
@@ -348,14 +380,93 @@ class AnimatedImagePlaybackController extends MediaPlaybackController {
     /** Pre-render remaining frames in async batches, yielding to the event loop between batches */
     _preRenderAsync() {
         const BATCH = 8;
-        const step = () => {
-            const start = this._preRenderedUpTo + 1;
-            if (start >= this._frames.length) return;
-            const end = Math.min(start + BATCH, this._frames.length);
-            this._preRenderRange(start, end);
+        if (this._useWindow) {
+            // Windowed mode: only pre-render a window ahead of frame 0
+            const windowEnd = Math.min(this._windowAhead, this._frames.length);
+            const step = () => {
+                const start = this._preRenderedUpTo + 1;
+                if (start >= windowEnd) return;
+                const end = Math.min(start + BATCH, windowEnd);
+                this._preRenderRange(start, end);
+                requestAnimationFrame(step);
+            };
             requestAnimationFrame(step);
-        };
-        requestAnimationFrame(step);
+        } else {
+            // Small GIF: pre-render all frames
+            const step = () => {
+                const start = this._preRenderedUpTo + 1;
+                if (start >= this._frames.length) return;
+                const end = Math.min(start + BATCH, this._frames.length);
+                this._preRenderRange(start, end);
+                requestAnimationFrame(step);
+            };
+            requestAnimationFrame(step);
+        }
+    }
+
+    /**
+     * Evict composited canvases outside the sliding window around the given frame.
+     * Only active in windowed mode. Frees GPU/memory for large GIFs.
+     */
+    _evictOutsideWindow(centerFrame) {
+        if (!this._useWindow) return;
+        const lo = centerFrame - this._windowBehind;
+        const hi = centerFrame + this._windowAhead;
+        for (let i = 0; i < this._frames.length; i++) {
+            if (this._composited[i] && (i < lo || i > hi)) {
+                this._composited[i] = null;
+                this._compositedCount--;
+            }
+        }
+    }
+
+    /**
+     * Ensure frames around the target are composited (windowed mode).
+     * Uses keyframes to seek efficiently without re-compositing from frame 0.
+     */
+    _ensureWindowAround(targetFrame) {
+        if (!this._useWindow) return;
+
+        // If target is already composited, just ensure ahead window
+        if (this._composited[targetFrame]) {
+            // Pre-render ahead if needed
+            const aheadEnd = Math.min(targetFrame + this._windowAhead, this._frames.length);
+            if (this._preRenderedUpTo < aheadEnd - 1) {
+                // Need to composite forward — but only if contiguous from _preRenderedUpTo
+                const start = this._preRenderedUpTo + 1;
+                if (start <= aheadEnd) {
+                    this._preRenderRange(start, aheadEnd);
+                }
+            }
+            return;
+        }
+
+        // Target not composited — find nearest keyframe at or before target
+        let keyframeIdx = -1;
+        for (let k = targetFrame; k >= 0; k -= this._keyframeInterval) {
+            const aligned = k - (k % this._keyframeInterval);
+            if (this._keyframes[aligned]) {
+                keyframeIdx = aligned;
+                break;
+            }
+            if (aligned === 0) break;
+        }
+
+        if (keyframeIdx >= 0) {
+            // Restore _tempCtx from keyframe and composite forward
+            this._tempCtx.putImageData(this._keyframes[keyframeIdx], 0, 0);
+            this._preRenderedUpTo = keyframeIdx - 1;
+        } else {
+            // No keyframe available — must composite from frame 0
+            this._preRenderedUpTo = -1;
+        }
+
+        // Composite from after keyframe to target + ahead window
+        const renderEnd = Math.min(targetFrame + this._windowAhead, this._frames.length);
+        this._preRenderRange(this._preRenderedUpTo + 1, renderEnd);
+
+        // Evict old frames outside window
+        this._evictOutsideWindow(targetFrame);
     }
 
     /**
@@ -366,10 +477,21 @@ class AnimatedImagePlaybackController extends MediaPlaybackController {
     _showFrame(index) {
         if (index < 0 || index >= this._frames.length) return;
         if (!this._composited[index]) {
-            this._preRenderRange(this._preRenderedUpTo + 1, index + 1);
+            if (this._useWindow) {
+                this._ensureWindowAround(index);
+            } else {
+                this._preRenderRange(this._preRenderedUpTo + 1, index + 1);
+            }
         }
-        this._ctx.drawImage(this._composited[index], 0, 0);
+        if (this._composited[index]) {
+            this._ctx.drawImage(this._composited[index], 0, 0);
+        }
         this._currentFrame = index;
+
+        // In windowed mode, evict distant frames periodically during playback
+        if (this._useWindow && this._playing) {
+            this._evictOutsideWindow(index);
+        }
     }
 
     _animate(timestamp) {
@@ -507,6 +629,8 @@ class AnimatedImagePlaybackController extends MediaPlaybackController {
         this.pause();
         this._frames = [];
         this._composited = [];
+        this._keyframes = [];
+        this._compositedCount = 0;
         this._frameTimeline = [];
         this._tempCanvas = null;
         this._tempCtx = null;

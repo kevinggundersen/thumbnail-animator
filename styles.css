@@ -984,7 +984,6 @@ header {
     box-shadow: var(--shadow-xl);
     width: 300px;
     z-index: 1000;
-    backdrop-filter: blur(16px);
     display: flex;
     flex-direction: column;
     overflow: visible;
@@ -2327,6 +2326,7 @@ button:hover {
     padding: var(--gap);
     position: relative;
     min-height: 0; /* Important for flex children to allow scrolling */
+    contain: layout style;
 }
 
 .grid-empty-state {
@@ -3069,7 +3069,6 @@ video.blow-up-media {
     border-radius: 4px;
     z-index: 10;
     pointer-events: none;
-    backdrop-filter: blur(4px);
     white-space: nowrap;
     display: none;
 }
@@ -3121,10 +3120,9 @@ video.blow-up-media {
     position: fixed;
     top: 38px;
     right: 60px;
-    background-color: rgba(0, 0, 0, 0.6);
+    background-color: rgba(0, 0, 0, 0.75);
     padding: 10px 16px;
     border-radius: 0 0 var(--radius-md) var(--radius-md);
-    backdrop-filter: blur(16px);
     border: 1px solid rgba(255, 255, 255, 0.08);
     border-top: none;
     z-index: 1001;
@@ -3234,9 +3232,8 @@ video.blow-up-media {
     max-width: 50%;
     padding: 8px 16px;
     z-index: 1001;
-    background: rgba(0, 0, 0, 0.6);
+    background: rgba(0, 0, 0, 0.75);
     border-radius: var(--radius-full);
-    backdrop-filter: blur(16px);
     border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
@@ -3299,7 +3296,6 @@ video.blow-up-media {
     justify-content: center;
     transition: background-color 0.15s, color 0.15s;
     z-index: 1002;
-    backdrop-filter: blur(10px);
 }
 
 #close-lightbox:hover {
@@ -3317,7 +3313,6 @@ video.blow-up-media {
     padding: 4px;
     min-width: 200px;
     z-index: 2000;
-    backdrop-filter: blur(16px);
     animation: context-menu-enter 0.12s var(--ease-out);
     contain: layout style paint;
 }
@@ -3870,7 +3865,6 @@ video.blow-up-media {
     min-width: 120px;
     max-height: 300px;
     overflow-y: auto;
-    backdrop-filter: blur(10px);
 }
 
 .drive-item {
@@ -3905,7 +3899,6 @@ video.blow-up-media {
     align-items: center;
     justify-content: center;
     transition: background-color 0.15s, color 0.15s, transform 0.1s;
-    backdrop-filter: blur(10px);
 }
 
 #lightbox-prev {
@@ -3955,7 +3948,6 @@ video.blow-up-media {
     align-items: center;
     justify-content: center;
     transition: background-color 0.2s;
-    backdrop-filter: blur(10px);
 }
 
 .lightbox-video-menu-btn:hover {
@@ -3972,7 +3964,6 @@ video.blow-up-media {
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
     min-width: 200px;
     padding: 8px 0;
-    backdrop-filter: blur(10px);
 }
 
 .lightbox-video-menu.hidden {
@@ -4629,7 +4620,6 @@ video.blow-up-media {
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
     min-width: 300px;
     z-index: 3000;
-    backdrop-filter: blur(10px);
 }
 
 .progress-indicator.hidden {
@@ -5305,9 +5295,8 @@ video.blow-up-media {
     text-transform: uppercase;
     letter-spacing: 0.5px;
     border-radius: var(--radius-sm);
-    background: rgba(0, 0, 0, 0.5);
+    background: rgba(0, 0, 0, 0.7);
     color: rgba(255, 255, 255, 0.8);
-    backdrop-filter: blur(4px);
     pointer-events: none;
     user-select: none;
 }
@@ -5595,7 +5584,6 @@ video.blow-up-media {
     font-weight: 600;
     border-radius: var(--radius-sm);
     cursor: pointer;
-    backdrop-filter: blur(8px);
     transition: background-color var(--duration-normal);
 }
 
@@ -5726,8 +5714,7 @@ video.blow-up-media {
     right: 12px;
     width: 320px;
     max-height: 400px;
-    background: rgba(18, 18, 18, 0.92);
-    backdrop-filter: blur(12px);
+    background: rgba(18, 18, 18, 0.96);
     border: 1px solid var(--border-default);
     border-radius: 10px;
     z-index: 9999;
@@ -6193,8 +6180,7 @@ video.blow-up-media {
     align-items: center;
     gap: 8px;
     padding: 8px 14px;
-    background: rgba(13, 13, 15, 0.85);
-    backdrop-filter: blur(12px);
+    background: rgba(13, 13, 15, 0.94);
     border: 1px solid var(--border-default);
     border-radius: 10px;
     box-shadow: var(--shadow-lg);
@@ -6911,9 +6897,8 @@ video.blow-up-media {
     text-transform: uppercase;
     letter-spacing: 0.5px;
     border-radius: var(--radius-sm);
-    background: rgba(0, 0, 0, 0.55);
+    background: rgba(0, 0, 0, 0.75);
     color: rgba(255, 255, 255, 0.85);
-    backdrop-filter: blur(4px);
     z-index: 1;
 }
 

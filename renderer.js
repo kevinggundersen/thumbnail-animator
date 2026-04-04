@@ -1415,6 +1415,33 @@ function friendlyError(err) {
     return msg;
 }
 
+// ===== Application Menu Command Handler =====
+window.electronAPI.onMenuCommand((command) => {
+    switch (command) {
+        case 'open-folder': selectFolderBtn.click(); break;
+        case 'export-settings': {
+            const btn = document.querySelector('[data-tab="data"]');
+            if (btn) { btn.click(); toggleSettingsModal(); }
+            break;
+        }
+        case 'import-settings': {
+            const btn = document.querySelector('[data-tab="data"]');
+            if (btn) { btn.click(); toggleSettingsModal(); }
+            break;
+        }
+        case 'undo': document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true })); break;
+        case 'redo': document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Z', ctrlKey: true, shiftKey: true, bubbles: true })); break;
+        case 'toggle-sidebar': setSidebarCollapsed(!sidebarCollapsed); break;
+        case 'toggle-layout': layoutModeToggle.checked = !layoutModeToggle.checked; switchLayoutMode(); break;
+        case 'zoom-in': { const z = Math.min(200, zoomLevel + 10); zoomSlider.value = z; zoomLevel = z; applyZoom(); deferLocalStorageWrite('zoomLevel', z.toString()); updateStatusBar(); break; }
+        case 'zoom-out': { const z = Math.max(50, zoomLevel - 10); zoomSlider.value = z; zoomLevel = z; applyZoom(); deferLocalStorageWrite('zoomLevel', z.toString()); updateStatusBar(); break; }
+        case 'zoom-reset': { zoomSlider.value = 100; zoomLevel = 100; applyZoom(); deferLocalStorageWrite('zoomLevel', '100'); updateStatusBar(); break; }
+        case 'show-shortcuts': toggleShortcutsOverlay(); break;
+        case 'open-settings': toggleSettingsModal(); break;
+        case 'about': showToast('Thumbnail Animator v' + (document.title.match(/v[\d.]+/)?.[0] || ''), 'info'); break;
+    }
+});
+
 // ===== Custom Confirmation Dialog =====
 const confirmDialog = document.getElementById('confirm-dialog');
 const confirmDialogTitle = document.getElementById('confirm-dialog-title');
@@ -6242,6 +6269,15 @@ function renderItems(items, preservedScrollTop = null) {
                     ? 'Try editing the filter rules or adding more source folders.'
                     : 'Drag files here or right-click files to add them.'}</p>
             `;
+        } else if (searchBox.value.trim() || currentFilter !== 'all') {
+            const searchTerm = searchBox.value.trim();
+            const filterLabel = currentFilter !== 'all' ? ` in "${currentFilter}" filter` : '';
+            emptyDiv.innerHTML = `
+                <p class="grid-empty-title">No results found</p>
+                <p class="grid-empty-hint">${searchTerm
+                    ? `No files match "${searchTerm}"${filterLabel}. Try a different search term or clear filters.`
+                    : `No files match the current filter. Try showing all files.`}</p>
+            `;
         } else {
             emptyDiv.innerHTML = '<p class="grid-empty-title">No folders or supported media found.</p>';
         }
@@ -8751,8 +8787,10 @@ function updateBreadcrumb(folderPath) {
 }
 
 // Loading indicator helpers
-function showLoadingIndicator() {
+function showLoadingIndicator(message) {
     if (loadingIndicator) {
+        const textEl = loadingIndicator.querySelector('.loading-text');
+        if (textEl) textEl.textContent = message || 'Loading...';
         loadingIndicator.classList.remove('hidden');
     }
 }
@@ -8760,6 +8798,8 @@ function showLoadingIndicator() {
 function hideLoadingIndicator() {
     if (loadingIndicator) {
         loadingIndicator.classList.add('hidden');
+        const textEl = loadingIndicator.querySelector('.loading-text');
+        if (textEl) textEl.textContent = 'Loading...';
     }
 }
 
@@ -8893,7 +8933,7 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
             // serve stale IndexedDB data that may be missing newly added files.
             forceReload = true;
             // Show loading indicator
-            showLoadingIndicator();
+            showLoadingIndicator(`Loading ${folderName}...`);
             try {
                 // Validate path exists by trying to scan it
                 // Skip stats only when neither sorting nor card metadata needs them.
@@ -9192,7 +9232,7 @@ async function exportSettings() {
         if (result.success) {
             showSettingsDataStatus('Settings exported successfully.', 'success');
         } else {
-            showSettingsDataStatus('Export failed: ' + result.error, 'error');
+            showSettingsDataStatus('Export failed: ' + friendlyError(result.error), 'error');
         }
     } catch (err) {
         showSettingsDataStatus('Export failed: ' + err.message, 'error');
@@ -9209,7 +9249,7 @@ async function importSettings() {
     }
     if (!result.success) {
         if (result.canceled) return;
-        showSettingsDataStatus('Import failed: ' + (result.error || 'Unknown error'), 'error');
+        showSettingsDataStatus('Import failed: ' + friendlyError(result.error || 'Unknown error'), 'error');
         return;
     }
     const data = result.data;
@@ -9876,7 +9916,7 @@ hoverScaleZ200.addEventListener('input', () => {
                     scheduleBackgroundEmbedding(currentItems);
                 }
             } else {
-                setAiStatus('error', 'Failed: ' + (result.error || 'unknown error'));
+                setAiStatus('error', 'Failed: ' + friendlyError(result.error || 'unknown error'));
                 revertToggleOff();
             }
         } catch (err) {
@@ -11274,7 +11314,7 @@ if (copyImageBtn) {
             try {
                 const result = await window.electronAPI.copyImageToClipboard(filePath);
                 success = result.success;
-                if (!success) showToast(`Could not copy image: ${result.error}`, 'error');
+                if (!success) showToast(`Could not copy image: ${friendlyError(result.error)}`, 'error');
             } catch (error) {
                 showToast(`Could not copy image: ${friendlyError(error)}`, 'error');
             }
@@ -11688,7 +11728,7 @@ contextMenu.addEventListener('click', async (e) => {
                 if (result.success) {
                     showToast('Copied to clipboard', 'success');
                 } else {
-                    showToast(`Could not copy: ${result.error}`, 'error');
+                    showToast(`Could not copy: ${friendlyError(result.error)}`, 'error');
                 }
             } catch (error) {
                 showToast(`Could not copy: ${friendlyError(error)}`, 'error');
@@ -11777,7 +11817,7 @@ contextMenu.addEventListener('click', async (e) => {
                 try {
                     const result = await window.electronAPI.executePluginAction(pluginId, actionId, filePath, null);
                     if (!result.success) {
-                        showToast(`Plugin action failed: ${result.error}`, 'error');
+                        showToast(`Plugin action failed: ${friendlyError(result.error)}`, 'error');
                     } else if (result.result?.json) {
                         // If the plugin returned JSON text, copy it to clipboard
                         navigator.clipboard.writeText(result.result.json).then(() => {
@@ -12157,11 +12197,11 @@ batchRenameApply.addEventListener('click', async () => {
             closeBatchRename();
             const failedResults = (result.results || []).filter(r => r.success === false);
             if (failedResults.length > 0) {
-                const firstError = friendlyError(failedResults[0].error);
+                const errorSummary = groupBatchErrors(failedResults);
                 showToast(
                     `Renamed ${result.successCount} of ${result.totalCount} files`,
                     'warning',
-                    { details: `${failedResults.length} failed: ${firstError}`, duration: 8000 }
+                    { details: `${failedResults.length} failed: ${errorSummary}`, duration: 8000 }
                 );
             } else {
                 showToast(`Renamed ${result.successCount} of ${result.totalCount} files`, 'success');
@@ -12172,7 +12212,7 @@ batchRenameApply.addEventListener('click', async () => {
                 await loadVideos(currentFolderPath, false, previousScrollTop);
             }
         } else {
-            showToast(`Batch rename failed: ${result.error}`, 'error');
+            showToast(`Batch rename failed: ${friendlyError(result.error)}`, 'error');
         }
     } catch (error) {
         showToast(`Batch rename failed: ${friendlyError(error)}`, 'error');
@@ -12498,7 +12538,7 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
     }
     
     if (needsScan) {
-        showLoadingIndicator();
+        showLoadingIndicator('Scanning folder...');
         setStatusActivity('Scanning folder...');
     }
 
@@ -13774,7 +13814,7 @@ document.getElementById('tag-create-btn').addEventListener('click', async () => 
             nameInput.value = '';
             renderTagsManagement();
         } else {
-            showToast('Failed to create tag: ' + (result.error || ''), 'error');
+            showToast('Failed to create tag: ' + friendlyError(result.error || ''), 'error');
         }
     } catch (e) {
         showToast('Failed to create tag: ' + e.message, 'error');

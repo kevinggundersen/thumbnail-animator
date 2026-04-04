@@ -1,3 +1,16 @@
+// ==================== BATCH ERROR GROUPING ====================
+function groupBatchErrors(failedItems) {
+    if (!failedItems || failedItems.length === 0) return '';
+    const groups = {};
+    for (const item of failedItems) {
+        const msg = friendlyError(item.error || 'Unknown error');
+        groups[msg] = (groups[msg] || 0) + 1;
+    }
+    return Object.entries(groups)
+        .map(([msg, count]) => count > 1 ? `${count} ${msg.toLowerCase()}` : msg.toLowerCase())
+        .join(', ');
+}
+
 // ==================== KEYBOARD SHORTCUTS ====================
 function initKeyboardShortcuts() {
     document.addEventListener('keydown', async (e) => {
@@ -3310,9 +3323,11 @@ function initDuplicateDetection() {
         const failCount = result.failed ? result.failed.length : 0;
         const successCount = count - failCount;
         if (failCount > 0 && successCount > 0) {
-            showToast(`Deleted ${successCount} file(s), ${failCount} failed`, 'warning');
+            const errorSummary = groupBatchErrors(result.failed);
+            showToast(`Deleted ${successCount} file(s), ${failCount} failed: ${errorSummary}`, 'warning');
         } else if (failCount > 0) {
-            showToast(`Failed to delete ${failCount} file(s)`, 'error');
+            const errorSummary = groupBatchErrors(result.failed);
+            showToast(`Failed to delete ${failCount} file(s): ${errorSummary}`, 'error');
         } else if (result.trashed) {
             showToast(`Moved ${count} file(s) to Recycle Bin`, 'success');
         } else {

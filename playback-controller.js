@@ -587,7 +587,18 @@ class MediaControlBar {
         });
 
         // Auto-hide: mouse move on lightbox shows controls, resets timer
-        this._mouseMoveHandler = () => this._showControls();
+        // Use dead-zone to avoid flickering on micro mouse movements
+        this._lastMouseX = 0;
+        this._lastMouseY = 0;
+        this._mouseMoveHandler = (e) => {
+            const dx = e.clientX - this._lastMouseX;
+            const dy = e.clientY - this._lastMouseY;
+            if (dx * dx + dy * dy > 100) { // >10px movement
+                this._lastMouseX = e.clientX;
+                this._lastMouseY = e.clientY;
+                this._showControls();
+            }
+        };
         this._mouseLeaveHandler = () => this._startHideTimer();
     }
 

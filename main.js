@@ -531,15 +531,16 @@ function loadWindowState() {
                 typeof state.x === 'number' && typeof state.y === 'number' &&
                 typeof state.width === 'number' && typeof state.height === 'number') {
                 
-                // Check if window would be visible on any display (more lenient check)
+                // Check if window center is within any display bounds
                 const displays = screen.getAllDisplays();
                 let isValidPosition = false;
-                
+                const centerX = state.x + state.width / 2;
+                const centerY = state.y + state.height / 2;
+
                 for (const display of displays) {
                     const { x, y, width: dWidth, height: dHeight } = display.bounds;
-                    // Allow window to be partially off-screen, just check if any part is visible
-                    if (state.x < x + dWidth && state.x + state.width > x &&
-                        state.y < y + dHeight && state.y + state.height > y) {
+                    if (centerX >= x && centerX < x + dWidth &&
+                        centerY >= y && centerY < y + dHeight) {
                         isValidPosition = true;
                         break;
                     }
@@ -740,6 +741,64 @@ app.whenReady().then(() => {
     markStartup('app-ready');
     const win = createWindow();
     markStartup('window-created');
+
+    // --- Application Menu ---
+    const isMac = process.platform === 'darwin';
+    const sendMenuCommand = (command) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('menu-command', command);
+        }
+    };
+    const menuTemplate = [
+        ...(isMac ? [{ role: 'appMenu' }] : []),
+        {
+            label: 'File',
+            submenu: [
+                { label: 'Open Folder', accelerator: 'CmdOrCtrl+O', click: () => sendMenuCommand('open-folder') },
+                { type: 'separator' },
+                { label: 'Export Settings...', click: () => sendMenuCommand('export-settings') },
+                { label: 'Import Settings...', click: () => sendMenuCommand('import-settings') },
+                { type: 'separator' },
+                isMac ? { role: 'close' } : { role: 'quit' }
+            ]
+        },
+        {
+            label: 'Edit',
+            submenu: [
+                { label: 'Undo File Operation', accelerator: 'CmdOrCtrl+Z', click: () => sendMenuCommand('undo') },
+                { label: 'Redo File Operation', accelerator: 'CmdOrCtrl+Shift+Z', click: () => sendMenuCommand('redo') },
+                { type: 'separator' },
+                { role: 'cut' },
+                { role: 'copy' },
+                { role: 'paste' },
+                { role: 'selectAll' }
+            ]
+        },
+        {
+            label: 'View',
+            submenu: [
+                { label: 'Toggle Sidebar', accelerator: 'S', click: () => sendMenuCommand('toggle-sidebar'), registerAccelerator: false },
+                { label: 'Toggle Layout', accelerator: 'G', click: () => sendMenuCommand('toggle-layout'), registerAccelerator: false },
+                { type: 'separator' },
+                { label: 'Zoom In', accelerator: 'CmdOrCtrl+=', click: () => sendMenuCommand('zoom-in'), registerAccelerator: false },
+                { label: 'Zoom Out', accelerator: 'CmdOrCtrl+-', click: () => sendMenuCommand('zoom-out'), registerAccelerator: false },
+                { label: 'Reset Zoom', accelerator: 'CmdOrCtrl+0', click: () => sendMenuCommand('zoom-reset'), registerAccelerator: false },
+                { type: 'separator' },
+                { role: 'togglefullscreen' },
+                { role: 'toggleDevTools' }
+            ]
+        },
+        {
+            label: 'Help',
+            submenu: [
+                { label: 'Keyboard Shortcuts', accelerator: '?', click: () => sendMenuCommand('show-shortcuts'), registerAccelerator: false },
+                { label: 'Settings', click: () => sendMenuCommand('open-settings') },
+                { type: 'separator' },
+                { label: 'About', click: () => sendMenuCommand('about') }
+            ]
+        }
+    ];
+    Menu.setApplicationMenu(Menu.buildFromTemplate(menuTemplate));
 
     // --- Auto-updater (lazy-loaded, notify only) ---
     autoUpdater = require('electron-updater').autoUpdater;

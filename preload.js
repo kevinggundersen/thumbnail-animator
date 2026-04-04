@@ -148,5 +148,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     dbQueryFilesByTags: (expression) => ipcRenderer.invoke('db-query-files-by-tags', expression),
     dbSuggestTags: (filePath) => ipcRenderer.invoke('db-suggest-tags', filePath),
     dbExportTags: () => ipcRenderer.invoke('db-export-tags'),
-    dbImportTags: (data) => ipcRenderer.invoke('db-import-tags', data)
+    dbImportTags: (data) => ipcRenderer.invoke('db-import-tags', data),
+    // Menu commands from application menu
+    onMenuCommand: (callback) => ipcRenderer.on('menu-command', (_e, command) => callback(command)),
+    removeMenuCommandListener: () => ipcRenderer.removeAllListeners('menu-command')
 });

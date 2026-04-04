@@ -4285,6 +4285,7 @@ let currentTranslateY = 0;
 // Context Menu Elements
 const contextMenu = document.getElementById('context-menu');
 let contextMenuTargetCard = null;
+let contextMenuSource = 'grid'; // 'grid' or 'lightbox'
 
 // Blow-Up Preview (right-click hold)
 const BLOW_UP_HOLD_DELAY = blowUpDelaySetting;
@@ -11015,6 +11016,8 @@ function resetZoom() {
 }
 
 function closeLightbox() {
+    hideContextMenu();
+
     // Persist playback settings from controller before destroying
     if (activePlaybackController) {
         videoPlaybackSpeed = activePlaybackController.getSpeed();
@@ -11069,9 +11072,23 @@ function closeLightbox() {
 closeLightboxBtn.addEventListener('click', closeLightbox);
 
 lightbox.addEventListener('click', (e) => {
-    if (e.target === lightbox) {
+    if (e.target === lightbox && contextMenu.classList.contains('hidden')) {
         closeLightbox();
     }
+});
+
+lightbox.addEventListener('contextmenu', (e) => {
+    // Don't intercept right-clicks on controls
+    if (e.target.closest('.lightbox-zoom-controls') ||
+        e.target.closest('.media-controls') ||
+        e.target.closest('.lightbox-file-info') ||
+        e.target.closest('#close-lightbox') ||
+        e.target.closest('.lightbox-nav-btn')) {
+        return;
+    }
+    e.preventDefault();
+    e.stopPropagation();
+    showLightboxContextMenu(e);
 });
 
 // Function to attach zoom slider listeners
@@ -11595,10 +11612,116 @@ window.addEventListener('blur', () => { hideBlowUp(); });
 // --- Context Menu Functionality ---
 const folderContextMenu = document.getElementById('folder-context-menu');
 
+function showLightboxContextMenu(event) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    contextMenuSource = 'lightbox';
+
+    const filePath = window.currentLightboxFilePath;
+    if (!filePath) return;
+    const fileName = filePath.split(/[\\/]/).pop();
+
+    // Virtual card object so the existing action handler works unchanged
+    contextMenuTargetCard = {
+        dataset: { path: filePath },
+        querySelector: (sel) => sel === '.video-info' ? { textContent: fileName } : null,
+        classList: { contains: () => false }
+    };
+
+    // Hide folder menu
+    folderContextMenu.classList.add('hidden');
+
+    // Update pin/unpin label
+    const pinned = isFilePinned(filePath);
+    const pinLabel = contextMenu.querySelector('.pin-label');
+    if (pinLabel) pinLabel.textContent = pinned ? 'Unpin' : 'Pin to Top';
+
+    // Show/hide items appropriate for lightbox (single file, no multi-select)
+    const batchRenameItem = contextMenu.querySelector('[data-action="batch-rename"]');
+    if (batchRenameItem) batchRenameItem.style.display = 'none';
+    const compareItem = contextMenu.querySelector('[data-action="compare"]');
+    if (compareItem) compareItem.style.display = 'none';
+    const slideshowItem = contextMenu.querySelector('[data-action="slideshow"]');
+    if (slideshowItem) slideshowItem.style.display = 'none';
+
+    // Show single-file actions
+    const openItem = contextMenu.querySelector('[data-action="open"]');
+    if (openItem) openItem.style.display = '';
+    const openWithItem = contextMenu.querySelector('[data-action="open-with"]');
+    if (openWithItem) openWithItem.style.display = '';
+    const renameItem = contextMenu.querySelector('[data-action="rename"]');
+    if (renameItem) renameItem.style.display = '';
+    const revealItem = contextMenu.querySelector('[data-action="reveal"]');
+    if (revealItem) revealItem.style.display = '';
+    const copyFileItem = contextMenu.querySelector('[data-action="copy-file"]');
+    if (copyFileItem) copyFileItem.style.display = '';
+    const pinItem = contextMenu.querySelector('[data-action="pin"]');
+    if (pinItem) pinItem.style.display = '';
+    const addToColItem = contextMenu.querySelector('[data-action="add-to-collection"]');
+    if (addToColItem) addToColItem.style.display = '';
+    const tagItem = contextMenu.querySelector('[data-action="tag-file"]');
+    if (tagItem) tagItem.style.display = '';
+    const autoTagItem = contextMenu.querySelector('[data-action="auto-tag"]');
+    if (autoTagItem) autoTagItem.style.display = '';
+    const deleteItem = contextMenu.querySelector('[data-action="delete"]');
+    if (deleteItem) deleteItem.style.display = '';
+
+    // Show/hide Remove from Collection
+    const removeFromColItem = contextMenu.querySelector('[data-action="remove-from-collection"]');
+    if (removeFromColItem) {
+        if (currentCollectionId) {
+            const col = collectionsCache.find(c => c.id === currentCollectionId);
+            removeFromColItem.style.display = (col && col.type === 'static') ? '' : 'none';
+        } else {
+            removeFromColItem.style.display = 'none';
+        }
+    }
+
+    // Find Similar — only when AI visual search enabled
+    const findSimilarItem = contextMenu.querySelector('[data-action="find-similar"]');
+    if (findSimilarItem) findSimilarItem.style.display = aiVisualSearchEnabled ? '' : 'none';
+
+    // Inject plugin items
+    contextMenu.querySelectorAll('.context-menu-item[data-plugin], .context-menu-plugin-separator').forEach(el => el.remove());
+    getPluginMenuItems().then(items => {
+        if (!items.length) return;
+        const separator = document.createElement('div');
+        separator.className = 'context-menu-separator context-menu-plugin-separator';
+        contextMenu.appendChild(separator);
+        for (const item of items) {
+            const el = document.createElement('div');
+            el.className = 'context-menu-item';
+            el.dataset.action = `plugin:${item.pluginId}:${item.id}`;
+            el.dataset.plugin = item.pluginId;
+            el.textContent = item.label;
+            contextMenu.appendChild(el);
+        }
+    });
+
+    // Position at mouse
+    const x = event.clientX;
+    const y = event.clientY;
+    contextMenu.style.left = `${x}px`;
+    contextMenu.style.top = `${y}px`;
+    contextMenu.classList.remove('hidden');
+
+    requestAnimationFrame(() => {
+        const rect = contextMenu.getBoundingClientRect();
+        if (rect.right > window.innerWidth) {
+            contextMenu.style.left = `${window.innerWidth - rect.width - 10}px`;
+        }
+        if (rect.bottom > window.innerHeight) {
+            contextMenu.style.top = `${window.innerHeight - rect.height - 10}px`;
+        }
+    });
+}
+
 function showContextMenu(event, card) {
     event.preventDefault();
     event.stopPropagation();
 
+    contextMenuSource = 'grid';
     contextMenuTargetCard = card;
     const isFolder = card.classList.contains('folder-card');
 
@@ -11717,12 +11840,17 @@ function hideContextMenu() {
     contextMenuTargetCard = null;
 }
 
-// Hide context menus on Escape
+// Hide context menus on Escape (stopImmediatePropagation prevents lightbox from also closing)
 document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
+        const wasMenuVisible = !contextMenu.classList.contains('hidden') || !folderContextMenu.classList.contains('hidden');
         hideContextMenu();
         if (favContextMenu) hideFavContextMenu();
         if (findSimilarActive) { clearFindSimilar(); return; }
+        if (wasMenuVisible) {
+            e.stopImmediatePropagation();
+            return;
+        }
     }
 });
 
@@ -11823,6 +11951,18 @@ contextMenu.addEventListener('click', async (e) => {
                             const previousScrollTop = gridContainer.scrollTop;
                             await loadVideos(currentFolderPath, false, previousScrollTop);
                         }
+                        // Navigate lightbox after delete
+                        if (isLightboxOpen && contextMenuSource === 'lightbox') {
+                            const delIdx = lightboxItems.findIndex(it => it.path === filePath);
+                            if (delIdx !== -1) lightboxItems.splice(delIdx, 1);
+                            if (lightboxItems.length === 0) {
+                                closeLightbox();
+                            } else {
+                                currentLightboxIndex = Math.min(delIdx, lightboxItems.length - 1);
+                                const next = lightboxItems[currentLightboxIndex];
+                                openLightbox(next.url, next.path, next.name);
+                            }
+                        }
                     } else {
                         showToast(`Could not delete file: ${friendlyError(result.error)}`, 'error');
                     }
@@ -11831,7 +11971,7 @@ contextMenu.addEventListener('click', async (e) => {
                 showToast(`Could not delete file: ${friendlyError(error)}`, 'error');
             }
             break;
-            
+
         case 'open':
             try {
                 await window.electronAPI.openWithDefault(filePath);
@@ -12076,6 +12216,7 @@ async function handleRenameConfirm() {
         setStatusActivity('');
         if (result.success) {
             renameDialog.classList.add('hidden');
+            const oldPath = renamePendingFile.filePath;
             renamePendingFile = null;
             showToast(`Renamed to "${newName}"`, 'success');
             // Refresh in-memory ratings/pins so the new path inherits metadata
@@ -12084,6 +12225,23 @@ async function handleRenameConfirm() {
                 invalidateFolderCache(currentFolderPath);
                 const previousScrollTop = gridContainer.scrollTop;
                 await loadVideos(currentFolderPath, false, previousScrollTop);
+            }
+            // Update lightbox state after rename
+            if (isLightboxOpen && contextMenuSource === 'lightbox') {
+                const dir = oldPath.substring(0, oldPath.lastIndexOf(oldPath.includes('/') ? '/' : '\\') + 1);
+                const newPath = dir + newName;
+                const newUrl = 'file:///' + newPath.replace(/\\/g, '/');
+                window.currentLightboxFilePath = newPath;
+                window.currentLightboxFileUrl = newUrl;
+                const filenameEl = document.getElementById('lightbox-filename');
+                if (filenameEl) filenameEl.textContent = newName;
+                // Update lightboxItems entry
+                const idx = lightboxItems.findIndex(it => it.path === oldPath);
+                if (idx !== -1) {
+                    lightboxItems[idx].path = newPath;
+                    lightboxItems[idx].name = newName;
+                    lightboxItems[idx].url = newUrl;
+                }
             }
         } else {
             showToast(`Could not rename: ${friendlyError(result.error)}`, 'error');

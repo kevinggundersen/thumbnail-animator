@@ -65,6 +65,15 @@ parentPort.on('message', (msg) => {
             }
             break;
         }
+        case 'preprocess-and-embed': {
+            try {
+                const flat = nativeScanner.clipPreprocessAndEmbed(msg.paths);
+                parentPort.postMessage({ type: 'embed-batch-result', id: msg.id, embeddings: flat });
+            } catch (err) {
+                parentPort.postMessage({ type: 'embed-error', id: msg.id, error: err.message || String(err) });
+            }
+            break;
+        }
         case 'shutdown': {
             try { if (nativeScanner && nativeScanner.clipUnload) nativeScanner.clipUnload(); } catch {}
             process.exit(0);

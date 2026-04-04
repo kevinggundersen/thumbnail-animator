@@ -234,6 +234,17 @@ function clipWorkerEmbedTextTokens(inputIds, attentionMask, batchSize) {
     });
 }
 
+// Combined native preprocess + inference. Single worker round-trip, zero
+// intermediate data copies between preprocessing and inference.
+function clipWorkerPreprocessAndEmbed(paths) {
+    if (!clipInferenceWorker || !clipNativeReady) return Promise.reject(new Error('clip worker not ready'));
+    const id = ++_clipInferenceReqId;
+    return new Promise((resolve, reject) => {
+        _clipInferenceReqs.set(id, { resolve, reject });
+        clipInferenceWorker.postMessage({ type: 'preprocess-and-embed', id, paths });
+    });
+}
+
 // Thumbnail cache directories (initialized after userDataPath is set)
 const crypto = require('crypto');
 let videoThumbDir = null;
@@ -3461,8 +3472,12 @@ ipcMain.handle('clip-init', async (event) => {
         // Explicitly specify which ONNX file to use for each model.
         // Without this, the library caches by repo name and both models
         // end up sharing the same (vision) ONNX session.
-        const visionOpts = { ...opts, model_file_name: 'vision_model' };
-        const textOpts   = { ...opts, model_file_name: 'text_model' };
+        // When CLIP_GPU is set we need the full-precision model files for the
+        // native DirectML/CoreML execution providers (they can't handle the
+        // int8 quantized graph). Defaults to q8 for smaller download + fast CPU.
+        const gpuMode = process.env.CLIP_GPU && process.env.CLIP_GPU !== '0';
+        const visionOpts = { ...opts, model_file_name: 'vision_model', dtype: gpuMode ? 'fp32' : 'q8' };
+        const textOpts   = { ...opts, model_file_name: 'text_model',   dtype: gpuMode ? 'fp32' : 'q8' };
 
         const [processor, visionModel] = await Promise.all([
             AutoProcessor.from_pretrained(MODEL_NAME, opts),
@@ -3482,14 +3497,25 @@ ipcMain.handle('clip-init', async (event) => {
         // Bypasses onnxruntime-node's ABI-incompat-with-workers problem entirely:
         // the Rust NAPI addon loads cleanly in any JS thread, so inference runs
         // fully off the main process.
+        //
+        // GPU acceleration: set CLIP_GPU=1 to use DirectML (Windows) or CoreML (Mac).
+        // GPU requires the non-quantized model files; we auto-download them on first use.
         if (nativeScanner && nativeScanner.clipInit) {
             try {
+                const gpuEnabled = process.env.CLIP_GPU && process.env.CLIP_GPU !== '0';
                 const cacheDir = getClipCacheDir();
                 const modelRoot = path.join(cacheDir, 'Xenova', 'clip-vit-base-patch32', 'onnx');
+
+                // GPU prefers full fp32 models; CPU prefers quantized (faster int8 on modern CPUs)
                 const pick = (base) => {
-                    const q = path.join(modelRoot, `${base}_quantized.onnx`);
-                    const f = path.join(modelRoot, `${base}.onnx`);
-                    return fs.existsSync(q) ? q : (fs.existsSync(f) ? f : null);
+                    const full = path.join(modelRoot, `${base}.onnx`);
+                    const quant = path.join(modelRoot, `${base}_quantized.onnx`);
+                    if (gpuEnabled) {
+                        if (fs.existsSync(full)) return full;
+                        console.warn(`[clip] CLIP_GPU set but ${base}.onnx not found; using quantized (GPU may crash)`);
+                        return fs.existsSync(quant) ? quant : null;
+                    }
+                    return fs.existsSync(quant) ? quant : (fs.existsSync(full) ? full : null);
                 };
                 const visionPath = pick('vision_model');
                 const textPath = pick('text_model');
@@ -3497,7 +3523,7 @@ ipcMain.handle('clip-init', async (event) => {
                     const t0 = Date.now();
                     const ok = await clipWorkerInit(visionPath, textPath, 4);
                     if (ok) {
-                        console.log(`[clip] native ONNX sessions loaded in worker in ${Date.now() - t0}ms`);
+                        console.log(`[clip] native ONNX sessions loaded in worker in ${Date.now() - t0}ms (gpu=${gpuEnabled ? 'on' : 'off'})`);
                     }
                 } else {
                     console.warn('[clip] native load skipped: model files not found on disk');
@@ -3720,7 +3746,9 @@ ipcMain.handle('clip-embed-images', async (event, files) => {
     // Phase 2: Batched CLIP inference with I/O pipelining.
     // Video/animated files use clipEmbedMultiFrame (already batched internally).
     // Static images are batched in groups of CLIP_BATCH_SIZE with look-ahead preprocessing.
-    const CLIP_BATCH_SIZE = 4;
+    // Larger batches when native GPU is active: RTX/etc. perform best at ≥16, and
+    // the pipelined overlap means a bigger preprocessing batch keeps the GPU fed.
+    const CLIP_BATCH_SIZE = clipNativeReady ? 16 : 4;
     const resultMap = new Map(); // filePath -> embedding
     let completed = 0;
     const sender = event.sender;
@@ -3815,13 +3843,103 @@ ipcMain.handle('clip-embed-images', async (event, files) => {
         });
     }
 
+    // When native GPU path is available, use the combined preprocess+embed
+    // function: one worker round-trip, no intermediate pixel tensor transferred
+    // back to JS. Much faster than the two-stage pipelined path for large batches.
+    async function nativeEmbedBatchFromFiles(batch) {
+        const sources = batch.map(file => resolveImageSource(file));
+        const flat = await clipWorkerPreprocessAndEmbed(sources);
+        const n = batch.length;
+        const embDim = flat.length / n;
+        const out = new Array(n);
+        for (let i = 0; i < n; i++) {
+            const offset = i * embDim;
+            const emb = new Array(embDim);
+            for (let j = 0; j < embDim; j++) emb[j] = flat[offset + j];
+            out[i] = emb;
+        }
+        return { sources, embeddings: out };
+    }
+
+    // Pre-generate thumbnails for any static images that don't have them yet.
+    // Decoding a 4K original JPEG takes ~80ms; a 512px cached PNG takes ~5ms.
+    // This is a one-time cost per image and also primes the cache for card browsing.
+    // resolveImageSource() only picks a cached thumb if file.mtime != null, so we
+    // stat files that lack an mtime to keep the cache keys consistent with browsing.
+    if (clipNativeReady && nativeScanner && nativeScanner.generateImageThumbnails && imageThumbDir && staticFiles.length > 0) {
+        // Backfill mtime for any file missing it (so thumbnail cache keys match browsing)
+        await Promise.all(staticFiles.map(async (f) => {
+            if (f.mtime == null) {
+                try { const s = await fs.promises.stat(f.path); f.mtime = s.mtimeMs; } catch {}
+            }
+        }));
+
+        const missing = [];
+        for (const f of staticFiles) {
+            if (f.mtime == null) continue; // resolveImageSource will use original anyway
+            const thumbPath = getImageThumbCachePath(f.path, f.mtime, 512);
+            if (!fs.existsSync(thumbPath)) {
+                missing.push({ filePath: f.path, thumbPath, maxSize: 512 });
+            }
+        }
+        if (missing.length > 0) {
+            const t = performance.now();
+            try {
+                nativeScanner.generateImageThumbnails(missing);
+                console.log(`[clip-scan] pre-generated ${missing.length}/${staticFiles.length} thumbnails in ${(performance.now() - t).toFixed(0)}ms`);
+            } catch (e) {
+                console.warn('[clip-scan] thumbnail pre-gen failed:', e.message);
+            }
+        }
+    }
+
     // Kick off first batch preprocessing immediately
     let nextBatchIdx = 0;
     let pendingPreprocess = null;
+    let pendingNative = null;
     if (staticFiles.length > 0) {
         const firstBatch = staticFiles.slice(0, CLIP_BATCH_SIZE);
-        pendingPreprocess = preprocessBatchAsync(firstBatch);
+        if (clipNativeReady) {
+            pendingNative = nativeEmbedBatchFromFiles(firstBatch);
+        } else {
+            pendingPreprocess = preprocessBatchAsync(firstBatch);
+        }
         nextBatchIdx = CLIP_BATCH_SIZE;
+    }
+
+    // Accumulated timing for diagnostic output at end of scan
+    let _totalPreprocessMs = 0;
+    let _totalInferenceMs = 0;
+    let _totalWaitMs = 0;
+    let _batchCount = 0;
+
+    // Fast path: native combined preprocess+infer. Single worker round-trip per batch.
+    while (pendingNative) {
+        // Start next batch in parallel with current native call
+        let nextNative = null;
+        let batchFiles = staticFiles.slice(nextBatchIdx - CLIP_BATCH_SIZE, nextBatchIdx);
+        if (nextBatchIdx < staticFiles.length) {
+            const next = staticFiles.slice(nextBatchIdx, nextBatchIdx + CLIP_BATCH_SIZE);
+            nextNative = nativeEmbedBatchFromFiles(next);
+            nextBatchIdx += CLIP_BATCH_SIZE;
+        }
+        const _t = performance.now();
+        let result;
+        try {
+            result = await pendingNative;
+        } catch (err) {
+            console.error('clip native embed error:', err.message);
+            result = { sources: [], embeddings: batchFiles.map(() => null) };
+        }
+        _totalInferenceMs += performance.now() - _t;
+        _batchCount++;
+
+        for (let j = 0; j < batchFiles.length; j++) {
+            resultMap.set(batchFiles[j].path, result.embeddings[j] || null);
+        }
+        completed += batchFiles.length;
+        sendProgress();
+        pendingNative = nextNative;
     }
 
     while (pendingPreprocess) {
@@ -3835,7 +3953,9 @@ ipcMain.handle('clip-embed-images', async (event, files) => {
         }
 
         // Await current batch's preprocessing
+        const _tWait = performance.now();
         const preprocessed = await pendingPreprocess;
+        _totalWaitMs += performance.now() - _tWait;
         currentBatch = preprocessed;
 
         const validPixels = [];
@@ -3850,12 +3970,15 @@ ipcMain.handle('clip-embed-images', async (event, files) => {
         // Single batched inference for all valid images in this batch
         let embeddings = [];
         if (validPixels.length > 0) {
+            const _tInf = performance.now();
             try {
                 embeddings = await clipEmbedBatch(validPixels);
             } catch (err) {
                 console.error('clip-embed batch error:', err.message);
                 embeddings = new Array(validPixels.length).fill(null);
             }
+            _totalInferenceMs += performance.now() - _tInf;
+            _batchCount++;
         }
 
         // Map results back to files
@@ -3877,6 +4000,28 @@ ipcMain.handle('clip-embed-images', async (event, files) => {
 
     // Build results array in original file order
     const results = files.map(f => ({ path: f.path, embedding: resultMap.get(f.path) || null }));
+
+    // Diagnostic: log what dominated the scan time
+    if (_batchCount > 0 && staticFiles.length >= 8) {
+        const avgInf = (_totalInferenceMs / _batchCount).toFixed(1);
+        if (clipNativeReady) {
+            // Native path: _totalInferenceMs includes preprocessing + inference
+            const perImg = (_totalInferenceMs / staticFiles.length).toFixed(1);
+            console.log(
+                `[clip-scan] ${staticFiles.length} static images, ` +
+                `${_batchCount} batches of ${CLIP_BATCH_SIZE}, path=native-fused | ` +
+                `avg=${avgInf}ms/batch  ${perImg}ms/img  total=${_totalInferenceMs.toFixed(0)}ms`
+            );
+        } else {
+            const avgWait = (_totalWaitMs / _batchCount).toFixed(1);
+            console.log(
+                `[clip-scan] ${staticFiles.length} static images, ` +
+                `${_batchCount} batches of ${CLIP_BATCH_SIZE}, path=js-pipelined | ` +
+                `avg inference=${avgInf}ms/batch  avg preprocess-wait=${avgWait}ms/batch  ` +
+                `totals: inf=${_totalInferenceMs.toFixed(0)}ms wait=${_totalWaitMs.toFixed(0)}ms`
+            );
+        }
+    }
 
     // Phase 3: Clean up all temp frames now that inference is complete.
     for (const framePaths of frameMap.values()) {

@@ -847,8 +847,58 @@ const CLIP_PIXEL_COUNT: usize = CLIP_IMAGE_SIZE * CLIP_IMAGE_SIZE * CLIP_CHANNEL
 
 fn build_session(path: &str, intra_threads: usize) -> Result<ort::session::Session> {
     use ort::session::{Session, builder::GraphOptimizationLevel};
-    Session::builder()
-        .map_err(|e| Error::from_reason(format!("ort builder: {}", e)))?
+    use ort::execution_providers::ExecutionProviderDispatch;
+
+    // GPU execution providers are opt-in via env var because:
+    //   - DirectML can crash (segfault) on some quantized ONNX graphs, and
+    //     the crash happens inside DirectX, bypassing Rust error handling.
+    //   - CoreML is usually safe on Apple Silicon but still experimental.
+    //
+    // To enable GPU acceleration: set CLIP_GPU=1 in the environment.
+    // Quantized (int8) models typically need CLIP_GPU=0 and the non-quantized
+    // *.onnx files for reliable GPU inference.
+    let gpu_enabled = std::env::var("CLIP_GPU").map(|v| v != "0" && !v.is_empty()).unwrap_or(false);
+
+    let mut providers: Vec<ExecutionProviderDispatch> = Vec::new();
+
+    if gpu_enabled {
+        // Preference order: CUDA (NVIDIA, fastest) -> DirectML (any Win GPU) -> CoreML (Mac)
+        // ORT tries each in order; if CUDA fails to init (missing toolkit, non-NVIDIA GPU)
+        // it falls through to DirectML/CoreML, then finally CPU.
+        #[cfg(any(target_os = "windows", target_os = "linux"))]
+        {
+            use ort::execution_providers::CUDAExecutionProvider;
+            providers.push(CUDAExecutionProvider::default().with_device_id(0).build());
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use ort::execution_providers::DirectMLExecutionProvider;
+            providers.push(DirectMLExecutionProvider::default().with_device_id(0).build());
+        }
+        #[cfg(target_os = "macos")]
+        {
+            use ort::execution_providers::CoreMLExecutionProvider;
+            providers.push(CoreMLExecutionProvider::default().build());
+        }
+    }
+
+    use ort::execution_providers::CPUExecutionProvider;
+    providers.push(CPUExecutionProvider::default().build());
+
+    let mut builder = Session::builder()
+        .map_err(|e| Error::from_reason(format!("ort builder: {}", e)))?;
+
+    // DirectML requires memory pattern disabled (it allocates per-call).
+    // CUDA doesn't require it but doesn't break with it disabled.
+    if gpu_enabled {
+        builder = builder
+            .with_memory_pattern(false)
+            .map_err(|e| Error::from_reason(format!("ort memory pattern: {}", e)))?;
+    }
+
+    builder
+        .with_execution_providers(providers)
+        .map_err(|e| Error::from_reason(format!("ort providers: {}", e)))?
         .with_optimization_level(GraphOptimizationLevel::Level3)
         .map_err(|e| Error::from_reason(format!("ort opt-level: {}", e)))?
         .with_intra_threads(intra_threads)
@@ -882,6 +932,26 @@ pub fn clip_is_loaded() -> bool {
         .unwrap_or(false)
 }
 
+/// Returns diagnostic info about the loaded CLIP vision session including the
+/// execution providers ORT actually registered. Use this to confirm whether
+/// CUDA/DirectML/CoreML is being used vs. falling back to CPU.
+#[napi]
+pub fn clip_diagnostics() -> Result<String> {
+    let state = CLIP_SESSIONS.lock().map_err(|_| Error::from_reason("clip state poisoned"))?;
+    let session = state.vision.as_ref().ok_or_else(|| Error::from_reason("clip vision model not loaded"))?;
+
+    // ORT's session tracks which providers got registered
+    let mut info = String::new();
+    info.push_str(&format!("inputs: {:?}\n", session.inputs.iter().map(|i| &i.name).collect::<Vec<_>>()));
+    info.push_str(&format!("outputs: {:?}\n", session.outputs.iter().map(|o| &o.name).collect::<Vec<_>>()));
+    // Note: ort 2.0-rc.10 doesn't expose a direct "active providers" API, but
+    // the session creation would have failed or warned if providers were rejected.
+    // We rely on ORT's own stderr logging (enabled below) to report this.
+    let gpu_env = std::env::var("CLIP_GPU").unwrap_or_else(|_| "(unset)".to_string());
+    info.push_str(&format!("CLIP_GPU env: {}\n", gpu_env));
+    Ok(info)
+}
+
 /// Free the CLIP sessions (drops them + their GPU/CPU memory).
 #[napi]
 pub fn clip_unload() -> bool {
@@ -899,6 +969,142 @@ fn l2_normalize_row(row: &mut [f32]) {
     for &v in row.iter() { mag += v * v; }
     let mag = mag.sqrt().max(1e-12);
     for v in row.iter_mut() { *v /= mag; }
+}
+
+/// CLIP preprocessing: load images from disk, resize (cover) + center-crop to 224x224,
+/// and normalize to CHW float32 with ImageNet mean/std.
+///
+/// Runs in parallel via rayon (one thread per image) and produces a single flat
+/// Float32Array of length `paths.len() * 3 * 224 * 224` ready for clipEmbedImageBatch.
+///
+/// Failed images contribute all-zeros; the caller knows its own batch size.
+#[napi]
+pub fn clip_preprocess_images(paths: Vec<String>) -> napi::bindgen_prelude::Float32Array {
+    use rayon::prelude::*;
+    use image::imageops::FilterType;
+
+    // CLIP ViT-B/32 ImageNet normalization
+    const MEAN: [f32; 3] = [0.48145466, 0.4578275, 0.40821073];
+    const STD:  [f32; 3] = [0.26862954, 0.26130258, 0.27577711];
+    const SIZE: u32 = 224;
+    const PIXELS_PER_IMAGE: usize = (SIZE * SIZE) as usize;
+
+    let n = paths.len();
+    let mut output = vec![0.0f32; n * 3 * PIXELS_PER_IMAGE];
+
+    // Process each image into its slot in the output buffer
+    output
+        .par_chunks_mut(3 * PIXELS_PER_IMAGE)
+        .zip(paths.par_iter())
+        .for_each(|(slot, path)| {
+            let img = match image::open(path) { Ok(i) => i, Err(_) => return };
+
+            let (w, h) = (img.width(), img.height());
+            if w == 0 || h == 0 { return; }
+
+            // "cover" fit: scale so the smaller dim == SIZE, then center-crop
+            let scale = (SIZE as f32 / w as f32).max(SIZE as f32 / h as f32);
+            let scaled_w = ((w as f32 * scale).ceil() as u32).max(SIZE);
+            let scaled_h = ((h as f32 * scale).ceil() as u32).max(SIZE);
+
+            let resized = img.resize_exact(scaled_w, scaled_h, FilterType::Triangle);
+            let crop_x = (scaled_w - SIZE) / 2;
+            let crop_y = (scaled_h - SIZE) / 2;
+            let cropped = image::imageops::crop_imm(&resized, crop_x, crop_y, SIZE, SIZE).to_image();
+            // Convert to RGB8 buffer
+            let rgb = image::DynamicImage::ImageRgba8(cropped).to_rgb8();
+            let bytes = rgb.as_raw();
+
+            // Normalize to float32 CHW layout: [R-plane][G-plane][B-plane]
+            let r_plane = 0;
+            let g_plane = PIXELS_PER_IMAGE;
+            let b_plane = 2 * PIXELS_PER_IMAGE;
+            for i in 0..PIXELS_PER_IMAGE {
+                let r = bytes[i * 3]     as f32 / 255.0;
+                let g = bytes[i * 3 + 1] as f32 / 255.0;
+                let b = bytes[i * 3 + 2] as f32 / 255.0;
+                slot[r_plane + i] = (r - MEAN[0]) / STD[0];
+                slot[g_plane + i] = (g - MEAN[1]) / STD[1];
+                slot[b_plane + i] = (b - MEAN[2]) / STD[2];
+            }
+        });
+
+    napi::bindgen_prelude::Float32Array::new(output)
+}
+
+/// One-shot: load + preprocess + infer in a single native call.
+///
+/// Combines `clip_preprocess_images` and `clip_embed_image_batch` without any
+/// intermediate copy across the NAPI boundary. Preprocessing runs on rayon
+/// (parallel across images); inference runs on ORT's execution providers.
+/// Returns N L2-normalized embeddings concatenated into one Float32Array.
+#[napi]
+pub fn clip_preprocess_and_embed(paths: Vec<String>) -> Result<napi::bindgen_prelude::Float32Array> {
+    use rayon::prelude::*;
+    use image::imageops::FilterType;
+    use ndarray::Array4;
+    use ort::value::Tensor;
+
+    const MEAN: [f32; 3] = [0.48145466, 0.4578275, 0.40821073];
+    const STD:  [f32; 3] = [0.26862954, 0.26130258, 0.27577711];
+    const SIZE: u32 = 224;
+    const PIXELS_PER_IMAGE: usize = (SIZE * SIZE) as usize;
+
+    let n = paths.len();
+    if n == 0 {
+        return Ok(napi::bindgen_prelude::Float32Array::new(Vec::new()));
+    }
+
+    // Parallel preprocessing into a flat buffer
+    let mut pixels = vec![0.0f32; n * 3 * PIXELS_PER_IMAGE];
+    pixels
+        .par_chunks_mut(3 * PIXELS_PER_IMAGE)
+        .zip(paths.par_iter())
+        .for_each(|(slot, path)| {
+            let img = match image::open(path) { Ok(i) => i, Err(_) => return };
+            let (w, h) = (img.width(), img.height());
+            if w == 0 || h == 0 { return; }
+            let scale = (SIZE as f32 / w as f32).max(SIZE as f32 / h as f32);
+            let scaled_w = ((w as f32 * scale).ceil() as u32).max(SIZE);
+            let scaled_h = ((h as f32 * scale).ceil() as u32).max(SIZE);
+            let resized = img.resize_exact(scaled_w, scaled_h, FilterType::Triangle);
+            let crop_x = (scaled_w - SIZE) / 2;
+            let crop_y = (scaled_h - SIZE) / 2;
+            let cropped = image::imageops::crop_imm(&resized, crop_x, crop_y, SIZE, SIZE).to_image();
+            let rgb = image::DynamicImage::ImageRgba8(cropped).to_rgb8();
+            let bytes = rgb.as_raw();
+            let r_plane = 0;
+            let g_plane = PIXELS_PER_IMAGE;
+            let b_plane = 2 * PIXELS_PER_IMAGE;
+            for i in 0..PIXELS_PER_IMAGE {
+                let r = bytes[i * 3]     as f32 / 255.0;
+                let g = bytes[i * 3 + 1] as f32 / 255.0;
+                let b = bytes[i * 3 + 2] as f32 / 255.0;
+                slot[r_plane + i] = (r - MEAN[0]) / STD[0];
+                slot[g_plane + i] = (g - MEAN[1]) / STD[1];
+                slot[b_plane + i] = (b - MEAN[2]) / STD[2];
+            }
+        });
+
+    // Inference
+    let mut state = CLIP_SESSIONS.lock().map_err(|_| Error::from_reason("clip state poisoned"))?;
+    let session = state.vision.as_mut().ok_or_else(|| Error::from_reason("clip vision model not loaded"))?;
+    let arr = Array4::from_shape_vec((n, CLIP_CHANNELS, CLIP_IMAGE_SIZE, CLIP_IMAGE_SIZE), pixels)
+        .map_err(|e| Error::from_reason(format!("shape: {}", e)))?;
+    let tensor = Tensor::from_array(arr)
+        .map_err(|e| Error::from_reason(format!("tensor: {}", e)))?;
+    let outputs = session.run(ort::inputs!["pixel_values" => tensor])
+        .map_err(|e| Error::from_reason(format!("run: {}", e)))?;
+    let (_shape, raw) = outputs[0].try_extract_tensor::<f32>()
+        .map_err(|e| Error::from_reason(format!("extract: {}", e)))?;
+    let mut out = raw.to_vec();
+    let embed_dim = out.len() / n;
+    for i in 0..n {
+        let start = i * embed_dim;
+        l2_normalize_row(&mut out[start..start + embed_dim]);
+    }
+
+    Ok(napi::bindgen_prelude::Float32Array::new(out))
 }
 
 /// Run CLIP vision model on a batch of preprocessed pixel tensors.

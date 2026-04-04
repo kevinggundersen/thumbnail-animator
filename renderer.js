@@ -2676,7 +2676,8 @@ async function loadCollectionIntoGrid(collectionId) {
 
                         // --- Phase 2: Process uncached images in background ---
                         if (uncached.length > 0) {
-                            const BATCH_SIZE = 20;
+                            // 32 = 2 full batches of 16 in main, no trailing small batch
+                            const BATCH_SIZE = 32;
                             let done = 0;
                             let newMatchCount = 0;
                             let updateTimer = null;
@@ -2948,7 +2949,8 @@ async function backgroundScanSmartCollection(collectionId) {
                     // Process uncached images with smaller batches + generous yielding
                     const uncached = mediaItems.filter(i => !embeddingMap.has(i.path));
                     if (uncached.length > 0) {
-                        const BG_BATCH_SIZE = 8;
+                        // 32 = 2 full batches of 16 in main (GPU-optimal)
+                        const BG_BATCH_SIZE = 32;
                         let done = 0;
                         let newMatches = false;
 
@@ -10736,7 +10738,8 @@ async function scheduleBackgroundEmbedding(items) {
         cancelBtn.onclick = cancelBtn._onclickAi;
     }
 
-    const BATCH_SIZE = 20;
+    // 32 = 2 full batches of 16 in main, no trailing small batch
+    const BATCH_SIZE = 32;
     let done = 0;
     for (let i = 0; i < uncached.length; i += BATCH_SIZE) {
         if (signal.aborted) { hideEmbedProgressUI(); return; }

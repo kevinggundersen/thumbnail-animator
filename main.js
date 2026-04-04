@@ -54,6 +54,11 @@ let nativeScanner;
 try {
     nativeScanner = require('./native-scanner');
     console.log('[scanner] Native Rust scanner loaded (FindFirstFileExW)');
+    if (nativeScanner.generateImageThumbnails) {
+        console.log('[thumbnails] Native Rust image pipeline available (rayon-parallel)');
+    } else {
+        console.warn('[thumbnails] Native scanner loaded but generateImageThumbnails missing — rebuild native-scanner');
+    }
 } catch (e) {
     console.warn('[scanner] Native scanner NOT available — using JS fallback. Reason:', e.message);
     nativeScanner = null;
@@ -2627,7 +2632,10 @@ ipcMain.handle('generate-video-thumbnail', async (event, filePath) => {
         if (!thumbnailPool) return { success: false };
         const stats = await fs.promises.stat(filePath);
         const thumbPath = getThumbCachePath(filePath, stats.mtimeMs);
+        const workerT0 = performance.now();
         const result = await thumbnailPool.generate({ type: 'video', filePath, thumbPath });
+        const workerMs = performance.now() - workerT0;
+        _bumpThumbStats(0, 0, 0, 0, 1, workerMs);
         if (result.success && result.thumbPath) {
             logPerf('generate-video-thumbnail.ipc', startTime, { success: 1, worker: 1 });
             return { success: true, url: pathToFileUrl(result.thumbPath) };
@@ -2640,14 +2648,33 @@ ipcMain.handle('generate-video-thumbnail', async (event, filePath) => {
     }
 });
 
-// Generate an image thumbnail via worker pool (returns file:// URL to cached PNG or null)
+// Generate an image thumbnail. Prefers native Rust (rayon-parallel `image` crate) when
+// available; falls back to the worker-pool + sharp path. Returns file:// URL to cached PNG.
 ipcMain.handle('generate-image-thumbnail', async (event, filePath, maxSize = 512) => {
     const startTime = performance.now();
     try {
-        if (!thumbnailPool) return { success: false };
         const stats = await fs.promises.stat(filePath);
         const thumbPath = getImageThumbCachePath(filePath, stats.mtimeMs, maxSize);
+
+        // Fast path: native Rust pipeline. Single-item batch still benefits from rayon
+        // for future batches; overhead per call is negligible.
+        if (nativeScanner && nativeScanner.generateImageThumbnails) {
+            const nativeT0 = performance.now();
+            const results = nativeScanner.generateImageThumbnails([{ filePath, thumbPath, maxSize }]);
+            const nativeMs = performance.now() - nativeT0;
+            if (results && results[0] && results[0].success) {
+                _bumpThumbStats(1, nativeMs, 0, 0, 0, 0);
+                logPerf('generate-image-thumbnail.ipc', startTime, { success: 1, maxSize, native: 1 });
+                return { success: true, url: pathToFileUrl(thumbPath) };
+            }
+            // If native failed, fall through to sharp (covers formats native can't handle, e.g. SVG)
+        }
+
+        if (!thumbnailPool) return { success: false };
+        const workerT0 = performance.now();
         const result = await thumbnailPool.generate({ type: 'image', filePath, thumbPath, maxSize });
+        const workerMs = performance.now() - workerT0;
+        _bumpThumbStats(0, 0, 1, workerMs, 0, 0);
         if (result.success && result.thumbPath) {
             logPerf('generate-image-thumbnail.ipc', startTime, { success: 1, maxSize, worker: 1 });
             return { success: true, url: pathToFileUrl(result.thumbPath) };
@@ -2660,15 +2687,43 @@ ipcMain.handle('generate-image-thumbnail', async (event, filePath, maxSize = 512
     }
 });
 
+// Running counters that clearly distinguish the three thumbnail paths:
+//   native — images via Rust (image crate + rayon)
+//   sharp  — images that fell back to sharp (SVG, unsupported formats)
+//   ffmpeg — videos (unavoidable; only ffmpeg can decode them)
+let _thumbStats = {
+    native: 0, nativeMs: 0,
+    sharp: 0, sharpMs: 0,
+    ffmpeg: 0, ffmpegMs: 0,
+    lastPrint: 0
+};
+function _bumpThumbStats(nativeCount, nativeMs, sharpCount, sharpMs, ffmpegCount, ffmpegMs) {
+    _thumbStats.native += nativeCount;  _thumbStats.nativeMs += nativeMs;
+    _thumbStats.sharp  += sharpCount;   _thumbStats.sharpMs  += sharpMs;
+    _thumbStats.ffmpeg += ffmpegCount;  _thumbStats.ffmpegMs += ffmpegMs;
+    const total = _thumbStats.native + _thumbStats.sharp + _thumbStats.ffmpeg;
+    if (total - _thumbStats.lastPrint >= 50) {
+        _thumbStats.lastPrint = total;
+        const fmt = (count, ms) => count ? `${count} (avg ${(ms / count).toFixed(1)}ms)` : '0';
+        console.log(
+            `[thumbnails] total=${total} ` +
+            `images→native=${fmt(_thumbStats.native, _thumbStats.nativeMs)} ` +
+            `images→sharp=${fmt(_thumbStats.sharp, _thumbStats.sharpMs)} ` +
+            `videos→ffmpeg=${fmt(_thumbStats.ffmpeg, _thumbStats.ffmpegMs)}`
+        );
+    }
+}
+
 // Batch thumbnail generation -- reduces IPC round-trips for large folders
 // items: Array<{ filePath, type: 'image'|'video', maxSize? }>
 // Returns: Array<{ filePath, success, url? }>
+//
+// Images go through the native Rust pipeline (rayon-parallel) when available.
+// Videos go through the worker pool + ffmpeg. Any native-failed images fall back to sharp.
 ipcMain.handle('generate-thumbnails-batch', async (event, items) => {
     const startTime = performance.now();
     try {
-        if (!thumbnailPool || !Array.isArray(items) || items.length === 0) {
-            return [];
-        }
+        if (!Array.isArray(items) || items.length === 0) return [];
 
         // Build thumb paths and stat files in parallel
         const prepared = await Promise.all(items.map(async (item) => {
@@ -2685,25 +2740,87 @@ ipcMain.handle('generate-thumbnails-batch', async (event, items) => {
 
         const validItems = prepared.filter(i => i.thumbPath);
         const invalidItems = prepared.filter(i => !i.thumbPath);
-
-        const results = await thumbnailPool.generateBatch(validItems);
-
-        // Merge results back, preserving original order
         const resultMap = new Map();
-        validItems.forEach((item, i) => {
-            const r = results[i];
-            resultMap.set(item.filePath, {
+
+        // Partition images vs. videos (videos must go through ffmpeg worker pool)
+        const imageBatch = [];
+        const videoBatch = [];
+        for (const item of validItems) {
+            if (item.type === 'image') imageBatch.push(item);
+            else videoBatch.push(item);
+        }
+
+        let nativeFailures = [];
+        let nativeMs = 0;
+        let nativeSuccesses = 0;
+        // Native Rust batch for images
+        if (imageBatch.length > 0 && nativeScanner && nativeScanner.generateImageThumbnails) {
+            const nativeRequests = imageBatch.map(item => ({
                 filePath: item.filePath,
-                success: r && r.success,
-                url: r && r.success && r.thumbPath ? pathToFileUrl(r.thumbPath) : null
+                thumbPath: item.thumbPath,
+                maxSize: item.maxSize || 512
+            }));
+            const nativeT0 = performance.now();
+            const nativeResults = nativeScanner.generateImageThumbnails(nativeRequests);
+            nativeMs = performance.now() - nativeT0;
+            for (let i = 0; i < nativeResults.length; i++) {
+                const r = nativeResults[i];
+                if (r.success) {
+                    nativeSuccesses++;
+                    resultMap.set(r.filePath, {
+                        filePath: r.filePath,
+                        success: true,
+                        url: pathToFileUrl(r.thumbPath)
+                    });
+                } else {
+                    // Native couldn't handle this image (e.g. SVG) — fall back to sharp
+                    nativeFailures.push(imageBatch[i]);
+                }
+            }
+        } else {
+            // No native addon — everything goes through sharp
+            nativeFailures = imageBatch;
+        }
+
+        // Worker-pool path for videos + native-failed images
+        const workerItems = videoBatch.concat(nativeFailures);
+        let workerMs = 0;
+        if (workerItems.length > 0 && thumbnailPool) {
+            const workerT0 = performance.now();
+            const results = await thumbnailPool.generateBatch(workerItems);
+            workerMs = performance.now() - workerT0;
+            workerItems.forEach((item, i) => {
+                const r = results[i];
+                resultMap.set(item.filePath, {
+                    filePath: item.filePath,
+                    success: r && r.success,
+                    url: r && r.success && r.thumbPath ? pathToFileUrl(r.thumbPath) : null
+                });
             });
-        });
+        } else if (workerItems.length > 0) {
+            for (const item of workerItems) {
+                resultMap.set(item.filePath, { filePath: item.filePath, success: false, url: null });
+            }
+        }
+        // Distribute the worker-path time across sharp (images) and ffmpeg (videos)
+        // weighted by item count (rough but gives a clear per-path breakdown).
+        const totalWorker = workerItems.length || 1;
+        const sharpMs = workerMs * (nativeFailures.length / totalWorker);
+        const ffmpegMs = workerMs * (videoBatch.length / totalWorker);
+        _bumpThumbStats(nativeSuccesses, nativeMs, nativeFailures.length, sharpMs, videoBatch.length, ffmpegMs);
+
         for (const item of invalidItems) {
             resultMap.set(item.filePath, { filePath: item.filePath, success: false, url: null });
         }
 
         const output = items.map(item => resultMap.get(item.filePath) || { filePath: item.filePath, success: false, url: null });
-        logPerf('generate-thumbnails-batch', startTime, { count: items.length, success: output.filter(r => r.success).length });
+        const nativeCount = imageBatch.length - nativeFailures.length;
+        logPerf('generate-thumbnails-batch', startTime, {
+            count: items.length,
+            success: output.filter(r => r.success).length,
+            native: nativeCount,
+            worker: workerItems.length
+        });
         return output;
     } catch (error) {
         logPerf('generate-thumbnails-batch', startTime, { error: 1 });

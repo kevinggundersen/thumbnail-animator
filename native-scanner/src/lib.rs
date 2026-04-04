@@ -730,3 +730,92 @@ fn consume_number(chars: &mut std::iter::Peekable<std::str::Chars>) -> u64 {
     }
     n
 }
+
+// ── Image thumbnail generation ──────────────────────────────────────────────
+//
+// Native image thumbnail pipeline using the `image` crate + rayon.
+// Replaces per-worker sharp calls with a single batched, natively parallel call.
+
+#[napi(object)]
+pub struct ThumbnailRequest {
+    pub file_path: String,
+    pub thumb_path: String,
+    pub max_size: u32,
+}
+
+#[napi(object)]
+pub struct ThumbnailResult {
+    pub file_path: String,
+    pub thumb_path: String,
+    pub success: bool,
+}
+
+fn generate_one_thumbnail(src: &str, dst: &str, max_size: u32) -> bool {
+    use std::path::Path;
+
+    // If the cached thumb already exists, we're done.
+    if Path::new(dst).exists() {
+        return true;
+    }
+
+    // Ensure the parent directory exists.
+    if let Some(parent) = Path::new(dst).parent() {
+        if !parent.as_os_str().is_empty() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+    }
+
+    // Decode the image. `image::open` sniffs format from extension + magic bytes.
+    let img = match image::open(src) {
+        Ok(i) => i,
+        Err(_) => return false,
+    };
+
+    let (w, h) = (img.width(), img.height());
+    if w == 0 || h == 0 {
+        return false;
+    }
+
+    // Resize if larger than max_size on the longest edge.
+    let longest = w.max(h);
+    let resized = if longest <= max_size {
+        img
+    } else {
+        let scale = max_size as f32 / longest as f32;
+        let new_w = ((w as f32 * scale).round() as u32).max(1);
+        let new_h = ((h as f32 * scale).round() as u32).max(1);
+        // `thumbnail` uses a fast filter (Triangle/box) optimized for downscaling.
+        img.thumbnail(new_w, new_h)
+    };
+
+    // Save as PNG (to match existing cache key convention: `.png` extension).
+    match resized.save(dst) {
+        Ok(()) => true,
+        Err(_) => {
+            let _ = std::fs::remove_file(dst);
+            false
+        }
+    }
+}
+
+/// Generate image thumbnails in parallel using rayon's thread pool.
+///
+/// - Skips items whose thumb already exists on disk.
+/// - Decodes + resizes + encodes using the `image` crate (pure Rust, no external deps).
+/// - Output format is PNG, matching the existing cache path convention.
+#[napi]
+pub fn generate_image_thumbnails(requests: Vec<ThumbnailRequest>) -> Vec<ThumbnailResult> {
+    use rayon::prelude::*;
+
+    requests
+        .par_iter()
+        .map(|req| {
+            let success = generate_one_thumbnail(&req.file_path, &req.thumb_path, req.max_size);
+            ThumbnailResult {
+                file_path: req.file_path.clone(),
+                thumb_path: req.thumb_path.clone(),
+                success,
+            }
+        })
+        .collect()
+}

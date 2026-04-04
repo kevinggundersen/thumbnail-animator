@@ -2481,7 +2481,7 @@ async function loadCollectionIntoGrid(collectionId) {
                 const filteredCached = filterItems(items);
                 const sortedCached = sortItems(filteredCached);
 
-                currentEmbeddings.clear();
+                currentEmbeddings.clear(); bumpEmbeddingsVersion();
                 currentTextEmbedding = null;
                 cancelEmbeddingScan();
 
@@ -2784,7 +2784,7 @@ async function loadCollectionIntoGrid(collectionId) {
         await yieldToEventLoop();
         if (loadToken !== _collectionLoadToken) return;
 
-        currentEmbeddings.clear();
+        currentEmbeddings.clear(); bumpEmbeddingsVersion();
         currentTextEmbedding = null;
         cancelEmbeddingScan();
         _cancelIdlePreEmbedding();
@@ -3435,7 +3435,7 @@ async function executeCrossFolderFindSimilar() {
     currentFolderPath = null;
     currentCollectionId = null;
 
-    currentEmbeddings.clear();
+    currentEmbeddings.clear(); bumpEmbeddingsVersion();
     currentTextEmbedding = null;
     cancelEmbeddingScan();
 
@@ -7605,9 +7605,224 @@ function applyVisualClustering(items) {
     return [...folders, ...ordered, ...noEmb];
 }
 
+// ── Filter/Sort Worker Bridge ─────────────────────────────────────────
+// Offloads the filter/sort pipeline to a Web Worker with a trigram index.
+// Main thread stays responsive during interactive search/filter changes.
+
+let _filterWorker = null;
+let _filterWorkerToken = 0;
+let _filterWorkerLastToken = 0;
+let _filterWorkerItemsRef = null;       // reference check: have we sent this exact array?
+let _filterWorkerLastLen = -1;
+let _filterWorkerEmbSyncedSize = -1;
+let _filterWorkerEmbVersion = 0;        // bump when embeddings cleared/repopulated
+let _filterWorkerEmbSyncedVersion = -1;
+
+function getFilterWorker() {
+    if (_filterWorker) return _filterWorker;
+    try {
+        _filterWorker = new Worker('filter-sort-worker.js');
+        _filterWorker.onmessage = (e) => {
+            const msg = e.data;
+            if (!msg || msg.type !== 'result') return;
+            // Stale — a newer apply has been queued, drop this result
+            if (msg.token !== _filterWorkerLastToken) return;
+            applyFilterWorkerResult(msg);
+        };
+        _filterWorker.onerror = (err) => {
+            console.error('filter-sort-worker error:', err);
+        };
+    } catch (e) {
+        console.warn('Failed to spawn filter worker; falling back to main-thread filtering:', e);
+        _filterWorker = null;
+    }
+    return _filterWorker;
+}
+
+function markFilterWorkerItemsStale() {
+    _filterWorkerItemsRef = null;
+}
+
+function syncFilterWorkerItems() {
+    const w = getFilterWorker();
+    if (!w) return false;
+    if (_filterWorkerItemsRef !== currentItems || _filterWorkerLastLen !== currentItems.length) {
+        // Send shallow-cloned items (only needed fields) to avoid sending non-cloneable refs
+        const slim = new Array(currentItems.length);
+        for (let i = 0; i < currentItems.length; i++) {
+            const it = currentItems[i];
+            slim[i] = {
+                type: it.type,
+                path: it.path,
+                folderPath: it.folderPath,
+                name: it.name,
+                mtime: it.mtime,
+                size: it.size,
+                width: it.width,
+                height: it.height,
+                missing: it.missing,
+                aspectRatio: it.aspectRatio
+            };
+        }
+        w.postMessage({ type: 'setItems', items: slim });
+        _filterWorkerItemsRef = currentItems;
+        _filterWorkerLastLen = currentItems.length;
+    }
+    return true;
+}
+
+function syncFilterWorkerRatings() {
+    const w = getFilterWorker();
+    if (!w) return;
+    w.postMessage({ type: 'setRatings', ratings: fileRatings });
+}
+
+function syncFilterWorkerPins() {
+    const w = getFilterWorker();
+    if (!w) return;
+    const paths = (typeof pinnedFiles === 'object' && pinnedFiles) ? Object.keys(pinnedFiles) : [];
+    w.postMessage({ type: 'setPins', paths });
+}
+
+function syncFilterWorkerTagFilter() {
+    const w = getFilterWorker();
+    if (!w) return;
+    const paths = (tagFilterActive && tagFilteredPaths) ? Array.from(tagFilteredPaths) : null;
+    w.postMessage({ type: 'setTagFilter', paths });
+}
+
+function bumpEmbeddingsVersion() {
+    _filterWorkerEmbVersion++;
+}
+
+function syncFilterWorkerEmbeddingsIfNeeded() {
+    const w = getFilterWorker();
+    if (!w) return;
+    // Re-sync only when version bumped (clear/bulk replace) OR size grew significantly
+    if (_filterWorkerEmbSyncedVersion === _filterWorkerEmbVersion &&
+        Math.abs(currentEmbeddings.size - _filterWorkerEmbSyncedSize) < 16) {
+        return;
+    }
+    const obj = {};
+    for (const [k, v] of currentEmbeddings) obj[k] = v;
+    w.postMessage({ type: 'setEmbeddings', embeddings: obj });
+    _filterWorkerEmbSyncedVersion = _filterWorkerEmbVersion;
+    _filterWorkerEmbSyncedSize = currentEmbeddings.size;
+}
+
+function syncFilterWorkerTextEmbedding() {
+    const w = getFilterWorker();
+    if (!w) return;
+    w.postMessage({ type: 'setTextEmbedding', vec: currentTextEmbedding || null });
+}
+
+function syncFilterWorkerFindSimilarEmbedding() {
+    const w = getFilterWorker();
+    if (!w) return;
+    w.postMessage({ type: 'setFindSimilarEmbedding', vec: findSimilarEmbedding || null });
+}
+
+function applyFilterWorkerResult(msg) {
+    // Safety: if currentItems was swapped out after the worker request was sent,
+    // the indices no longer map to the current array. Drop this stale result —
+    // a fresh applyFilters will run for the new items.
+    if (_filterWorkerItemsRef !== currentItems) return;
+
+    vsGroupHeadersPresent = !!msg.groupHeadersPresent;
+
+    // Reconstruct the items array from currentItems using the indices the worker sent.
+    // Negative indices reference synthetic objects (group headers).
+    const indices = msg.indices;
+    const synthetics = msg.synthetics || [];
+    const scores = msg.scores || {};
+    const aiScores = scores.ai || null;
+    const simScores = scores.sim || null;
+    const ratings = scores.ratings || null;
+
+    const items = new Array(indices.length);
+    let nulled = 0;
+    for (let k = 0; k < indices.length; k++) {
+        const idx = indices[k];
+        if (idx < 0) {
+            items[k] = synthetics[-idx - 1];
+        } else {
+            const orig = currentItems[idx];
+            if (!orig) { items[k] = null; nulled++; continue; }
+            // Stamp injected scores directly onto the original item so any legacy code
+            // reading item._aiScore / item._similarityScore / item._cachedRating still works.
+            if (aiScores)  orig._aiScore = aiScores[idx];
+            if (simScores) orig._similarityScore = simScores[idx];
+            if (ratings)   orig._cachedRating = ratings[idx];
+            items[k] = orig;
+        }
+    }
+    // Compact out any null holes (shouldn't happen unless currentItems mutated)
+    const finalItems = nulled > 0 ? items.filter(x => x != null) : items;
+
+    if (vsEnabled) {
+        vsUpdateItems(finalItems, { preserveScroll: true });
+    }
+    updateItemCount();
+}
+
+/**
+ * Offloaded filter/sort pipeline. Sends state to worker; result comes back via onmessage.
+ * Falls back to synchronous applyFilters() if worker unavailable.
+ */
+function applyFiltersViaWorker() {
+    if (currentItems.length === 0) return false;
+    const w = getFilterWorker();
+    if (!w) return false;
+
+    syncFilterWorkerItems();
+    // Sync small state bags every call (cheap). Embeddings are big, sync only when needed.
+    syncFilterWorkerRatings();
+    syncFilterWorkerPins();
+    syncFilterWorkerTagFilter();
+    syncFilterWorkerTextEmbedding();
+    syncFilterWorkerFindSimilarEmbedding();
+    // Embeddings only matter when AI search / clustering / find-similar is active
+    if (aiSearchActive || aiClusteringMode === 'similarity' || findSimilarActive) {
+        syncFilterWorkerEmbeddingsIfNeeded();
+    }
+
+    const token = ++_filterWorkerToken;
+    _filterWorkerLastToken = token;
+
+    const state = {
+        query: searchBox.value,
+        currentFilter,
+        includeMovingImages,
+        starFilterActive,
+        starSortOrder,
+        tagFilterActive,
+        findSimilarActive,
+        findSimilarAllFolders,
+        findSimilarThreshold,
+        aiVisualSearchEnabled,
+        aiSearchActive,
+        aiSimilarityThreshold,
+        aiClusteringMode,
+        advancedSearchFilters,
+        sortType,
+        sortOrder,
+        groupByDate,
+        dateGroupGranularity,
+        collapsedGroups: Array.from(collapsedDateGroups || [])
+    };
+    w.postMessage({ type: 'applyFilters', token, state });
+    return true;
+}
+
 function applyFilters() {
     const perfStart = perfTest.start();
     if (currentItems.length === 0) return;
+
+    // Prefer worker-based pipeline when available
+    if (applyFiltersViaWorker()) {
+        perfTest.end('applyFilters', perfStart, { cardCount: currentItems.length, detail: 'worker' });
+        return;
+    }
 
     const query = searchBox.value.toLowerCase().trim();
 
@@ -10141,7 +10356,7 @@ hoverScaleZ200.addEventListener('input', () => {
                 // Turn off
                 aiSearchActive = false;
                 currentTextEmbedding = null;
-                currentEmbeddings.clear();
+                currentEmbeddings.clear(); bumpEmbeddingsVersion();
                 cancelEmbeddingScan();
                 showAiToggleBtn(false);
                 updateAiToggleBtnState();
@@ -10194,7 +10409,7 @@ hoverScaleZ200.addEventListener('input', () => {
     if (clearCacheBtn) {
         clearCacheBtn.addEventListener('click', async () => {
             cancelEmbeddingScan();
-            currentEmbeddings.clear();
+            currentEmbeddings.clear(); bumpEmbeddingsVersion();
             await clearEmbeddingCache();
             setAiStatus(aiVisualSearchEnabled ? 'loaded' : null, aiVisualSearchEnabled ? 'Cache cleared — rescan to rebuild' : 'Model not loaded');
         });
@@ -12987,7 +13202,7 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
         
         // Render the filtered and sorted items
         // Clear embeddings from previous folder so stale data doesn't affect new folder
-        currentEmbeddings.clear();
+        currentEmbeddings.clear(); bumpEmbeddingsVersion();
         currentTextEmbedding = null;
         cancelEmbeddingScan();
         _cancelIdlePreEmbedding();

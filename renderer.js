@@ -17393,13 +17393,44 @@ class InspectorPanel {
         });
     }
 
-    _renderSimilar() {
+    async _renderSimilar() {
         this._similar.innerHTML = '';
         const path = this._currentPath;
         if (!path) { this._lastSimilarResults = null; return; }
         const results = findSimilarInLightbox(path, 6);
         this._lastSimilarResults = results;
         if (results == null) {
+            // Source has no embedding. Auto-compute if AI is enabled;
+            // otherwise fall back to manual "Compute now" button.
+            if (aiVisualSearchEnabled) {
+                if (this._similarComputing === path) return;  // in-flight for this path
+                this._similarComputing = path;
+                const placeholder = document.createElement('div');
+                placeholder.className = 'lb-insp-similar-empty';
+                placeholder.textContent = 'Computing…';
+                this._similar.appendChild(placeholder);
+                try {
+                    const item = currentItems.find(i => i.path === path);
+                    const mtime = item ? (item.mtime || 0) : 0;
+                    const embResults = await window.electronAPI.clipEmbedImages([{ path, mtime, thumbPath: null }]);
+                    if (this._currentPath !== path) return;  // user navigated away
+                    if (embResults && embResults[0] && embResults[0].embedding) {
+                        currentEmbeddings.set(path, l2Normalize(new Float32Array(embResults[0].embedding)));
+                        this._renderSimilar();
+                    }
+                } catch (err) {
+                    if (this._currentPath === path) {
+                        this._similar.innerHTML = '';
+                        const fail = document.createElement('div');
+                        fail.className = 'lb-insp-similar-empty';
+                        fail.textContent = 'Failed to compute embedding.';
+                        this._similar.appendChild(fail);
+                    }
+                } finally {
+                    if (this._similarComputing === path) this._similarComputing = null;
+                }
+                return;
+            }
             const empty = document.createElement('div');
             empty.className = 'lb-insp-similar-empty';
             empty.innerHTML = 'No embedding yet.<br><button>Compute now</button>';
@@ -17407,9 +17438,9 @@ class InspectorPanel {
                 const item = currentItems.find(i => i.path === path);
                 const mtime = item ? (item.mtime || 0) : 0;
                 try {
-                    const results = await window.electronAPI.clipEmbedImages([{ path, mtime, thumbPath: null }]);
-                    if (results && results[0] && results[0].embedding) {
-                        const emb = l2Normalize(new Float32Array(results[0].embedding));
+                    const embResults = await window.electronAPI.clipEmbedImages([{ path, mtime, thumbPath: null }]);
+                    if (embResults && embResults[0] && embResults[0].embedding) {
+                        const emb = l2Normalize(new Float32Array(embResults[0].embedding));
                         currentEmbeddings.set(path, emb);
                         this._renderSimilar();
                     }
@@ -17419,6 +17450,45 @@ class InspectorPanel {
             return;
         }
         if (results.length === 0) {
+            // Source embedded but no siblings are. Backfill up to N with AI on.
+            if (aiVisualSearchEnabled && this._similarComputing !== `backfill:${path}`) {
+                this._similarComputing = `backfill:${path}`;
+                const placeholder = document.createElement('div');
+                placeholder.className = 'lb-insp-similar-empty';
+                placeholder.textContent = 'Computing…';
+                this._similar.appendChild(placeholder);
+                try {
+                    const MAX_BACKFILL = 12;
+                    const batch = [];
+                    for (const it of currentItems) {
+                        if (batch.length >= MAX_BACKFILL) break;
+                        if (!it || it.type === 'folder' || it.type === 'group-header') continue;
+                        if (it.path === path) continue;
+                        if (currentEmbeddings.has(it.path)) continue;
+                        batch.push({ path: it.path, mtime: it.mtime || 0, thumbPath: null });
+                    }
+                    if (batch.length > 0) {
+                        const embResults = await window.electronAPI.clipEmbedImages(batch);
+                        if (this._currentPath !== path) return;
+                        if (Array.isArray(embResults)) {
+                            for (let i = 0; i < embResults.length; i++) {
+                                const r = embResults[i];
+                                if (r && r.embedding) {
+                                    currentEmbeddings.set(batch[i].path, l2Normalize(new Float32Array(r.embedding)));
+                                }
+                            }
+                        }
+                        this._renderSimilar();
+                        return;
+                    }
+                } catch (err) {
+                    // fall through to empty message
+                } finally {
+                    if (this._similarComputing === `backfill:${path}`) this._similarComputing = null;
+                }
+                if (this._currentPath !== path) return;
+                this._similar.innerHTML = '';
+            }
             const empty = document.createElement('div');
             empty.className = 'lb-insp-similar-empty';
             empty.textContent = 'No similar items in this folder.';
@@ -17430,9 +17500,20 @@ class InspectorPanel {
             card.className = 'lb-insp-similar-card';
             card.dataset.path = r.path;
             card.title = r.path.split(/[\\/]/).pop();
+            const item = (typeof currentItems !== 'undefined')
+                ? currentItems.find(i => i.path === r.path)
+                : null;
+            const isVideo = item && item.type === 'video';
             const img = document.createElement('img');
             img.loading = 'lazy';
-            img.src = 'file:///' + r.path.replace(/\\/g, '/');
+            if (isVideo) {
+                // Use the same poster-cache system the grid uses for video cards.
+                requestVideoPosterUrl(r.path).then(url => {
+                    if (url && card.isConnected) img.src = url;
+                }).catch(() => { /* leave blank tile */ });
+            } else {
+                img.src = 'file:///' + r.path.replace(/\\/g, '/');
+            }
             card.appendChild(img);
             const score = document.createElement('span');
             score.className = 'score';

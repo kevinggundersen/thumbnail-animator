@@ -66,7 +66,11 @@
       "!native-scanner/target/**/*",
       "!native-scanner/Cargo.toml",
       "!native-scanner/Cargo.lock",
-      "!native-scanner/build.rs"
+      "!native-scanner/build.rs",
+      "!node_modules/@huggingface/transformers/.cache/**/*",
+      "!node_modules/**/onnxruntime-node/bin/napi-v6/darwin/**/*",
+      "!node_modules/**/onnxruntime-node/bin/napi-v6/linux/**/*",
+      "!node_modules/**/onnxruntime-node/bin/napi-v6/win32/arm64/**/*"
     ],
     "win": {
       "target": [

@@ -2528,6 +2528,7 @@ let autoRepeatVideos = false;
 let playbackControlsEnabled = true;
 let zoomToFit = true;
 let hoverScrubEnabled = true;
+let lightboxFilmstripEnabled = localStorage.getItem('lightboxFilmstripEnabled') !== 'false';
 
 // Track progress
 let currentProgress = null; // { current: number, total: number, cancelled: boolean }
@@ -10674,7 +10675,7 @@ const SETTINGS_EXPORT_KEYS_STRING = [
     'selectedTheme', 'sidebarWidth', 'sidebarCollapsed', 'layoutMode',
     'zoomLevel', 'zoomToFit', 'thumbnailQuality', 'sortType', 'sortOrder',
     'rememberLastFolder', 'lastFolderPath', 'includeMovingImages',
-    'autoRepeatVideos', 'pauseOnBlur', 'pauseOnLightbox', 'hoverScrub',
+    'autoRepeatVideos', 'pauseOnBlur', 'pauseOnLightbox', 'hoverScrub', 'lightboxFilmstripEnabled',
     'playbackControls', 'activeTabId',
     'aiVisualSearchEnabled', 'aiModelDownloadConfirmed', 'aiAutoScan',
     'aiSimilarityThreshold', 'aiClusteringMode',
@@ -11265,6 +11266,25 @@ hoverScrubToggle.addEventListener('change', () => {
     hoverScrubLabel.textContent = hoverScrubEnabled ? 'On' : 'Off';
     deferLocalStorageWrite('hoverScrub', hoverScrubEnabled.toString());
 });
+
+// Lightbox filmstrip toggle
+const lightboxFilmstripToggleEl = document.getElementById('lightbox-filmstrip-toggle');
+const lightboxFilmstripLabelEl = document.getElementById('lightbox-filmstrip-label');
+if (lightboxFilmstripToggleEl) {
+    // Hydrate from saved state
+    lightboxFilmstripToggleEl.checked = lightboxFilmstripEnabled;
+    if (lightboxFilmstripLabelEl) lightboxFilmstripLabelEl.textContent = lightboxFilmstripEnabled ? 'On' : 'Off';
+    lightboxFilmstripToggleEl.addEventListener('change', () => {
+        lightboxFilmstripEnabled = lightboxFilmstripToggleEl.checked;
+        if (lightboxFilmstripLabelEl) lightboxFilmstripLabelEl.textContent = lightboxFilmstripEnabled ? 'On' : 'Off';
+        deferLocalStorageWrite('lightboxFilmstripEnabled', lightboxFilmstripEnabled.toString());
+        // Live-apply: if disabled while lightbox is open, hide immediately.
+        // Re-enabling takes effect on next lightbox open.
+        if (!lightboxFilmstripEnabled && filmstripInstance) {
+            filmstripInstance.hide();
+        }
+    });
+}
 
 lightboxZoomToFitToggle.addEventListener('change', () => {
     zoomToFit = lightboxZoomToFitToggle.checked;
@@ -17565,7 +17585,7 @@ function _enhancedLightboxOnOpen(filePath, controller, mediaUrl) {
     // Clear loop points per-file
     loopPoints = { in: null, out: null };
     if (filmstripInstance) {
-        if (controller) {
+        if (controller && lightboxFilmstripEnabled) {
             filmstripInstance.bind(controller, mediaUrl);
             filmstripInstance.updateMarkers(loopPoints);
         } else {

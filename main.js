@@ -3192,16 +3192,47 @@ ipcMain.handle('scan-duplicates', async (event, folderPath, options = {}) => {
         // than sharp). Falls back to the JS worker pool if native isn't available.
         let hashMap;
         if (nativeScanner && nativeScanner.computePerceptualHashes) {
-            // For videos, use the existing thumbPath (cached first frame); for
-            // images, read the file directly. Skip SVGs (can't decode reliably).
-            const perceptualPaths = files.map(f => {
+            // Prefer cached 512px thumbnails over original files — decoding a
+            // 5MB JPEG is ~30-80ms vs. ~2-5ms for a 512px PNG thumbnail.
+            // Pre-generate missing image thumbnails first (same pattern as CLIP).
+            if (nativeScanner.generateImageThumbnails && imageThumbDir) {
+                const missing = [];
+                for (const f of files) {
+                    if (!f.isImage) continue;
+                    if (f.path.toLowerCase().endsWith('.svg')) continue;
+                    if (!f.mtime) continue;
+                    const tp = getImageThumbCachePath(f.path, f.mtime, 512);
+                    if (!fs.existsSync(tp)) {
+                        missing.push({ filePath: f.path, thumbPath: tp, maxSize: 512 });
+                    }
+                }
+                if (missing.length > 0) {
+                    const t = performance.now();
+                    try {
+                        nativeScanner.generateImageThumbnails(missing);
+                        console.log(`[scan-duplicates] pre-generated ${missing.length} thumbnails in ${(performance.now() - t).toFixed(0)}ms`);
+                    } catch (e) {
+                        console.warn('[scan-duplicates] thumbnail pre-gen failed:', e.message);
+                    }
+                }
+            }
+
+            // Now resolve each file to its best source: cached image thumb > video thumb > original
+            const resolveHashSource = (f) => {
                 if (f.path.toLowerCase().endsWith('.svg')) return null;
-                return f.thumbPath || (f.isImage ? f.path : null);
-            });
+                if (f.thumbPath && fs.existsSync(f.thumbPath)) return f.thumbPath;
+                if (f.isImage && imageThumbDir && f.mtime) {
+                    const tp = getImageThumbCachePath(f.path, f.mtime, 512);
+                    if (fs.existsSync(tp)) return tp;
+                }
+                return f.isImage ? f.path : null;
+            };
+
             const inputs = [];
             const inputIndices = [];
-            for (let i = 0; i < perceptualPaths.length; i++) {
-                if (perceptualPaths[i]) { inputs.push(perceptualPaths[i]); inputIndices.push(i); }
+            for (let i = 0; i < files.length; i++) {
+                const src = resolveHashSource(files[i]);
+                if (src) { inputs.push(src); inputIndices.push(i); }
             }
             const phStart = performance.now();
             const results = nativeScanner.computePerceptualHashes(inputs);

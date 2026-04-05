@@ -5747,9 +5747,16 @@ function getFileType(url) {
         urlLower.endsWith('.png') || urlLower.endsWith('.webp') || urlLower.endsWith('.bmp') ||
         urlLower.endsWith('.svg')) return 'image';
     // Video formats
-    if (urlLower.endsWith('.mp4') || urlLower.endsWith('.webm') || 
+    if (urlLower.endsWith('.mp4') || urlLower.endsWith('.webm') ||
         urlLower.endsWith('.ogg') || urlLower.endsWith('.mov')) return 'video';
     return 'video'; // Default to video for unknown types
+}
+
+// Moving-image extension check (gif/webp treated as videos when includeMovingImages is ON)
+function _isMovingImageExt(name) {
+    if (!name) return false;
+    const n = name.toLowerCase();
+    return n.endsWith('.gif') || n.endsWith('.webp');
 }
 
 // Color mapping for file extensions (user-customizable)
@@ -6606,9 +6613,15 @@ function toggleIncludeMovingImages() {
 function filterItems(items) {
     let filtered = items;
     if (currentFilter === 'video') {
-        filtered = filtered.filter(item => item.type === 'video');
+        filtered = filtered.filter(item =>
+            item.type === 'video' ||
+            (includeMovingImages && item.type === 'image' && _isMovingImageExt(item.name))
+        );
     } else if (currentFilter === 'image') {
-        filtered = filtered.filter(item => item.type === 'image');
+        filtered = filtered.filter(item =>
+            item.type === 'image' &&
+            !(includeMovingImages && _isMovingImageExt(item.name))
+        );
     }
     if (starFilterActive) {
         filtered = filtered.filter(item => {
@@ -8687,15 +8700,13 @@ function applyFilters() {
         // Type filter
         let matchesFilter = true;
         if (currentFilter === 'video') {
-            matchesFilter = item.type === 'video';
+            const isGifOrWebp = fileName.endsWith('.gif') || fileName.endsWith('.webp');
+            matchesFilter = item.type === 'video' ||
+                (includeMovingImages && item.type === 'image' && isGifOrWebp);
         } else if (currentFilter === 'image') {
             const isImage = item.type === 'image';
-            if (isImage && !includeMovingImages) {
-                const isMovingImage = fileName.endsWith('.gif') || fileName.endsWith('.webp');
-                matchesFilter = !isMovingImage;
-            } else {
-                matchesFilter = isImage;
-            }
+            const isGifOrWebp = fileName.endsWith('.gif') || fileName.endsWith('.webp');
+            matchesFilter = isImage && !(includeMovingImages && isGifOrWebp);
         }
         if (!matchesFilter) return false;
 

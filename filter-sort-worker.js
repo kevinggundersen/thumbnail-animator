@@ -229,12 +229,17 @@ function runFilterPipeline(state) {
 
         // Type filter
         if (currentFilter === 'video') {
-            if (item.type !== 'video') continue;
+            const isGifOrWebp = fileName.endsWith('.gif') || fileName.endsWith('.webp');
+            if (item.type === 'video') {
+                // keep
+            } else if (includeMovingImages && item.type === 'image' && isGifOrWebp) {
+                // keep: moving images treated as videos
+            } else {
+                continue;
+            }
         } else if (currentFilter === 'image') {
             if (item.type !== 'image') continue;
-            if (!includeMovingImages) {
-                if (fileName.endsWith('.gif') || fileName.endsWith('.webp')) continue;
-            }
+            if (includeMovingImages && (fileName.endsWith('.gif') || fileName.endsWith('.webp'))) continue;
         }
 
         if (needRating && item.type !== 'folder' && item.path) {

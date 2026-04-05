@@ -688,15 +688,16 @@ function vsUpdateDOM(startIndex, endIndex) {
             const newTop = positions[idx + 1];
             const newWidth = positions[idx + 2];
             const newHeight = positions[idx + 3];
-            // Only update if position changed (avoids style recalc)
-            if (card._vsLeft !== newLeft || card._vsTop !== newTop ||
-                card._vsWidth !== newWidth || card._vsHeight !== newHeight) {
-                card.style.left = `${newLeft}px`;
-                card.style.top = `${newTop}px`;
-                card.style.width = `${newWidth}px`;
-                card.style.height = `${newHeight}px`;
+            // Update position (compositor-only) and size (layout) independently
+            // so that pure scroll-position updates skip layout work entirely.
+            if (card._vsLeft !== newLeft || card._vsTop !== newTop) {
+                card.style.translate = `${newLeft}px ${newTop}px`;
                 card._vsLeft = newLeft;
                 card._vsTop = newTop;
+            }
+            if (card._vsWidth !== newWidth || card._vsHeight !== newHeight) {
+                card.style.width = `${newWidth}px`;
+                card.style.height = `${newHeight}px`;
                 card._vsWidth = newWidth;
                 card._vsHeight = newHeight;
             }
@@ -726,10 +727,9 @@ function vsUpdateDOM(startIndex, endIndex) {
             card = newCard;
         }
 
-        // Position absolutely
+        // Position absolutely; translate is compositor-only, width/height trigger layout
         card.style.position = 'absolute';
-        card.style.left = `${left}px`;
-        card.style.top = `${top}px`;
+        card.style.translate = `${left}px ${top}px`;
         card.style.width = `${width}px`;
         card.style.height = `${height}px`;
         card.style.paddingBottom = '0';
@@ -6458,12 +6458,13 @@ function initMasonry() {
         card.style.position = '';
         card.style.left = '';
         card.style.top = '';
+        card.style.translate = '';
         card.style.width = '';
         card.style.height = '';
         card.style.opacity = '';
         card.style.visibility = '';
     });
-    
+
     // Initial layout after cards are rendered
     scheduleMasonryLayout();
     
@@ -6554,6 +6555,7 @@ function initGrid() {
         card.style.position = '';
         card.style.left = '';
         card.style.top = '';
+        card.style.translate = '';
         card.style.width = '';
         card.style.height = '';
         card.style.paddingBottom = ''; // Reset padding-bottom to use CSS aspect ratio classes

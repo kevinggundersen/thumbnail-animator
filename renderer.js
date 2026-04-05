@@ -905,7 +905,7 @@ function vsPopulateExistingCard(card, item) {
 
         const info = document.createElement('div');
         info.className = 'video-info';
-        info.textContent = item.name;
+        setCardFilenameContent(info, item.name);
 
         if (!cardInfoSettings.extension) extensionLabel.style.display = 'none';
         card.appendChild(extensionLabel);
@@ -1351,6 +1351,9 @@ if (!gridContainer) {
 const searchBox = document.getElementById('search-box');
 const searchClearBtn = document.getElementById('search-clear-btn');
 const itemCountEl = document.getElementById('item-count');
+const searchResultCountEl = document.getElementById('search-result-count');
+const searchDebounceDotEl = document.getElementById('search-debounce-dot');
+const searchBoxContainerEl = searchBox ? searchBox.parentElement : null;
 
 // Status bar elements
 const statusActivity = document.getElementById('status-activity');
@@ -6615,7 +6618,7 @@ function createCardFromItem(item, skipAnimation = false) {
 
         const info = document.createElement('div');
         info.className = 'video-info';
-        info.textContent = item.name;
+        setCardFilenameContent(info, item.name);
 
         if (!cardInfoSettings.extension) extensionLabel.style.display = 'none';
         card.appendChild(extensionLabel);
@@ -8292,6 +8295,13 @@ function applyFilterWorkerResult(msg) {
         vsUpdateItems(finalItems, { preserveScroll: true });
     }
     updateItemCount();
+
+    // Count visible (non-header) matches for the search result badge
+    const visibleCount = finalItems.reduce((acc, it) => acc + (it && it.type !== 'group-header' ? 1 : 0), 0);
+    updateSearchResultCount(visibleCount);
+    clearSearchDebounceIndicator();
+    // Refresh filename highlights for the new query across visible cards
+    if (typeof refreshVisibleFilenameHighlights === 'function') refreshVisibleFilenameHighlights();
 }
 
 /**
@@ -8502,6 +8512,13 @@ function applyFilters() {
         vsUpdateItems(sortedFiltered, { preserveScroll: true });
     }
     updateItemCount();
+
+    // Count visible (non-header) matches for the search result badge
+    const visibleCount = sortedFiltered.reduce((acc, it) => acc + (it && it.type !== 'group-header' ? 1 : 0), 0);
+    updateSearchResultCount(visibleCount);
+    clearSearchDebounceIndicator();
+    if (typeof refreshVisibleFilenameHighlights === 'function') refreshVisibleFilenameHighlights();
+
     perfTest.end('applyFilters', perfStart, { cardCount: currentItems.length });
 }
 
@@ -8509,6 +8526,10 @@ function performSearch(searchQuery) {
     // Debounce search to avoid excessive filtering while typing
     clearTimeout(filterDebounceTimer);
     const delay = (aiVisualSearchEnabled && aiSearchActive) ? 300 : 150;
+    // Show pulsing debounce indicator while waiting
+    if (searchDebounceDotEl) {
+        searchDebounceDotEl.classList.toggle('pulsing', !!searchQuery);
+    }
     filterDebounceTimer = setTimeout(async () => {
         if (aiVisualSearchEnabled && aiSearchActive && searchQuery.trim()) {
             try {
@@ -8522,6 +8543,87 @@ function performSearch(searchQuery) {
         }
         applyFilters();
     }, delay);
+}
+
+// Update the search result count badge ("X of Y") next to the search box.
+// Hidden when search box is empty.
+function updateSearchResultCount(visibleCount) {
+    if (!searchResultCountEl) return;
+    const query = searchBox.value.trim();
+    if (!query) {
+        searchResultCountEl.classList.remove('visible');
+        searchResultCountEl.textContent = '';
+        return;
+    }
+    const total = currentItems.length;
+    searchResultCountEl.textContent = `${visibleCount} of ${total}`;
+    searchResultCountEl.classList.add('visible');
+}
+
+// Clear debounce dot after filter results arrive
+function clearSearchDebounceIndicator() {
+    if (searchDebounceDotEl) searchDebounceDotEl.classList.remove('pulsing');
+}
+
+// ── Filename match highlighting ─────────────────────────────────────────────
+// Wraps matched substrings in filenames with <mark class="search-hl"> when a
+// text search is active. Skipped while AI visual search is on (similarity
+// scoring doesn't map to substrings).
+function getActiveSearchHighlightQuery() {
+    if (aiVisualSearchEnabled && aiSearchActive) return '';
+    const q = searchBox.value.trim();
+    return q ? q.toLowerCase() : '';
+}
+
+function buildHighlightedFilenameHtml(text, queryLower) {
+    if (!queryLower) return null;
+    const lower = text.toLowerCase();
+    let idx = lower.indexOf(queryLower);
+    if (idx === -1) return null;
+    const parts = [];
+    let last = 0;
+    const qLen = queryLower.length;
+    while (idx !== -1) {
+        parts.push(escapeHtml(text.slice(last, idx)));
+        parts.push('<mark class="search-hl">');
+        parts.push(escapeHtml(text.slice(idx, idx + qLen)));
+        parts.push('</mark>');
+        last = idx + qLen;
+        idx = lower.indexOf(queryLower, last);
+    }
+    parts.push(escapeHtml(text.slice(last)));
+    return parts.join('');
+}
+
+// Set a filename element's content, applying search highlighting when active.
+// Safe to call from card creation + recycling paths.
+function setCardFilenameContent(infoEl, name) {
+    if (!infoEl) return;
+    const q = getActiveSearchHighlightQuery();
+    const html = q ? buildHighlightedFilenameHtml(name, q) : null;
+    if (html) infoEl.innerHTML = html;
+    else infoEl.textContent = name;
+}
+
+// Rebuild highlights across all currently visible cards. Called after filter
+// results land so cards that weren't re-populated still reflect the new query.
+function refreshVisibleFilenameHighlights() {
+    const q = getActiveSearchHighlightQuery();
+    const cards = gridContainer.querySelectorAll('.video-card');
+    for (const card of cards) {
+        const info = card.querySelector('.video-info');
+        if (!info) continue;
+        const name = card.dataset.name;
+        if (!name) continue;
+        if (q) {
+            const html = buildHighlightedFilenameHtml(name, q);
+            if (html) info.innerHTML = html;
+            else info.textContent = name;
+        } else if (info.querySelector('mark.search-hl')) {
+            // Only touch DOM if highlights need removing
+            info.textContent = name;
+        }
+    }
 }
 
 // --- Delegated Event Handlers for Grid Cards ---

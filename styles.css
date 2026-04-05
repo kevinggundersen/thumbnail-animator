@@ -2305,7 +2305,7 @@ header {
 
 #search-box {
     flex: 1;
-    padding: 6px 56px 6px 12px;
+    padding: 6px 56px 6px 22px;
     background-color: var(--bg-primary);
     color: var(--text-color);
     border: 1px solid var(--border-default);
@@ -2327,6 +2327,54 @@ header {
     display: flex;
     align-items: center;
     justify-content: center;
+}
+
+.search-result-count {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    pointer-events: none;
+    white-space: nowrap;
+    opacity: 0;
+    transition: opacity 0.15s ease-out;
+    align-self: center;
+    margin: 0 4px 0 -4px;
+    min-width: 0;
+    max-width: 0;
+    overflow: hidden;
+}
+.search-result-count.visible {
+    opacity: 1;
+    max-width: 120px;
+}
+
+.search-debounce-dot {
+    position: absolute;
+    left: 10px;
+    top: 50%;
+    margin-top: -3px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent, #e8a44a);
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s ease-out;
+}
+.search-debounce-dot.pulsing {
+    opacity: 1;
+    animation: search-dot-pulse 0.9s ease-in-out infinite;
+}
+@keyframes search-dot-pulse {
+    0%, 100% { transform: scale(0.6); opacity: 0.35; }
+    50%      { transform: scale(1.0); opacity: 1; }
+}
+
+/* Highlight matched substrings in filenames */
+mark.search-hl {
+    background: var(--accent, #e8a44a);
+    color: #000;
+    padding: 0 1px;
+    border-radius: 2px;
 }
 
 .search-clear-btn:hover {

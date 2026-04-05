@@ -1354,8 +1354,59 @@ const statusSelectionInfo = document.getElementById('status-selection-info');
 const statusLayoutMode = document.getElementById('status-layout-mode');
 const statusZoomLevel = document.getElementById('status-zoom-level');
 
-function setStatusActivity(msg) {
+const statusProgress = document.getElementById('status-progress');
+const statusProgressFill = document.getElementById('status-progress-fill');
+const statusProgressEta = document.getElementById('status-progress-eta');
+
+function setStatusActivity(msg, opts) {
     if (statusActivity) statusActivity.textContent = msg || '';
+    if (opts && typeof opts.done === 'number' && opts.total > 0) {
+        if (statusProgress) statusProgress.classList.remove('hidden');
+        if (statusProgressFill) {
+            const pct = Math.min(100, Math.max(0, (opts.done / opts.total) * 100));
+            statusProgressFill.style.width = pct + '%';
+        }
+        if (statusProgressEta) statusProgressEta.textContent = opts.eta || '';
+    } else {
+        if (statusProgress) statusProgress.classList.add('hidden');
+        if (statusProgressEta) statusProgressEta.textContent = '';
+    }
+}
+
+// Rolling-average ETA tracker. Call tick(itemsCompleted) after each batch.
+function createEtaTracker(total) {
+    const startMs = performance.now();
+    let lastMs = startMs;
+    let lastDone = 0;
+    let avgMsPerItem = 0;
+    return {
+        tick(done) {
+            const now = performance.now();
+            const deltaItems = done - lastDone;
+            if (deltaItems > 0) {
+                const msPerItem = (now - lastMs) / deltaItems;
+                // Exponential moving average, weight recent samples
+                avgMsPerItem = avgMsPerItem === 0 ? msPerItem : (avgMsPerItem * 0.6 + msPerItem * 0.4);
+                lastMs = now;
+                lastDone = done;
+            }
+            const remaining = Math.max(0, total - done);
+            const msLeft = remaining * avgMsPerItem;
+            return formatEta(msLeft);
+        }
+    };
+}
+
+function formatEta(ms) {
+    if (!isFinite(ms) || ms <= 0) return '';
+    const s = Math.ceil(ms / 1000);
+    if (s < 10) return `~${s}s left`;
+    if (s < 60) return `~${Math.ceil(s / 5) * 5}s left`;
+    const m = Math.ceil(s / 60);
+    if (m < 60) return `~${m}m left`;
+    const h = Math.floor(m / 60);
+    const mr = m % 60;
+    return mr > 0 ? `~${h}h ${mr}m left` : `~${h}h left`;
 }
 
 // ===== Toast Notification System =====
@@ -1454,6 +1505,14 @@ function escapeHtml(str) {
     const div = document.createElement('div');
     div.textContent = str;
     return div.innerHTML;
+}
+
+// Show a toast for a given category only once per session
+const _shownToastKeys = new Set();
+function showToastOnce(key, message, type = 'info', options = {}) {
+    if (_shownToastKeys.has(key)) return null;
+    _shownToastKeys.add(key);
+    return showToast(message, type, options);
 }
 
 // ===== Auto-Update Notifications =====
@@ -2563,9 +2622,15 @@ async function loadCollectionIntoGrid(collectionId) {
                 if (progress.items) progressFileCount += progress.items.length;
                 const itemLabel = collection.rules?.fileType === 'video' ? 'videos' : collection.rules?.fileType === 'image' ? 'images' : 'items';
                 if (hadCache) {
-                    setStatusActivity(`Refreshing... ${progress.foldersScanned}/${progress.totalFolders}`);
+                    setStatusActivity(
+                        `Refreshing... ${progress.foldersScanned}/${progress.totalFolders}`,
+                        { done: progress.foldersScanned, total: progress.totalFolders }
+                    );
                 } else {
-                    setStatusActivity(`Scanning folders... ${progress.foldersScanned}/${progress.totalFolders} | ${progressFileCount} ${itemLabel}`);
+                    setStatusActivity(
+                        `Scanning folders... ${progress.foldersScanned}/${progress.totalFolders} | ${progressFileCount} ${itemLabel}`,
+                        { done: progress.foldersScanned, total: progress.totalFolders }
+                    );
                 }
 
                 // Progressive rendering only when no cache was shown and no AI query
@@ -2716,6 +2781,7 @@ async function loadCollectionIntoGrid(collectionId) {
                             let done = 0;
                             let newMatchCount = 0;
                             let updateTimer = null;
+                            const etaTracker = createEtaTracker(uncached.length);
 
                             const scheduleResultUpdate = () => {
                                 if (updateTimer) return;
@@ -2749,7 +2815,10 @@ async function loadCollectionIntoGrid(collectionId) {
                                     if (updateTimer) clearTimeout(updateTimer);
                                     return;
                                 }
-                                setStatusActivity(`AI search: scanning ${done}/${uncached.length} new images...`);
+                                setStatusActivity(
+                                    `AI search: scanning ${done}/${uncached.length} new images...`,
+                                    { done, total: uncached.length, eta: etaTracker.tick(done) }
+                                );
                                 const batch = uncached.slice(i, i + BATCH_SIZE);
                                 try {
                                     const results = await window.electronAPI.clipEmbedImages(
@@ -3737,6 +3806,11 @@ async function hydrateMissingDimensionsInBackground(folderPath, items) {
 initIndexedDB().catch(() => {
     // IndexedDB not available, continue without persistent cache
     console.warn('IndexedDB initialization failed, using memory cache only');
+    showToastOnce('indexeddb-init-fail',
+        'Persistent cache unavailable',
+        'warning',
+        { details: 'Folder listings and thumbnails will be re-fetched each session.' }
+    );
 });
 
 // Load plugin manifests for context menu contributions
@@ -3755,6 +3829,11 @@ async function getPluginMenuItems() {
         }
     } catch (err) {
         console.warn('Could not load plugin manifests:', err);
+        showToastOnce('plugin-manifests-fail',
+            'Plugin menu items unavailable',
+            'warning',
+            { details: 'Plugins could not be loaded; right-click menu contributions will be missing.' }
+        );
         _pluginMenuItems = [];
     }
     return _pluginMenuItems;
@@ -7863,6 +7942,11 @@ function getFilterWorker() {
         };
     } catch (e) {
         console.warn('Failed to spawn filter worker; falling back to main-thread filtering:', e);
+        showToastOnce('filter-worker-fail',
+            'Filtering is running on the main thread',
+            'warning',
+            { details: 'A worker failed to spawn; sorting large folders may feel slower.' }
+        );
         _filterWorker = null;
     }
     return _filterWorker;

@@ -174,25 +174,39 @@ function initKeyboardShortcuts() {
             return;
         }
 
-        // Delete focused file
-        if (matchesShortcut(e, 'deleteCard') && focusedCardIndex >= 0) {
-            e.preventDefault();
-            const card = visibleCards[focusedCardIndex];
-            if (card && !card.classList.contains('folder-card')) {
-                const path = card.dataset.path;
-                const name = card.querySelector('.video-info')?.textContent || '';
-                if (path && await showConfirm('Delete File', `Delete "${name}"?`, { confirmLabel: 'Delete', danger: true })) {
-                    setStatusActivity(`Deleting ${name}...`);
-                    window.electronAPI.deleteFile(path).then(result => {
-                        setStatusActivity('');
-                        if (result.success) {
-                            showToast(`Deleted "${name}"`, 'success', {
+        // Delete: batch-delete selection if 2+ selected, otherwise delete focused file
+        if (matchesShortcut(e, 'deleteCard')) {
+            if (selectedCardPaths.size >= 2) {
+                e.preventDefault();
+                const paths = [...selectedCardPaths];
+                const count = paths.length;
+                const deleteLabel = useSystemTrash ? 'Move to Recycle Bin' : 'Delete';
+                const promptLabel = useSystemTrash
+                    ? `Move ${count} files to the Recycle Bin?`
+                    : `Delete ${count} files?`;
+                if (await showConfirm(deleteLabel, promptLabel, { confirmLabel: deleteLabel, danger: true })) {
+                    showProgress(0, count, `${deleteLabel.replace(/ing$/, '')}ing ${count} files...`);
+                    try {
+                        window.electronAPI.onBatchDeleteProgress((_evt, data) => {
+                            updateProgress(data.current, data.total);
+                        });
+                        const result = await window.electronAPI.deleteFilesBatch(paths);
+                        window.electronAPI.removeBatchDeleteProgressListener();
+                        hideProgress();
+                        const failCount = result.failed ? result.failed.length : 0;
+                        const successCount = count - failCount;
+                        if (successCount > 0) {
+                            const msg = useSystemTrash
+                                ? `Moved ${successCount} files to Recycle Bin`
+                                : `Deleted ${successCount} files`;
+                            showToast(msg, failCount > 0 ? 'warning' : 'success', {
                                 duration: 8000,
-                                actionLabel: 'Undo',
-                                actionCallback: () => {
+                                details: failCount > 0 ? `${failCount} failed` : undefined,
+                                actionLabel: useSystemTrash ? undefined : 'Undo',
+                                actionCallback: useSystemTrash ? undefined : () => {
                                     window.electronAPI.undoFileOperation().then(undoResult => {
                                         if (undoResult.success) {
-                                            showToast(`Restored "${name}"`, 'success');
+                                            showToast(`Restored ${successCount} files`, 'success');
                                             if (currentFolderPath) {
                                                 invalidateFolderCache(currentFolderPath);
                                                 const st = gridContainer.scrollTop;
@@ -206,21 +220,71 @@ function initKeyboardShortcuts() {
                                     });
                                 }
                             });
-                            if (currentFolderPath) {
-                                invalidateFolderCache(currentFolderPath);
-                                const previousScrollTop = gridContainer.scrollTop;
-                                loadVideos(currentFolderPath, false, previousScrollTop);
-                            }
-                        } else {
-                            showToast(`Could not delete file: ${friendlyError(result.error)}`, 'error');
+                        } else if (failCount > 0) {
+                            showToast(`Could not delete ${failCount} files`, 'error');
                         }
-                    }).catch(err => {
-                        setStatusActivity('');
-                        showToast(`Could not delete file: ${friendlyError(err)}`, 'error');
-                    });
+                        clearCardSelection();
+                        if (currentFolderPath) {
+                            invalidateFolderCache(currentFolderPath);
+                            const previousScrollTop = gridContainer.scrollTop;
+                            loadVideos(currentFolderPath, false, previousScrollTop);
+                        }
+                    } catch (err) {
+                        window.electronAPI.removeBatchDeleteProgressListener();
+                        hideProgress();
+                        showToast(`Batch delete failed: ${friendlyError(err)}`, 'error');
+                    }
                 }
+                return;
             }
-            return;
+
+            if (focusedCardIndex >= 0) {
+                e.preventDefault();
+                const card = visibleCards[focusedCardIndex];
+                if (card && !card.classList.contains('folder-card')) {
+                    const path = card.dataset.path;
+                    const name = card.querySelector('.video-info')?.textContent || '';
+                    if (path && await showConfirm('Delete File', `Delete "${name}"?`, { confirmLabel: 'Delete', danger: true })) {
+                        setStatusActivity(`Deleting ${name}...`);
+                        window.electronAPI.deleteFile(path).then(result => {
+                            setStatusActivity('');
+                            if (result.success) {
+                                showToast(`Deleted "${name}"`, 'success', {
+                                    duration: 8000,
+                                    actionLabel: 'Undo',
+                                    actionCallback: () => {
+                                        window.electronAPI.undoFileOperation().then(undoResult => {
+                                            if (undoResult.success) {
+                                                showToast(`Restored "${name}"`, 'success');
+                                                if (currentFolderPath) {
+                                                    invalidateFolderCache(currentFolderPath);
+                                                    const st = gridContainer.scrollTop;
+                                                    loadVideos(currentFolderPath, false, st);
+                                                }
+                                            } else {
+                                                showToast(`Undo failed: ${undoResult.error}`, 'error');
+                                            }
+                                        }).catch(err => {
+                                            showToast(`Undo failed: ${friendlyError(err)}`, 'error');
+                                        });
+                                    }
+                                });
+                                if (currentFolderPath) {
+                                    invalidateFolderCache(currentFolderPath);
+                                    const previousScrollTop = gridContainer.scrollTop;
+                                    loadVideos(currentFolderPath, false, previousScrollTop);
+                                }
+                            } else {
+                                showToast(`Could not delete file: ${friendlyError(result.error)}`, 'error');
+                            }
+                        }).catch(err => {
+                            setStatusActivity('');
+                            showToast(`Could not delete file: ${friendlyError(err)}`, 'error');
+                        });
+                    }
+                }
+                return;
+            }
         }
 
         // Rename focused file

@@ -306,7 +306,8 @@ function _initWorkerSlot(slot, params) {
             type: 'init',
             visionPath: params.visionPath,
             textPath: params.textPath,
-            threads: params.threads || 4
+            threads: params.threads || 4,
+            gpuMode: params.gpuMode === true
         });
     });
 }
@@ -323,8 +324,8 @@ function ensureClipInferencePool() {
     return anyAlive;
 }
 
-function clipWorkerInit(visionPath, textPath, threads) {
-    _clipInitParams = { visionPath, textPath, threads };
+function clipWorkerInit(visionPath, textPath, threads, gpuMode) {
+    _clipInitParams = { visionPath, textPath, threads, gpuMode: gpuMode === true };
     if (!ensureClipInferencePool()) return Promise.resolve(false);
     const initPromises = clipInferenceWorkers.map((slot) =>
         slot ? _initWorkerSlot(slot, _clipInitParams) : Promise.resolve(false)
@@ -3707,6 +3708,95 @@ function getClipCacheDir() {
     return path.join(app.getPath('userData'), 'clip-models');
 }
 
+// --- GPU acceleration state ---
+// Sentinel = "GPU session creation in progress". If it's still here on startup,
+// the previous GPU attempt crashed (likely DirectML segfault bypassing error handling).
+// Known-bad = persistent flag set after a sentinel-detected crash. User resets via Settings.
+function getGpuSentinelPath() {
+    return path.join(app.getPath('userData'), 'clip-gpu-attempted.lock');
+}
+function getGpuKnownBadPath() {
+    return path.join(app.getPath('userData'), 'clip-gpu-known-bad.flag');
+}
+let _clipLastGpuProvider = null; // 'directml' | 'cuda' | 'coreml' | 'cpu' | null
+let _clipLastGpuFallbackReason = null; // human-readable string when we forced CPU in 'auto' mode
+
+// Resolve the effective GPU mode for a clip-init call.
+// Returns { useGpu: bool, source: string, provider: string|null, note: string|null }
+// Precedence: CLIP_GPU env var > explicit 'on'/'off' from renderer > 'auto' (probe + sentinel)
+async function resolveClipGpuMode(requestedMode) {
+    // Env var override (debug hatch) wins over everything.
+    const envRaw = process.env.CLIP_GPU;
+    if (envRaw === '0' || envRaw === '') {
+        return { useGpu: false, source: 'env CLIP_GPU=0', provider: null, note: null };
+    }
+    if (envRaw && envRaw !== '0') {
+        return { useGpu: true, source: 'env CLIP_GPU=1', provider: null, note: null };
+    }
+
+    const mode = (requestedMode === 'on' || requestedMode === 'off' || requestedMode === 'auto')
+        ? requestedMode : 'auto';
+
+    if (mode === 'off') {
+        return { useGpu: false, source: 'user setting: off', provider: null, note: null };
+    }
+    if (mode === 'on') {
+        return { useGpu: true, source: 'user setting: on', provider: null, note: null };
+    }
+
+    // 'auto': sentinel crash guard, then persistent known-bad flag, then probe.
+    const sentinel = getGpuSentinelPath();
+    const knownBad = getGpuKnownBadPath();
+
+    if (fs.existsSync(sentinel)) {
+        // Last attempt crashed mid-init. Promote to persistent known-bad.
+        try { fs.writeFileSync(knownBad, `set after sentinel detected on ${new Date().toISOString()}\n`); } catch {}
+        try { fs.unlinkSync(sentinel); } catch {}
+        const note = 'GPU init crashed on previous run — disabled until you reset it in Settings → AI Search.';
+        return { useGpu: false, source: 'crash guard', provider: null, note };
+    }
+
+    if (fs.existsSync(knownBad)) {
+        return { useGpu: false, source: 'known-bad', provider: null, note: 'GPU previously marked bad. Reset in Settings → AI Search to retry.' };
+    }
+
+    // Safe to probe. The probe itself could crash DirectML in theory, but in
+    // practice DirectML init with a 103-byte model is a much lighter path than
+    // loading fp32 CLIP. The sentinel protects the big load either way.
+    try {
+        if (nativeScanner && nativeScanner.probeGpu) {
+            const provider = nativeScanner.probeGpu();
+            if (provider && provider !== 'cpu' && provider !== 'none') {
+                return { useGpu: true, source: 'auto (probe)', provider, note: null };
+            }
+            return { useGpu: false, source: 'auto (probe)', provider: 'cpu', note: null };
+        }
+    } catch (e) {
+        console.warn('[clip] GPU probe failed:', e.message);
+        return { useGpu: false, source: 'auto (probe failed)', provider: null, note: null };
+    }
+    return { useGpu: false, source: 'auto (no probe)', provider: null, note: null };
+}
+
+ipcMain.handle('clip-gpu-reset', async () => {
+    let removed = 0;
+    for (const p of [getGpuSentinelPath(), getGpuKnownBadPath()]) {
+        try { fs.unlinkSync(p); removed++; } catch { /* not present */ }
+    }
+    _clipLastGpuFallbackReason = null;
+    return { ok: true, removed };
+});
+
+ipcMain.handle('clip-gpu-status', async () => {
+    return {
+        lastProvider: _clipLastGpuProvider,
+        fallbackReason: _clipLastGpuFallbackReason,
+        knownBad: fs.existsSync(getGpuKnownBadPath()),
+        sentinelPresent: fs.existsSync(getGpuSentinelPath()),
+        envOverride: process.env.CLIP_GPU || null,
+    };
+});
+
 ipcMain.handle('clip-check-cache', async () => {
     try {
         const cacheDir = getClipCacheDir();
@@ -3720,9 +3810,21 @@ ipcMain.handle('clip-check-cache', async () => {
     }
 });
 
-ipcMain.handle('clip-init', async (event) => {
+ipcMain.handle('clip-init', async (event, payload = {}) => {
     try {
         if (clipModel) return { success: true };
+
+        // Resolve GPU mode first so we know which dtype to download.
+        const requestedMode = payload && typeof payload.gpuMode === 'string' ? payload.gpuMode : 'auto';
+        const resolved = await resolveClipGpuMode(requestedMode);
+        const useGpu = resolved.useGpu;
+        console.log(`[clip] GPU mode: ${useGpu ? 'on' : 'off'} (${resolved.source}${resolved.provider ? ', provider=' + resolved.provider : ''})`);
+        if (resolved.note) {
+            _clipLastGpuFallbackReason = resolved.note;
+            try { event.sender.send('clip-gpu-fallback', { reason: resolved.note, source: resolved.source }); } catch {}
+        } else {
+            _clipLastGpuFallbackReason = null;
+        }
 
         const transformers = require('@huggingface/transformers');
 
@@ -3741,12 +3843,10 @@ ipcMain.handle('clip-init', async (event) => {
         // Explicitly specify which ONNX file to use for each model.
         // Without this, the library caches by repo name and both models
         // end up sharing the same (vision) ONNX session.
-        // When CLIP_GPU is set we need the full-precision model files for the
-        // native DirectML/CoreML execution providers (they can't handle the
-        // int8 quantized graph). Defaults to q8 for smaller download + fast CPU.
-        const gpuMode = process.env.CLIP_GPU && process.env.CLIP_GPU !== '0';
-        const visionOpts = { ...opts, model_file_name: 'vision_model', dtype: gpuMode ? 'fp32' : 'q8' };
-        const textOpts   = { ...opts, model_file_name: 'text_model',   dtype: gpuMode ? 'fp32' : 'q8' };
+        // GPU mode needs full-precision models for DirectML/CUDA/CoreML (int8
+        // quantized graphs are not reliable on GPU). CPU uses q8 (smaller, faster).
+        const visionOpts = { ...opts, model_file_name: 'vision_model', dtype: useGpu ? 'fp32' : 'q8' };
+        const textOpts   = { ...opts, model_file_name: 'text_model',   dtype: useGpu ? 'fp32' : 'q8' };
 
         const [processor, visionModel] = await Promise.all([
             AutoProcessor.from_pretrained(MODEL_NAME, opts),
@@ -3763,46 +3863,69 @@ ipcMain.handle('clip-init', async (event) => {
         if (!clipPreprocessPool) clipPreprocessPool = new ClipPreprocessPool();
 
         // Native Rust CLIP: load ONNX sessions inside a Node worker_thread.
-        // Bypasses onnxruntime-node's ABI-incompat-with-workers problem entirely:
-        // the Rust NAPI addon loads cleanly in any JS thread, so inference runs
-        // fully off the main process.
-        //
-        // GPU acceleration: set CLIP_GPU=1 to use DirectML (Windows) or CoreML (Mac).
-        // GPU requires the non-quantized model files; we auto-download them on first use.
+        // GPU acceleration uses DirectML / CUDA / CoreML (chosen by ORT based on
+        // EP priority). Sentinel file protects against DirectML crashes.
         if (nativeScanner && nativeScanner.clipInit) {
             try {
-                const gpuEnabled = process.env.CLIP_GPU && process.env.CLIP_GPU !== '0';
                 const cacheDir = getClipCacheDir();
                 const modelRoot = path.join(cacheDir, 'Xenova', 'clip-vit-base-patch32', 'onnx');
 
-                // GPU prefers full fp32 models; CPU prefers quantized (faster int8 on modern CPUs)
+                // GPU prefers full fp32 models; CPU prefers quantized
                 const pick = (base) => {
                     const full = path.join(modelRoot, `${base}.onnx`);
                     const quant = path.join(modelRoot, `${base}_quantized.onnx`);
-                    if (gpuEnabled) {
+                    if (useGpu) {
                         if (fs.existsSync(full)) return full;
-                        console.warn(`[clip] CLIP_GPU set but ${base}.onnx not found; using quantized (GPU may crash)`);
+                        console.warn(`[clip] GPU mode but ${base}.onnx not found; falling back to CPU with quantized`);
                         return fs.existsSync(quant) ? quant : null;
                     }
                     return fs.existsSync(quant) ? quant : (fs.existsSync(full) ? full : null);
                 };
                 const visionPath = pick('vision_model');
                 const textPath = pick('text_model');
+                // If we wanted GPU but had to fall back to quantized models, force CPU.
+                const effectiveGpu = useGpu && visionPath && visionPath.endsWith('.onnx') && !visionPath.includes('_quantized');
+
                 if (visionPath && textPath) {
+                    const sentinel = getGpuSentinelPath();
+                    if (effectiveGpu) {
+                        try { fs.writeFileSync(sentinel, `clip-init started ${new Date().toISOString()}\n`); } catch {}
+                    }
                     const t0 = Date.now();
-                    const ok = await clipWorkerInit(visionPath, textPath, 4);
+                    let ok = false;
+                    try {
+                        ok = await clipWorkerInit(visionPath, textPath, 4, effectiveGpu);
+                    } catch (initErr) {
+                        console.warn('[clip] GPU worker init threw:', initErr.message);
+                        ok = false;
+                    }
+                    // Clean sentinel — if we got here, no crash happened.
+                    if (effectiveGpu) { try { fs.unlinkSync(sentinel); } catch {} }
+
+                    if (!ok && effectiveGpu) {
+                        // Recoverable failure (ORT error, not a crash). Retry on CPU.
+                        console.warn('[clip] GPU init failed, retrying with CPU');
+                        _clipLastGpuFallbackReason = 'GPU init failed — using CPU for this session.';
+                        try { event.sender.send('clip-gpu-fallback', { reason: _clipLastGpuFallbackReason, source: 'runtime fallback' }); } catch {}
+                        ok = await clipWorkerInit(visionPath, textPath, 4, false);
+                        _clipLastGpuProvider = ok ? 'cpu' : null;
+                    } else if (ok) {
+                        _clipLastGpuProvider = effectiveGpu ? (resolved.provider || 'gpu') : 'cpu';
+                    }
                     if (ok) {
-                        console.log(`[clip] native ONNX sessions loaded in worker in ${Date.now() - t0}ms (gpu=${gpuEnabled ? 'on' : 'off'})`);
+                        console.log(`[clip] native ONNX sessions loaded in worker in ${Date.now() - t0}ms (gpu=${_clipLastGpuProvider})`);
                     }
                 } else {
                     console.warn('[clip] native load skipped: model files not found on disk');
                 }
             } catch (e) {
+                // Safety net: scrub sentinel if we bailed out early.
+                try { fs.unlinkSync(getGpuSentinelPath()); } catch {}
                 console.warn('[clip] native load failed, falling back to onnxruntime-node:', e.message);
             }
         }
 
-        return { success: true };
+        return { success: true, gpuMode: _clipLastGpuProvider };
     } catch (err) {
         clipModel = null;
         console.error('clip-init error:', err);

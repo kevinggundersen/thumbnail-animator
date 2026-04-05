@@ -896,19 +896,17 @@ const CLIP_IMAGE_SIZE: usize = 224;
 const CLIP_CHANNELS: usize = 3;
 const CLIP_PIXEL_COUNT: usize = CLIP_IMAGE_SIZE * CLIP_IMAGE_SIZE * CLIP_CHANNELS;
 
-fn build_session(path: &str, intra_threads: usize) -> Result<ort::session::Session> {
+fn build_session(path: &str, intra_threads: usize, gpu_enabled: bool) -> Result<ort::session::Session> {
     use ort::session::{Session, builder::GraphOptimizationLevel};
     use ort::execution_providers::ExecutionProviderDispatch;
 
-    // GPU execution providers are opt-in via env var because:
-    //   - DirectML can crash (segfault) on some quantized ONNX graphs, and
-    //     the crash happens inside DirectX, bypassing Rust error handling.
+    // GPU execution provider behaviour is decided by the caller (main.js
+    // resolves user setting + sentinel crash guard + CLIP_GPU env override).
+    //   - DirectML can crash (segfault) on some quantized ONNX graphs,
+    //     bypassing Rust error handling — handled by sentinel in main.js.
     //   - CoreML is usually safe on Apple Silicon but still experimental.
-    //
-    // To enable GPU acceleration: set CLIP_GPU=1 in the environment.
-    // Quantized (int8) models typically need CLIP_GPU=0 and the non-quantized
-    // *.onnx files for reliable GPU inference.
-    let gpu_enabled = std::env::var("CLIP_GPU").map(|v| v != "0" && !v.is_empty()).unwrap_or(false);
+    //   - Quantized (int8) models typically need CPU; fp32 models are
+    //     required for reliable GPU inference.
 
     let mut providers: Vec<ExecutionProviderDispatch> = Vec::new();
 
@@ -962,16 +960,103 @@ fn build_session(path: &str, intra_threads: usize) -> Result<ort::session::Sessi
 ///
 /// Both paths should point to the *.onnx files produced by Hugging Face's
 /// Xenova/clip-vit-base-patch32 export (vision_model.onnx / text_model.onnx).
+///
+/// `gpu_mode` controls GPU execution provider use:
+///   - `Some(true)`: try DirectML (Windows) / CUDA (NVIDIA) / CoreML (Mac) before CPU
+///   - `Some(false)` or `None`: CPU only (falls back to `CLIP_GPU=1` env for back-compat when None)
+///
 /// Returns true on success.
 #[napi]
-pub fn clip_init(vision_model_path: String, text_model_path: String, intra_threads: Option<u32>) -> Result<bool> {
+pub fn clip_init(
+    vision_model_path: String,
+    text_model_path: String,
+    intra_threads: Option<u32>,
+    gpu_mode: Option<bool>,
+) -> Result<bool> {
     let threads = intra_threads.unwrap_or(4).max(1) as usize;
-    let vision = build_session(&vision_model_path, threads)?;
-    let text = build_session(&text_model_path, threads)?;
+    let gpu_enabled = gpu_mode.unwrap_or_else(|| {
+        // Backwards-compat: if caller didn't pass gpu_mode, honour CLIP_GPU env
+        std::env::var("CLIP_GPU").map(|v| v != "0" && !v.is_empty()).unwrap_or(false)
+    });
+    let vision = build_session(&vision_model_path, threads, gpu_enabled)?;
+    let text = build_session(&text_model_path, threads, gpu_enabled)?;
     let mut state = CLIP_SESSIONS.lock().map_err(|_| Error::from_reason("clip state poisoned"))?;
     state.vision = Some(vision);
     state.text = Some(text);
     Ok(true)
+}
+
+/// Probe whether a GPU execution provider can initialise on this machine.
+///
+/// Loads a tiny embedded Identity ONNX model with DirectML/CUDA/CoreML
+/// providers. Returns:
+///   - "directml" / "cuda" / "coreml" — a GPU provider initialised successfully
+///   - "cpu" — no GPU provider was available, CPU fallback works
+///   - Err(...) — ORT failed entirely (unusual)
+///
+/// Note: DirectML can still segfault during real session work even if the
+/// probe passes. Callers should layer a sentinel file guard on top.
+#[napi]
+pub fn probe_gpu() -> Result<String> {
+    use ort::execution_providers::ExecutionProviderDispatch;
+
+    static PROBE_MODEL: &[u8] = include_bytes!("gpu_probe.onnx");
+
+    // Try each GPU provider in isolation so we can report which one worked.
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    {
+        use ort::execution_providers::CUDAExecutionProvider;
+        let providers: Vec<ExecutionProviderDispatch> =
+            vec![CUDAExecutionProvider::default().with_device_id(0).build()];
+        if try_probe_with(providers, PROBE_MODEL).is_ok() {
+            return Ok("cuda".into());
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use ort::execution_providers::DirectMLExecutionProvider;
+        let providers: Vec<ExecutionProviderDispatch> =
+            vec![DirectMLExecutionProvider::default().with_device_id(0).build()];
+        if try_probe_with(providers, PROBE_MODEL).is_ok() {
+            return Ok("directml".into());
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use ort::execution_providers::CoreMLExecutionProvider;
+        let providers: Vec<ExecutionProviderDispatch> =
+            vec![CoreMLExecutionProvider::default().build()];
+        if try_probe_with(providers, PROBE_MODEL).is_ok() {
+            return Ok("coreml".into());
+        }
+    }
+
+    // CPU probe — sanity check that ORT itself works
+    use ort::execution_providers::CPUExecutionProvider;
+    let providers: Vec<ExecutionProviderDispatch> =
+        vec![CPUExecutionProvider::default().build()];
+    try_probe_with(providers, PROBE_MODEL)
+        .map_err(|e| Error::from_reason(format!("ort cpu probe failed: {}", e)))?;
+    Ok("cpu".into())
+}
+
+fn try_probe_with(
+    providers: Vec<ort::execution_providers::ExecutionProviderDispatch>,
+    model_bytes: &[u8],
+) -> std::result::Result<(), String> {
+    use ort::session::{Session, builder::GraphOptimizationLevel};
+    let mut builder = Session::builder().map_err(|e| e.to_string())?;
+    builder = builder.with_memory_pattern(false).map_err(|e| e.to_string())?;
+    let session = builder
+        .with_execution_providers(providers)
+        .map_err(|e| e.to_string())?
+        .with_optimization_level(GraphOptimizationLevel::Level3)
+        .map_err(|e| e.to_string())?
+        .commit_from_memory(model_bytes)
+        .map_err(|e| e.to_string())?;
+    // Drop immediately — we only wanted to verify provider init
+    drop(session);
+    Ok(())
 }
 
 /// True if both CLIP sessions have been loaded.

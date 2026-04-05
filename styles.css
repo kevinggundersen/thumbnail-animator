@@ -6587,6 +6587,16 @@ video.blow-up-media {
     color: var(--text-secondary);
 }
 
+.ai-status-text-inline {
+    flex: 1;
+    font-size: 11px;
+    color: var(--text-secondary);
+    align-self: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
 .ai-status-dot {
     width: 8px;
     height: 8px;

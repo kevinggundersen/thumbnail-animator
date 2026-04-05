@@ -1931,6 +1931,11 @@ let currentItems = [];
 let aiVisualSearchEnabled = localStorage.getItem('aiVisualSearchEnabled') === 'true';
 let aiModelDownloadConfirmed = localStorage.getItem('aiModelDownloadConfirmed') === 'true';
 let aiAutoScan = localStorage.getItem('aiAutoScan') === 'true';
+// GPU acceleration mode: 'auto' (default, probe hardware) | 'on' (force) | 'off' (CPU only)
+function getClipGpuMode() {
+    const saved = localStorage.getItem('clipGpuMode');
+    return (saved === 'on' || saved === 'off' || saved === 'auto') ? saved : 'auto';
+}
 let aiSimilarityThreshold = parseFloat(localStorage.getItem('aiSimilarityThreshold')) || 0.15;
 let aiClusteringMode = localStorage.getItem('aiClusteringMode') || 'off';
 let aiSearchActive = false;      // Whether the AI search toggle is currently on
@@ -2645,7 +2650,7 @@ async function loadCollectionIntoGrid(collectionId) {
                         modelReady = true;
                     } else if (aiVisualSearchEnabled && aiModelDownloadConfirmed) {
                         setStatusActivity('Loading AI model...');
-                        const init = await window.electronAPI.clipInit();
+                        const init = await window.electronAPI.clipInit(getClipGpuMode());
                         modelReady = init.success;
                     }
                 } catch { /* model unavailable */ }
@@ -2925,7 +2930,7 @@ async function backgroundScanSmartCollection(collectionId) {
                 if (status.loaded) {
                     modelReady = true;
                 } else if (aiVisualSearchEnabled && aiModelDownloadConfirmed) {
-                    const init = await window.electronAPI.clipInit();
+                    const init = await window.electronAPI.clipInit(getClipGpuMode());
                     modelReady = init.success;
                 }
             } catch { /* model unavailable */ }
@@ -3356,7 +3361,7 @@ async function activateFindSimilar(filePath, fileName) {
         try {
             const status = await window.electronAPI.clipStatus();
             if (!status.loaded) {
-                const init = await window.electronAPI.clipInit();
+                const init = await window.electronAPI.clipInit(getClipGpuMode());
                 if (!init.success) {
                     showToast('Could not load AI model', 'error');
                     return;
@@ -9681,6 +9686,9 @@ function bindSettingsTabListeners() {
             tab.classList.add('active');
             const content = document.querySelector(`.settings-tab-content[data-tab="${tab.dataset.tab}"]`);
             if (content) content.classList.add('active');
+            if (tab.dataset.tab === 'ai-search' && typeof window.__refreshClipGpuStatus === 'function') {
+                window.__refreshClipGpuStatus();
+            }
         });
     });
 }
@@ -10422,6 +10430,51 @@ hoverScaleZ200.addEventListener('input', () => {
     if (thresholdValue)  thresholdValue.textContent = `${clipScoreToDisplayPct(aiSimilarityThreshold)}%`;
     if (clusteringSelect) clusteringSelect.value = aiClusteringMode;
 
+    // --- GPU acceleration controls ---
+    const gpuModeSelect = document.getElementById('clip-gpu-mode-select');
+    const gpuResetBtn   = document.getElementById('clip-gpu-reset-btn');
+    const gpuStatusText = document.getElementById('clip-gpu-status-text');
+
+    function refreshGpuStatus() {
+        if (!gpuStatusText || !window.electronAPI.clipGpuStatus) return;
+        window.electronAPI.clipGpuStatus().then((s) => {
+            if (!s) { gpuStatusText.textContent = ''; return; }
+            const parts = [];
+            if (s.lastProvider) parts.push(`using: ${s.lastProvider}`);
+            if (s.envOverride) parts.push(`env: CLIP_GPU=${s.envOverride}`);
+            if (s.knownBad) parts.push('known-bad flag set');
+            if (s.sentinelPresent) parts.push('sentinel present');
+            gpuStatusText.textContent = parts.length ? parts.join(' · ') : 'not initialised';
+        }).catch(() => {});
+    }
+
+    if (gpuModeSelect) {
+        gpuModeSelect.value = getClipGpuMode();
+        gpuModeSelect.addEventListener('change', () => {
+            const val = gpuModeSelect.value;
+            localStorage.setItem('clipGpuMode', val);
+            showToast('GPU setting saved. Restart the app or reload AI to apply.', 'info', { duration: 5000 });
+        });
+    }
+    if (gpuResetBtn) {
+        gpuResetBtn.addEventListener('click', async () => {
+            if (!window.electronAPI.clipGpuReset) return;
+            gpuResetBtn.disabled = true;
+            try {
+                const res = await window.electronAPI.clipGpuReset();
+                showToast(res && res.ok ? 'GPU detection reset. Will re-probe next time AI loads.' : 'Reset failed', res && res.ok ? 'success' : 'error', { duration: 4000 });
+            } catch (e) {
+                showToast('Reset failed: ' + e.message, 'error');
+            } finally {
+                gpuResetBtn.disabled = false;
+                refreshGpuStatus();
+            }
+        });
+    }
+    refreshGpuStatus();
+    // Allow external code (settings tab switch) to refresh this view
+    window.__refreshClipGpuStatus = refreshGpuStatus;
+
     function setAiStatusDot(state) {
         if (!statusDot) return;
         statusDot.classList.remove('loaded', 'loading', 'error');
@@ -10491,7 +10544,7 @@ hoverScaleZ200.addEventListener('input', () => {
     async function doLoadModel() {
         setAiStatus('loading', 'Loading model...');
         try {
-            const result = await window.electronAPI.clipInit();
+            const result = await window.electronAPI.clipInit(getClipGpuMode());
             if (result.success) {
                 setAiStatus('loaded', 'Model loaded');
                 if (aiAutoScan && currentFolderPath) {
@@ -10672,6 +10725,14 @@ hoverScaleZ200.addEventListener('input', () => {
     window.electronAPI.onClipProgress((event, { current, total, phase }) => {
         updateEmbedProgressUI(current, total);
     });
+
+    // GPU fallback notifications from main process
+    if (window.electronAPI.onClipGpuFallback) {
+        window.electronAPI.onClipGpuFallback((_event, info) => {
+            const reason = (info && info.reason) || 'GPU disabled — using CPU.';
+            showToast(reason, 'warning', { duration: 8000 });
+        });
+    }
 })();
 
 // --- Find Similar banner event listeners ---
@@ -10802,7 +10863,7 @@ async function scheduleBackgroundEmbedding(items) {
     try {
         const status = await window.electronAPI.clipStatus();
         if (!status.loaded) {
-            const init = await window.electronAPI.clipInit();
+            const init = await window.electronAPI.clipInit(getClipGpuMode());
             if (!init.success) { hideEmbedProgressUI(); return; }
         }
     } catch { hideEmbedProgressUI(); return; }
@@ -13018,7 +13079,7 @@ async function openAutoTag(filePaths) {
         const status = await window.electronAPI.clipStatus();
         if (!status.loaded) {
             autoTagStatus.textContent = 'Loading AI model...';
-            const init = await window.electronAPI.clipInit();
+            const init = await window.electronAPI.clipInit(getClipGpuMode());
             if (!init.success) {
                 autoTagStatus.textContent = 'Could not load AI model. Enable AI search in settings first.';
                 return;

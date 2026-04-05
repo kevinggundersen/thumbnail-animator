@@ -1146,6 +1146,23 @@
                             <button id="ai-clear-cache-btn" class="settings-action-btn">Clear Embedding Cache</button>
                         </div>
                         <div class="settings-item">
+                            <label class="settings-label">
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">GPU Acceleration</div>
+                                    <div class="settings-item-description">Use DirectML (Windows) / CUDA (NVIDIA) / CoreML (Mac) for faster embedding. Auto probes hardware on startup and falls back to CPU if the GPU session ever crashes.</div>
+                                </div>
+                                <select id="clip-gpu-mode-select" class="settings-select">
+                                    <option value="auto" selected>Auto</option>
+                                    <option value="on">Force on</option>
+                                    <option value="off">Force off (CPU)</option>
+                                </select>
+                            </label>
+                        </div>
+                        <div class="settings-item ai-actions-row">
+                            <button id="clip-gpu-reset-btn" class="settings-action-btn">Reset GPU Detection</button>
+                            <span id="clip-gpu-status-text" class="ai-status-text-inline">&nbsp;</span>
+                        </div>
+                        <div class="settings-item">
                             <div class="ai-status-row">
                                 <span class="ai-status-dot" id="ai-status-dot"></span>
                                 <span id="ai-status-text">Model not loaded</span>

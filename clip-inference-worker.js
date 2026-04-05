@@ -39,7 +39,7 @@ parentPort.on('message', (msg) => {
                     parentPort.postMessage({ type: 'init-result', ok: false, error: 'clipInit not available' });
                     return;
                 }
-                nativeScanner.clipInit(msg.visionPath, msg.textPath, msg.threads || 4);
+                nativeScanner.clipInit(msg.visionPath, msg.textPath, msg.threads || 4, msg.gpuMode === true);
                 parentPort.postMessage({ type: 'init-result', ok: true });
             } catch (err) {
                 parentPort.postMessage({ type: 'init-result', ok: false, error: err.message });

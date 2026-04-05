@@ -2276,6 +2276,8 @@ function setFileRating(filePath, rating) {
 
     // Update all cards with the same path immediately - use updateCardRating which calls updateCardStars
     updateCardRating(filePath, rating);
+    // Canvas grid: schedule redraw so the star row updates on canvas-rendered cards
+    if (window.CG && window.CG.isEnabled()) window.CG.scheduleRender();
 }
 
 function updateCardStars(card, rating, filePath) {
@@ -2348,6 +2350,8 @@ function setFilePinned(filePath, pinned) {
     }
     // Persist to SQLite (fire-and-forget)
     window.electronAPI.dbSetPinned(normalizedPath, pinned);
+    // Canvas grid: pin bar state changed, redraw affected card(s)
+    if (window.CG && window.CG.isEnabled()) window.CG.scheduleRender();
 }
 
 function savePins() {

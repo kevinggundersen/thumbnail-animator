@@ -621,6 +621,11 @@ function vsGetVisibleRange(scrollTop, viewportHeight) {
  */
 function vsUpdateDOM(startIndex, endIndex) {
     if (!vsEnabled) return;
+    // Canvas grid owns rendering when enabled — skip DOM card recycling.
+    if (window.CG && window.CG.isEnabled()) {
+        window.CG.scheduleRender();
+        return;
+    }
 
     // Remove cards outside visible range
     for (const [itemIdx, card] of vsActiveCards) {
@@ -824,6 +829,7 @@ function vsResetCard(card) {
  * Returns { card, isMedia } matching createCardFromItem's interface.
  */
 function vsPopulateExistingCard(card, item) {
+    if (window.CG && window.CG.isEnabled()) return { card, isMedia: false };
     if (item.type === 'group-header') {
         card.className = 'date-group-header';
         card.dataset.groupKey = item.groupKey;
@@ -931,6 +937,12 @@ function vsPopulateExistingCard(card, item) {
 function vsOnScroll() {
     if (!vsEnabled || isWindowMinimized) return;
 
+    // Canvas grid path: route scroll to canvas renderer, skip DOM recycling entirely
+    if (window.CG && window.CG.isEnabled()) {
+        window.CG.scheduleRender();
+        return;
+    }
+
     if (vsScrollRafId) return; // Already scheduled
     vsScrollRafId = requestAnimationFrame(() => {
         vsScrollRafId = null;
@@ -1033,6 +1045,9 @@ function vsInit(items) {
     const result = vsCalculatePositions(items, containerWidth, layoutMode, zoomLevel);
     vsPositions = result.positions;
     vsTotalHeight = result.totalHeight;
+
+    // Notify canvas grid that the items + positions changed
+    if (window.CG) window.CG.invalidateData();
 
     // Set up container for absolute positioning
     gridContainer.classList.add('masonry'); // Always use block+absolute for virtual scroll
@@ -1209,6 +1224,9 @@ function vsUpdateItems(items, options = {}) {
     const result = vsCalculatePositions(items, containerWidth, layoutMode, zoomLevel);
     vsPositions = result.positions;
     vsTotalHeight = result.totalHeight;
+
+    // Notify canvas grid that positions changed
+    if (window.CG) window.CG.invalidateData();
 
     // Update spacer
     if (vsSpacer) {
@@ -4951,6 +4969,13 @@ function _bitmapDiag() {
     );
 }
 
+function evictBitmapEntry(url) {
+    const entry = _bitmapCache.get(url);
+    if (!entry) return;
+    try { entry.bitmap.close(); } catch {}
+    _bitmapCache.delete(url);
+}
+
 function getCachedBitmap(url) {
     const entry = _bitmapCache.get(url);
     if (!entry) { _bitmapStats.misses++; _bitmapDiag(); return null; }
@@ -6528,9 +6553,13 @@ function renderItems(items, preservedScrollTop = null) {
         spacer.remove();
     }
 
-    // Clear container
-    while (gridContainer.firstChild) {
-        gridContainer.removeChild(gridContainer.firstChild);
+    // Clear container (preserve canvas-grid infrastructure elements)
+    {
+        const children = Array.from(gridContainer.children);
+        for (const child of children) {
+            if (child.id && child.id.startsWith('cg-')) continue;
+            gridContainer.removeChild(child);
+        }
     }
     currentHoveredCard = null;
     focusedCardIndex = -1;
@@ -8760,9 +8789,21 @@ function isDragWithFiles(e) {
     return e.dataTransfer.types.includes('Files');
 }
 
+// Helper: resolve folder card under pointer for drag ops. Works for both
+// DOM grid (closest) and canvas grid (hit-test via CG).
+function _resolveDragFolderCard(e) {
+    const dom = e.target.closest('.folder-card');
+    if (dom) return dom;
+    if (window.CG && window.CG.isEnabled() && typeof window.CG.targetFromEvent === 'function') {
+        const vcard = window.CG.targetFromEvent(e);
+        if (vcard && vcard.closest && vcard.closest('.folder-card')) return vcard;
+    }
+    return null;
+}
+
 // Drop on grid — copy external files into current folder
 gridContainer.addEventListener('dragenter', (e) => {
-    const folderCard = e.target.closest('.folder-card');
+    const folderCard = _resolveDragFolderCard(e);
     const isInternal = e.dataTransfer.types.includes('application/x-thumbnail-animator-path');
     if (folderCard || isInternal || (isDragWithFiles(e) && currentFolderPath)) {
         e.preventDefault();
@@ -8770,15 +8811,16 @@ gridContainer.addEventListener('dragenter', (e) => {
 });
 
 gridContainer.addEventListener('dragover', (e) => {
-    const folderCard = e.target.closest('.folder-card');
+    const folderCard = _resolveDragFolderCard(e);
     const isInternal = e.dataTransfer.types.includes('application/x-thumbnail-animator-path');
     if (folderCard || isInternal || (isDragWithFiles(e) && currentFolderPath)) {
         e.preventDefault();
         const isMove = folderCard && isInternal;
         e.dataTransfer.dropEffect = isMove ? 'move' : 'copy';
         if (folderCard) {
-            folderCard.classList.add('drag-over');
-            const folderName = folderCard.querySelector('.folder-name')?.textContent || 'folder';
+            if (folderCard.classList && folderCard.classList.add) folderCard.classList.add('drag-over');
+            const folderName = folderCard.dataset ? (folderCard.dataset.name || 'folder')
+                : (folderCard.querySelector && folderCard.querySelector('.folder-name')?.textContent) || 'folder';
             showDragLabel(e, isMove ? 'Move to' : 'Copy to', folderName);
         } else if (!isInternal && currentFolderPath) {
             const currentName = currentFolderPath.split(/[/\\]/).pop();
@@ -8790,8 +8832,8 @@ gridContainer.addEventListener('dragover', (e) => {
 });
 
 gridContainer.addEventListener('dragleave', (e) => {
-    const folderCard = e.target.closest('.folder-card');
-    if (folderCard) {
+    const folderCard = _resolveDragFolderCard(e);
+    if (folderCard && folderCard.classList && folderCard.classList.remove) {
         folderCard.classList.remove('drag-over');
     }
     // Hide label when leaving grid entirely
@@ -8811,7 +8853,7 @@ gridContainer.addEventListener('drop', async (e) => {
     if (paths.length === 0) return;
 
     // Check if dropped on a folder card
-    const folderCard = e.target.closest('.folder-card');
+    const folderCard = _resolveDragFolderCard(e);
     if (folderCard) {
         const destFolder = folderCard.dataset.folderPath;
         if (destFolder) {
@@ -15731,3 +15773,97 @@ document.getElementById('reset-all-settings-btn')?.addEventListener('click', asy
 
 // Initialize shortcut settings tab
 renderShortcutSettings();
+
+// ── Canvas Grid bridge ────────────────────────────────────────────────
+// Exposes the renderer's layout + state + actions to canvas-grid.js.
+// canvas-grid.js reads from this host to paint without owning any DOM.
+window.__cgHost = {
+    // State getters
+    get items() { return vsSortedItems; },
+    get positions() { return vsPositions; },
+    get totalHeight() { return vsTotalHeight; },
+    get layoutMode() { return layoutMode; },
+    get zoomLevel() { return zoomLevel; },
+    get cardInfoSettings() { return cardInfoSettings; },
+    get selection() { return selectedCardPaths; },
+    get currentFolderPath() { return currentFolderPath; },
+    get recursiveEnabled() { return recursiveSearchEnabled; },
+    get collapsedDateGroups() { return collapsedDateGroups; },
+    get gridContainer() { return gridContainer; },
+    get visibleRange() { return vsGetVisibleRange; },
+
+    // Helpers (exposed as functions)
+    isFilePinned: (p) => (typeof isFilePinned === 'function' ? isFilePinned(p) : false),
+    getFileRating: (p) => (typeof getFileRating === 'function' ? getFileRating(p) : 0),
+    getExtensionColor: (ext) => (typeof getExtensionColor === 'function' ? getExtensionColor(ext) : '#888'),
+    hexToRgba: (h, o) => (typeof hexToRgba === 'function' ? hexToRgba(h, o) : h),
+    normalizePath: (p) => (typeof normalizePath === 'function' ? normalizePath(p) : p),
+    getCachedBitmap: (url) => (typeof getCachedBitmap === 'function' ? getCachedBitmap(url) : null),
+    prefetchImageBitmap: (url, w, h) => (typeof prefetchImageBitmap === 'function' ? prefetchImageBitmap(url, w, h) : null),
+    evictBitmap: (url) => { if (typeof evictBitmapEntry === 'function') evictBitmapEntry(url); },
+    requestImageThumbnailUrl: (p, size) => (typeof requestImageThumbnailUrl === 'function' ? requestImageThumbnailUrl(p, size) : Promise.resolve(null)),
+    getClosestAspectRatio: (w, h) => (typeof getClosestAspectRatio === 'function' ? getClosestAspectRatio(w, h) : '16:9'),
+    formatBytesForCardLabel: (b) => (typeof formatBytesForCardLabel === 'function' ? formatBytesForCardLabel(b) : String(b)),
+    formatCardDate: (t) => (typeof formatCardDate === 'function' ? formatCardDate(t) : ''),
+    fileTagsGetter: (p) => {
+        // fileTagsCache lives in renderer-features.js
+        if (typeof fileTagsCache !== 'undefined' && fileTagsCache && fileTagsCache.get) {
+            return fileTagsCache.get(normalizePath(p)) || null;
+        }
+        return null;
+    },
+
+    // Actions (called back by canvas-grid on user interaction)
+    openLightbox: (idx) => {
+        const item = vsSortedItems[idx];
+        if (!item || item.type === 'folder' || item.type === 'group-header') return;
+        openLightbox(item.url, item.path, item.name);
+    },
+    navigateToFolder: (path) => {
+        if (typeof navigateToFolder === 'function') navigateToFolder(path);
+    },
+    toggleDateGroup: (key) => {
+        if (typeof toggleDateGroup === 'function') toggleDateGroup(key);
+    },
+    setFileRating: (path, rating) => {
+        if (typeof setFileRating === 'function') setFileRating(path, rating);
+    },
+    toggleSelection: (idx, modifier /* 'ctrl'|'shift'|'none' */) => {
+        const item = vsSortedItems[idx];
+        if (!item) return;
+        if (modifier === 'ctrl') {
+            if (selectedCardPaths.has(item.path)) selectedCardPaths.delete(item.path);
+            else selectedCardPaths.add(item.path);
+            lastSelectedCardIndex = idx;
+        } else if (modifier === 'shift' && lastSelectedCardIndex >= 0) {
+            const lo = Math.min(lastSelectedCardIndex, idx);
+            const hi = Math.max(lastSelectedCardIndex, idx);
+            for (let i = lo; i <= hi; i++) {
+                const it = vsSortedItems[i];
+                if (it && it.path && it.type !== 'folder' && it.type !== 'group-header') {
+                    selectedCardPaths.add(it.path);
+                }
+            }
+        } else {
+            selectedCardPaths.clear();
+            selectedCardPaths.add(item.path);
+            lastSelectedCardIndex = idx;
+        }
+        if (typeof updateSelectionStatusBar === 'function') updateSelectionStatusBar();
+        if (window.CG) window.CG.invalidateSelection();
+    },
+    showContextMenu: (event, virtualCard) => {
+        if (typeof showContextMenu === 'function') showContextMenu(event, virtualCard);
+    },
+    destroyVideoElement: (v) => {
+        if (typeof destroyVideoElement === 'function') destroyVideoElement(v);
+    },
+    destroyImageElement: (img) => {
+        if (typeof destroyImageElement === 'function') destroyImageElement(img);
+    }
+};
+
+// Tell canvas-grid to start listening now that the host is ready
+if (window.CG && typeof window.CG.attachHost === 'function') {
+    window.CG.attachHost(window.__cgHost);
+}

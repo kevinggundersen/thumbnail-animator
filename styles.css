@@ -136,7 +136,7 @@ body {
 }
 
 /* ===== Button Press Feedback ===== */
-button:active:not(:disabled):not(.lightbox-nav-btn) {
+button:active:not(:disabled):not(.lightbox-nav-btn):not(.lb-inspector-toggle) {
     transform: scale(0.97);
     transition-duration: 0.05s;
 }
@@ -9118,9 +9118,10 @@ body.reduce-motion *::after {
     align-items: center;
     justify-content: center;
     padding: 0;
-    transition: background 0.15s, color 0.15s;
+    transition: background 0.15s, color 0.15s, transform 0.1s;
 }
 .lb-inspector-toggle:hover { background: var(--bg-hover); color: var(--accent); }
+.lb-inspector-toggle:active { transform: translateY(-50%) scale(0.92); }
 .lb-inspector.collapsed .lb-inspector-toggle svg { transform: rotate(180deg); }
 
 .lb-inspector-scroll {

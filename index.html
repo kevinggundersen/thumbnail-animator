@@ -303,9 +303,18 @@
                         <option value="rating">Rating</option>
                     </select>
                 </div>
+                <div class="search-saved-presets">
+                    <div id="saved-search-chips" class="saved-search-chips"></div>
+                </div>
                 <div class="advanced-search-buttons">
                     <button id="apply-advanced-search" class="search-btn">Apply</button>
                     <button id="clear-advanced-search" class="search-btn">Clear</button>
+                    <button id="save-advanced-search" class="search-btn" title="Save current filters as a preset">Save&hellip;</button>
+                </div>
+                <div id="save-preset-inline" class="save-preset-inline hidden">
+                    <input type="text" id="save-preset-name" placeholder="Preset name" maxlength="40">
+                    <button id="save-preset-confirm" class="search-btn">Save</button>
+                    <button id="save-preset-cancel" class="search-btn">Cancel</button>
                 </div>
             </div>
         </div>
@@ -549,6 +558,23 @@
             </div>
         </div>
     </div>
+    <!-- Welcome card (first run only) -->
+    <div id="welcome-card" class="welcome-card hidden">
+        <div class="welcome-card-header">
+            <h2>Welcome to Thumbnail Animator</h2>
+            <button id="welcome-close" class="welcome-close-btn" title="Close"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+        </div>
+        <p class="welcome-card-subtitle">A few shortcuts to get you started:</p>
+        <div class="welcome-card-tips">
+            <div class="welcome-tip"><kbd>Ctrl+P</kbd><span>Command palette — find any action</span></div>
+            <div class="welcome-tip"><kbd>?</kbd><span>Full keyboard shortcut reference</span></div>
+            <div class="welcome-tip"><kbd>Ctrl+F</kbd><span>Search the current folder</span></div>
+            <div class="welcome-tip"><kbd>Ctrl+A</kbd><span>Select all visible files</span></div>
+            <div class="welcome-tip"><kbd>F5</kbd><span>Start slideshow</span></div>
+        </div>
+        <button id="welcome-dismiss" class="welcome-dismiss-btn">Got it</button>
+    </div>
+
     <!-- Keyboard Shortcuts Cheat Sheet (toggle with ?) -->
     <div id="shortcuts-overlay" class="shortcuts-overlay hidden">
         <div class="shortcuts-dialog">

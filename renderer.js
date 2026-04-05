@@ -2110,6 +2110,32 @@ let lightboxItems = []; // Filtered items for lightbox navigation
 // Track star ratings
 let fileRatings = {}; // Map<filePath, rating (1-5)>
 
+// App-level undo stack for metadata operations (ratings, tags, pins).
+// File operations (rename/move/delete) are undone via main.js's own stack.
+const metadataUndoStack = [];
+const METADATA_UNDO_LIMIT = 50;
+let _skipMetadataUndo = false;
+
+function pushMetadataUndo(label, undoFn) {
+    if (_skipMetadataUndo || typeof undoFn !== 'function') return;
+    metadataUndoStack.push({ label, undoFn });
+    if (metadataUndoStack.length > METADATA_UNDO_LIMIT) {
+        metadataUndoStack.shift();
+    }
+}
+
+async function undoLastMetadataOp() {
+    const entry = metadataUndoStack.pop();
+    if (!entry) return null;
+    _skipMetadataUndo = true;
+    try {
+        await entry.undoFn();
+    } finally {
+        _skipMetadataUndo = false;
+    }
+    return entry.label;
+}
+
 // Track advanced search filters
 let advancedSearchFilters = {
     sizeOperator: '',
@@ -3841,6 +3867,23 @@ async function getPluginMenuItems() {
 
 // Warm the plugin cache so the first context menu open doesn't flicker items in async
 setTimeout(() => { getPluginMenuItems(); }, 0);
+
+// Show first-run welcome card
+(function initWelcomeCard() {
+    if (localStorage.getItem('welcomeDismissed') === 'true') return;
+    const card = document.getElementById('welcome-card');
+    if (!card) return;
+    // Delay so it doesn't compete with initial render
+    setTimeout(() => { card.classList.remove('hidden'); }, 800);
+    const dismiss = () => {
+        card.classList.add('hidden');
+        localStorage.setItem('welcomeDismissed', 'true');
+    };
+    const closeBtn = document.getElementById('welcome-close');
+    const dismissBtn = document.getElementById('welcome-dismiss');
+    if (closeBtn) closeBtn.addEventListener('click', dismiss);
+    if (dismissBtn) dismissBtn.addEventListener('click', dismiss);
+})();
 
 // Normalize path for consistent cache lookups (handle Windows path variations)
 const _normalizeCache = new Map();

@@ -79,23 +79,31 @@ function initKeyboardShortcuts() {
             return;
         }
 
-        // Undo file operation
+        // Undo: metadata ops (ratings/pins/tags) first, then file operations
         if (matchesShortcut(e, 'undo')) {
             e.preventDefault();
-            window.electronAPI.undoFileOperation().then(result => {
-                if (result.success) {
-                    showToast(`Undo: ${result.description}`, 'success');
-                    if (currentFolderPath) {
-                        invalidateFolderCache(currentFolderPath);
-                        const previousScrollTop = gridContainer.scrollTop;
-                        loadVideos(currentFolderPath, false, previousScrollTop);
-                    }
-                } else if (result.error !== 'Nothing to undo') {
-                    showToast(`Undo failed: ${result.error}`, 'error');
+            (async () => {
+                if (metadataUndoStack.length > 0) {
+                    const label = await undoLastMetadataOp();
+                    if (label) showToast(`Undo: ${label}`, 'success');
+                    return;
                 }
-            }).catch(err => {
-                showToast(`Undo failed: ${friendlyError(err)}`, 'error');
-            });
+                try {
+                    const result = await window.electronAPI.undoFileOperation();
+                    if (result.success) {
+                        showToast(`Undo: ${result.description}`, 'success');
+                        if (currentFolderPath) {
+                            invalidateFolderCache(currentFolderPath);
+                            const previousScrollTop = gridContainer.scrollTop;
+                            loadVideos(currentFolderPath, false, previousScrollTop);
+                        }
+                    } else if (result.error !== 'Nothing to undo') {
+                        showToast(`Undo failed: ${result.error}`, 'error');
+                    }
+                } catch (err) {
+                    showToast(`Undo failed: ${friendlyError(err)}`, 'error');
+                }
+            })();
             return;
         }
 
@@ -2336,6 +2344,7 @@ function getFileRating(filePath) {
 
 function setFileRating(filePath, rating) {
     if (!filePath) return;
+    const prev = getFileRating(filePath);
     // Store with both original and normalized path for consistent lookups
     fileRatings[filePath] = rating;
     const normalizedPath = normalizePath(filePath);
@@ -2349,6 +2358,14 @@ function setFileRating(filePath, rating) {
     updateCardRating(filePath, rating);
     // Canvas grid: schedule redraw so the star row updates on canvas-rendered cards
     if (window.CG && window.CG.isEnabled()) window.CG.scheduleRender();
+
+    // Push onto metadata undo stack unless we're *doing* an undo right now
+    if (prev !== rating) {
+        pushMetadataUndo(
+            `Rating ${rating || 0} \u2192 ${prev || 0}`,
+            () => setFileRating(filePath, prev)
+        );
+    }
 }
 
 function updateCardStars(card, rating, filePath) {
@@ -2411,6 +2428,7 @@ function isFilePinned(filePath) {
 
 function setFilePinned(filePath, pinned) {
     if (!filePath) return;
+    const prev = isFilePinned(filePath);
     const normalizedPath = normalizePath(filePath);
     if (pinned) {
         pinnedFiles[filePath] = true;
@@ -2423,6 +2441,15 @@ function setFilePinned(filePath, pinned) {
     window.electronAPI.dbSetPinned(normalizedPath, pinned);
     // Canvas grid: pin bar state changed, redraw affected card(s)
     if (window.CG && window.CG.isEnabled()) window.CG.scheduleRender();
+
+    // Push onto metadata undo stack
+    if (prev !== pinned) {
+        const name = filePath.split(/[\\/]/).pop();
+        pushMetadataUndo(
+            pinned ? `Pin "${name}"` : `Unpin "${name}"`,
+            () => { setFilePinned(filePath, prev); applySorting(); }
+        );
+    }
 }
 
 function savePins() {
@@ -2459,6 +2486,110 @@ function updateCardRating(filePath, rating) {
             }
         }
     });
+}
+
+// Advanced search — saved presets
+const SAVED_SEARCHES_KEY = 'savedSearches';
+
+function getSavedSearches() {
+    try {
+        const raw = localStorage.getItem(SAVED_SEARCHES_KEY);
+        return raw ? JSON.parse(raw) : [];
+    } catch { return []; }
+}
+
+function writeSavedSearches(list) {
+    localStorage.setItem(SAVED_SEARCHES_KEY, JSON.stringify(list));
+}
+
+function captureAdvancedSearchForm() {
+    return {
+        sizeOperator: document.getElementById('search-size-operator')?.value || '',
+        sizeValue: document.getElementById('search-size-value')?.value || '',
+        dateFrom: document.getElementById('search-date-from')?.value || '',
+        dateTo: document.getElementById('search-date-to')?.value || '',
+        width: document.getElementById('search-width')?.value || '',
+        height: document.getElementById('search-height')?.value || '',
+        aspectRatio: document.getElementById('search-aspect-ratio')?.value || '',
+        starRating: document.getElementById('search-star-rating')?.value || '',
+        recursive: document.getElementById('search-recursive')?.checked || false,
+        advancedSort: document.getElementById('advanced-sort-type')?.value || ''
+    };
+}
+
+function applyAdvancedSearchForm(form) {
+    const set = (id, val) => { const el = document.getElementById(id); if (el) el.value = val || ''; };
+    set('search-size-operator', form.sizeOperator);
+    set('search-size-value', form.sizeValue);
+    set('search-date-from', form.dateFrom);
+    set('search-date-to', form.dateTo);
+    set('search-width', form.width);
+    set('search-height', form.height);
+    set('search-aspect-ratio', form.aspectRatio);
+    set('search-star-rating', form.starRating);
+    const recCb = document.getElementById('search-recursive');
+    if (recCb) recCb.checked = !!form.recursive;
+    set('advanced-sort-type', form.advancedSort);
+}
+
+function renderSavedSearchChips() {
+    const container = document.getElementById('saved-search-chips');
+    if (!container) return;
+    const presets = getSavedSearches();
+    container.innerHTML = '';
+    for (const preset of presets) {
+        const chip = document.createElement('span');
+        chip.className = 'saved-search-chip';
+        chip.title = 'Click to load this preset';
+        chip.dataset.name = preset.name;
+        chip.textContent = preset.name;
+        const del = document.createElement('button');
+        del.className = 'saved-search-chip-delete';
+        del.title = 'Delete preset';
+        del.textContent = '\u00D7';
+        del.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const list = getSavedSearches().filter(p => p.name !== preset.name);
+            writeSavedSearches(list);
+            renderSavedSearchChips();
+        });
+        chip.appendChild(del);
+        chip.addEventListener('click', () => {
+            applyAdvancedSearchForm(preset.form);
+            applyAdvancedSearch();
+        });
+        container.appendChild(chip);
+    }
+}
+
+function saveCurrentAdvancedSearch() {
+    const inline = document.getElementById('save-preset-inline');
+    const input = document.getElementById('save-preset-name');
+    if (!inline || !input) return;
+    inline.classList.remove('hidden');
+    input.value = '';
+    input.focus();
+}
+
+function confirmSavePreset() {
+    const input = document.getElementById('save-preset-name');
+    if (!input) return;
+    const name = (input.value || '').trim();
+    if (!name) { input.focus(); return; }
+    const form = captureAdvancedSearchForm();
+    const list = getSavedSearches().filter(p => p.name !== name);
+    list.push({ name, form });
+    writeSavedSearches(list);
+    renderSavedSearchChips();
+    showToast(`Saved filter "${name}"`, 'success');
+    cancelSavePreset();
+}
+
+function cancelSavePreset() {
+    const inline = document.getElementById('save-preset-inline');
+    const input = document.getElementById('save-preset-name');
+    if (inline) inline.classList.add('hidden');
+    if (input) input.value = '';
 }
 
 // Advanced search
@@ -3023,6 +3154,7 @@ function initNewFeatures() {
                     if (advSortEl) advSortEl.value = sortType || 'name';
                     const recursiveCheckbox = document.getElementById('search-recursive');
                     if (recursiveCheckbox) recursiveCheckbox.checked = recursiveSearchEnabled;
+                    renderSavedSearchChips();
                 }
             }
         });
@@ -3034,6 +3166,22 @@ function initNewFeatures() {
 
     if (clearAdvancedSearchBtn) {
         clearAdvancedSearchBtn.addEventListener('click', clearAdvancedSearch);
+    }
+
+    const saveAdvancedSearchBtn = document.getElementById('save-advanced-search');
+    if (saveAdvancedSearchBtn) {
+        saveAdvancedSearchBtn.addEventListener('click', saveCurrentAdvancedSearch);
+    }
+    const savePresetConfirm = document.getElementById('save-preset-confirm');
+    const savePresetCancel = document.getElementById('save-preset-cancel');
+    const savePresetInput = document.getElementById('save-preset-name');
+    if (savePresetConfirm) savePresetConfirm.addEventListener('click', confirmSavePreset);
+    if (savePresetCancel) savePresetCancel.addEventListener('click', cancelSavePreset);
+    if (savePresetInput) {
+        savePresetInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); confirmSavePreset(); }
+            else if (e.key === 'Escape') { e.preventDefault(); cancelSavePreset(); }
+        });
     }
 
     if (advancedSearchCloseX) {

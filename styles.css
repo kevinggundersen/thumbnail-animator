@@ -4665,7 +4665,8 @@ video.blow-up-media {
     color: var(--bg-primary);
 }
 
-#clear-advanced-search {
+#clear-advanced-search,
+#save-advanced-search {
     background-color: transparent;
     color: var(--text-color);
     border: 1px solid var(--border-default);
@@ -4673,6 +4674,73 @@ video.blow-up-media {
 
 .search-btn:hover {
     opacity: 0.9;
+}
+
+/* Save preset inline editor */
+.save-preset-inline {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    margin-top: 8px;
+}
+.save-preset-inline.hidden { display: none; }
+.save-preset-inline input {
+    flex: 1;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    padding: 6px 10px;
+    font-size: 13px;
+    outline: none;
+}
+.save-preset-inline input:focus { border-color: var(--accent); }
+
+/* Saved search preset chips */
+.search-saved-presets {
+    margin: 8px 0;
+}
+.search-saved-presets:empty { display: none; }
+.saved-search-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+.saved-search-chips:empty { display: none; }
+.saved-search-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 4px 3px 10px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-full);
+    font-size: 11px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: background var(--duration-normal), border-color var(--duration-normal);
+}
+.saved-search-chip:hover {
+    background: var(--bg-hover);
+    border-color: var(--accent);
+    color: var(--text-primary);
+}
+.saved-search-chip-delete {
+    background: transparent;
+    border: none;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    padding: 0 4px;
+    display: flex;
+    align-items: center;
+    border-radius: 50%;
+    width: 16px;
+    height: 16px;
+    justify-content: center;
+}
+.saved-search-chip-delete:hover {
+    background: var(--danger);
+    color: #fff;
 }
 
 /* Progress Indicator */
@@ -6104,6 +6172,81 @@ video.blow-up-media {
     font-size: 13px;
     color: var(--text-tertiary);
 }
+
+/* Welcome Card (first run) */
+.welcome-card {
+    position: fixed;
+    bottom: 52px;
+    right: 20px;
+    width: 380px;
+    padding: 20px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-xl);
+    z-index: var(--z-toast);
+    animation: modal-enter var(--modal-enter-duration) var(--ease-out-expo);
+}
+.welcome-card.hidden { display: none; }
+.welcome-card-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    margin-bottom: 4px;
+}
+.welcome-card-header h2 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+.welcome-close-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: -4px -4px 0 0;
+}
+.welcome-close-btn:hover { color: var(--text-primary); }
+.welcome-card-subtitle {
+    margin: 0 0 12px 0;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+.welcome-card-tips {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+.welcome-tip {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+.welcome-tip kbd {
+    min-width: 52px;
+    text-align: center;
+    flex-shrink: 0;
+}
+.welcome-dismiss-btn {
+    background: var(--accent);
+    color: var(--bg-primary);
+    border: none;
+    padding: 8px 16px;
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background var(--duration-normal);
+}
+.welcome-dismiss-btn:hover { background: var(--accent-hover); }
 
 /* Keyboard Shortcuts Overlay */
 .shortcuts-overlay {

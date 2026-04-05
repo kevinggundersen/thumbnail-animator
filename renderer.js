@@ -208,6 +208,21 @@ const vsState = {
     }
 };
 
+// Cache of "Npx" strings to avoid template-literal allocations in hot scroll paths.
+// Positions round to integers for cache stability; cards only paint to pixel boundaries
+// anyway. Cache is bounded — scrolled grids reuse a few hundred integer positions.
+const _pxCache = new Map();
+function px(n) {
+    const k = n | 0; // truncate float to int (fast, 32-bit safe for our sizes)
+    let s = _pxCache.get(k);
+    if (s === undefined) {
+        s = k + 'px';
+        _pxCache.set(k, s);
+        if (_pxCache.size > 4096) _pxCache.clear(); // bound memory
+    }
+    return s;
+}
+
 // Pre-built star rating templates for fast cloning (built lazily on first use)
 let _starTemplateUnrated = null; // 0-star template
 let _starTemplateCache = new Map(); // rating -> cloneable container
@@ -570,10 +585,19 @@ function vsCalculatePositions(items, containerWidth, mode, zoom) {
  * Binary search to find the range of items visible at current scroll position.
  * Returns { startIndex, endIndex } (endIndex is exclusive).
  */
+// Module-level scratch vars set by vsGetVisibleRange. The hot RAF scroll path reads
+// these directly to avoid allocating a {startIndex, endIndex} object per frame.
+let _vsVisibleStartIndex = 0;
+let _vsVisibleEndIndex = 0;
+
 function vsGetVisibleRange(scrollTop, viewportHeight) {
     const positions = vsState.positions;
     const itemCount = vsState.sortedItems.length;
-    if (!positions || itemCount === 0) return { startIndex: 0, endIndex: 0 };
+    if (!positions || itemCount === 0) {
+        _vsVisibleStartIndex = 0;
+        _vsVisibleEndIndex = 0;
+        return { startIndex: 0, endIndex: 0 };
+    }
 
     const visibleTop = scrollTop - VS_BUFFER_PX;
     const visibleBottom = scrollTop + viewportHeight + VS_BUFFER_PX;
@@ -615,6 +639,8 @@ function vsGetVisibleRange(scrollTop, viewportHeight) {
         }
     }
 
+    _vsVisibleStartIndex = startIndex;
+    _vsVisibleEndIndex = endIndex;
     return { startIndex, endIndex };
 }
 
@@ -691,13 +717,13 @@ function vsUpdateDOM(startIndex, endIndex) {
             // Update position (compositor-only) and size (layout) independently
             // so that pure scroll-position updates skip layout work entirely.
             if (card._vsLeft !== newLeft || card._vsTop !== newTop) {
-                card.style.translate = `${newLeft}px ${newTop}px`;
+                card.style.translate = px(newLeft) + ' ' + px(newTop);
                 card._vsLeft = newLeft;
                 card._vsTop = newTop;
             }
             if (card._vsWidth !== newWidth || card._vsHeight !== newHeight) {
-                card.style.width = `${newWidth}px`;
-                card.style.height = `${newHeight}px`;
+                card.style.width = px(newWidth);
+                card.style.height = px(newHeight);
                 card._vsWidth = newWidth;
                 card._vsHeight = newHeight;
             }
@@ -729,9 +755,9 @@ function vsUpdateDOM(startIndex, endIndex) {
 
         // Position absolutely; translate is compositor-only, width/height trigger layout
         card.style.position = 'absolute';
-        card.style.translate = `${left}px ${top}px`;
-        card.style.width = `${width}px`;
-        card.style.height = `${height}px`;
+        card.style.translate = px(left) + ' ' + px(top);
+        card.style.width = px(width);
+        card.style.height = px(height);
         card.style.paddingBottom = '0';
         card.style.opacity = '1';
         card.style.visibility = 'visible';
@@ -949,6 +975,44 @@ let _vsLastScrollTop = 0;
 let _vsLastScrollTime = 0;
 const VS_FAST_SCROLL_PX_PER_SEC = 2000;
 
+// Hoisted callbacks to avoid allocating closures every scroll frame.
+function _vsScrollRafCallback() {
+    vsState.scrollRafId = null;
+    invalidateScrollCaches();
+    const scrollTop = gridContainer.scrollTop;
+    const viewportHeight = gridContainer.clientHeight;
+    vsGetVisibleRange(scrollTop, viewportHeight);
+    const startIndex = _vsVisibleStartIndex;
+    const endIndex = _vsVisibleEndIndex;
+
+    // Only update if range changed
+    if (startIndex !== vsState.lastStartIndex || endIndex !== vsState.lastEndIndex) {
+        vsUpdateDOM(startIndex, endIndex);
+    }
+
+    // Compute scroll velocity; skip media-load safety net during fast scroll
+    // to avoid creating thumbnails the user is scrolling past. The scroll-settle
+    // debounce below will call vsEnsureVisibleMedia once scrolling stops.
+    const now = performance.now();
+    const dt = now - _vsLastScrollTime;
+    const velocity = dt > 0 ? Math.abs(scrollTop - _vsLastScrollTop) / dt * 1000 : 0;
+    _vsLastScrollTop = scrollTop;
+    _vsLastScrollTime = now;
+    if (velocity < VS_FAST_SCROLL_PX_PER_SEC) {
+        // Guarantee every card currently in the viewport has media loading.
+        // This bypasses IntersectionObserver entirely — using pre-computed
+        // positions from the Float64Array to check visibility in O(active cards).
+        vsEnsureVisibleMedia(scrollTop, viewportHeight);
+    }
+}
+
+function _vsScrollSettleCallback() {
+    invalidateScrollCaches();
+    runCleanupCycle();
+    // Catch up on any visible cards whose media was deferred during fast scroll
+    vsEnsureVisibleMedia(gridContainer.scrollTop, gridContainer.clientHeight);
+}
+
 /**
  * Handle scroll events for virtual scrolling.
  */
@@ -962,33 +1026,7 @@ function vsOnScroll() {
     }
 
     if (vsState.scrollRafId) return; // Already scheduled
-    vsState.scrollRafId = requestAnimationFrame(() => {
-        vsState.scrollRafId = null;
-        invalidateScrollCaches();
-        const scrollTop = gridContainer.scrollTop;
-        const viewportHeight = gridContainer.clientHeight;
-        const { startIndex, endIndex } = vsGetVisibleRange(scrollTop, viewportHeight);
-
-        // Only update if range changed
-        if (startIndex !== vsState.lastStartIndex || endIndex !== vsState.lastEndIndex) {
-            vsUpdateDOM(startIndex, endIndex);
-        }
-
-        // Compute scroll velocity; skip media-load safety net during fast scroll
-        // to avoid creating thumbnails the user is scrolling past. The scroll-settle
-        // debounce below will call vsEnsureVisibleMedia once scrolling stops.
-        const now = performance.now();
-        const dt = now - _vsLastScrollTime;
-        const velocity = dt > 0 ? Math.abs(scrollTop - _vsLastScrollTop) / dt * 1000 : 0;
-        _vsLastScrollTop = scrollTop;
-        _vsLastScrollTime = now;
-        if (velocity < VS_FAST_SCROLL_PX_PER_SEC) {
-            // Guarantee every card currently in the viewport has media loading.
-            // This bypasses IntersectionObserver entirely — using pre-computed
-            // positions from the Float64Array to check visibility in O(active cards).
-            vsEnsureVisibleMedia(scrollTop, viewportHeight);
-        }
-    });
+    vsState.scrollRafId = requestAnimationFrame(_vsScrollRafCallback);
 
     // Throttle cleanup — run periodically during continuous scroll so that
     // proactiveLoadMedia picks up cards the observer hasn't reached yet
@@ -1000,12 +1038,7 @@ function vsOnScroll() {
 
     // Debounce cleanup — also run after scrolling settles, not every frame
     clearTimeout(cleanupScrollTimeout);
-    cleanupScrollTimeout = setTimeout(() => {
-        invalidateScrollCaches();
-        runCleanupCycle();
-        // Catch up on any visible cards whose media was deferred during fast scroll
-        vsEnsureVisibleMedia(gridContainer.scrollTop, gridContainer.clientHeight);
-    }, SCROLL_DEBOUNCE_MS);
+    cleanupScrollTimeout = setTimeout(_vsScrollSettleCallback, SCROLL_DEBOUNCE_MS);
 }
 
 /**
@@ -7372,11 +7405,11 @@ function createImageForCard(card, imageUrl) {
         if (!img.isConnected) return;
         img.dataset.sourceMode = mode;
         img.src = src;
-        // After decoding, force Chrome to paint the image. Without this,
-        // the compositor can defer painting indefinitely during scroll.
-        img.decode().then(() => {
-            if (img.isConnected) img.offsetHeight;
-        }).catch(() => {});
+        // Note: previously called `img.offsetHeight` here to force-paint after decode,
+        // but reading offsetHeight triggers synchronous layout. During scroll many images
+        // decode concurrently, causing hundreds of forced reflows per second (DevTools-
+        // flagged at ~40ms cumulative reflow). Modern Chromium's compositor paints
+        // decoded images on its own schedule without this hack.
     };
     
     // For animated GIFs/WEBPs, capture the first frame as a static snapshot

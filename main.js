@@ -158,91 +158,200 @@ markStartup('worker-pools-created');
 let clipModel = null; // { visionModel, textModel, processor, tokenizer, RawImage, ort }
 let clipPreprocessPool = null;
 
-// Native-ONNX CLIP inference worker (wraps the native-scanner NAPI addon in a
-// Node worker_thread). Rust NAPI addons are ABI-safe across worker threads,
-// unlike onnxruntime-node, so inference happens off the main process.
-let clipInferenceWorker = null;
+// Native-ONNX CLIP inference worker POOL (wraps the native-scanner NAPI addon
+// in N Node worker_threads). Rust NAPI addons are ABI-safe across worker
+// threads, unlike onnxruntime-node, so inference happens off the main process.
+// Pool size is fixed (default 4) so multiple CLIP batches run concurrently on
+// the GPU. Dispatch is least-loaded (ties: lowest index). On worker crash,
+// inflight requests are transparently re-dispatched to surviving workers.
+const CLIP_WORKER_POOL_SIZE = Math.max(1, parseInt(process.env.CLIP_WORKERS, 10) || 4);
+const clipInferenceWorkers = new Array(CLIP_WORKER_POOL_SIZE).fill(null); // {worker, ready, inflight, index}
 let clipNativeReady = false;
 let _clipInferenceReqId = 0;
-const _clipInferenceReqs = new Map(); // id -> {resolve, reject}
+const _clipInferenceReqs = new Map(); // id -> {resolve, reject, workerIndex, type, payload, transferList}
+let _clipInitParams = null; // {visionPath, textPath, threads} for reinit-on-crash
 
-function ensureClipInferenceWorker() {
-    if (clipInferenceWorker) return clipInferenceWorker;
-    try {
-        const { Worker } = require('worker_threads');
-        clipInferenceWorker = new Worker(path.join(__dirname, 'clip-inference-worker.js'));
-        clipInferenceWorker.on('message', (msg) => {
-            if (!msg || !msg.type) return;
-            if (msg.type === 'embed-batch-result') {
-                const entry = _clipInferenceReqs.get(msg.id);
-                if (entry) { _clipInferenceReqs.delete(msg.id); entry.resolve(msg.embeddings); }
-            } else if (msg.type === 'embed-error') {
-                const entry = _clipInferenceReqs.get(msg.id);
-                if (entry) { _clipInferenceReqs.delete(msg.id); entry.reject(new Error(msg.error)); }
-            }
-        });
-        clipInferenceWorker.on('error', (err) => { console.error('[clip-worker] error:', err); });
-        clipInferenceWorker.on('exit', (code) => {
-            if (code !== 0) console.warn('[clip-worker] exited code=' + code);
-            clipInferenceWorker = null;
-            clipNativeReady = false;
-            for (const [, e] of _clipInferenceReqs) e.reject(new Error('clip worker exited'));
-            _clipInferenceReqs.clear();
-        });
-    } catch (err) {
-        console.warn('[clip-worker] failed to spawn:', err.message);
-        clipInferenceWorker = null;
-    }
-    return clipInferenceWorker;
+function _refreshReady() {
+    clipNativeReady = clipInferenceWorkers.some(w => w && w.ready);
 }
 
-function clipWorkerInit(visionPath, textPath, threads) {
-    const worker = ensureClipInferenceWorker();
-    if (!worker) return Promise.resolve(false);
+function _pickWorker() {
+    let best = null;
+    for (let i = 0; i < clipInferenceWorkers.length; i++) {
+        const w = clipInferenceWorkers[i];
+        if (!w || !w.ready) continue;
+        if (best === null || w.inflight < best.inflight) best = w;
+    }
+    return best;
+}
+
+function _sendToWorker(slot, type, id, payload, transferList) {
+    slot.inflight++;
+    slot.worker.postMessage({ type, id, ...payload }, transferList || []);
+}
+
+function _dispatchRequest(type, payload, transferList) {
+    const slot = _pickWorker();
+    if (!slot) return Promise.reject(new Error('clip worker not ready'));
+    const id = ++_clipInferenceReqId;
+    return new Promise((resolve, reject) => {
+        _clipInferenceReqs.set(id, {
+            resolve, reject,
+            workerIndex: slot.index,
+            type, payload, transferList: null // transferList is consumed on first send
+        });
+        _sendToWorker(slot, type, id, payload, transferList);
+    });
+}
+
+function _createWorkerSlot(index) {
+    const { Worker } = require('worker_threads');
+    let worker;
+    try {
+        worker = new Worker(path.join(__dirname, 'clip-inference-worker.js'));
+    } catch (err) {
+        console.warn(`[clip-pool] worker ${index} spawn failed:`, err.message);
+        return null;
+    }
+    const slot = { worker, ready: false, inflight: 0, index };
+    worker.on('message', (msg) => {
+        if (!msg || !msg.type) return;
+        if (msg.type === 'embed-batch-result') {
+            const entry = _clipInferenceReqs.get(msg.id);
+            if (entry) {
+                _clipInferenceReqs.delete(msg.id);
+                slot.inflight = Math.max(0, slot.inflight - 1);
+                entry.resolve(msg.embeddings);
+            }
+        } else if (msg.type === 'embed-error') {
+            const entry = _clipInferenceReqs.get(msg.id);
+            if (entry) {
+                _clipInferenceReqs.delete(msg.id);
+                slot.inflight = Math.max(0, slot.inflight - 1);
+                entry.reject(new Error(msg.error));
+            }
+        }
+    });
+    worker.on('error', (err) => { console.error(`[clip-pool] worker ${index} error:`, err); });
+    worker.on('exit', (code) => { _handleWorkerDeath(index, code); });
+    return slot;
+}
+
+function _handleWorkerDeath(index, code) {
+    const dead = clipInferenceWorkers[index];
+    if (!dead) return;
+    clipInferenceWorkers[index] = null;
+    _refreshReady();
+    if (code !== 0) console.warn(`[clip-pool] worker ${index} exited code=${code}`);
+
+    // Find all inflight requests on this worker; re-dispatch or reject.
+    const orphaned = [];
+    for (const [id, entry] of _clipInferenceReqs) {
+        if (entry.workerIndex === index) orphaned.push([id, entry]);
+    }
+    let rescued = 0, failed = 0;
+    for (const [id, entry] of orphaned) {
+        const alt = _pickWorker();
+        if (!alt) {
+            _clipInferenceReqs.delete(id);
+            entry.reject(new Error('clip worker died, no survivors'));
+            failed++;
+            continue;
+        }
+        // Retry on surviving worker. transferList buffers were already consumed
+        // on first send, so retries cannot re-transfer (embed-batch relies on
+        // batchData buffer which is detached after first post). For those, we
+        // must reject — but preprocess-and-embed uses plain paths so it retries.
+        if (entry.type === 'embed-batch') {
+            _clipInferenceReqs.delete(id);
+            entry.reject(new Error('clip worker died mid-embed-batch'));
+            failed++;
+            continue;
+        }
+        entry.workerIndex = alt.index;
+        _sendToWorker(alt, entry.type, id, entry.payload, null);
+        rescued++;
+    }
+    if (orphaned.length > 0) {
+        console.warn(`[clip-pool] worker ${index} died, re-dispatched ${rescued}/${orphaned.length} inflight requests (${failed} rejected)`);
+    }
+
+    // Respawn + reinit in background so we're back to full capacity.
+    if (_clipInitParams) {
+        const slot = _createWorkerSlot(index);
+        if (slot) {
+            clipInferenceWorkers[index] = slot;
+            _initWorkerSlot(slot, _clipInitParams).then((ok) => {
+                if (ok) console.log(`[clip-pool] worker ${index} respawned and reinitialized`);
+                _refreshReady();
+            }).catch((err) => {
+                console.warn(`[clip-pool] worker ${index} reinit failed:`, err.message);
+            });
+        }
+    }
+}
+
+function _initWorkerSlot(slot, params) {
     return new Promise((resolve) => {
         const onMsg = (msg) => {
             if (msg && msg.type === 'init-result') {
-                worker.off('message', onMsg);
-                clipNativeReady = !!msg.ok;
-                if (!msg.ok) console.warn('[clip-worker] init failed:', msg.error);
+                slot.worker.off('message', onMsg);
+                slot.ready = !!msg.ok;
+                if (!msg.ok) console.warn(`[clip-pool] worker ${slot.index} init failed:`, msg.error);
                 resolve(!!msg.ok);
             }
         };
-        worker.on('message', onMsg);
-        worker.postMessage({ type: 'init', visionPath, textPath, threads: threads || 4 });
+        slot.worker.on('message', onMsg);
+        slot.worker.postMessage({
+            type: 'init',
+            visionPath: params.visionPath,
+            textPath: params.textPath,
+            threads: params.threads || 4
+        });
+    });
+}
+
+function ensureClipInferencePool() {
+    let anyAlive = false;
+    for (let i = 0; i < CLIP_WORKER_POOL_SIZE; i++) {
+        if (!clipInferenceWorkers[i]) {
+            const slot = _createWorkerSlot(i);
+            if (slot) clipInferenceWorkers[i] = slot;
+        }
+        if (clipInferenceWorkers[i]) anyAlive = true;
+    }
+    return anyAlive;
+}
+
+function clipWorkerInit(visionPath, textPath, threads) {
+    _clipInitParams = { visionPath, textPath, threads };
+    if (!ensureClipInferencePool()) return Promise.resolve(false);
+    const initPromises = clipInferenceWorkers.map((slot) =>
+        slot ? _initWorkerSlot(slot, _clipInitParams) : Promise.resolve(false)
+    );
+    return Promise.all(initPromises).then((results) => {
+        const ready = results.filter(Boolean).length;
+        _refreshReady();
+        console.log(`[clip-pool] initialized ${ready}/${CLIP_WORKER_POOL_SIZE} workers`);
+        return ready > 0;
     });
 }
 
 function clipWorkerEmbedBatch(batchData, n) {
-    if (!clipInferenceWorker || !clipNativeReady) return Promise.reject(new Error('clip worker not ready'));
-    const id = ++_clipInferenceReqId;
-    return new Promise((resolve, reject) => {
-        _clipInferenceReqs.set(id, { resolve, reject });
-        clipInferenceWorker.postMessage(
-            { type: 'embed-batch', id, batchData, n },
-            [batchData.buffer]
-        );
-    });
+    if (!_pickWorker() || !clipNativeReady) return Promise.reject(new Error('clip worker not ready'));
+    return _dispatchRequest('embed-batch', { batchData, n }, [batchData.buffer]);
 }
 
 function clipWorkerEmbedTextTokens(inputIds, attentionMask, batchSize) {
-    if (!clipInferenceWorker || !clipNativeReady) return Promise.reject(new Error('clip worker not ready'));
-    const id = ++_clipInferenceReqId;
-    return new Promise((resolve, reject) => {
-        _clipInferenceReqs.set(id, { resolve, reject });
-        clipInferenceWorker.postMessage({ type: 'embed-text-tokens', id, inputIds, attentionMask, batchSize });
-    });
+    if (!_pickWorker() || !clipNativeReady) return Promise.reject(new Error('clip worker not ready'));
+    return _dispatchRequest('embed-text-tokens', { inputIds, attentionMask, batchSize }, null);
 }
 
 // Combined native preprocess + inference. Single worker round-trip, zero
 // intermediate data copies between preprocessing and inference.
 function clipWorkerPreprocessAndEmbed(paths) {
-    if (!clipInferenceWorker || !clipNativeReady) return Promise.reject(new Error('clip worker not ready'));
-    const id = ++_clipInferenceReqId;
-    return new Promise((resolve, reject) => {
-        _clipInferenceReqs.set(id, { resolve, reject });
-        clipInferenceWorker.postMessage({ type: 'preprocess-and-embed', id, paths });
-    });
+    if (!_pickWorker() || !clipNativeReady) return Promise.reject(new Error('clip worker not ready'));
+    return _dispatchRequest('preprocess-and-embed', { paths }, null);
 }
 
 // Thumbnail cache directories (initialized after userDataPath is set)
@@ -3761,7 +3870,7 @@ async function clipEmbedBatch(pixelDataArray) {
 
     // Fast path: native Rust ONNX runtime inside a Node worker_thread.
     // Inference runs fully off the main process — Node event loop stays responsive.
-    if (clipNativeReady && clipInferenceWorker) {
+    if (clipNativeReady && _pickWorker()) {
         try {
             const flat = await clipWorkerEmbedBatch(batchData, n);
             const embDim = flat.length / n;
@@ -3908,7 +4017,7 @@ ipcMain.handle('clip-embed-images', async (event, files) => {
     // Static images are batched in groups of CLIP_BATCH_SIZE with look-ahead preprocessing.
     // Larger batches when native GPU is active: RTX/etc. perform best at ≥16, and
     // the pipelined overlap means a bigger preprocessing batch keeps the GPU fed.
-    const CLIP_BATCH_SIZE = clipNativeReady ? 16 : 4;
+    const CLIP_BATCH_SIZE = clipNativeReady ? 32 : 4;
     const resultMap = new Map(); // filePath -> embedding
     let completed = 0;
     const sender = event.sender;
@@ -4053,53 +4162,55 @@ ipcMain.handle('clip-embed-images', async (event, files) => {
         }
     }
 
-    // Kick off first batch preprocessing immediately
-    let nextBatchIdx = 0;
-    let pendingPreprocess = null;
-    let pendingNative = null;
-    if (staticFiles.length > 0) {
-        const firstBatch = staticFiles.slice(0, CLIP_BATCH_SIZE);
-        if (clipNativeReady) {
-            pendingNative = nativeEmbedBatchFromFiles(firstBatch);
-        } else {
-            pendingPreprocess = preprocessBatchAsync(firstBatch);
-        }
-        nextBatchIdx = CLIP_BATCH_SIZE;
-    }
-
     // Accumulated timing for diagnostic output at end of scan
     let _totalPreprocessMs = 0;
     let _totalInferenceMs = 0;
     let _totalWaitMs = 0;
     let _batchCount = 0;
 
-    // Fast path: native combined preprocess+infer. Single worker round-trip per batch.
-    while (pendingNative) {
-        // Start next batch in parallel with current native call
-        let nextNative = null;
-        let batchFiles = staticFiles.slice(nextBatchIdx - CLIP_BATCH_SIZE, nextBatchIdx);
-        if (nextBatchIdx < staticFiles.length) {
-            const next = staticFiles.slice(nextBatchIdx, nextBatchIdx + CLIP_BATCH_SIZE);
-            nextNative = nativeEmbedBatchFromFiles(next);
+    // Fast path: native combined preprocess+infer. With a worker pool of N,
+    // keep N+1 batches inflight so every worker stays fed (one draining, N
+    // queued). Drains from the head; pushes fresh batches to the tail.
+    let nextBatchIdx = 0;
+    let pendingPreprocess = null;
+    if (clipNativeReady && staticFiles.length > 0) {
+        const totalBatches = Math.ceil(staticFiles.length / CLIP_BATCH_SIZE);
+        const pipelineDepth = Math.min(CLIP_WORKER_POOL_SIZE + 1, totalBatches);
+        const pending = []; // [{promise, batchFiles}]
+        for (let p = 0; p < pipelineDepth; p++) {
+            const batchFiles = staticFiles.slice(nextBatchIdx, nextBatchIdx + CLIP_BATCH_SIZE);
+            pending.push({ promise: nativeEmbedBatchFromFiles(batchFiles), batchFiles });
             nextBatchIdx += CLIP_BATCH_SIZE;
         }
-        const _t = performance.now();
-        let result;
-        try {
-            result = await pendingNative;
-        } catch (err) {
-            console.error('clip native embed error:', err.message);
-            result = { sources: [], embeddings: batchFiles.map(() => null) };
+        while (pending.length > 0) {
+            const head = pending.shift();
+            // Top up the queue so surviving workers stay busy
+            if (nextBatchIdx < staticFiles.length) {
+                const next = staticFiles.slice(nextBatchIdx, nextBatchIdx + CLIP_BATCH_SIZE);
+                pending.push({ promise: nativeEmbedBatchFromFiles(next), batchFiles: next });
+                nextBatchIdx += CLIP_BATCH_SIZE;
+            }
+            const _t = performance.now();
+            let result;
+            try {
+                result = await head.promise;
+            } catch (err) {
+                console.error('clip native embed error:', err.message);
+                result = { sources: [], embeddings: head.batchFiles.map(() => null) };
+            }
+            _totalInferenceMs += performance.now() - _t;
+            _batchCount++;
+            for (let j = 0; j < head.batchFiles.length; j++) {
+                resultMap.set(head.batchFiles[j].path, result.embeddings[j] || null);
+            }
+            completed += head.batchFiles.length;
+            sendProgress();
         }
-        _totalInferenceMs += performance.now() - _t;
-        _batchCount++;
-
-        for (let j = 0; j < batchFiles.length; j++) {
-            resultMap.set(batchFiles[j].path, result.embeddings[j] || null);
-        }
-        completed += batchFiles.length;
-        sendProgress();
-        pendingNative = nextNative;
+    } else if (staticFiles.length > 0) {
+        // JS pipelined fallback: kick off first preprocess batch
+        const firstBatch = staticFiles.slice(0, CLIP_BATCH_SIZE);
+        pendingPreprocess = preprocessBatchAsync(firstBatch);
+        nextBatchIdx = CLIP_BATCH_SIZE;
     }
 
     while (pendingPreprocess) {
@@ -4200,7 +4311,7 @@ ipcMain.handle('clip-embed-text', async (event, text) => {
         const inputs = tokenizer(text, { padding: true, truncation: true });
 
         // Native path: pass tokenized tensors to the Rust worker for inference
-        if (clipNativeReady && clipInferenceWorker) {
+        if (clipNativeReady && _pickWorker()) {
             try {
                 const ids = inputs.input_ids;
                 const mask = inputs.attention_mask;
@@ -4242,12 +4353,15 @@ ipcMain.handle('clip-status', async () => {
 ipcMain.handle('clip-terminate', async () => {
     clipModel = null;
     if (clipPreprocessPool) { clipPreprocessPool.terminate(); clipPreprocessPool = null; }
-    if (clipInferenceWorker) {
-        try { clipInferenceWorker.postMessage({ type: 'shutdown' }); } catch {}
-        try { clipInferenceWorker.terminate(); } catch {}
-        clipInferenceWorker = null;
-        clipNativeReady = false;
+    _clipInitParams = null; // prevent respawn on exit
+    for (let i = 0; i < clipInferenceWorkers.length; i++) {
+        const slot = clipInferenceWorkers[i];
+        if (!slot) continue;
+        try { slot.worker.postMessage({ type: 'shutdown' }); } catch {}
+        try { slot.worker.terminate(); } catch {}
+        clipInferenceWorkers[i] = null;
     }
+    clipNativeReady = false;
     return { success: true };
 });
 

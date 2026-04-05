@@ -19,7 +19,7 @@
                 <button id="forward-btn" class="nav-btn" title="Forward" disabled><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg></button>
             </div>
             <div class="search-box-container">
-                <input type="text" id="search-box" placeholder="Search files..." autocomplete="off">
+                <input type="text" id="search-box" placeholder="Search files..." autocomplete="off" aria-label="Search files in current folder">
                 <button id="search-clear-btn" class="search-clear-btn" title="Clear search" style="display:none"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
                 <button id="ai-search-toggle-btn" class="search-box-icon-btn ai-search-toggle-btn" title="AI Visual Search" style="display:none"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L9.5 9.5 2 12l7.5 2.5L12 22l2.5-7.5L22 12l-7.5-2.5z"/></svg></button>
                 <button id="advanced-search-btn" class="search-box-icon-btn" title="Advanced Search"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg></button>
@@ -53,7 +53,7 @@
             <button id="settings-btn" class="settings-btn toolbar-icon-btn" title="Settings"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg></button>
         </header>
         <div class="content-wrapper">
-            <div id="folder-sidebar" class="folder-sidebar">
+            <nav id="folder-sidebar" class="folder-sidebar" aria-label="Folders and collections">
                 <div class="sidebar-header">
                     <span class="sidebar-title">Explorer</span>
                     <button id="sidebar-collapse-btn" class="sidebar-collapse-btn" title="Hide Sidebar"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg></button>
@@ -66,11 +66,13 @@
                     </div>
                     <div id="collections-list" class="collections-list"></div>
                 </div>
-            </div>
+            </nav>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle"></div>
             <div class="main-content-area">
                 <div id="breadcrumb-container" class="breadcrumb-container">
                     <span id="current-path">No folder selected</span>
+                    <span id="breadcrumb-filter-chip" class="breadcrumb-filter-chip" title="Active filters" style="display:none"></span>
+                    <span id="breadcrumb-sort-chip" class="breadcrumb-sort-chip" title="Sort order"></span>
                     <span id="item-count" class="item-count"></span>
                 </div>
                 <div id="find-similar-banner" class="find-similar-banner hidden">
@@ -90,19 +92,19 @@
                         <button id="find-similar-clear" class="find-similar-clear-btn" title="Clear find similar filter">&times;</button>
                     </div>
                 </div>
-                <main id="grid-container">
+                <main id="grid-container" role="grid" tabindex="0" aria-label="Media grid">
                     <!-- Videos and folders will be injected here -->
                 </main>
             </div>
         </div>
-        <div id="status-bar" class="status-bar">
+        <div id="status-bar" class="status-bar" role="status" aria-live="polite">
             <div class="status-bar-left">
                 <span id="status-activity" class="status-activity"></span>
                 <div id="status-progress" class="status-progress hidden"><div id="status-progress-fill" class="status-progress-fill"></div></div>
                 <span id="status-progress-eta" class="status-progress-eta"></span>
                 <span id="status-item-counts"></span>
                 <span id="status-filter-info" class="status-muted" style="display:none"></span>
-                <div class="filter-buttons">
+                <div class="filter-buttons" role="group" aria-label="File type filters">
                     <button id="filter-all" class="filter-btn active"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></svg> All</button>
                     <button id="filter-videos" class="filter-btn"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M17 3v18"/><path d="M3 7h4"/><path d="M3 11h4"/><path d="M3 15h4"/><path d="M17 7h4"/><path d="M17 11h4"/><path d="M17 15h4"/></svg> Videos</button>
                     <button id="filter-images" class="filter-btn"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg> Images</button>

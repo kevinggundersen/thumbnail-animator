@@ -852,6 +852,9 @@ function vsPopulateExistingCard(card, item) {
         card.className = 'folder-card';
         card.dataset.folderPath = item.path;
         card.dataset.searchText = item.name.toLowerCase();
+        card.setAttribute('role', 'gridcell');
+        card.setAttribute('aria-label', `Folder: ${item.name}`);
+        card.setAttribute('tabindex', '-1');
 
         const folderIcon = document.createElement('div');
         folderIcon.className = 'folder-icon';
@@ -873,6 +876,9 @@ function vsPopulateExistingCard(card, item) {
         card.dataset.name = item.name;
         card.dataset.searchText = item.name.toLowerCase();
         card.dataset.mediaType = item.type;
+        card.setAttribute('role', 'gridcell');
+        card.setAttribute('aria-label', `${item.type === 'video' ? 'Video' : 'Image'}: ${item.name}`);
+        card.setAttribute('tabindex', '-1');
         card.dataset.mtime = String(item.mtime || 0);
         if (item.size > 0) card.dataset.fileSize = String(item.size);
         else delete card.dataset.fileSize;
@@ -1436,10 +1442,17 @@ function showToast(message, type = 'info', options = {}) {
     if (!toastContainer) return null;
     const { details, duration = 4000, actionLabel, actionCallback } = options;
 
-    // Limit visible toasts
-    const existing = toastContainer.querySelectorAll('.toast:not(.toast-exit)');
+    // Limit visible toasts. Prefer dropping dismissible (info/success) toasts
+    // before errors/warnings so critical messages aren't pushed out by noise.
+    const existing = Array.from(toastContainer.querySelectorAll('.toast:not(.toast-exit)'));
     if (existing.length >= MAX_TOASTS) {
-        dismissToast(existing[existing.length - 1]);
+        const dismissible = existing.filter(t =>
+            !t.classList.contains('toast-error') && !t.classList.contains('toast-warning')
+        );
+        const victim = dismissible.length > 0
+            ? dismissible[dismissible.length - 1]
+            : existing[existing.length - 1];
+        dismissToast(victim);
     }
 
     const toast = document.createElement('div');
@@ -2130,10 +2143,82 @@ async function undoLastMetadataOp() {
     _skipMetadataUndo = true;
     try {
         await entry.undoFn();
+        // Refresh any card tag chips after DB mutations
+        if (typeof refreshVisibleCardTags === 'function') {
+            try { refreshVisibleCardTags(); } catch {}
+        }
     } finally {
         _skipMetadataUndo = false;
     }
     return entry.label;
+}
+
+// --- Tag mutation wrappers (with undo) -----------------------------------
+// These wrap the IPC calls so every tag mutation runs through a single
+// point that can track previous state and push an undo entry.
+async function tagAddToFile(normalizedPath, tagId, tagName) {
+    const result = await window.electronAPI.dbAddTagToFile(normalizedPath, tagId);
+    pushMetadataUndo(
+        `Add tag "${tagName || 'tag'}"`,
+        () => window.electronAPI.dbRemoveTagFromFile(normalizedPath, tagId)
+    );
+    return result;
+}
+
+async function tagRemoveFromFile(normalizedPath, tagId, tagName) {
+    const result = await window.electronAPI.dbRemoveTagFromFile(normalizedPath, tagId);
+    pushMetadataUndo(
+        `Remove tag "${tagName || 'tag'}"`,
+        () => window.electronAPI.dbAddTagToFile(normalizedPath, tagId)
+    );
+    return result;
+}
+
+async function tagBulkAdd(normalizedPaths, tagId, tagName) {
+    // Capture previous state so we can restore precisely (only add-back paths
+    // that actually gained the tag as a result of this operation).
+    let prevHad = [];
+    try {
+        const existing = await window.electronAPI.dbGetTagsForFiles(normalizedPaths);
+        // existing is assumed to be { [path]: [{id, name}, ...] }
+        if (existing && typeof existing === 'object') {
+            for (const p of normalizedPaths) {
+                const tags = existing[p] || [];
+                if (tags.some(t => t.id === tagId)) prevHad.push(p);
+            }
+        }
+    } catch { /* best-effort */ }
+    const result = await window.electronAPI.dbBulkTagFiles(normalizedPaths, tagId);
+    const newlyAdded = normalizedPaths.filter(p => !prevHad.includes(p));
+    if (newlyAdded.length > 0) {
+        pushMetadataUndo(
+            `Tag ${newlyAdded.length} file${newlyAdded.length === 1 ? '' : 's'} with "${tagName || 'tag'}"`,
+            () => window.electronAPI.dbBulkRemoveTagFromFiles(newlyAdded, tagId)
+        );
+    }
+    return result;
+}
+
+async function tagBulkRemove(normalizedPaths, tagId, tagName) {
+    // Capture which files actually had the tag so undo only re-adds those.
+    let prevHad = [];
+    try {
+        const existing = await window.electronAPI.dbGetTagsForFiles(normalizedPaths);
+        if (existing && typeof existing === 'object') {
+            for (const p of normalizedPaths) {
+                const tags = existing[p] || [];
+                if (tags.some(t => t.id === tagId)) prevHad.push(p);
+            }
+        }
+    } catch { /* best-effort */ }
+    const result = await window.electronAPI.dbBulkRemoveTagFromFiles(normalizedPaths, tagId);
+    if (prevHad.length > 0) {
+        pushMetadataUndo(
+            `Remove tag "${tagName || 'tag'}" from ${prevHad.length} file${prevHad.length === 1 ? '' : 's'}`,
+            () => window.electronAPI.dbBulkTagFiles(prevHad, tagId)
+        );
+    }
+    return result;
 }
 
 // Track advanced search filters
@@ -6426,6 +6511,9 @@ function createCardFromItem(item, skipAnimation = false) {
         card.dataset.name = item.name;
         card.dataset.searchText = item.name.toLowerCase();
         card.dataset.mediaType = item.type;
+        card.setAttribute('role', 'gridcell');
+        card.setAttribute('aria-label', `${item.type === 'video' ? 'Video' : 'Image'}: ${item.name}`);
+        card.setAttribute('tabindex', '-1');
         card.dataset.mtime = String(item.mtime || 0);
         if (item.size > 0) card.dataset.fileSize = String(item.size);
         else delete card.dataset.fileSize;
@@ -6729,10 +6817,16 @@ function renderItems(items, preservedScrollTop = null) {
     if (items.length === 0) {
         const emptyDiv = document.createElement('div');
         emptyDiv.className = 'grid-empty-state';
+        const emptyIcon = {
+            collection: '<svg class="grid-empty-icon" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>',
+            search: '<svg class="grid-empty-icon" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>',
+            folder: '<svg class="grid-empty-icon" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></svg>'
+        };
         if (currentCollectionId) {
             const collection = collectionsCache.find(c => c.id === currentCollectionId);
             const isSmart = collection && collection.type === 'smart';
             emptyDiv.innerHTML = `
+                ${emptyIcon.collection}
                 <p class="grid-empty-title">This collection is empty</p>
                 <p class="grid-empty-hint">${isSmart
                     ? 'Try editing the filter rules or adding more source folders.'
@@ -6742,13 +6836,14 @@ function renderItems(items, preservedScrollTop = null) {
             const searchTerm = searchBox.value.trim();
             const filterLabel = currentFilter !== 'all' ? ` in "${currentFilter}" filter` : '';
             emptyDiv.innerHTML = `
+                ${emptyIcon.search}
                 <p class="grid-empty-title">No results found</p>
                 <p class="grid-empty-hint">${searchTerm
                     ? `No files match "${searchTerm}"${filterLabel}. Try a different search term or clear filters.`
                     : `No files match the current filter. Try showing all files.`}</p>
             `;
         } else {
-            emptyDiv.innerHTML = '<p class="grid-empty-title">No folders or supported media found.</p>';
+            emptyDiv.innerHTML = `${emptyIcon.folder}<p class="grid-empty-title">No folders or supported media found.</p>`;
         }
         gridContainer.appendChild(emptyDiv);
         updateItemCount();
@@ -7838,6 +7933,27 @@ function updateItemCount() {
         itemCountEl.textContent = `${visible} of ${total} items`;
     } else {
         itemCountEl.textContent = `${total} items`;
+    }
+
+    // Breadcrumb chips: active filter summary + sort indicator
+    const filterChip = document.getElementById('breadcrumb-filter-chip');
+    const sortChip = document.getElementById('breadcrumb-sort-chip');
+    if (filterChip) {
+        const bits = [];
+        if (currentFilter !== 'all') bits.push(currentFilter);
+        if (hasAdvanced) bits.push('advanced');
+        if (query) bits.push('search');
+        if (bits.length > 0) {
+            filterChip.textContent = 'Filtered: ' + bits.join(' + ');
+            filterChip.style.display = '';
+        } else {
+            filterChip.style.display = 'none';
+        }
+    }
+    if (sortChip) {
+        const arrow = sortOrder === 'descending' ? '\u2193' : '\u2191';
+        const label = sortType ? sortType.charAt(0).toUpperCase() + sortType.slice(1) : 'Name';
+        sortChip.textContent = `${label} ${arrow}`;
     }
 
     updateStatusBar();
@@ -13421,9 +13537,9 @@ autoTagApply.addEventListener('click', async () => {
             // Bulk assign
             const normalizedPaths = filePaths.map(fp => normalizePath(fp));
             if (normalizedPaths.length > 1) {
-                await window.electronAPI.dbBulkTagFiles(normalizedPaths, tag.id);
+                await tagBulkAdd(normalizedPaths, tag.id, tag.name);
             } else {
-                await window.electronAPI.dbAddTagToFile(normalizedPaths[0], tag.id);
+                await tagAddToFile(normalizedPaths[0], tag.id, tag.name);
             }
         }
 
@@ -14302,6 +14418,11 @@ if (typeof CommandPalette !== 'undefined') {
         // Tools
         { id: 'tools.organize', label: 'Organize Files', category: 'Tools', keywords: ['organize', 'move', 'sort', 'folder'], action: () => document.getElementById('organize-btn').click() },
         { id: 'tools.duplicates', label: 'Find Duplicates', category: 'Tools', keywords: ['duplicate', 'similar', 'copy'], action: () => document.getElementById('find-duplicates-btn').click() },
+        { id: 'tools.batch-rename', label: 'Batch Rename Selected', category: 'Tools', keywords: ['batch', 'rename', 'bulk'], when: () => selectedCardPaths.size >= 2, action: () => openBatchRename([...selectedCardPaths]) },
+        { id: 'tools.compare', label: 'Compare Selected', category: 'Tools', shortcut: 'C', keywords: ['compare', 'side by side', 'diff'], when: () => selectedCardPaths.size >= 2 && selectedCardPaths.size <= 4, action: () => openCompareMode([...selectedCardPaths]) },
+        { id: 'tools.slideshow', label: 'Start Slideshow', category: 'Tools', shortcut: 'F5', keywords: ['slideshow', 'play', 'presentation'], action: () => startSlideshow() },
+        { id: 'tools.select-all', label: 'Select All', category: 'Tools', shortcut: 'Ctrl+A', keywords: ['select', 'all'], action: () => selectAllCards() },
+        { id: 'tools.clear-selection', label: 'Clear Selection', category: 'Tools', keywords: ['clear', 'deselect', 'none'], when: () => selectedCardPaths.size > 0, action: () => clearCardSelection() },
 
         // Settings
         { id: 'settings.open', label: 'Open Settings', category: 'Settings', keywords: ['settings', 'preferences', 'options', 'config'], action: () => toggleSettingsModal() },
@@ -14501,10 +14622,11 @@ async function renderTagPickerList(filter) {
                     await refreshTagsCache();
                     // Auto-assign to files
                     const normalizedPaths = tagPickerFilePaths.map(fp => normalizePath(fp));
+                    const newTagName = result.data.name || filter.trim();
                     if (isMulti) {
-                        await window.electronAPI.dbBulkTagFiles(normalizedPaths, result.data.id);
+                        await tagBulkAdd(normalizedPaths, result.data.id, newTagName);
                     } else {
-                        await window.electronAPI.dbAddTagToFile(normalizedPaths[0], result.data.id);
+                        await tagAddToFile(normalizedPaths[0], result.data.id, newTagName);
                     }
                     document.getElementById('tag-picker-search').value = '';
                     await renderTagPickerList();
@@ -14539,16 +14661,16 @@ async function renderTagPickerList(filter) {
             if (wasAll) {
                 // Remove from all files
                 if (isMulti) {
-                    await window.electronAPI.dbBulkRemoveTagFromFiles(normalizedPaths, tag.id);
+                    await tagBulkRemove(normalizedPaths, tag.id, tag.name);
                 } else {
-                    await window.electronAPI.dbRemoveTagFromFile(normalizedPaths[0], tag.id);
+                    await tagRemoveFromFile(normalizedPaths[0], tag.id, tag.name);
                 }
             } else {
                 // Add to all files (covers both partial and unchecked)
                 if (isMulti) {
-                    await window.electronAPI.dbBulkTagFiles(normalizedPaths, tag.id);
+                    await tagBulkAdd(normalizedPaths, tag.id, tag.name);
                 } else {
-                    await window.electronAPI.dbAddTagToFile(normalizedPaths[0], tag.id);
+                    await tagAddToFile(normalizedPaths[0], tag.id, tag.name);
                 }
             }
             // Re-render to get accurate state
@@ -14572,8 +14694,11 @@ async function renderTagPickerSuggestions() {
             chip.className = 'tag-suggestion';
             chip.innerHTML = `<span class="tag-picker-item-dot" style="background:${sug.tag.color || '#6366f1'}"></span>${sug.tag.name}`;
             chip.addEventListener('click', async () => {
-                for (const fp of tagPickerFilePaths) {
-                    await window.electronAPI.dbAddTagToFile(normalizePath(fp), sug.tag.id);
+                const normalizedPaths = tagPickerFilePaths.map(fp => normalizePath(fp));
+                if (normalizedPaths.length > 1) {
+                    await tagBulkAdd(normalizedPaths, sug.tag.id, sug.tag.name);
+                } else if (normalizedPaths.length === 1) {
+                    await tagAddToFile(normalizedPaths[0], sug.tag.id, sug.tag.name);
                 }
                 chip.remove();
                 await renderTagPickerList(document.getElementById('tag-picker-search').value);
@@ -14938,6 +15063,8 @@ console.log('[Tags] renderer.js fully loaded, end of file reached');
             span.textContent = q;
             el.appendChild(span);
             el.addEventListener('mousedown', ev => {
+                // Only left-click runs the search; let contextmenu handle right-click
+                if (ev.button !== 0) return;
                 ev.preventDefault();
                 searchBox.value = q;
                 const clearBtn = document.getElementById('search-clear-btn');
@@ -14945,6 +15072,15 @@ console.log('[Tags] renderer.js fully loaded, end of file reached');
                 performSearch(q);
                 dropdown.classList.add('hidden');
             });
+            el.addEventListener('contextmenu', ev => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                const h = getHistory().filter(s => s !== q);
+                localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(h));
+                renderDropdown();
+                searchBox.focus();
+            });
+            el.title = 'Click to search, right-click to remove';
             dropdown.appendChild(el);
         });
 

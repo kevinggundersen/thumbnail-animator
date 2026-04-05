@@ -1633,6 +1633,34 @@ header {
     flex-shrink: 0;
 }
 
+.breadcrumb-filter-chip,
+.breadcrumb-sort-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 1px 6px;
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-full);
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+.breadcrumb-filter-chip {
+    color: var(--accent);
+    border-color: var(--accent-muted);
+    background: var(--accent-muted);
+}
+.breadcrumb-sort-chip:empty { display: none; }
+.breadcrumb-sort-chip {
+    margin-left: 4px;
+}
+.breadcrumb-filter-chip {
+    margin-left: 8px;
+}
+
 .item-count {
     margin-left: auto;
     flex-shrink: 0;
@@ -2404,6 +2432,12 @@ button:hover {
     justify-content: center;
     padding: 60px 20px;
     text-align: center;
+}
+
+.grid-empty-icon {
+    color: var(--text-tertiary);
+    margin-bottom: 12px;
+    opacity: 0.6;
 }
 
 .grid-empty-title {
@@ -4099,7 +4133,7 @@ video.blow-up-media {
     overflow-y: auto;
     box-shadow: var(--shadow-xl);
     position: relative;
-    animation: modal-enter 0.2s var(--ease-out-expo);
+    animation: modal-enter var(--modal-enter-duration) var(--ease-out-expo);
 }
 
 .file-info-header {
@@ -4481,12 +4515,12 @@ video.blow-up-media {
     left: 0;
     width: 100%;
     height: 100%;
-    background-color: rgba(0, 0, 0, 0.6);
+    background-color: var(--modal-backdrop);
     display: flex;
     justify-content: center;
     align-items: center;
-    z-index: 2000;
-    backdrop-filter: blur(16px);
+    z-index: var(--z-modal);
+    backdrop-filter: blur(var(--modal-blur));
 }
 
 .advanced-search-panel.hidden {
@@ -4502,7 +4536,7 @@ video.blow-up-media {
     max-height: 80vh;
     overflow-y: auto;
     box-shadow: var(--shadow-xl);
-    animation: modal-enter 0.2s var(--ease-out-expo);
+    animation: modal-enter var(--modal-enter-duration) var(--ease-out-expo);
 }
 
 .advanced-search-header {

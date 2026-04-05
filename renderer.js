@@ -174,36 +174,38 @@ let MAX_TOTAL_MEDIA = MAX_VIDEOS + MAX_IMAGES;
 // ============================================================================
 
 // Virtual scrolling state
-let vsEnabled = false;             // Whether virtual scrolling is active for current render
-let vsSortedItems = [];            // Items array (sorted/filtered) backing current virtual scroll
-let vsPositions = null;            // Float64Array: [left0, top0, width0, height0, left1, ...]
-let vsTotalHeight = 0;             // Total computed height of all content
-let vsActiveCards = new Map();     // Map<itemIndex, HTMLElement> - currently rendered cards
-let vsRecyclePool = [];            // Pool of detached card DOM nodes for reuse
-// VS_MAX_POOL_SIZE and VS_BUFFER_PX are defined and hydrated in the config block above
-let vsScrollRafId = null;          // RAF ID for scroll handler coalescing
-let vsLastStartIndex = -1;         // Last rendered range start
-let vsLastEndIndex = -1;           // Last rendered range end
-let vsLastScrollCleanupTime = 0;   // Throttle timestamp for proactive media loading during scroll
-let vsSpacer = null;               // Spacer element that sets total scroll height
-let vsResizeHandler = null;        // Window resize handler
-let vsDimensionRecalcRafId = null; // RAF ID for coalescing metadata-triggered recalcs
-let vsTagGeneration = 0;           // Incremented on each vsUpdateDOM to cancel stale tag fetches
-let vsGroupHeadersPresent = false; // True when date group headers are in vsSortedItems
-
-// Masonry layout cache for incremental updates
-let vsLayoutCache = {
-    itemCount: 0,
-    containerWidth: 0,
-    mode: null,
-    zoom: 0,
-    columns: 0,
-    columnWidth: 0,
-    gap: 0,
-    positions: null,
-    totalHeight: 0,
-    colHeights: null,       // Float64Array of column heights (for incremental updates)
-    columnAssignments: null  // Uint16Array: which column each item was placed in
+const vsState = {
+    enabled: false,             // Whether virtual scrolling is active for current render
+    sortedItems: [],            // Items array (sorted/filtered) backing current virtual scroll
+    positions: null,            // Float64Array: [left0, top0, width0, height0, left1, ...]
+    totalHeight: 0,             // Total computed height of all content
+    activeCards: new Map(),     // Map<itemIndex, HTMLElement> - currently rendered cards
+    recyclePool: [],            // Pool of detached card DOM nodes for reuse
+    // VS_MAX_POOL_SIZE and VS_BUFFER_PX are defined and hydrated in the config block above
+    scrollRafId: null,          // RAF ID for scroll handler coalescing
+    lastStartIndex: -1,         // Last rendered range start
+    lastEndIndex: -1,           // Last rendered range end
+    lastScrollCleanupTime: 0,   // Throttle timestamp for proactive media loading during scroll
+    spacer: null,               // Spacer element that sets total scroll height
+    resizeHandler: null,        // Window resize handler
+    dimensionRecalcRafId: null, // RAF ID for coalescing metadata-triggered recalcs
+    tagGeneration: 0,           // Incremented on each vsUpdateDOM to cancel stale tag fetches
+    groupHeadersPresent: false, // True when date group headers are in vsState.sortedItems
+    aspectRatioMap: null,       // Lookup from ASPECT_RATIOS name to ratio value (built lazily)
+    // Masonry layout cache for incremental updates
+    layoutCache: {
+        itemCount: 0,
+        containerWidth: 0,
+        mode: null,
+        zoom: 0,
+        columns: 0,
+        columnWidth: 0,
+        gap: 0,
+        positions: null,
+        totalHeight: 0,
+        colHeights: null,       // Float64Array of column heights (for incremental updates)
+        columnAssignments: null  // Uint16Array: which column each item was placed in
+    }
 };
 
 // Pre-built star rating templates for fast cloning (built lazily on first use)
@@ -255,18 +257,17 @@ function getStarRatingElement(rating) {
 
 // Build a lookup from ASPECT_RATIOS name to ratio value for fast access
 // (ASPECT_RATIOS is defined later, so we build this lazily)
-let vsAspectRatioMap = null;
 function vsGetAspectRatioValue(name) {
-    if (!vsAspectRatioMap) {
-        vsAspectRatioMap = new Map();
+    if (!vsState.aspectRatioMap) {
+        vsState.aspectRatioMap = new Map();
         // ASPECT_RATIOS is defined at line ~1617
         if (typeof ASPECT_RATIOS !== 'undefined') {
             for (const ar of ASPECT_RATIOS) {
-                vsAspectRatioMap.set(ar.name, ar.ratio);
+                vsState.aspectRatioMap.set(ar.name, ar.ratio);
             }
         }
     }
-    return vsAspectRatioMap.get(name) || (16 / 9);
+    return vsState.aspectRatioMap.get(name) || (16 / 9);
 }
 
 /**
@@ -316,14 +317,14 @@ function vsCalculatePositions(items, containerWidth, mode, zoom) {
 
     // --- Fast path: scale existing positions when column count and items haven't changed ---
     // Disable fast path when group headers are present (their height is fixed, not scalable)
-    const cache = vsLayoutCache;
+    const cache = vsState.layoutCache;
     if (
         cache.positions &&
         cache.itemCount === items.length &&
         cache.mode === mode &&
         cache.columns === newColumns &&
         items.length > 0 &&
-        !vsGroupHeadersPresent
+        !vsState.groupHeadersPresent
     ) {
         // Column count unchanged -- scale all positions proportionally
         const scaleX = newColumnWidth / cache.columnWidth;
@@ -463,7 +464,7 @@ function vsCalculatePositions(items, containerWidth, mode, zoom) {
         const totalHeight = maxHeight + paddingTop + paddingBottom;
 
         // Update cache
-        vsLayoutCache = {
+        vsState.layoutCache = {
             itemCount: items.length,
             containerWidth,
             mode,
@@ -546,7 +547,7 @@ function vsCalculatePositions(items, containerWidth, mode, zoom) {
         const totalHeight = rowTop + (currentCol > 0 ? rowMaxHeight : 0) + paddingTop + paddingBottom;
 
         // Update cache
-        vsLayoutCache = {
+        vsState.layoutCache = {
             itemCount: items.length,
             containerWidth,
             mode,
@@ -570,9 +571,9 @@ function vsCalculatePositions(items, containerWidth, mode, zoom) {
  * Returns { startIndex, endIndex } (endIndex is exclusive).
  */
 function vsGetVisibleRange(scrollTop, viewportHeight) {
-    if (!vsPositions || vsSortedItems.length === 0) return { startIndex: 0, endIndex: 0 };
+    if (!vsState.positions || vsState.sortedItems.length === 0) return { startIndex: 0, endIndex: 0 };
 
-    const itemCount = vsSortedItems.length;
+    const itemCount = vsState.sortedItems.length;
     const visibleTop = scrollTop - VS_BUFFER_PX;
     const visibleBottom = scrollTop + viewportHeight + VS_BUFFER_PX;
 
@@ -585,7 +586,7 @@ function vsGetVisibleRange(scrollTop, viewportHeight) {
         while (lo < hi) {
             const mid = (lo + hi) >>> 1;
             const idx = mid * 4;
-            if (vsPositions[idx + 1] + vsPositions[idx + 3] < visibleTop) {
+            if (vsState.positions[idx + 1] + vsState.positions[idx + 3] < visibleTop) {
                 lo = mid + 1;
             } else {
                 hi = mid;
@@ -595,7 +596,7 @@ function vsGetVisibleRange(scrollTop, viewportHeight) {
     } else {
         for (let i = 0; i < itemCount; i++) {
             const idx = i * 4;
-            if (vsPositions[idx + 1] + vsPositions[idx + 3] >= visibleTop) {
+            if (vsState.positions[idx + 1] + vsState.positions[idx + 3] >= visibleTop) {
                 startIndex = i;
                 break;
             }
@@ -607,7 +608,7 @@ function vsGetVisibleRange(scrollTop, viewportHeight) {
     let endIndex = itemCount;
     for (let i = startIndex; i < itemCount; i++) {
         const idx = i * 4;
-        if (vsPositions[idx + 1] > visibleBottom) {
+        if (vsState.positions[idx + 1] > visibleBottom) {
             endIndex = i;
             break;
         }
@@ -620,7 +621,7 @@ function vsGetVisibleRange(scrollTop, viewportHeight) {
  * Create/recycle/remove card DOM nodes to match the visible range.
  */
 function vsUpdateDOM(startIndex, endIndex) {
-    if (!vsEnabled) return;
+    if (!vsState.enabled) return;
     // Canvas grid owns rendering when enabled — skip DOM card recycling.
     if (window.CG && window.CG.isEnabled()) {
         window.CG.scheduleRender();
@@ -628,7 +629,7 @@ function vsUpdateDOM(startIndex, endIndex) {
     }
 
     // Remove cards outside visible range
-    for (const [itemIdx, card] of vsActiveCards) {
+    for (const [itemIdx, card] of vsState.activeCards) {
         if (itemIdx < startIndex || itemIdx >= endIndex) {
             // Clean up media using cached reference (avoids querySelectorAll)
             if (card._mediaEl) {
@@ -658,11 +659,11 @@ function vsUpdateDOM(startIndex, endIndex) {
 
             observer.unobserve(card);
             card.remove();
-            vsActiveCards.delete(itemIdx);
+            vsState.activeCards.delete(itemIdx);
 
             // Add to recycle pool
-            if (vsRecyclePool.length < VS_MAX_POOL_SIZE) {
-                vsRecyclePool.push(card);
+            if (vsState.recyclePool.length < VS_MAX_POOL_SIZE) {
+                vsState.recyclePool.push(card);
             }
         }
     }
@@ -672,14 +673,14 @@ function vsUpdateDOM(startIndex, endIndex) {
     const newCards = [];
 
     for (let i = startIndex; i < endIndex; i++) {
-        if (vsActiveCards.has(i)) {
+        if (vsState.activeCards.has(i)) {
             // Card already exists, just update position if needed
-            const card = vsActiveCards.get(i);
+            const card = vsState.activeCards.get(i);
             const idx = i * 4;
-            const newLeft = vsPositions[idx];
-            const newTop = vsPositions[idx + 1];
-            const newWidth = vsPositions[idx + 2];
-            const newHeight = vsPositions[idx + 3];
+            const newLeft = vsState.positions[idx];
+            const newTop = vsState.positions[idx + 1];
+            const newWidth = vsState.positions[idx + 2];
+            const newHeight = vsState.positions[idx + 3];
             // Only update if position changed (avoids style recalc)
             if (card._vsLeft !== newLeft || card._vsTop !== newTop ||
                 card._vsWidth !== newWidth || card._vsHeight !== newHeight) {
@@ -695,15 +696,15 @@ function vsUpdateDOM(startIndex, endIndex) {
             continue;
         }
 
-        const item = vsSortedItems[i];
+        const item = vsState.sortedItems[i];
         const idx = i * 4;
-        const left = vsPositions[idx];
-        const top = vsPositions[idx + 1];
-        const width = vsPositions[idx + 2];
-        const height = vsPositions[idx + 3];
+        const left = vsState.positions[idx];
+        const top = vsState.positions[idx + 1];
+        const width = vsState.positions[idx + 2];
+        const height = vsState.positions[idx + 3];
 
         // Try to recycle a card
-        let card = vsRecyclePool.pop();
+        let card = vsState.recyclePool.pop();
         if (card) {
             // Reset the recycled card
             vsResetCard(card);
@@ -738,7 +739,7 @@ function vsUpdateDOM(startIndex, endIndex) {
             card.classList.add('selected');
         }
 
-        vsActiveCards.set(i, card);
+        vsState.activeCards.set(i, card);
         fragment.appendChild(card);
 
         if (isMedia) {
@@ -762,7 +763,7 @@ function vsUpdateDOM(startIndex, endIndex) {
             const needTagPaths = [];
             const tagCards = [];
             for (let i = startIndex; i < endIndex; i++) {
-                const card = vsActiveCards.get(i);
+                const card = vsState.activeCards.get(i);
                 if (card && card.classList.contains('video-card') && card.dataset.path) {
                     const np = normalizePath(card.dataset.path);
                     if (!fileTagsCache.has(np)) {
@@ -772,9 +773,9 @@ function vsUpdateDOM(startIndex, endIndex) {
                 }
             }
             if (needTagPaths.length > 0) {
-                const gen = ++vsTagGeneration;
+                const gen = ++vsState.tagGeneration;
                 warmFileTagsCache(needTagPaths).then(() => {
-                    if (gen !== vsTagGeneration) return; // stale scroll
+                    if (gen !== vsState.tagGeneration) return; // stale scroll
                     tagCards.forEach(c => {
                         if (c.dataset.path) updateCardTagBadges(c);
                     });
@@ -785,8 +786,8 @@ function vsUpdateDOM(startIndex, endIndex) {
         }
     }
 
-    vsLastStartIndex = startIndex;
-    vsLastEndIndex = endIndex;
+    vsState.lastStartIndex = startIndex;
+    vsState.lastEndIndex = endIndex;
 }
 
 /**
@@ -940,7 +941,7 @@ function vsPopulateExistingCard(card, item) {
  * Handle scroll events for virtual scrolling.
  */
 function vsOnScroll() {
-    if (!vsEnabled || isWindowMinimized) return;
+    if (!vsState.enabled || isWindowMinimized) return;
 
     // Canvas grid path: route scroll to canvas renderer, skip DOM recycling entirely
     if (window.CG && window.CG.isEnabled()) {
@@ -948,16 +949,16 @@ function vsOnScroll() {
         return;
     }
 
-    if (vsScrollRafId) return; // Already scheduled
-    vsScrollRafId = requestAnimationFrame(() => {
-        vsScrollRafId = null;
+    if (vsState.scrollRafId) return; // Already scheduled
+    vsState.scrollRafId = requestAnimationFrame(() => {
+        vsState.scrollRafId = null;
         invalidateScrollCaches();
         const scrollTop = gridContainer.scrollTop;
         const viewportHeight = gridContainer.clientHeight;
         const { startIndex, endIndex } = vsGetVisibleRange(scrollTop, viewportHeight);
 
         // Only update if range changed
-        if (startIndex !== vsLastStartIndex || endIndex !== vsLastEndIndex) {
+        if (startIndex !== vsState.lastStartIndex || endIndex !== vsState.lastEndIndex) {
             vsUpdateDOM(startIndex, endIndex);
         }
 
@@ -970,8 +971,8 @@ function vsOnScroll() {
     // Throttle cleanup — run periodically during continuous scroll so that
     // proactiveLoadMedia picks up cards the observer hasn't reached yet
     const now = Date.now();
-    if (now - vsLastScrollCleanupTime >= OBSERVER_CLEANUP_THROTTLE_MS) {
-        vsLastScrollCleanupTime = now;
+    if (now - vsState.lastScrollCleanupTime >= OBSERVER_CLEANUP_THROTTLE_MS) {
+        vsState.lastScrollCleanupTime = now;
         scheduleCleanupCycle();
     }
 
@@ -986,17 +987,17 @@ function vsOnScroll() {
 /**
  * Force-load media for any card that is inside the viewport but has no
  * *working* media element (one whose src is actually set).
- * Uses pre-computed vsPositions (no DOM measurement, no IntersectionObserver).
+ * Uses pre-computed vsState.positions (no DOM measurement, no IntersectionObserver).
  */
 function vsEnsureVisibleMedia(scrollTop, viewportHeight) {
-    if (!vsPositions) return;
+    if (!vsState.positions) return;
     const visibleTop = scrollTop;
     const visibleBottom = scrollTop + viewportHeight;
 
-    for (const [idx, card] of vsActiveCards) {
+    for (const [idx, card] of vsState.activeCards) {
         const posIdx = idx * 4;
-        const cardTop = vsPositions[posIdx + 1];
-        const cardBottom = cardTop + vsPositions[posIdx + 3];
+        const cardTop = vsState.positions[posIdx + 1];
+        const cardBottom = cardTop + vsState.positions[posIdx + 3];
 
         // Skip cards outside the actual viewport (no buffer)
         if (cardBottom < visibleTop || cardTop > visibleBottom) continue;
@@ -1037,19 +1038,19 @@ function vsEnsureVisibleMedia(scrollTop, viewportHeight) {
 function vsInit(items) {
     vsCleanup(); // Clean up any previous virtual scroll state
 
-    vsSortedItems = items;
-    vsEnabled = true;
-    vsActiveCards = new Map();
-    vsRecyclePool = [];
-    vsLastStartIndex = -1;
-    vsLastEndIndex = -1;
-    vsAspectRatioMap = null; // Rebuild on next access
+    vsState.sortedItems = items;
+    vsState.enabled = true;
+    vsState.activeCards = new Map();
+    vsState.recyclePool = [];
+    vsState.lastStartIndex = -1;
+    vsState.lastEndIndex = -1;
+    vsState.aspectRatioMap = null; // Rebuild on next access
 
     // Calculate positions
     const containerWidth = gridContainer.clientWidth;
     const result = vsCalculatePositions(items, containerWidth, layoutMode, zoomLevel);
-    vsPositions = result.positions;
-    vsTotalHeight = result.totalHeight;
+    vsState.positions = result.positions;
+    vsState.totalHeight = result.totalHeight;
 
     // Notify canvas grid that the items + positions changed
     if (window.CG) window.CG.invalidateData();
@@ -1059,16 +1060,16 @@ function vsInit(items) {
     gridContainer.classList.remove('grid');
 
     // Create spacer for total height
-    vsSpacer = document.createElement('div');
-    vsSpacer.className = 'masonry-spacer vs-spacer';
-    vsSpacer.style.width = '1px';
-    vsSpacer.style.height = `${vsTotalHeight}px`;
-    vsSpacer.style.position = 'static';
-    vsSpacer.style.pointerEvents = 'none';
-    vsSpacer.style.visibility = 'hidden';
-    vsSpacer.style.margin = '0';
-    vsSpacer.style.padding = '0';
-    gridContainer.appendChild(vsSpacer);
+    vsState.spacer = document.createElement('div');
+    vsState.spacer.className = 'masonry-spacer vs-spacer';
+    vsState.spacer.style.width = '1px';
+    vsState.spacer.style.height = `${vsState.totalHeight}px`;
+    vsState.spacer.style.position = 'static';
+    vsState.spacer.style.pointerEvents = 'none';
+    vsState.spacer.style.visibility = 'hidden';
+    vsState.spacer.style.margin = '0';
+    vsState.spacer.style.padding = '0';
+    gridContainer.appendChild(vsState.spacer);
 
     // Initial render
     const scrollTop = gridContainer.scrollTop;
@@ -1080,7 +1081,7 @@ function vsInit(items) {
     gridContainer.addEventListener('scroll', vsOnScroll, { passive: true });
 
     // Attach resize handler
-    vsResizeHandler = () => {
+    vsState.resizeHandler = () => {
         cachedViewportBounds = null;
         viewportBoundsCacheTime = 0;
         cardRectCacheGeneration++;
@@ -1089,14 +1090,14 @@ function vsInit(items) {
             vsRecalculate();
         }, 150);
     };
-    window.addEventListener('resize', vsResizeHandler);
+    window.addEventListener('resize', vsState.resizeHandler);
 }
 
 /**
  * Recalculate positions (after resize, zoom change, or filter change).
  */
 function vsRecalculate() {
-    if (!vsEnabled) return;
+    if (!vsState.enabled) return;
 
     // Remember which item is at the top of viewport
     const scrollTop = gridContainer.scrollTop;
@@ -1104,36 +1105,36 @@ function vsRecalculate() {
     let anchorItemIndex = -1;
     let anchorOffset = 0;
 
-    if (vsPositions && vsSortedItems.length > 0) {
+    if (vsState.positions && vsState.sortedItems.length > 0) {
         const { startIndex } = vsGetVisibleRange(scrollTop, viewportHeight);
-        if (startIndex < vsSortedItems.length) {
+        if (startIndex < vsState.sortedItems.length) {
             anchorItemIndex = startIndex;
             const idx = startIndex * 4;
-            anchorOffset = scrollTop - vsPositions[idx + 1];
+            anchorOffset = scrollTop - vsState.positions[idx + 1];
         }
     }
 
     // Recalculate positions
     const containerWidth = gridContainer.clientWidth;
-    const result = vsCalculatePositions(vsSortedItems, containerWidth, layoutMode, zoomLevel);
-    vsPositions = result.positions;
-    vsTotalHeight = result.totalHeight;
+    const result = vsCalculatePositions(vsState.sortedItems, containerWidth, layoutMode, zoomLevel);
+    vsState.positions = result.positions;
+    vsState.totalHeight = result.totalHeight;
 
     // Update spacer
-    if (vsSpacer) {
-        vsSpacer.style.height = `${vsTotalHeight}px`;
+    if (vsState.spacer) {
+        vsState.spacer.style.height = `${vsState.totalHeight}px`;
     }
 
     // Restore scroll position relative to anchor item
-    if (anchorItemIndex >= 0 && anchorItemIndex < vsSortedItems.length) {
+    if (anchorItemIndex >= 0 && anchorItemIndex < vsState.sortedItems.length) {
         const idx = anchorItemIndex * 4;
-        const newTop = vsPositions[idx + 1];
+        const newTop = vsState.positions[idx + 1];
         gridContainer.scrollTop = newTop + anchorOffset;
     }
 
     // Force full re-render of visible range
-    vsLastStartIndex = -1;
-    vsLastEndIndex = -1;
+    vsState.lastStartIndex = -1;
+    vsState.lastEndIndex = -1;
     const newScrollTop = gridContainer.scrollTop;
     const { startIndex, endIndex } = vsGetVisibleRange(newScrollTop, viewportHeight);
     vsUpdateDOM(startIndex, endIndex);
@@ -1143,7 +1144,7 @@ function vsRecalculate() {
  * Update virtual scrolling with new filtered/sorted items.
  */
 function vsUpdateItems(items, options = {}) {
-    if (!vsEnabled) {
+    if (!vsState.enabled) {
         vsInit(items);
         return;
     }
@@ -1162,7 +1163,7 @@ function vsUpdateItems(items, options = {}) {
 
         // Separate cards into keep (item still exists) and remove
         const keptCards = new Map(); // newIndex -> card
-        for (const [oldIdx, card] of vsActiveCards) {
+        for (const [oldIdx, card] of vsState.activeCards) {
             const cardPath = card.dataset.path || card.dataset.folderPath || '';
             const newIdx = pathToNewIndex.get(cardPath);
             if (newIdx !== undefined) {
@@ -1183,21 +1184,21 @@ function vsUpdateItems(items, options = {}) {
                 mediaToRetry.delete(card);
                 observer.unobserve(card);
                 card.remove();
-                if (vsRecyclePool.length < VS_MAX_POOL_SIZE) {
-                    vsRecyclePool.push(card);
+                if (vsState.recyclePool.length < VS_MAX_POOL_SIZE) {
+                    vsState.recyclePool.push(card);
                 }
             }
         }
 
-        vsActiveCards.clear();
+        vsState.activeCards.clear();
         // Re-register kept cards under their new indices
         for (const [newIdx, card] of keptCards) {
             card._vsItemIndex = newIdx;
-            vsActiveCards.set(newIdx, card);
+            vsState.activeCards.set(newIdx, card);
         }
     } else {
         // --- Full teardown path for folder navigation ---
-        for (const [itemIdx, card] of vsActiveCards) {
+        for (const [itemIdx, card] of vsState.activeCards) {
             const mediaEl = card._mediaEl;
             if (mediaEl) {
                 if (mediaEl.tagName === 'VIDEO') {
@@ -1210,40 +1211,40 @@ function vsUpdateItems(items, options = {}) {
             }
             observer.unobserve(card);
             card.remove();
-            if (vsRecyclePool.length < VS_MAX_POOL_SIZE) {
-                vsRecyclePool.push(card);
+            if (vsState.recyclePool.length < VS_MAX_POOL_SIZE) {
+                vsState.recyclePool.push(card);
             }
         }
-        vsActiveCards.clear();
+        vsState.activeCards.clear();
         pendingMediaCreations.clear();
         mediaToRetry.clear();
     }
 
-    vsSortedItems = items;
+    vsState.sortedItems = items;
 
     // Invalidate layout cache -- items changed, force full recalculation
-    vsLayoutCache.itemCount = 0;
+    vsState.layoutCache.itemCount = 0;
 
     // Recalculate positions
     const containerWidth = gridContainer.clientWidth;
     const result = vsCalculatePositions(items, containerWidth, layoutMode, zoomLevel);
-    vsPositions = result.positions;
-    vsTotalHeight = result.totalHeight;
+    vsState.positions = result.positions;
+    vsState.totalHeight = result.totalHeight;
 
     // Notify canvas grid that positions changed
     if (window.CG) window.CG.invalidateData();
 
     // Update spacer
-    if (vsSpacer) {
-        vsSpacer.style.height = `${vsTotalHeight}px`;
+    if (vsState.spacer) {
+        vsState.spacer.style.height = `${vsState.totalHeight}px`;
     }
 
     // Scroll to top for new items, or preserve scroll for filter changes
     gridContainer.scrollTop = savedScrollTop;
 
     // Render visible range
-    vsLastStartIndex = -1;
-    vsLastEndIndex = -1;
+    vsState.lastStartIndex = -1;
+    vsState.lastEndIndex = -1;
     const viewportHeight = gridContainer.clientHeight;
     const { startIndex, endIndex } = vsGetVisibleRange(savedScrollTop, viewportHeight);
     vsUpdateDOM(startIndex, endIndex);
@@ -1253,23 +1254,23 @@ function vsUpdateItems(items, options = {}) {
  * Clean up virtual scrolling state.
  */
 function vsCleanup() {
-    vsEnabled = false;
+    vsState.enabled = false;
     cancelMarquee();
 
-    if (vsScrollRafId) {
-        cancelAnimationFrame(vsScrollRafId);
-        vsScrollRafId = null;
+    if (vsState.scrollRafId) {
+        cancelAnimationFrame(vsState.scrollRafId);
+        vsState.scrollRafId = null;
     }
 
     gridContainer.removeEventListener('scroll', vsOnScroll);
 
-    if (vsResizeHandler) {
-        window.removeEventListener('resize', vsResizeHandler);
-        vsResizeHandler = null;
+    if (vsState.resizeHandler) {
+        window.removeEventListener('resize', vsState.resizeHandler);
+        vsState.resizeHandler = null;
     }
 
     // Clean up active cards
-    for (const [, card] of vsActiveCards) {
+    for (const [, card] of vsState.activeCards) {
         const mediaEl = card._mediaEl;
         if (mediaEl) {
             if (mediaEl.tagName === 'VIDEO') destroyVideoElement(mediaEl);
@@ -1277,18 +1278,18 @@ function vsCleanup() {
         }
         observer.unobserve(card);
     }
-    vsActiveCards.clear();
-    vsRecyclePool = [];
-    vsPositions = null;
-    vsSortedItems = [];
-    vsTotalHeight = 0;
-    vsLastStartIndex = -1;
-    vsLastEndIndex = -1;
+    vsState.activeCards.clear();
+    vsState.recyclePool = [];
+    vsState.positions = null;
+    vsState.sortedItems = [];
+    vsState.totalHeight = 0;
+    vsState.lastStartIndex = -1;
+    vsState.lastEndIndex = -1;
 
-    if (vsSpacer && vsSpacer.parentNode) {
-        vsSpacer.remove();
+    if (vsState.spacer && vsState.spacer.parentNode) {
+        vsState.spacer.remove();
     }
-    vsSpacer = null;
+    vsState.spacer = null;
 }
 
 /**
@@ -1302,7 +1303,7 @@ function vsGetItemIndex(card) {
  * Get the card element for a given item index (if currently rendered).
  */
 function vsGetCardForIndex(index) {
-    return vsActiveCards.get(index) || null;
+    return vsState.activeCards.get(index) || null;
 }
 
 // ============================================================================
@@ -2071,22 +2072,24 @@ let activeTagFilters = []; // [{tagId, name, color}]
 let tagFilterOperator = 'AND'; // 'AND' or 'OR'
 
 // --- Find Similar state ---
-let findSimilarActive = false;
-let findSimilarEmbedding = null;       // Float32Array - source image embedding
-let findSimilarSourcePath = null;      // Source file path
-let findSimilarThreshold = 0.60;       // Similarity threshold (0-1)
-let findSimilarAllFolders = false;     // Cross-folder toggle
-let findSimilarPreviousItems = null;   // Stashed currentItems to restore on clear
-let findSimilarPreviousFolder = null;  // Stashed currentFolderPath to restore on clear
+const findSimilarState = {
+    active: false,
+    embedding: null,       // Float32Array - source image embedding
+    sourcePath: null,      // Source file path
+    threshold: 0.60,       // Similarity threshold (0-1)
+    allFolders: false,     // Cross-folder toggle
+    previousItems: null,   // Stashed currentItems to restore on clear
+    previousFolder: null,  // Stashed currentFolderPath to restore on clear
+};
 
 // Silent reset of find-similar state + banner (no re-render).
 function clearFindSimilarState() {
-    if (!findSimilarActive) return;
-    findSimilarActive = false;
-    findSimilarEmbedding = null;
-    findSimilarSourcePath = null;
-    findSimilarPreviousItems = null;
-    findSimilarPreviousFolder = null;
+    if (!findSimilarState.active) return;
+    findSimilarState.active = false;
+    findSimilarState.embedding = null;
+    findSimilarState.sourcePath = null;
+    findSimilarState.previousItems = null;
+    findSimilarState.previousFolder = null;
     const fsBanner = document.getElementById('find-similar-banner');
     if (fsBanner) fsBanner.classList.add('hidden');
 }
@@ -3850,9 +3853,9 @@ async function activateFindSimilar(filePath, fileName) {
         }
     }
 
-    findSimilarActive = true;
-    findSimilarEmbedding = embedding;
-    findSimilarSourcePath = filePath;
+    findSimilarState.active = true;
+    findSimilarState.embedding = embedding;
+    findSimilarState.sourcePath = filePath;
 
     // Show banner
     const banner = document.getElementById('find-similar-banner');
@@ -3863,17 +3866,17 @@ async function activateFindSimilar(filePath, fileName) {
 
     if (sourceNameEl) sourceNameEl.textContent = fileName || filePath.split(/[/\\]/).pop();
     if (thresholdSlider) {
-        thresholdSlider.value = Math.round(findSimilarThreshold * 100);
-        thresholdValue.textContent = findSimilarThreshold.toFixed(2);
+        thresholdSlider.value = Math.round(findSimilarState.threshold * 100);
+        thresholdValue.textContent = findSimilarState.threshold.toFixed(2);
     }
-    if (allFoldersCheckbox) allFoldersCheckbox.checked = findSimilarAllFolders;
+    if (allFoldersCheckbox) allFoldersCheckbox.checked = findSimilarState.allFolders;
     if (banner) banner.classList.remove('hidden');
 
     // Highlight source card
     const sourceCard = gridContainer.querySelector(`[data-path="${CSS.escape(filePath)}"]`);
     if (sourceCard) sourceCard.classList.add('find-similar-source');
 
-    if (findSimilarAllFolders) {
+    if (findSimilarState.allFolders) {
         await executeCrossFolderFindSimilar();
     } else {
         applyFilters();
@@ -3885,7 +3888,7 @@ async function activateFindSimilar(filePath, fileName) {
  * Execute cross-folder "Find Similar" by scanning all embeddings in IndexedDB.
  */
 async function executeCrossFolderFindSimilar() {
-    if (!findSimilarEmbedding) return;
+    if (!findSimilarState.embedding) return;
 
     showToast('Searching across all indexed folders...', 'info', { duration: 2000 });
 
@@ -3899,9 +3902,9 @@ async function executeCrossFolderFindSimilar() {
     // Compute similarities
     const matches = [];
     for (const [path, data] of allEmbeddings) {
-        if (path === findSimilarSourcePath) continue; // Skip source
-        const sim = cosineSimilarity(findSimilarEmbedding, data.embedding);
-        if (sim >= findSimilarThreshold) {
+        if (path === findSimilarState.sourcePath) continue; // Skip source
+        const sim = cosineSimilarity(findSimilarState.embedding, data.embedding);
+        if (sim >= findSimilarState.threshold) {
             matches.push({ path, mtime: data.mtime, score: sim });
         }
     }
@@ -3910,9 +3913,9 @@ async function executeCrossFolderFindSimilar() {
     matches.sort((a, b) => b.score - a.score);
 
     // Stash current state for restore
-    if (!findSimilarPreviousItems) {
-        findSimilarPreviousItems = currentItems.slice();
-        findSimilarPreviousFolder = currentFolderPath;
+    if (!findSimilarState.previousItems) {
+        findSimilarState.previousItems = currentItems.slice();
+        findSimilarState.previousFolder = currentFolderPath;
     }
 
     // Build item objects from matches (must include url for thumbnails and lightbox)
@@ -3958,7 +3961,7 @@ function updateFindSimilarCount() {
     const countEl = document.getElementById('find-similar-count');
     if (!countEl) return;
 
-    if (findSimilarAllFolders) {
+    if (findSimilarState.allFolders) {
         countEl.textContent = `${currentItems.length} result${currentItems.length !== 1 ? 's' : ''}`;
     } else {
         // Count items that pass the similarity filter in current folder
@@ -3967,8 +3970,8 @@ function updateFindSimilarCount() {
             if (item.type === 'folder') continue;
             const emb = currentEmbeddings.get(item.path);
             if (!emb) continue;
-            const sim = cosineSimilarity(findSimilarEmbedding, emb);
-            if (sim >= findSimilarThreshold) count++;
+            const sim = cosineSimilarity(findSimilarState.embedding, emb);
+            if (sim >= findSimilarState.threshold) count++;
         }
         countEl.textContent = `${count} result${count !== 1 ? 's' : ''}`;
     }
@@ -3978,16 +3981,16 @@ function updateFindSimilarCount() {
  * Clear the "Find Similar" filter and restore previous view.
  */
 function clearFindSimilar() {
-    const wasAllFolders = findSimilarAllFolders;
+    const wasAllFolders = findSimilarState.allFolders;
 
     // Remove source card highlight
     const sourceCard = gridContainer.querySelector('.find-similar-source');
     if (sourceCard) sourceCard.classList.remove('find-similar-source');
 
     // Reset state
-    findSimilarActive = false;
-    findSimilarEmbedding = null;
-    findSimilarSourcePath = null;
+    findSimilarState.active = false;
+    findSimilarState.embedding = null;
+    findSimilarState.sourcePath = null;
 
     // Hide banner
     const banner = document.getElementById('find-similar-banner');
@@ -3995,12 +3998,12 @@ function clearFindSimilar() {
     const countEl = document.getElementById('find-similar-count');
     if (countEl) countEl.textContent = '';
 
-    if (wasAllFolders && findSimilarPreviousItems) {
+    if (wasAllFolders && findSimilarState.previousItems) {
         // Restore previous view
-        currentItems = findSimilarPreviousItems;
-        currentFolderPath = findSimilarPreviousFolder;
-        findSimilarPreviousItems = null;
-        findSimilarPreviousFolder = null;
+        currentItems = findSimilarState.previousItems;
+        currentFolderPath = findSimilarState.previousFolder;
+        findSimilarState.previousItems = null;
+        findSimilarState.previousFolder = null;
 
         if (currentFolderPath) {
             // Re-render the previous folder
@@ -4010,8 +4013,8 @@ function clearFindSimilar() {
             renderItems(currentItems, null);
         }
     } else {
-        findSimilarPreviousItems = null;
-        findSimilarPreviousFolder = null;
+        findSimilarState.previousItems = null;
+        findSimilarState.previousFolder = null;
         applyFilters();
     }
 }
@@ -4075,13 +4078,13 @@ function updateInMemoryFolderCaches(folderPath, items) {
 }
 
 function scheduleVsRecalculateForDimensions() {
-    if (!vsEnabled || layoutMode !== 'masonry') return;
-    if (vsDimensionRecalcRafId !== null) return;
+    if (!vsState.enabled || layoutMode !== 'masonry') return;
+    if (vsState.dimensionRecalcRafId !== null) return;
 
-    vsDimensionRecalcRafId = requestAnimationFrame(() => {
-        vsDimensionRecalcRafId = null;
+    vsState.dimensionRecalcRafId = requestAnimationFrame(() => {
+        vsState.dimensionRecalcRafId = null;
         // Force a full position rebuild so updated dimensions are reflected.
-        vsLayoutCache.itemCount = 0;
+        vsState.layoutCache.itemCount = 0;
         vsRecalculate();
     });
 }
@@ -4103,8 +4106,8 @@ function updateItemDimensionsByPath(filePath, width, height) {
 function applyUpdatedDimensionsToVisibleCards(updatedPaths) {
     let updatedVisibleCards = 0;
 
-    for (const [itemIdx, card] of vsActiveCards) {
-        const item = vsSortedItems[itemIdx];
+    for (const [itemIdx, card] of vsState.activeCards) {
+        const item = vsState.sortedItems[itemIdx];
         if (!item || item.type === 'folder' || !updatedPaths.has(item.path) || !item.width || !item.height) {
             continue;
         }
@@ -4178,7 +4181,7 @@ async function hydrateMissingDimensionsInBackground(folderPath, items) {
             if (shouldReapplyFilters) {
                 applyFilters();
             } else {
-                vsLayoutCache.itemCount = 0; // Invalidate cache so new dimensions are used
+                vsState.layoutCache.itemCount = 0; // Invalidate cache so new dimensions are used
                 vsRecalculate();
             }
         }
@@ -4901,7 +4904,7 @@ function handleGridScroll() {
 }
 
 function ensureCleanupScrollListener() {
-    if (cleanupScrollListenerAttached || vsEnabled) return;
+    if (cleanupScrollListenerAttached || vsState.enabled) return;
     gridContainer.addEventListener('scroll', handleGridScroll, { passive: true });
     cleanupScrollListenerAttached = true;
 }
@@ -4909,8 +4912,8 @@ function ensureCleanupScrollListener() {
 function performCleanupCheck() {
     const perfStart = perfTest.start();
 
-    // Use vsActiveCards when virtual scrolling is active (avoids full DOM traversal)
-    const cardSource = vsEnabled ? Array.from(vsActiveCards.values()) : Array.from(gridContainer.querySelectorAll('.video-card'));
+    // Use vsState.activeCards when virtual scrolling is active (avoids full DOM traversal)
+    const cardSource = vsState.enabled ? Array.from(vsState.activeCards.values()) : Array.from(gridContainer.querySelectorAll('.video-card'));
     if (cardSource.length === 0) {
         perfTest.end('performCleanupCheck', perfStart, { cardCount: 0, detail: 'empty' });
         return;
@@ -5998,8 +6001,8 @@ function onCardInfoSettingsChanged() {
 function getMediaItemForCard(card) {
     const path = card.dataset.path;
     if (!path) return null;
-    if (typeof card._vsItemIndex === 'number' && vsSortedItems[card._vsItemIndex]) {
-        const it = vsSortedItems[card._vsItemIndex];
+    if (typeof card._vsItemIndex === 'number' && vsState.sortedItems[card._vsItemIndex]) {
+        const it = vsState.sortedItems[card._vsItemIndex];
         if (it && it.path === path) return it;
     }
     const found = currentItems.find(i => i.path === path);
@@ -6114,8 +6117,8 @@ function applyCardInfoLayoutClasses(card) {
 }
 
 function refreshAllVisibleMediaCardInfo() {
-    const cards = vsEnabled && vsActiveCards.size > 0
-        ? Array.from(vsActiveCards.values())
+    const cards = vsState.enabled && vsState.activeCards.size > 0
+        ? Array.from(vsState.activeCards.values())
         : Array.from(gridContainer.querySelectorAll('.video-card'));
 
     for (const card of cards) {
@@ -6549,7 +6552,7 @@ function switchLayoutMode() {
     deferLocalStorageWrite('layoutMode', layoutMode);
 
     // With virtual scrolling, recalculate positions for new layout mode
-    if (vsEnabled) {
+    if (vsState.enabled) {
         vsRecalculate();
     } else {
         // Fallback for non-VS mode
@@ -6718,10 +6721,10 @@ function sortItems(items) {
     const allFiles = pinnedFiles.concat(unpinnedFiles);
 
     if (groupByDate && allFiles.length > 0) {
-        vsGroupHeadersPresent = true;
+        vsState.groupHeadersPresent = true;
         return [...pinnedFolders, ...unpinnedFolders, ...injectDateGroupHeaders(allFiles)];
     }
-    vsGroupHeadersPresent = false;
+    vsState.groupHeadersPresent = false;
     return pinnedFolders.concat(unpinnedFolders, allFiles);
 }
 
@@ -8223,8 +8226,8 @@ function updateItemCount() {
     if (total === 0) {
         itemCountEl.textContent = '';
     } else if (hasFilter) {
-        // With virtual scrolling, vsSortedItems contains the filtered set
-        const visible = vsEnabled ? vsSortedItems.length : (() => {
+        // With virtual scrolling, vsState.sortedItems contains the filtered set
+        const visible = vsState.enabled ? vsState.sortedItems.length : (() => {
             const cards = gridContainer.querySelectorAll('.video-card, .folder-card');
             return Array.from(cards).filter(c => c.style.display !== 'none').length;
         })();
@@ -8490,7 +8493,7 @@ function syncFilterWorkerTextEmbedding() {
 function syncFilterWorkerFindSimilarEmbedding() {
     const w = getFilterWorker();
     if (!w) return;
-    w.postMessage({ type: 'setFindSimilarEmbedding', vec: findSimilarEmbedding || null });
+    w.postMessage({ type: 'setFindSimilarEmbedding', vec: findSimilarState.embedding || null });
 }
 
 function applyFilterWorkerResult(msg) {
@@ -8499,7 +8502,7 @@ function applyFilterWorkerResult(msg) {
     // a fresh applyFilters will run for the new items.
     if (_filterWorkerItemsRef !== currentItems) return;
 
-    vsGroupHeadersPresent = !!msg.groupHeadersPresent;
+    vsState.groupHeadersPresent = !!msg.groupHeadersPresent;
 
     // Reconstruct the items array from currentItems using the indices the worker sent.
     // Negative indices reference synthetic objects (group headers).
@@ -8534,7 +8537,7 @@ function applyFilterWorkerResult(msg) {
     // - type:gif and type:folder synthetic types
     finalItems = _applyOperatorPostFilter(finalItems);
 
-    if (vsEnabled) {
+    if (vsState.enabled) {
         vsUpdateItems(finalItems, { preserveScroll: true });
     }
     updateItemCount();
@@ -8611,7 +8614,7 @@ function applyFiltersViaWorker() {
     syncFilterWorkerTextEmbedding();
     syncFilterWorkerFindSimilarEmbedding();
     // Embeddings only matter when AI search / clustering / find-similar is active
-    if (aiSearchActive || aiClusteringMode === 'similarity' || findSimilarActive) {
+    if (aiSearchActive || aiClusteringMode === 'similarity' || findSimilarState.active) {
         syncFilterWorkerEmbeddingsIfNeeded();
     }
 
@@ -8636,9 +8639,9 @@ function applyFiltersViaWorker() {
         starFilterActive,
         starSortOrder,
         tagFilterActive,
-        findSimilarActive,
-        findSimilarAllFolders,
-        findSimilarThreshold,
+        findSimilarActive: findSimilarState.active,
+        findSimilarAllFolders: findSimilarState.allFolders,
+        findSimilarThreshold: findSimilarState.threshold,
         aiVisualSearchEnabled,
         aiSearchActive,
         aiSimilarityThreshold,
@@ -8727,13 +8730,13 @@ function applyFilters() {
         }
 
         // Find Similar filter (current folder mode only — cross-folder replaces currentItems)
-        if (findSimilarActive && findSimilarEmbedding && !findSimilarAllFolders) {
+        if (findSimilarState.active && findSimilarState.embedding && !findSimilarState.allFolders) {
             if (item.type === 'folder') return false;
             const emb = currentEmbeddings.get(item.path);
             if (!emb) return false;
-            const sim = cosineSimilarity(findSimilarEmbedding, emb);
+            const sim = cosineSimilarity(findSimilarState.embedding, emb);
             item._similarityScore = sim;
-            if (sim < findSimilarThreshold) return false;
+            if (sim < findSimilarState.threshold) return false;
         }
 
         // Advanced search filters
@@ -8782,7 +8785,7 @@ function applyFilters() {
     }
 
     // Sort by similarity when find-similar is active (current folder mode)
-    if (findSimilarActive && findSimilarEmbedding && !findSimilarAllFolders) {
+    if (findSimilarState.active && findSimilarState.embedding && !findSimilarState.allFolders) {
         sortedFiltered = [...sortedFiltered].sort((a, b) => {
             if (a.type === 'folder') return 1;
             if (b.type === 'folder') return -1;
@@ -8811,7 +8814,7 @@ function applyFilters() {
     sortedFiltered = _applyOperatorPostFilter(sortedFiltered);
 
     // Update virtual scrolling with filtered items
-    if (vsEnabled) {
+    if (vsState.enabled) {
         vsUpdateItems(sortedFiltered, { preserveScroll: true });
     }
     updateItemCount();
@@ -8976,21 +8979,23 @@ let currentHoveredCard = null;
 
 // ── Multi-select state ───────────────────────────────────────────────
 const selectedCardPaths = new Set();
-let lastSelectedCardIndex = -1; // index into vsSortedItems for shift-click range
+let lastSelectedCardIndex = -1; // index into vsState.sortedItems for shift-click range
 
 // ── Marquee (drag-to-select) state ──────────────────────────────────
-let marqueeActive = false;
-let marqueePending = false;       // mousedown recorded, waiting for dead-zone
-let marqueeStartClientX = 0;     // client coords at mousedown
-let marqueeStartClientY = 0;
-let marqueeStartContentX = 0;    // content coords (scroll-adjusted)
-let marqueeStartContentY = 0;
-let marqueeElement = null;        // the rectangle div
-let marqueeCtrlHeld = false;
-let marqueePreSelection = null;   // Set snapshot for Ctrl+drag
-let marqueeRafId = null;
-let marqueeJustFinished = false;
-let marqueeAutoScrollId = null;
+const marqueeState = {
+    active: false,
+    pending: false,       // mousedown recorded, waiting for dead-zone
+    startClientX: 0,      // client coords at mousedown
+    startClientY: 0,
+    startContentX: 0,     // content coords (scroll-adjusted)
+    startContentY: 0,
+    element: null,        // the rectangle div
+    ctrlHeld: false,
+    preSelection: null,   // Set snapshot for Ctrl+drag
+    rafId: null,
+    justFinished: false,
+    autoScrollId: null,
+};
 
 function clearCardSelection() {
     if (selectedCardPaths.size === 0) return;
@@ -9003,15 +9008,15 @@ function clearCardSelection() {
 function selectAllCards() {
     selectedCardPaths.clear();
     let lastIndex = -1;
-    for (let i = 0; i < vsSortedItems.length; i++) {
-        const item = vsSortedItems[i];
+    for (let i = 0; i < vsState.sortedItems.length; i++) {
+        const item = vsState.sortedItems[i];
         if (!item || item.type === 'folder' || item.type === 'group-header') continue;
         if (!item.path) continue;
         selectedCardPaths.add(item.path);
         lastIndex = i;
     }
     lastSelectedCardIndex = lastIndex;
-    vsActiveCards.forEach((card) => {
+    vsState.activeCards.forEach((card) => {
         if (card.dataset.path && selectedCardPaths.has(card.dataset.path)) {
             card.classList.add('selected');
         }
@@ -9037,12 +9042,12 @@ function rangeSelectCards(fromIndex, toIndex) {
     const lo = Math.min(fromIndex, toIndex);
     const hi = Math.max(fromIndex, toIndex);
     for (let i = lo; i <= hi; i++) {
-        const item = vsSortedItems[i];
+        const item = vsState.sortedItems[i];
         if (!item || item.type === 'folder') continue;
         selectedCardPaths.add(item.path);
     }
     // Update visible card DOM
-    vsActiveCards.forEach((card) => {
+    vsState.activeCards.forEach((card) => {
         if (card.dataset.path && selectedCardPaths.has(card.dataset.path)) {
             card.classList.add('selected');
         }
@@ -9063,7 +9068,7 @@ function updateSelectionStatusBar() {
 function getItemIndexForCard(card) {
     const path = card.dataset.path;
     if (!path) return -1;
-    return vsSortedItems.findIndex(item => item.path === path);
+    return vsState.sortedItems.findIndex(item => item.path === path);
 }
 
 // ── Marquee (drag-to-select) ────────────────────────────────────────
@@ -9078,37 +9083,37 @@ function marqueeClientToContent(clientX, clientY) {
 
 function marqueeGetRect(cx, cy) {
     const cur = marqueeClientToContent(cx, cy);
-    const x1 = Math.min(marqueeStartContentX, cur.x);
-    const y1 = Math.min(marqueeStartContentY, cur.y);
-    const x2 = Math.max(marqueeStartContentX, cur.x);
-    const y2 = Math.max(marqueeStartContentY, cur.y);
+    const x1 = Math.min(marqueeState.startContentX, cur.x);
+    const y1 = Math.min(marqueeState.startContentY, cur.y);
+    const x2 = Math.max(marqueeState.startContentX, cur.x);
+    const y2 = Math.max(marqueeState.startContentY, cur.y);
     return { left: x1, top: y1, right: x2, bottom: y2 };
 }
 
 function marqueeUpdateRect(clientX, clientY) {
-    if (!marqueeElement) return;
+    if (!marqueeState.element) return;
     const containerRect = gridContainer.getBoundingClientRect();
     const cur = marqueeClientToContent(clientX, clientY);
     // Position the div in content space (absolute inside grid-container)
-    const x1 = Math.min(marqueeStartContentX, cur.x);
-    const y1 = Math.min(marqueeStartContentY, cur.y);
-    const x2 = Math.max(marqueeStartContentX, cur.x);
-    const y2 = Math.max(marqueeStartContentY, cur.y);
-    marqueeElement.style.left = x1 + 'px';
-    marqueeElement.style.top = y1 + 'px';
-    marqueeElement.style.width = (x2 - x1) + 'px';
-    marqueeElement.style.height = (y2 - y1) + 'px';
+    const x1 = Math.min(marqueeState.startContentX, cur.x);
+    const y1 = Math.min(marqueeState.startContentY, cur.y);
+    const x2 = Math.max(marqueeState.startContentX, cur.x);
+    const y2 = Math.max(marqueeState.startContentY, cur.y);
+    marqueeState.element.style.left = x1 + 'px';
+    marqueeState.element.style.top = y1 + 'px';
+    marqueeState.element.style.width = (x2 - x1) + 'px';
+    marqueeState.element.style.height = (y2 - y1) + 'px';
 }
 
 function marqueeComputeSelection(clientX, clientY) {
-    if (!vsPositions || !vsSortedItems.length) return;
+    if (!vsState.positions || !vsState.sortedItems.length) return;
     const sel = marqueeGetRect(clientX, clientY);
-    const itemCount = vsSortedItems.length;
+    const itemCount = vsState.sortedItems.length;
 
     // Rebuild selection
     selectedCardPaths.clear();
-    if (marqueeCtrlHeld && marqueePreSelection) {
-        for (const p of marqueePreSelection) selectedCardPaths.add(p);
+    if (marqueeState.ctrlHeld && marqueeState.preSelection) {
+        for (const p of marqueeState.preSelection) selectedCardPaths.add(p);
     }
 
     // Binary search for first item whose bottom edge (top + height) >= sel.top
@@ -9116,7 +9121,7 @@ function marqueeComputeSelection(clientX, clientY) {
     while (lo < hi) {
         const mid = (lo + hi) >>> 1;
         const midIdx = mid * 4;
-        if (vsPositions[midIdx + 1] + vsPositions[midIdx + 3] < sel.top) {
+        if (vsState.positions[midIdx + 1] + vsState.positions[midIdx + 3] < sel.top) {
             lo = mid + 1;
         } else {
             hi = mid;
@@ -9126,20 +9131,20 @@ function marqueeComputeSelection(clientX, clientY) {
     // Iterate only items in the Y range of the marquee rectangle
     for (let i = lo; i < itemCount; i++) {
         const idx = i * 4;
-        const cT = vsPositions[idx + 1];
+        const cT = vsState.positions[idx + 1];
         if (cT > sel.bottom) break; // Past the marquee — done
 
-        const item = vsSortedItems[i];
+        const item = vsState.sortedItems[i];
         if (!item.path || item.type === 'folder' || item.type === 'group-header') continue;
-        const cL = vsPositions[idx];
-        const cR = cL + vsPositions[idx + 2];
-        const cB = cT + vsPositions[idx + 3];
+        const cL = vsState.positions[idx];
+        const cR = cL + vsState.positions[idx + 2];
+        const cB = cT + vsState.positions[idx + 3];
         if (!(sel.right < cL || sel.left > cR || sel.bottom < cT || sel.top > cB)) {
             selectedCardPaths.add(item.path);
         }
     }
     // Update visible card DOM
-    vsActiveCards.forEach((card) => {
+    vsState.activeCards.forEach((card) => {
         if (card.dataset.path) {
             card.classList.toggle('selected', selectedCardPaths.has(card.dataset.path));
         }
@@ -9148,10 +9153,10 @@ function marqueeComputeSelection(clientX, clientY) {
 }
 
 function marqueeStartAutoScroll(clientY) {
-    if (marqueeAutoScrollId) return;
+    if (marqueeState.autoScrollId) return;
     const EDGE = 50, MAX_SPEED = 15;
     function step() {
-        if (!marqueeActive) { marqueeAutoScrollId = null; return; }
+        if (!marqueeState.active) { marqueeState.autoScrollId = null; return; }
         const rect = gridContainer.getBoundingClientRect();
         let speed = 0;
         if (clientY < rect.top + EDGE) {
@@ -9162,32 +9167,32 @@ function marqueeStartAutoScroll(clientY) {
         if (Math.abs(speed) > 0.5) {
             gridContainer.scrollTop += speed;
         }
-        marqueeAutoScrollId = requestAnimationFrame(step);
+        marqueeState.autoScrollId = requestAnimationFrame(step);
     }
-    marqueeAutoScrollId = requestAnimationFrame(step);
+    marqueeState.autoScrollId = requestAnimationFrame(step);
 }
 
 function marqueeStopAutoScroll() {
-    if (marqueeAutoScrollId) {
-        cancelAnimationFrame(marqueeAutoScrollId);
-        marqueeAutoScrollId = null;
+    if (marqueeState.autoScrollId) {
+        cancelAnimationFrame(marqueeState.autoScrollId);
+        marqueeState.autoScrollId = null;
     }
 }
 
 function marqueeOnMouseMove(e) {
-    if (!marqueePending && !marqueeActive) return;
-    const dx = e.clientX - marqueeStartClientX;
-    const dy = e.clientY - marqueeStartClientY;
+    if (!marqueeState.pending && !marqueeState.active) return;
+    const dx = e.clientX - marqueeState.startClientX;
+    const dy = e.clientY - marqueeState.startClientY;
 
-    if (marqueePending) {
+    if (marqueeState.pending) {
         if (Math.abs(dx) < 5 && Math.abs(dy) < 5) return; // dead zone
         // Activate marquee
-        marqueePending = false;
-        marqueeActive = true;
+        marqueeState.pending = false;
+        marqueeState.active = true;
         gridContainer.classList.add('marquee-dragging');
-        marqueeElement = document.createElement('div');
-        marqueeElement.className = 'marquee-selection-rect';
-        gridContainer.appendChild(marqueeElement);
+        marqueeState.element = document.createElement('div');
+        marqueeState.element.className = 'marquee-selection-rect';
+        gridContainer.appendChild(marqueeState.element);
     }
 
     marqueeUpdateRect(e.clientX, e.clientY);
@@ -9200,11 +9205,11 @@ function marqueeOnMouseMove(e) {
     }
 
     // Throttle intersection via rAF
-    if (!marqueeRafId) {
+    if (!marqueeState.rafId) {
         const cx = e.clientX, cy = e.clientY;
-        marqueeRafId = requestAnimationFrame(() => {
-            marqueeRafId = null;
-            if (marqueeActive) marqueeComputeSelection(cx, cy);
+        marqueeState.rafId = requestAnimationFrame(() => {
+            marqueeState.rafId = null;
+            if (marqueeState.active) marqueeComputeSelection(cx, cy);
         });
     }
 }
@@ -9214,52 +9219,52 @@ function marqueeOnMouseUp(e) {
     document.removeEventListener('mouseup', marqueeOnMouseUp);
     marqueeStopAutoScroll();
 
-    if (marqueeActive) {
+    if (marqueeState.active) {
         marqueeComputeSelection(e.clientX, e.clientY);
-        if (marqueeElement && marqueeElement.parentNode) {
-            marqueeElement.remove();
+        if (marqueeState.element && marqueeState.element.parentNode) {
+            marqueeState.element.remove();
         }
-        marqueeElement = null;
+        marqueeState.element = null;
         gridContainer.classList.remove('marquee-dragging');
-        marqueeActive = false;
-        if (marqueeRafId) { cancelAnimationFrame(marqueeRafId); marqueeRafId = null; }
+        marqueeState.active = false;
+        if (marqueeState.rafId) { cancelAnimationFrame(marqueeState.rafId); marqueeState.rafId = null; }
         // Suppress the click event that follows mouseup
-        marqueeJustFinished = true;
-        requestAnimationFrame(() => { marqueeJustFinished = false; });
+        marqueeState.justFinished = true;
+        requestAnimationFrame(() => { marqueeState.justFinished = false; });
     }
-    marqueePending = false;
-    marqueePreSelection = null;
+    marqueeState.pending = false;
+    marqueeState.preSelection = null;
 }
 
 function cancelMarquee() {
-    if (!marqueeActive && !marqueePending) return;
+    if (!marqueeState.active && !marqueeState.pending) return;
     document.removeEventListener('mousemove', marqueeOnMouseMove);
     document.removeEventListener('mouseup', marqueeOnMouseUp);
     marqueeStopAutoScroll();
-    if (marqueeRafId) { cancelAnimationFrame(marqueeRafId); marqueeRafId = null; }
-    if (marqueeElement && marqueeElement.parentNode) marqueeElement.remove();
-    marqueeElement = null;
+    if (marqueeState.rafId) { cancelAnimationFrame(marqueeState.rafId); marqueeState.rafId = null; }
+    if (marqueeState.element && marqueeState.element.parentNode) marqueeState.element.remove();
+    marqueeState.element = null;
     gridContainer.classList.remove('marquee-dragging');
     // Restore pre-selection if Ctrl was held
-    if (marqueeCtrlHeld && marqueePreSelection) {
+    if (marqueeState.ctrlHeld && marqueeState.preSelection) {
         selectedCardPaths.clear();
-        for (const p of marqueePreSelection) selectedCardPaths.add(p);
-        vsActiveCards.forEach((card) => {
+        for (const p of marqueeState.preSelection) selectedCardPaths.add(p);
+        vsState.activeCards.forEach((card) => {
             if (card.dataset.path) {
                 card.classList.toggle('selected', selectedCardPaths.has(card.dataset.path));
             }
         });
         updateSelectionStatusBar();
     }
-    marqueeActive = false;
-    marqueePending = false;
-    marqueePreSelection = null;
+    marqueeState.active = false;
+    marqueeState.pending = false;
+    marqueeState.preSelection = null;
 }
 
 gridContainer.addEventListener('click', (e) => {
     // Suppress click after marquee drag
-    if (marqueeJustFinished) {
-        marqueeJustFinished = false;
+    if (marqueeState.justFinished) {
+        marqueeState.justFinished = false;
         return;
     }
 
@@ -9336,18 +9341,18 @@ gridContainer.addEventListener('mousedown', (e) => {
     }
     // Marquee: left-click on empty grid space
     if (e.button === 0 && !e.target.closest('.video-card, .folder-card, .date-group-header, .star')) {
-        marqueeCtrlHeld = e.ctrlKey || e.metaKey;
-        if (marqueeCtrlHeld) {
-            marqueePreSelection = new Set(selectedCardPaths);
+        marqueeState.ctrlHeld = e.ctrlKey || e.metaKey;
+        if (marqueeState.ctrlHeld) {
+            marqueeState.preSelection = new Set(selectedCardPaths);
         } else {
             clearCardSelection();
         }
-        marqueeStartClientX = e.clientX;
-        marqueeStartClientY = e.clientY;
+        marqueeState.startClientX = e.clientX;
+        marqueeState.startClientY = e.clientY;
         const content = marqueeClientToContent(e.clientX, e.clientY);
-        marqueeStartContentX = content.x;
-        marqueeStartContentY = content.y;
-        marqueePending = true;
+        marqueeState.startContentX = content.x;
+        marqueeState.startContentY = content.y;
+        marqueeState.pending = true;
         document.addEventListener('mousemove', marqueeOnMouseMove);
         document.addEventListener('mouseup', marqueeOnMouseUp);
         e.preventDefault();
@@ -9392,7 +9397,7 @@ gridContainer.addEventListener('auxclick', (e) => {
 });
 
 gridContainer.addEventListener('mouseover', (e) => {
-    if (marqueeActive) return;
+    if (marqueeState.active) return;
     const card = e.target.closest('.video-card');
     if (card && card !== currentHoveredCard) {
         if (card.dataset.mediaType === 'video') {
@@ -9440,7 +9445,7 @@ gridContainer.addEventListener('mouseover', (e) => {
 let _scrubRafPending = false;
 
 gridContainer.addEventListener('mousemove', (e) => {
-    if (marqueeActive) return;
+    if (marqueeState.active) return;
     if (!currentHoveredCard || !currentHoveredCard._scrubbing) return;
     const card = currentHoveredCard;
     const video = card.querySelector('video');
@@ -9496,10 +9501,10 @@ function _ensureCardTooltipEl() {
 function _buildCardTooltipHtml(card) {
     const path = card.dataset.path;
     if (!path) return null;
-    // Pull authoritative item data from vsSortedItems when available
+    // Pull authoritative item data from vsState.sortedItems when available
     let item = null;
-    if (typeof card._vsItemIndex === 'number' && typeof vsSortedItems !== 'undefined' && vsSortedItems[card._vsItemIndex]) {
-        item = vsSortedItems[card._vsItemIndex];
+    if (typeof card._vsItemIndex === 'number' && typeof vsState.sortedItems !== 'undefined' && vsState.sortedItems[card._vsItemIndex]) {
+        item = vsState.sortedItems[card._vsItemIndex];
     }
     const name = (item && item.name) || card.dataset.name || '';
     const width = (item && item.width) || parseInt(card.dataset.width || '0', 10) || 0;
@@ -9583,7 +9588,7 @@ function _scheduleCardTooltip(card) {
 }
 
 gridContainer.addEventListener('mouseover', (e) => {
-    if (marqueeActive) return;
+    if (marqueeState.active) return;
     const card = e.target.closest('.video-card');
     if (card) _scheduleCardTooltip(card);
     else _hideCardTooltip();
@@ -10384,7 +10389,7 @@ function restoreGridScrollPosition(targetScrollTop) {
         const maxScrollTop = Math.max(0, gridContainer.scrollHeight - gridContainer.clientHeight);
         const clamped = Math.max(0, Math.min(targetScrollTop, maxScrollTop));
         gridContainer.scrollTop = clamped;
-        if (vsEnabled) {
+        if (vsState.enabled) {
             const viewportHeight = gridContainer.clientHeight;
             const { startIndex, endIndex } = vsGetVisibleRange(gridContainer.scrollTop, viewportHeight);
             // Force the virtual list to match the restored viewport immediately.
@@ -11323,40 +11328,42 @@ thumbnailQualitySelect.addEventListener('change', () => {
 });
 
 // Hover expand setting (slider: 100 = no scale, 150 = 1.5x)
-let hoverScalePct = 102;
-let hoverScaleWithZoom = false;
-let hoverScaleAt50 = 120;
-let hoverScaleAt100 = 102;
-let hoverScaleAt200 = 100;
+const hoverScaleState = {
+    pct: 102,
+    withZoom: false,
+    at50: 120,
+    at100: 102,
+    at200: 100,
+};
 
 function applyHoverScale() {
     let pct;
-    if (hoverScaleWithZoom) {
+    if (hoverScaleState.withZoom) {
         // Lerp between the 3 user-defined breakpoints based on current zoom
         const z = Math.max(50, Math.min(200, zoomLevel));
         if (z <= 100) {
             const t = (z - 50) / 50;
-            pct = hoverScaleAt50 + (hoverScaleAt100 - hoverScaleAt50) * t;
+            pct = hoverScaleState.at50 + (hoverScaleState.at100 - hoverScaleState.at50) * t;
         } else {
             const t = (z - 100) / 100;
-            pct = hoverScaleAt100 + (hoverScaleAt200 - hoverScaleAt100) * t;
+            pct = hoverScaleState.at100 + (hoverScaleState.at200 - hoverScaleState.at100) * t;
         }
     } else {
-        pct = hoverScalePct;
+        pct = hoverScaleState.pct;
     }
     const scale = pct / 100;
     const lift = pct <= 100 ? 0 : Math.round((pct - 100) * 0.16);
     document.documentElement.style.setProperty('--hover-scale', String(scale));
     document.documentElement.style.setProperty('--hover-lift', `-${lift}px`);
-    if (!hoverScaleWithZoom && hoverScaleValue) {
-        hoverScaleValue.textContent = (hoverScalePct / 100).toFixed(2) + 'x';
+    if (!hoverScaleState.withZoom && hoverScaleValue) {
+        hoverScaleValue.textContent = (hoverScaleState.pct / 100).toFixed(2) + 'x';
     }
 }
 
 function updateHoverScaleUI() {
-    if (hoverScaleFixedWrap) hoverScaleFixedWrap.style.display = hoverScaleWithZoom ? 'none' : '';
-    if (hoverScaleZoomRow) hoverScaleZoomRow.style.display = hoverScaleWithZoom ? '' : 'none';
-    if (hoverScaleZoomLabel) hoverScaleZoomLabel.textContent = hoverScaleWithZoom ? 'Per-Zoom' : 'Fixed';
+    if (hoverScaleFixedWrap) hoverScaleFixedWrap.style.display = hoverScaleState.withZoom ? 'none' : '';
+    if (hoverScaleZoomRow) hoverScaleZoomRow.style.display = hoverScaleState.withZoom ? '' : 'none';
+    if (hoverScaleZoomLabel) hoverScaleZoomLabel.textContent = hoverScaleState.withZoom ? 'Per-Zoom' : 'Fixed';
 }
 
 function formatZoomSliderValue(el, pct) {
@@ -11364,56 +11371,56 @@ function formatZoomSliderValue(el, pct) {
 }
 
 (function initHoverScale() {
-    hoverScalePct = parseInt(localStorage.getItem('hoverScale')) || 102;
-    hoverScaleWithZoom = localStorage.getItem('hoverScaleWithZoom') === 'true';
-    hoverScaleAt50 = parseInt(localStorage.getItem('hoverScaleAt50')) || 120;
-    hoverScaleAt100 = parseInt(localStorage.getItem('hoverScaleAt100')) || 102;
-    hoverScaleAt200 = parseInt(localStorage.getItem('hoverScaleAt200')) || 100;
-    if (hoverScaleSlider) hoverScaleSlider.value = hoverScalePct;
-    if (hoverScaleZoomToggle) hoverScaleZoomToggle.checked = hoverScaleWithZoom;
-    if (hoverScaleZ50) hoverScaleZ50.value = hoverScaleAt50;
-    if (hoverScaleZ100) hoverScaleZ100.value = hoverScaleAt100;
-    if (hoverScaleZ200) hoverScaleZ200.value = hoverScaleAt200;
-    formatZoomSliderValue(hoverScaleValue, hoverScalePct);
-    formatZoomSliderValue(hoverScaleZ50Value, hoverScaleAt50);
-    formatZoomSliderValue(hoverScaleZ100Value, hoverScaleAt100);
-    formatZoomSliderValue(hoverScaleZ200Value, hoverScaleAt200);
+    hoverScaleState.pct = parseInt(localStorage.getItem('hoverScale')) || 102;
+    hoverScaleState.withZoom = localStorage.getItem('hoverScaleWithZoom') === 'true';
+    hoverScaleState.at50 = parseInt(localStorage.getItem('hoverScaleAt50')) || 120;
+    hoverScaleState.at100 = parseInt(localStorage.getItem('hoverScaleAt100')) || 102;
+    hoverScaleState.at200 = parseInt(localStorage.getItem('hoverScaleAt200')) || 100;
+    if (hoverScaleSlider) hoverScaleSlider.value = hoverScaleState.pct;
+    if (hoverScaleZoomToggle) hoverScaleZoomToggle.checked = hoverScaleState.withZoom;
+    if (hoverScaleZ50) hoverScaleZ50.value = hoverScaleState.at50;
+    if (hoverScaleZ100) hoverScaleZ100.value = hoverScaleState.at100;
+    if (hoverScaleZ200) hoverScaleZ200.value = hoverScaleState.at200;
+    formatZoomSliderValue(hoverScaleValue, hoverScaleState.pct);
+    formatZoomSliderValue(hoverScaleZ50Value, hoverScaleState.at50);
+    formatZoomSliderValue(hoverScaleZ100Value, hoverScaleState.at100);
+    formatZoomSliderValue(hoverScaleZ200Value, hoverScaleState.at200);
     updateHoverScaleUI();
     applyHoverScale();
 })();
 
 hoverScaleSlider.addEventListener('input', () => {
-    hoverScalePct = parseInt(hoverScaleSlider.value);
+    hoverScaleState.pct = parseInt(hoverScaleSlider.value);
     applyHoverScale();
-    deferLocalStorageWrite('hoverScale', String(hoverScalePct));
+    deferLocalStorageWrite('hoverScale', String(hoverScaleState.pct));
 });
 
 hoverScaleZoomToggle.addEventListener('change', () => {
-    hoverScaleWithZoom = hoverScaleZoomToggle.checked;
+    hoverScaleState.withZoom = hoverScaleZoomToggle.checked;
     updateHoverScaleUI();
     applyHoverScale();
-    deferLocalStorageWrite('hoverScaleWithZoom', String(hoverScaleWithZoom));
+    deferLocalStorageWrite('hoverScaleWithZoom', String(hoverScaleState.withZoom));
 });
 
 hoverScaleZ50.addEventListener('input', () => {
-    hoverScaleAt50 = parseInt(hoverScaleZ50.value);
-    formatZoomSliderValue(hoverScaleZ50Value, hoverScaleAt50);
+    hoverScaleState.at50 = parseInt(hoverScaleZ50.value);
+    formatZoomSliderValue(hoverScaleZ50Value, hoverScaleState.at50);
     applyHoverScale();
-    deferLocalStorageWrite('hoverScaleAt50', String(hoverScaleAt50));
+    deferLocalStorageWrite('hoverScaleAt50', String(hoverScaleState.at50));
 });
 
 hoverScaleZ100.addEventListener('input', () => {
-    hoverScaleAt100 = parseInt(hoverScaleZ100.value);
-    formatZoomSliderValue(hoverScaleZ100Value, hoverScaleAt100);
+    hoverScaleState.at100 = parseInt(hoverScaleZ100.value);
+    formatZoomSliderValue(hoverScaleZ100Value, hoverScaleState.at100);
     applyHoverScale();
-    deferLocalStorageWrite('hoverScaleAt100', String(hoverScaleAt100));
+    deferLocalStorageWrite('hoverScaleAt100', String(hoverScaleState.at100));
 });
 
 hoverScaleZ200.addEventListener('input', () => {
-    hoverScaleAt200 = parseInt(hoverScaleZ200.value);
-    formatZoomSliderValue(hoverScaleZ200Value, hoverScaleAt200);
+    hoverScaleState.at200 = parseInt(hoverScaleZ200.value);
+    formatZoomSliderValue(hoverScaleZ200Value, hoverScaleState.at200);
     applyHoverScale();
-    deferLocalStorageWrite('hoverScaleAt200', String(hoverScaleAt200));
+    deferLocalStorageWrite('hoverScaleAt200', String(hoverScaleState.at200));
 });
 
 // --- AI Visual Search settings event handlers ---
@@ -11758,13 +11765,13 @@ hoverScaleZ200.addEventListener('input', () => {
 
     if (thresholdSlider) {
         thresholdSlider.addEventListener('input', () => {
-            findSimilarThreshold = parseInt(thresholdSlider.value, 10) / 100;
-            if (thresholdValue) thresholdValue.textContent = findSimilarThreshold.toFixed(2);
-            if (!findSimilarActive || !findSimilarEmbedding) return;
+            findSimilarState.threshold = parseInt(thresholdSlider.value, 10) / 100;
+            if (thresholdValue) thresholdValue.textContent = findSimilarState.threshold.toFixed(2);
+            if (!findSimilarState.active || !findSimilarState.embedding) return;
             // Debounce the heavy re-render to avoid card flashing while dragging
             clearTimeout(_fsThresholdTimer);
             _fsThresholdTimer = setTimeout(() => {
-                if (findSimilarAllFolders) {
+                if (findSimilarState.allFolders) {
                     executeCrossFolderFindSimilar();
                 } else {
                     applyFilters();
@@ -11776,22 +11783,22 @@ hoverScaleZ200.addEventListener('input', () => {
 
     if (allFoldersCheckbox) {
         allFoldersCheckbox.addEventListener('change', () => {
-            findSimilarAllFolders = allFoldersCheckbox.checked;
-            if (!findSimilarActive || !findSimilarEmbedding) return;
-            if (findSimilarAllFolders) {
+            findSimilarState.allFolders = allFoldersCheckbox.checked;
+            if (!findSimilarState.active || !findSimilarState.embedding) return;
+            if (findSimilarState.allFolders) {
                 // Stash current state before switching to cross-folder
-                if (!findSimilarPreviousItems) {
-                    findSimilarPreviousItems = currentItems.slice();
-                    findSimilarPreviousFolder = currentFolderPath;
+                if (!findSimilarState.previousItems) {
+                    findSimilarState.previousItems = currentItems.slice();
+                    findSimilarState.previousFolder = currentFolderPath;
                 }
                 executeCrossFolderFindSimilar();
             } else {
                 // Restore previous view and use current-folder filter
-                if (findSimilarPreviousItems) {
-                    currentItems = findSimilarPreviousItems;
-                    currentFolderPath = findSimilarPreviousFolder;
-                    findSimilarPreviousItems = null;
-                    findSimilarPreviousFolder = null;
+                if (findSimilarState.previousItems) {
+                    currentItems = findSimilarState.previousItems;
+                    currentFolderPath = findSimilarState.previousFolder;
+                    findSimilarState.previousItems = null;
+                    findSimilarState.previousFolder = null;
                     if (currentFolderPath) {
                         const st = gridContainer.scrollTop;
                         loadVideos(currentFolderPath, true, st);
@@ -12022,7 +12029,7 @@ zoomSlider.addEventListener('input', (e) => {
     // Instant CSS variable update for visual feedback
     document.documentElement.style.setProperty('--zoom-level', zoomLevel);
     // Re-apply hover scale if it's zoom-dependent
-    if (hoverScaleWithZoom) applyHoverScale();
+    if (hoverScaleState.withZoom) applyHoverScale();
     // Throttle the expensive layout recalculation + localStorage write
     if (zoomLayoutTimer === null) {
         zoomLayoutTimer = requestAnimationFrame(() => {
@@ -12752,20 +12759,22 @@ if (lightboxGifCanvas) {
 
 // Pan/drag functionality when zoomed
 // Panning functionality - optimized with requestAnimationFrame
-let lastPanX = 0;
-let lastPanY = 0;
-let initialMouseX = 0;
-let initialMouseY = 0;
-let initialTranslateX = 0;
-let initialTranslateY = 0;
-let panRAF = null;
-let pendingPanUpdate = false;
-let hasDragged = false; // Track if we actually dragged (vs just clicked)
+const panState = {
+    lastX: 0,
+    lastY: 0,
+    initMouseX: 0,
+    initMouseY: 0,
+    initTranslateX: 0,
+    initTranslateY: 0,
+    rafId: null,
+    pendingUpdate: false,
+    hasDragged: false, // Track if we actually dragged (vs just clicked)
+};
 
 function applyPanTransform() {
     if (!isDragging || currentZoomLevel <= 100) {
-        panRAF = null;
-        pendingPanUpdate = false;
+        panState.rafId = null;
+        panState.pendingUpdate = false;
         return;
     }
     
@@ -12787,21 +12796,21 @@ function applyPanTransform() {
     if (isVideoVisible) lightboxVideo.style.transform = transformString;
     if (isCanvasVisible) lightboxGifCanvas.style.transform = transformString;
     
-    panRAF = null;
-    pendingPanUpdate = false;
+    panState.rafId = null;
+    panState.pendingUpdate = false;
 }
 
 lightboxImage.addEventListener('mousedown', (e) => {
     if (currentZoomLevel > 100 && e.button === 0) {
         isDragging = true;
-        hasDragged = false; // Reset drag flag
+        panState.hasDragged = false; // Reset drag flag
         // Store initial positions
-        initialMouseX = e.clientX;
-        initialMouseY = e.clientY;
-        initialTranslateX = currentTranslateX;
-        initialTranslateY = currentTranslateY;
-        lastPanX = e.clientX;
-        lastPanY = e.clientY;
+        panState.initMouseX = e.clientX;
+        panState.initMouseY = e.clientY;
+        panState.initTranslateX = currentTranslateX;
+        panState.initTranslateY = currentTranslateY;
+        panState.lastX = e.clientX;
+        panState.lastY = e.clientY;
         e.preventDefault();
         e.stopPropagation();
     }
@@ -12810,13 +12819,13 @@ lightboxImage.addEventListener('mousedown', (e) => {
 lightboxVideo.addEventListener('mousedown', (e) => {
     if (currentZoomLevel > 100 && e.button === 0) {
         isDragging = true;
-        hasDragged = false;
-        initialMouseX = e.clientX;
-        initialMouseY = e.clientY;
-        initialTranslateX = currentTranslateX;
-        initialTranslateY = currentTranslateY;
-        lastPanX = e.clientX;
-        lastPanY = e.clientY;
+        panState.hasDragged = false;
+        panState.initMouseX = e.clientX;
+        panState.initMouseY = e.clientY;
+        panState.initTranslateX = currentTranslateX;
+        panState.initTranslateY = currentTranslateY;
+        panState.lastX = e.clientX;
+        panState.lastY = e.clientY;
         e.preventDefault();
         e.stopPropagation();
     }
@@ -12825,13 +12834,13 @@ lightboxVideo.addEventListener('mousedown', (e) => {
 lightboxGifCanvas.addEventListener('mousedown', (e) => {
     if (currentZoomLevel > 100 && e.button === 0) {
         isDragging = true;
-        hasDragged = false;
-        initialMouseX = e.clientX;
-        initialMouseY = e.clientY;
-        initialTranslateX = currentTranslateX;
-        initialTranslateY = currentTranslateY;
-        lastPanX = e.clientX;
-        lastPanY = e.clientY;
+        panState.hasDragged = false;
+        panState.initMouseX = e.clientX;
+        panState.initMouseY = e.clientY;
+        panState.initTranslateX = currentTranslateX;
+        panState.initTranslateY = currentTranslateY;
+        panState.lastX = e.clientX;
+        panState.lastY = e.clientY;
         e.preventDefault();
         e.stopPropagation();
     }
@@ -12840,24 +12849,24 @@ lightboxGifCanvas.addEventListener('mousedown', (e) => {
 document.addEventListener('mousemove', (e) => {
     if (isDragging && currentZoomLevel > 100) {
         // Calculate total mouse movement from initial click
-        const totalDeltaX = e.clientX - initialMouseX;
-        const totalDeltaY = e.clientY - initialMouseY;
+        const totalDeltaX = e.clientX - panState.initMouseX;
+        const totalDeltaY = e.clientY - panState.initMouseY;
         
         // Check if we've moved enough to consider it a drag (more than 3 pixels)
         const dragDistance = Math.sqrt(totalDeltaX * totalDeltaX + totalDeltaY * totalDeltaY);
         if (dragDistance > 3) {
-            hasDragged = true;
+            panState.hasDragged = true;
         }
         
         // Update translation values immediately
-        currentTranslateX = initialTranslateX + totalDeltaX;
-        currentTranslateY = initialTranslateY + totalDeltaY;
+        currentTranslateX = panState.initTranslateX + totalDeltaX;
+        currentTranslateY = panState.initTranslateY + totalDeltaY;
         
         // Schedule transform update via requestAnimationFrame for smooth rendering
-        if (!pendingPanUpdate) {
-            pendingPanUpdate = true;
-            if (!panRAF) {
-                panRAF = requestAnimationFrame(applyPanTransform);
+        if (!panState.pendingUpdate) {
+            panState.pendingUpdate = true;
+            if (!panState.rafId) {
+                panState.rafId = requestAnimationFrame(applyPanTransform);
             }
         }
         
@@ -12869,14 +12878,14 @@ document.addEventListener('mouseup', (e) => {
     if (isDragging) {
         isDragging = false;
         // Ensure final position is applied
-        if (panRAF) {
-            cancelAnimationFrame(panRAF);
-            panRAF = null;
+        if (panState.rafId) {
+            cancelAnimationFrame(panState.rafId);
+            panState.rafId = null;
         }
         applyPanTransform();
         
         // If we dragged (not just clicked), prevent video play/pause
-        if (hasDragged && currentZoomLevel > 100) {
+        if (panState.hasDragged && currentZoomLevel > 100) {
             e.preventDefault();
             e.stopPropagation();
             // Also prevent the click event that might fire after mouseup
@@ -12893,10 +12902,10 @@ document.addEventListener('mouseup', (e) => {
 
 // Click on video or canvas to toggle play/pause (but not after dragging)
 lightboxVideo.addEventListener('click', (e) => {
-    if (hasDragged && currentZoomLevel > 100) {
+    if (panState.hasDragged && currentZoomLevel > 100) {
         e.preventDefault();
         e.stopPropagation();
-        hasDragged = false;
+        panState.hasDragged = false;
         return;
     }
     if (activePlaybackController) {
@@ -12905,10 +12914,10 @@ lightboxVideo.addEventListener('click', (e) => {
 }, true);
 
 lightboxGifCanvas.addEventListener('click', (e) => {
-    if (hasDragged && currentZoomLevel > 100) {
+    if (panState.hasDragged && currentZoomLevel > 100) {
         e.preventDefault();
         e.stopPropagation();
-        hasDragged = false;
+        panState.hasDragged = false;
         return;
     }
     if (activePlaybackController) {
@@ -13440,7 +13449,7 @@ document.addEventListener('keydown', (e) => {
         const wasMenuVisible = !contextMenu.classList.contains('hidden') || !folderContextMenu.classList.contains('hidden');
         hideContextMenu();
         if (favContextMenu) hideFavContextMenu();
-        if (findSimilarActive) { clearFindSimilar(); return; }
+        if (findSimilarState.active) { clearFindSimilar(); return; }
         if (wasMenuVisible) {
             e.stopImmediatePropagation();
             return;
@@ -14161,27 +14170,29 @@ const autoTagProgressText = document.getElementById('auto-tag-progress-text');
 const autoTagSelectionCountEl = document.getElementById('auto-tag-selection-count');
 const autoTagSmartSelectEl = document.getElementById('auto-tag-smart-select');
 
-let autoTagFilePaths = [];
-let autoTagData = []; // [{ path, name, thumbType, thumbSrc, suggestions: [{ label, score }] }]
-let autoTagLabelEmbeddings = null; // Map<label, Float32Array>
-let autoTagSelection = new Map(); // Map<path, Set<label>>
-let autoTagView = 'file'; // 'file' | 'tag'
-let autoTagByTag = new Map(); // Map<label, Array<{path, score}>> — derived from autoTagData + threshold
-let autoTagCollapsedTags = new Set();
-let autoTagCancelScan = false;
-let autoTagIO = null; // IntersectionObserver for File view cards
-let autoTagTileIO = null; // IntersectionObserver for Tag view tiles
+const autoTagState = {
+    filePaths: [],
+    data: [], // [{ path, name, thumbType, thumbSrc, suggestions: [{ label, score }] }]
+    labelEmbeddings: null, // Map<label, Float32Array>
+    selection: new Map(), // Map<path, Set<label>>
+    view: 'file', // 'file' | 'tag'
+    byTag: new Map(), // Map<label, Array<{path, score}>> — derived from data + threshold
+    collapsedTags: new Set(),
+    cancelScan: false,
+    io: null, // IntersectionObserver for File view cards
+    tileIO: null, // IntersectionObserver for Tag view tiles
+};
 
 function closeAutoTag() {
     autoTagOverlay.classList.add('hidden');
-    autoTagFilePaths = [];
-    autoTagData = [];
-    autoTagSelection.clear();
-    autoTagByTag.clear();
-    autoTagCollapsedTags.clear();
-    autoTagCancelScan = false;
-    if (autoTagIO) { try { autoTagIO.disconnect(); } catch {} autoTagIO = null; }
-    if (autoTagTileIO) { try { autoTagTileIO.disconnect(); } catch {} autoTagTileIO = null; }
+    autoTagState.filePaths = [];
+    autoTagState.data = [];
+    autoTagState.selection.clear();
+    autoTagState.byTag.clear();
+    autoTagState.collapsedTags.clear();
+    autoTagState.cancelScan = false;
+    if (autoTagState.io) { try { autoTagState.io.disconnect(); } catch {} autoTagState.io = null; }
+    if (autoTagState.tileIO) { try { autoTagState.tileIO.disconnect(); } catch {} autoTagState.tileIO = null; }
     autoTagShowProgress(false);
     autoTagViewFileEl.innerHTML = '';
     autoTagViewTagEl.innerHTML = '';
@@ -14195,26 +14206,26 @@ async function embedTagLabels() {
 
     if (allTagsCache.length === 0) return false;
 
-    autoTagLabelEmbeddings = new Map();
+    autoTagState.labelEmbeddings = new Map();
     for (let i = 0; i < allTagsCache.length; i++) {
         const tag = allTagsCache[i];
         autoTagStatus.textContent = `Embedding tags... ${i + 1}/${allTagsCache.length}`;
         try {
             const raw = await window.electronAPI.clipEmbedText(`a photo of ${tag.name}`);
-            if (raw) autoTagLabelEmbeddings.set(tag.name, new Float32Array(raw));
+            if (raw) autoTagState.labelEmbeddings.set(tag.name, new Float32Array(raw));
         } catch {}
     }
-    return autoTagLabelEmbeddings.size > 0;
+    return autoTagState.labelEmbeddings.size > 0;
 }
 
 async function openAutoTag(filePaths) {
-    autoTagFilePaths = filePaths;
+    autoTagState.filePaths = filePaths;
     autoTagOverlay.classList.remove('hidden');
-    autoTagData = [];
-    autoTagSelection.clear();
-    autoTagByTag.clear();
-    autoTagCollapsedTags.clear();
-    autoTagCancelScan = false;
+    autoTagState.data = [];
+    autoTagState.selection.clear();
+    autoTagState.byTag.clear();
+    autoTagState.collapsedTags.clear();
+    autoTagState.cancelScan = false;
     autoTagViewFileEl.innerHTML = '';
     autoTagViewTagEl.innerHTML = '';
     autoTagApply.disabled = true;
@@ -14223,8 +14234,8 @@ async function openAutoTag(filePaths) {
     // Restore last-used view preference
     try {
         const saved = localStorage.getItem('autoTagLastView');
-        autoTagView = (saved === 'tag' || saved === 'file') ? saved : 'file';
-    } catch { autoTagView = 'file'; }
+        autoTagState.view = (saved === 'tag' || saved === 'file') ? saved : 'file';
+    } catch { autoTagState.view = 'file'; }
     autoTagApplyViewToggle();
 
     autoTagStatus.textContent = 'Checking AI model...';
@@ -14267,10 +14278,10 @@ async function openAutoTag(filePaths) {
     const BATCH = 8;
 
     for (let i = 0; i < filePaths.length; i += BATCH) {
-        if (autoTagCancelScan) break;
+        if (autoTagState.cancelScan) break;
         const batch = filePaths.slice(i, i + BATCH);
         const items = batch.map(fp => {
-            const item = vsSortedItems.find(it => it.path === fp);
+            const item = vsState.sortedItems.find(it => it.path === fp);
             return { path: fp, mtime: item ? (item.mtime || 0) : 0, thumbPath: null };
         });
 
@@ -14305,16 +14316,16 @@ async function openAutoTag(filePaths) {
             const emb = embeddings.get(fp);
             if (!emb) continue;
             const suggestions = [];
-            for (const [label, labelEmb] of autoTagLabelEmbeddings) {
+            for (const [label, labelEmb] of autoTagState.labelEmbeddings) {
                 const score = cosineSimilarity(emb, labelEmb);
                 suggestions.push({ label, score });
             }
             suggestions.sort((a, b) => b.score - a.score);
 
             const name = fp.split(/[\\/]/).pop();
-            const item = vsSortedItems.find(it => it.path === fp);
+            const item = vsState.sortedItems.find(it => it.path === fp);
             const isVideo = item && item.type === 'video';
-            autoTagData.push({
+            autoTagState.data.push({
                 path: fp,
                 name,
                 thumbType: isVideo ? 'video' : 'image',
@@ -14329,8 +14340,8 @@ async function openAutoTag(filePaths) {
     }
 
     autoTagShowProgress(false);
-    const cancelled = autoTagCancelScan;
-    const analyzed = autoTagData.length;
+    const cancelled = autoTagState.cancelScan;
+    const analyzed = autoTagState.data.length;
     autoTagStatus.textContent = cancelled
         ? `Cancelled. ${analyzed} file${analyzed === 1 ? '' : 's'} analyzed.`
         : `Done. ${analyzed} file${analyzed === 1 ? '' : 's'} analyzed.`;
@@ -14348,51 +14359,51 @@ function autoTagGetThreshold() {
 
 function autoTagRebuildByTag() {
     const threshold = autoTagGetThreshold();
-    autoTagByTag.clear();
-    for (const file of autoTagData) {
+    autoTagState.byTag.clear();
+    for (const file of autoTagState.data) {
         for (const s of file.suggestions) {
             if (s.score < threshold) continue;
-            if (!autoTagByTag.has(s.label)) autoTagByTag.set(s.label, []);
-            autoTagByTag.get(s.label).push({ path: file.path, score: s.score });
+            if (!autoTagState.byTag.has(s.label)) autoTagState.byTag.set(s.label, []);
+            autoTagState.byTag.get(s.label).push({ path: file.path, score: s.score });
         }
     }
-    for (const arr of autoTagByTag.values()) arr.sort((a, b) => b.score - a.score);
+    for (const arr of autoTagState.byTag.values()) arr.sort((a, b) => b.score - a.score);
 }
 
 function autoTagIsSelected(path, label) {
-    const set = autoTagSelection.get(path);
+    const set = autoTagState.selection.get(path);
     return !!(set && set.has(label));
 }
 
 function autoTagToggleSelection(path, label) {
-    let set = autoTagSelection.get(path);
-    if (!set) { set = new Set(); autoTagSelection.set(path, set); }
+    let set = autoTagState.selection.get(path);
+    if (!set) { set = new Set(); autoTagState.selection.set(path, set); }
     if (set.has(label)) {
         set.delete(label);
-        if (set.size === 0) autoTagSelection.delete(path);
+        if (set.size === 0) autoTagState.selection.delete(path);
     } else {
         set.add(label);
     }
 }
 
 function autoTagSetSelection(path, label, enabled) {
-    let set = autoTagSelection.get(path);
+    let set = autoTagState.selection.get(path);
     if (enabled) {
-        if (!set) { set = new Set(); autoTagSelection.set(path, set); }
+        if (!set) { set = new Set(); autoTagState.selection.set(path, set); }
         set.add(label);
     } else if (set) {
         set.delete(label);
-        if (set.size === 0) autoTagSelection.delete(path);
+        if (set.size === 0) autoTagState.selection.delete(path);
     }
 }
 
 function autoTagClearSelection() {
-    autoTagSelection.clear();
+    autoTagState.selection.clear();
 }
 
 function autoTagSelectAllAboveThreshold() {
     const threshold = autoTagGetThreshold();
-    for (const file of autoTagData) {
+    for (const file of autoTagState.data) {
         for (const s of file.suggestions) {
             if (s.score >= threshold) autoTagSetSelection(file.path, s.label, true);
         }
@@ -14400,7 +14411,7 @@ function autoTagSelectAllAboveThreshold() {
 }
 
 function autoTagSelectForTag(label, enable) {
-    const matches = autoTagByTag.get(label);
+    const matches = autoTagState.byTag.get(label);
     if (!matches) return;
     for (const m of matches) autoTagSetSelection(m.path, label, enable);
 }
@@ -14409,7 +14420,7 @@ function autoTagSmartSelect(mode) {
     autoTagClearSelection();
     if (mode === 'top1') {
         const threshold = autoTagGetThreshold();
-        for (const file of autoTagData) {
+        for (const file of autoTagState.data) {
             const top = file.suggestions[0];
             if (top && top.score >= threshold) autoTagSetSelection(file.path, top.label, true);
         }
@@ -14421,7 +14432,7 @@ function autoTagSmartSelect(mode) {
     const scoreThreshold = (pct / 100) * 0.25 + 0.15;
     const uiThreshold = autoTagGetThreshold();
     const effective = Math.max(uiThreshold, scoreThreshold);
-    for (const file of autoTagData) {
+    for (const file of autoTagState.data) {
         for (const s of file.suggestions) {
             if (s.score >= effective) autoTagSetSelection(file.path, s.label, true);
         }
@@ -14430,8 +14441,8 @@ function autoTagSmartSelect(mode) {
 
 function autoTagGetCounts() {
     let tagCount = 0;
-    for (const set of autoTagSelection.values()) tagCount += set.size;
-    return { tagCount, fileCount: autoTagSelection.size };
+    for (const set of autoTagState.selection.values()) tagCount += set.size;
+    return { tagCount, fileCount: autoTagState.selection.size };
 }
 
 function autoTagUpdateCounter() {
@@ -14457,45 +14468,45 @@ function autoTagUpdateProgress(done, total) {
 }
 
 function cancelAutoTagScan() {
-    autoTagCancelScan = true;
+    autoTagState.cancelScan = true;
 }
 
 function autoTagApplyViewToggle() {
     const buttons = autoTagOverlay.querySelectorAll('.auto-tag-view-toggle button');
     buttons.forEach(b => {
-        const active = b.dataset.view === autoTagView;
+        const active = b.dataset.view === autoTagState.view;
         b.classList.toggle('active', active);
         b.setAttribute('aria-selected', active ? 'true' : 'false');
     });
-    autoTagViewFileEl.classList.toggle('hidden', autoTagView !== 'file');
-    autoTagViewTagEl.classList.toggle('hidden', autoTagView !== 'tag');
+    autoTagViewFileEl.classList.toggle('hidden', autoTagState.view !== 'file');
+    autoTagViewTagEl.classList.toggle('hidden', autoTagState.view !== 'tag');
 }
 
 function autoTagSetView(view) {
     if (view !== 'file' && view !== 'tag') return;
-    if (view === autoTagView) return;
-    autoTagView = view;
+    if (view === autoTagState.view) return;
+    autoTagState.view = view;
     try { localStorage.setItem('autoTagLastView', view); } catch {}
     autoTagApplyViewToggle();
     renderAutoTagResults();
 }
 
 function autoTagSetupObservers() {
-    if (autoTagIO) { try { autoTagIO.disconnect(); } catch {} }
-    if (autoTagTileIO) { try { autoTagTileIO.disconnect(); } catch {} }
-    autoTagIO = new IntersectionObserver((entries) => {
+    if (autoTagState.io) { try { autoTagState.io.disconnect(); } catch {} }
+    if (autoTagState.tileIO) { try { autoTagState.tileIO.disconnect(); } catch {} }
+    autoTagState.io = new IntersectionObserver((entries) => {
         for (const entry of entries) {
             if (entry.isIntersecting) {
                 autoTagLoadCardThumb(entry.target);
-                autoTagIO.unobserve(entry.target);
+                autoTagState.io.unobserve(entry.target);
             }
         }
     }, { root: autoTagResults, rootMargin: '300px 0px' });
-    autoTagTileIO = new IntersectionObserver((entries) => {
+    autoTagState.tileIO = new IntersectionObserver((entries) => {
         for (const entry of entries) {
             if (entry.isIntersecting) {
                 autoTagLoadTileThumb(entry.target);
-                autoTagTileIO.unobserve(entry.target);
+                autoTagState.tileIO.unobserve(entry.target);
             }
         }
     }, { root: autoTagResults, rootMargin: '200px 0px 200px 200px' });
@@ -14509,7 +14520,7 @@ function autoTagSetThumbImage(thumbEl, url) {
 
 function autoTagLoadCardThumb(cardEl) {
     const idx = parseInt(cardEl.dataset.idx, 10);
-    const data = autoTagData[idx];
+    const data = autoTagState.data[idx];
     if (!data) return;
     const thumbEl = cardEl.querySelector('.auto-tag-card-thumb');
     if (!thumbEl) return;
@@ -14525,7 +14536,7 @@ function autoTagLoadCardThumb(cardEl) {
 
 function autoTagLoadTileThumb(tileEl) {
     const path = tileEl.dataset.path;
-    const data = autoTagData.find(d => d.path === path);
+    const data = autoTagState.data.find(d => d.path === path);
     if (!data) return;
     const thumbEl = tileEl.querySelector('.auto-tag-tag-tile-thumb');
     if (!thumbEl) return;
@@ -14549,16 +14560,16 @@ function renderAutoTagFileView() {
     autoTagViewFileEl.innerHTML = '';
     const threshold = autoTagGetThreshold();
 
-    if (autoTagData.length === 0) {
+    if (autoTagState.data.length === 0) {
         autoTagViewFileEl.innerHTML = '<div class="auto-tag-empty">No files analyzed yet.</div>';
         return;
     }
 
     const frag = document.createDocumentFragment();
-    for (let idx = 0; idx < autoTagData.length; idx++) {
-        const file = autoTagData[idx];
+    for (let idx = 0; idx < autoTagState.data.length; idx++) {
+        const file = autoTagState.data[idx];
         const matching = file.suggestions.filter(s => s.score >= threshold);
-        const selectedSet = autoTagSelection.get(file.path);
+        const selectedSet = autoTagState.selection.get(file.path);
         const hasSelection = !!(selectedSet && selectedSet.size > 0);
 
         const card = document.createElement('div');
@@ -14601,31 +14612,31 @@ function renderAutoTagFileView() {
     autoTagViewFileEl.appendChild(frag);
 
     // Observe cards for lazy thumbnail loading
-    if (autoTagIO) {
-        autoTagViewFileEl.querySelectorAll('.auto-tag-card').forEach(el => autoTagIO.observe(el));
+    if (autoTagState.io) {
+        autoTagViewFileEl.querySelectorAll('.auto-tag-card').forEach(el => autoTagState.io.observe(el));
     }
 }
 
 function renderAutoTagTagView() {
     autoTagViewTagEl.innerHTML = '';
 
-    if (autoTagData.length === 0) {
+    if (autoTagState.data.length === 0) {
         autoTagViewTagEl.innerHTML = '<div class="auto-tag-empty">No files analyzed yet.</div>';
         return;
     }
-    if (autoTagByTag.size === 0) {
+    if (autoTagState.byTag.size === 0) {
         autoTagViewTagEl.innerHTML = '<div class="auto-tag-empty">No tags above threshold. Try lowering the confidence slider.</div>';
         return;
     }
 
     // Sort tags by match count descending
-    const entries = Array.from(autoTagByTag.entries()).sort((a, b) => b[1].length - a[1].length);
+    const entries = Array.from(autoTagState.byTag.entries()).sort((a, b) => b[1].length - a[1].length);
     const frag = document.createDocumentFragment();
 
     const chevronSvg = '<svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>';
 
     for (const [label, matches] of entries) {
-        const collapsed = autoTagCollapsedTags.has(label);
+        const collapsed = autoTagState.collapsedTags.has(label);
         const selectedCount = matches.reduce((n, m) => n + (autoTagIsSelected(m.path, label) ? 1 : 0), 0);
 
         const row = document.createElement('div');
@@ -14650,7 +14661,7 @@ function renderAutoTagTagView() {
         const strip = document.createElement('div');
         strip.className = 'auto-tag-tag-row-strip';
         for (const m of matches) {
-            const data = autoTagData.find(d => d.path === m.path);
+            const data = autoTagState.data.find(d => d.path === m.path);
             if (!data) continue;
             const tile = document.createElement('div');
             const isSel = autoTagIsSelected(m.path, label);
@@ -14686,7 +14697,7 @@ function renderAutoTagTagView() {
     }
 
     // Note about tags with no matches
-    const tagsWithNoMatches = allTagsCache.length - autoTagByTag.size;
+    const tagsWithNoMatches = allTagsCache.length - autoTagState.byTag.size;
     if (tagsWithNoMatches > 0) {
         const note = document.createElement('div');
         note.className = 'auto-tag-no-tags-note';
@@ -14696,15 +14707,15 @@ function renderAutoTagTagView() {
 
     autoTagViewTagEl.appendChild(frag);
 
-    if (autoTagTileIO) {
-        autoTagViewTagEl.querySelectorAll('.auto-tag-tag-tile').forEach(el => autoTagTileIO.observe(el));
+    if (autoTagState.tileIO) {
+        autoTagViewTagEl.querySelectorAll('.auto-tag-tag-tile').forEach(el => autoTagState.tileIO.observe(el));
     }
 }
 
 function renderAutoTagResults() {
     autoTagRebuildByTag();
-    if (!autoTagIO || !autoTagTileIO) autoTagSetupObservers();
-    if (autoTagView === 'file') {
+    if (!autoTagState.io || !autoTagState.tileIO) autoTagSetupObservers();
+    if (autoTagState.view === 'file') {
         renderAutoTagFileView();
     } else {
         renderAutoTagTagView();
@@ -14760,7 +14771,7 @@ autoTagResults.addEventListener('click', (e) => {
             chip.classList.toggle('selected');
             const card = chip.closest('.auto-tag-card');
             if (card) {
-                const set = autoTagSelection.get(path);
+                const set = autoTagState.selection.get(path);
                 card.classList.toggle('has-selection', !!(set && set.size > 0));
             }
             autoTagUpdateCounter();
@@ -14778,7 +14789,7 @@ autoTagResults.addEventListener('click', (e) => {
             // Update the header count for this row
             const row = tile.closest('.auto-tag-tag-row');
             if (row) {
-                const matches = autoTagByTag.get(label) || [];
+                const matches = autoTagState.byTag.get(label) || [];
                 const selectedCount = matches.reduce((n, m) => n + (autoTagIsSelected(m.path, label) ? 1 : 0), 0);
                 const countEl = row.querySelector('.auto-tag-tag-row-count');
                 if (countEl) countEl.textContent = `${selectedCount}/${matches.length} selected`;
@@ -14792,8 +14803,8 @@ autoTagResults.addEventListener('click', (e) => {
     if (tagToggle) {
         const label = tagToggle.dataset.label;
         if (label) {
-            if (autoTagCollapsedTags.has(label)) autoTagCollapsedTags.delete(label);
-            else autoTagCollapsedTags.add(label);
+            if (autoTagState.collapsedTags.has(label)) autoTagState.collapsedTags.delete(label);
+            else autoTagState.collapsedTags.add(label);
             const row = tagToggle.closest('.auto-tag-tag-row');
             if (row) row.classList.toggle('collapsed');
         }
@@ -14826,7 +14837,7 @@ autoTagApply.addEventListener('click', async () => {
 
         // Group by label -> collect file paths (from selection Map)
         const labelToFiles = new Map();
-        for (const [path, set] of autoTagSelection) {
+        for (const [path, set] of autoTagState.selection) {
             for (const label of set) {
                 if (!labelToFiles.has(label)) labelToFiles.set(label, []);
                 labelToFiles.get(label).push(path);
@@ -14849,7 +14860,7 @@ autoTagApply.addEventListener('click', async () => {
 
         await refreshTagsCache();
         refreshVisibleCardTags();
-        const fileCount = autoTagSelection.size;
+        const fileCount = autoTagState.selection.size;
         closeAutoTag();
         showToast(`Applied ${tagCount} tag${tagCount === 1 ? '' : 's'} across ${fileCount} file${fileCount === 1 ? '' : 's'}`, 'success');
     } catch (error) {
@@ -14916,8 +14927,8 @@ function scheduleStreamingLayoutRefresh() {
     if (_streamingLayoutTimer) return;
     _streamingLayoutTimer = setTimeout(() => {
         _streamingLayoutTimer = null;
-        if (vsEnabled) {
-            vsLayoutCache.itemCount = 0;
+        if (vsState.enabled) {
+            vsState.layoutCache.itemCount = 0;
             vsRecalculate();
         }
     }, 120);
@@ -16322,8 +16333,8 @@ async function renderTagPickerSuggestions() {
 async function refreshVisibleCardTags() {
     fileTagsCache.clear();
     let cards;
-    if (vsEnabled && vsActiveCards.size > 0) {
-        cards = Array.from(vsActiveCards.values()).filter(c => c.classList.contains('video-card'));
+    if (vsState.enabled && vsState.activeCards.size > 0) {
+        cards = Array.from(vsState.activeCards.values()).filter(c => c.classList.contains('video-card'));
     } else {
         cards = Array.from(document.querySelectorAll('.video-card'));
     }
@@ -16882,7 +16893,7 @@ function openCompareMode(paths) {
         const name = p.split(/[\\/]/).pop();
         const ext = name.split('.').pop().toLowerCase();
         const isVid = ['mp4','webm','mov','avi','mkv','m4v','ogg'].includes(ext);
-        const item = vsSortedItems.find(it => it.path === p);
+        const item = vsState.sortedItems.find(it => it.path === p);
         const src = item ? item.url : 'file:///' + p.replace(/\\/g, '/');
 
         const panel = document.createElement('div');
@@ -17006,16 +17017,18 @@ function closeCompareMode() {
 
 
 // ==================== SLIDESHOW MODE ====================
-let ssActive = false;
-let ssItems = [];
-let ssIndex = 0;
-let ssTimer = null;
-let ssPlaying = true;
-let ssShuffle = false;
-let ssLoop = true;
-let ssInterval = 3000;
-let ssShuffleOrder = [];
-let ssLayerA = true; // which img layer shows current item
+const slideshowState = {
+    active: false,
+    items: [],
+    index: 0,
+    timer: null,
+    playing: true,
+    shuffle: false,
+    loop: true,
+    interval: 3000,
+    shuffleOrder: [],
+    layerA: true, // which img layer shows current item
+};
 
 function shuffleArray(arr) {
     for (let i = arr.length - 1; i > 0; i--) {
@@ -17025,13 +17038,13 @@ function shuffleArray(arr) {
 }
 
 function startSlideshow() {
-    const items = vsSortedItems.filter(i => i.type !== 'folder' && i.type !== 'group-header' && !i.missing);
+    const items = vsState.sortedItems.filter(i => i.type !== 'folder' && i.type !== 'group-header' && !i.missing);
     if (items.length === 0) { showToast('No media to show in slideshow', 'info'); return; }
-    ssItems = items;
-    ssIndex = 0;
-    ssPlaying = true;
-    ssShuffleOrder = items.map((_, k) => k);
-    if (ssShuffle) shuffleArray(ssShuffleOrder);
+    slideshowState.items = items;
+    slideshowState.index = 0;
+    slideshowState.playing = true;
+    slideshowState.shuffleOrder = items.map((_, k) => k);
+    if (slideshowState.shuffle) shuffleArray(slideshowState.shuffleOrder);
 
     const overlay = document.getElementById('slideshow-overlay');
     if (!overlay) return;
@@ -17043,18 +17056,18 @@ function startSlideshow() {
     if (imgA) { imgA.src = ''; imgA.classList.remove('ss-visible'); }
     if (imgB) { imgB.src = ''; imgB.classList.remove('ss-visible'); }
     if (video) { video.pause(); video.src = ''; video.style.display = 'none'; }
-    ssLayerA = true;
+    slideshowState.layerA = true;
 
     overlay.classList.remove('hidden');
-    ssActive = true;
-    ssShowItem(ssShuffleOrder[ssIndex]);
+    slideshowState.active = true;
+    ssShowItem(slideshowState.shuffleOrder[slideshowState.index]);
     ssUpdateControls();
     ssScheduleNext();
 }
 
 function stopSlideshow() {
-    ssActive = false;
-    clearTimeout(ssTimer);
+    slideshowState.active = false;
+    clearTimeout(slideshowState.timer);
     const overlay = document.getElementById('slideshow-overlay');
     if (overlay) overlay.classList.add('hidden');
     const video = document.getElementById('ss-video');
@@ -17062,14 +17075,14 @@ function stopSlideshow() {
 }
 
 function ssShowItem(idx) {
-    ssIndex = idx;
-    const item = ssItems[idx];
+    slideshowState.index = idx;
+    const item = slideshowState.items[idx];
     if (!item) return;
 
-    const pos = ssShuffleOrder.indexOf(idx) + 1;
+    const pos = slideshowState.shuffleOrder.indexOf(idx) + 1;
     const counterEl = document.getElementById('ss-counter');
     const filenameEl = document.getElementById('ss-filename');
-    if (counterEl) counterEl.textContent = `${pos} / ${ssItems.length}`;
+    if (counterEl) counterEl.textContent = `${pos} / ${slideshowState.items.length}`;
     if (filenameEl) filenameEl.textContent = item.name || '';
 
     const imgA = document.getElementById('ss-img-a');
@@ -17087,50 +17100,50 @@ function ssShowItem(idx) {
         video.src = item.url;
         video.load();
         video.play().catch(() => {});
-        video.onended = () => { if (ssPlaying) ssNext(); };
+        video.onended = () => { if (slideshowState.playing) ssNext(); };
     } else {
         video.pause();
         video.src = '';
         video.style.display = 'none';
         video.onended = null;
 
-        const curLayer = ssLayerA ? imgA : imgB;
-        const nextLayer = ssLayerA ? imgB : imgA;
+        const curLayer = slideshowState.layerA ? imgA : imgB;
+        const nextLayer = slideshowState.layerA ? imgB : imgA;
         nextLayer.src = item.url;
         // Show immediately with crossfade
         requestAnimationFrame(() => {
             nextLayer.classList.add('ss-visible');
             curLayer.classList.remove('ss-visible');
-            ssLayerA = !ssLayerA;
+            slideshowState.layerA = !slideshowState.layerA;
         });
     }
 }
 
 function ssNext() {
-    clearTimeout(ssTimer);
-    const pos = ssShuffleOrder.indexOf(ssIndex);
+    clearTimeout(slideshowState.timer);
+    const pos = slideshowState.shuffleOrder.indexOf(slideshowState.index);
     let nextPos = pos + 1;
-    if (nextPos >= ssItems.length) {
-        if (!ssLoop) { stopSlideshow(); return; }
+    if (nextPos >= slideshowState.items.length) {
+        if (!slideshowState.loop) { stopSlideshow(); return; }
         nextPos = 0;
     }
-    ssShowItem(ssShuffleOrder[nextPos]);
-    if (ssPlaying) ssScheduleNext();
+    ssShowItem(slideshowState.shuffleOrder[nextPos]);
+    if (slideshowState.playing) ssScheduleNext();
 }
 
 function ssPrev() {
-    clearTimeout(ssTimer);
-    const pos = ssShuffleOrder.indexOf(ssIndex);
+    clearTimeout(slideshowState.timer);
+    const pos = slideshowState.shuffleOrder.indexOf(slideshowState.index);
     let prevPos = pos - 1;
-    if (prevPos < 0) prevPos = ssItems.length - 1;
-    ssShowItem(ssShuffleOrder[prevPos]);
-    if (ssPlaying) ssScheduleNext();
+    if (prevPos < 0) prevPos = slideshowState.items.length - 1;
+    ssShowItem(slideshowState.shuffleOrder[prevPos]);
+    if (slideshowState.playing) ssScheduleNext();
 }
 
 function ssScheduleNext() {
-    clearTimeout(ssTimer);
-    if (!ssPlaying) return;
-    ssTimer = setTimeout(ssNext, ssInterval);
+    clearTimeout(slideshowState.timer);
+    if (!slideshowState.playing) return;
+    slideshowState.timer = setTimeout(ssNext, slideshowState.interval);
 }
 
 function ssUpdateControls() {
@@ -17138,13 +17151,13 @@ function ssUpdateControls() {
     const shuffleBtn = document.getElementById('ss-shuffle-btn');
     const loopBtn = document.getElementById('ss-loop-btn');
     if (playBtn) {
-        playBtn.classList.toggle('active', ssPlaying);
-        playBtn.innerHTML = ssPlaying
+        playBtn.classList.toggle('active', slideshowState.playing);
+        playBtn.innerHTML = slideshowState.playing
             ? '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>'
             : '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>';
     }
-    if (shuffleBtn) shuffleBtn.classList.toggle('active', ssShuffle);
-    if (loopBtn) loopBtn.classList.toggle('active', ssLoop);
+    if (shuffleBtn) shuffleBtn.classList.toggle('active', slideshowState.shuffle);
+    if (loopBtn) loopBtn.classList.toggle('active', slideshowState.loop);
 }
 
 (function initSlideshow() {
@@ -17164,40 +17177,40 @@ function ssUpdateControls() {
     if (nextBtn) nextBtn.addEventListener('click', ssNext);
 
     if (playBtn) playBtn.addEventListener('click', () => {
-        ssPlaying = !ssPlaying;
-        if (ssPlaying) ssScheduleNext();
-        else clearTimeout(ssTimer);
+        slideshowState.playing = !slideshowState.playing;
+        if (slideshowState.playing) ssScheduleNext();
+        else clearTimeout(slideshowState.timer);
         ssUpdateControls();
     });
 
     if (shuffleBtn) shuffleBtn.addEventListener('click', () => {
-        ssShuffle = !ssShuffle;
-        if (ssShuffle) shuffleArray(ssShuffleOrder);
-        else ssShuffleOrder = ssItems.map((_, k) => k);
+        slideshowState.shuffle = !slideshowState.shuffle;
+        if (slideshowState.shuffle) shuffleArray(slideshowState.shuffleOrder);
+        else slideshowState.shuffleOrder = slideshowState.items.map((_, k) => k);
         ssUpdateControls();
     });
 
     if (loopBtn) loopBtn.addEventListener('click', () => {
-        ssLoop = !ssLoop;
+        slideshowState.loop = !slideshowState.loop;
         ssUpdateControls();
     });
 
     if (speedSel) speedSel.addEventListener('change', () => {
-        ssInterval = parseInt(speedSel.value, 10) || 3000;
-        if (ssPlaying) ssScheduleNext();
+        slideshowState.interval = parseInt(speedSel.value, 10) || 3000;
+        if (slideshowState.playing) ssScheduleNext();
     });
 
     // Keyboard handling (high priority - captures before renderer-features.js)
     document.addEventListener('keydown', ev => {
-        if (!ssActive || overlay.classList.contains('hidden')) return;
+        if (!slideshowState.active || overlay.classList.contains('hidden')) return;
         if (ev.key === 'Escape') { ev.stopImmediatePropagation(); stopSlideshow(); return; }
         if (ev.key === 'ArrowRight') { ev.stopImmediatePropagation(); ssNext(); return; }
         if (ev.key === 'ArrowLeft') { ev.stopImmediatePropagation(); ssPrev(); return; }
         if (ev.key === ' ') {
             ev.preventDefault();
             ev.stopImmediatePropagation();
-            ssPlaying = !ssPlaying;
-            if (ssPlaying) ssScheduleNext(); else clearTimeout(ssTimer);
+            slideshowState.playing = !slideshowState.playing;
+            if (slideshowState.playing) ssScheduleNext(); else clearTimeout(slideshowState.timer);
             ssUpdateControls();
         }
     });
@@ -19264,9 +19277,9 @@ renderShortcutSettings();
 // canvas-grid.js reads from this host to paint without owning any DOM.
 window.__cgHost = {
     // State getters
-    get items() { return vsSortedItems; },
-    get positions() { return vsPositions; },
-    get totalHeight() { return vsTotalHeight; },
+    get items() { return vsState.sortedItems; },
+    get positions() { return vsState.positions; },
+    get totalHeight() { return vsState.totalHeight; },
     get layoutMode() { return layoutMode; },
     get zoomLevel() { return zoomLevel; },
     get cardInfoSettings() { return cardInfoSettings; },
@@ -19300,7 +19313,7 @@ window.__cgHost = {
 
     // Actions (called back by canvas-grid on user interaction)
     openLightbox: (idx) => {
-        const item = vsSortedItems[idx];
+        const item = vsState.sortedItems[idx];
         if (!item || item.type === 'folder' || item.type === 'group-header') return;
         openLightbox(item.url, item.path, item.name);
     },
@@ -19314,7 +19327,7 @@ window.__cgHost = {
         if (typeof setFileRating === 'function') setFileRating(path, rating);
     },
     toggleSelection: (idx, modifier /* 'ctrl'|'shift'|'none' */) => {
-        const item = vsSortedItems[idx];
+        const item = vsState.sortedItems[idx];
         if (!item) return;
         if (modifier === 'ctrl') {
             if (selectedCardPaths.has(item.path)) selectedCardPaths.delete(item.path);
@@ -19324,7 +19337,7 @@ window.__cgHost = {
             const lo = Math.min(lastSelectedCardIndex, idx);
             const hi = Math.max(lastSelectedCardIndex, idx);
             for (let i = lo; i <= hi; i++) {
-                const it = vsSortedItems[i];
+                const it = vsState.sortedItems[i];
                 if (it && it.path && it.type !== 'folder' && it.type !== 'group-header') {
                     selectedCardPaths.add(it.path);
                 }

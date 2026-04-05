@@ -134,7 +134,7 @@ function initKeyboardShortcuts() {
                 closeDuplicatesModal();
             } else if (!toolsMenuDropdown.classList.contains('hidden')) {
                 toolsMenuDropdown.classList.add('hidden');
-            } else if (marqueeActive || marqueePending) {
+            } else if (marqueeState.active || marqueeState.pending) {
                 cancelMarquee();
             } else if (selectedCardPaths.size > 0) {
                 clearCardSelection();
@@ -1823,7 +1823,7 @@ function applyZoom() {
     }
     
     // Recalculate layout for new zoom level
-    if (vsEnabled) {
+    if (vsState.enabled) {
         vsRecalculate();
     } else if (layoutMode === 'masonry') {
         scheduleMasonryLayout();
@@ -1864,8 +1864,8 @@ function getThumbnailQualityMultiplier() {
 // Get current filtered items for lightbox navigation
 function getFilteredMediaItems() {
     // With virtual scrolling, use the items array directly (includes all items, not just visible DOM cards)
-    if (vsEnabled && vsSortedItems.length > 0) {
-        return vsSortedItems
+    if (vsState.enabled && vsState.sortedItems.length > 0) {
+        return vsState.sortedItems
             .filter(item => item.type !== 'folder' && item.url && item.path)
             .map(item => ({
                 url: item.url,

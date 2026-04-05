@@ -134,6 +134,13 @@ function initKeyboardShortcuts() {
             return;
         }
 
+        // Select all visible file items
+        if (matchesShortcut(e, 'selectAll')) {
+            e.preventDefault();
+            selectAllCards();
+            return;
+        }
+
         // Arrow keys: Navigate thumbnails (always use direct key check — not remappable)
         if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
             e.preventDefault();

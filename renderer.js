@@ -3760,6 +3760,9 @@ async function getPluginMenuItems() {
     return _pluginMenuItems;
 }
 
+// Warm the plugin cache so the first context menu open doesn't flicker items in async
+setTimeout(() => { getPluginMenuItems(); }, 0);
+
 // Normalize path for consistent cache lookups (handle Windows path variations)
 const _normalizeCache = new Map();
 function normalizePath(path) {
@@ -8249,6 +8252,25 @@ function clearCardSelection() {
     selectedCardPaths.clear();
     lastSelectedCardIndex = -1;
     document.querySelectorAll('.video-card.selected').forEach(c => c.classList.remove('selected'));
+    updateSelectionStatusBar();
+}
+
+function selectAllCards() {
+    selectedCardPaths.clear();
+    let lastIndex = -1;
+    for (let i = 0; i < vsSortedItems.length; i++) {
+        const item = vsSortedItems[i];
+        if (!item || item.type === 'folder' || item.type === 'group-header') continue;
+        if (!item.path) continue;
+        selectedCardPaths.add(item.path);
+        lastIndex = i;
+    }
+    lastSelectedCardIndex = lastIndex;
+    vsActiveCards.forEach((card) => {
+        if (card.dataset.path && selectedCardPaths.has(card.dataset.path)) {
+            card.classList.add('selected');
+        }
+    });
     updateSelectionStatusBar();
 }
 
@@ -15300,6 +15322,7 @@ const DEFAULT_SHORTCUTS = {
     openFolder:     { key: 'o', ctrl: true, label: 'Open folder', category: 'Navigation' },
     openCard:       { key: 'Enter', label: 'Open selected card', category: 'Navigation' },
     deleteCard:     { key: 'Delete', label: 'Delete file', category: 'File Actions' },
+    selectAll:      { key: 'a', ctrl: true, label: 'Select all', category: 'File Actions' },
     rename:         { key: 'F2', label: 'Rename file', category: 'File Actions' },
     goBack:         { key: 'Backspace', label: 'Go back', category: 'Navigation' },
     goBackAlt:      { key: 'b', ctrl: true, label: 'Go back (alt)', category: 'Navigation' },

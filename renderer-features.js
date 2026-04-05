@@ -1,3 +1,31 @@
+// ==================== WEBGPU HAMMING DISTANCE OFFLOAD ====================
+// Main process requests GPU-accelerated pairwise hamming comparison via IPC;
+// we run the compute shader and return the matching pairs. Falls back to CPU
+// in main if WebGPU isn't available or the device is lost.
+if (window.electronAPI && window.electronAPI.onWebgpuHammingRequest) {
+    window.electronAPI.onWebgpuHammingRequest(async (_event, req) => {
+        const { id, hashBytes, threshold } = req || {};
+        try {
+            if (!window.webgpuHamming) throw new Error('webgpu-hamming module not loaded');
+            const t0 = performance.now();
+            const result = await window.webgpuHamming.computeHammingPairs(hashBytes, threshold);
+            const ms = performance.now() - t0;
+            window.electronAPI.sendWebgpuHammingResponse({
+                id,
+                pairs: result.pairs,
+                overflowed: result.overflowed,
+                count: result.count,
+                ms
+            });
+        } catch (err) {
+            window.electronAPI.sendWebgpuHammingResponse({
+                id,
+                error: err && err.message ? err.message : String(err)
+            });
+        }
+    });
+}
+
 // ==================== BATCH ERROR GROUPING ====================
 function groupBatchErrors(failedItems) {
     if (!failedItems || failedItems.length === 0) return '';

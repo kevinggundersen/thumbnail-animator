@@ -53,6 +53,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     redoFileOperation: () => ipcRenderer.invoke('redo-file-operation'),
     onDuplicateScanProgress: (callback) => ipcRenderer.on('duplicate-scan-progress', callback),
     removeDuplicateScanProgressListener: () => ipcRenderer.removeAllListeners('duplicate-scan-progress'),
+    // WebGPU hamming-distance offload (main → renderer request/response)
+    onWebgpuHammingRequest: (callback) => ipcRenderer.on('webgpu-hamming-request', callback),
+    sendWebgpuHammingResponse: (data) => ipcRenderer.send('webgpu-hamming-response', data),
     toggleMenuBar: () => ipcRenderer.send('toggle-menu-bar'),
     updateTitleBarOverlay: (overlay) => ipcRenderer.send('update-titlebar-overlay', overlay),
     // AI Visual Search (CLIP)

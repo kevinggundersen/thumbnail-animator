@@ -318,6 +318,28 @@ function initKeyboardShortcuts() {
             }
         }
 
+        // T: Open tag picker for hovered > selected > focused card(s).
+        // Target priority matches rating shortcuts so no click is required.
+        if (matchesShortcut(e, 'tagPicker')) {
+            let tagPaths = [];
+            const hoveredCard = document.querySelector('.video-card:hover');
+            if (hoveredCard && hoveredCard.dataset.path) {
+                tagPaths = [hoveredCard.dataset.path];
+            } else if (typeof selectedCardPaths !== 'undefined' && selectedCardPaths.size > 0) {
+                tagPaths = Array.from(selectedCardPaths).filter(Boolean);
+            } else if (focusedCardIndex >= 0) {
+                const card = visibleCards[focusedCardIndex];
+                if (card && !card.classList.contains('folder-card') && card.dataset.path) {
+                    tagPaths = [card.dataset.path];
+                }
+            }
+            if (tagPaths.length > 0 && typeof openTagPicker === 'function') {
+                e.preventDefault();
+                openTagPicker(tagPaths);
+                return;
+            }
+        }
+
         // Rename focused file
         if (matchesShortcut(e, 'rename') && focusedCardIndex >= 0) {
             e.preventDefault();

@@ -16877,6 +16877,7 @@ const DEFAULT_SHORTCUTS = {
     deleteCard:     { key: 'Delete', label: 'Delete file', category: 'File Actions' },
     selectAll:      { key: 'a', ctrl: true, label: 'Select all', category: 'File Actions' },
     rename:         { key: 'F2', label: 'Rename file', category: 'File Actions' },
+    tagPicker:      { key: 't', label: 'Open tag picker', category: 'File Actions' },
     goBack:         { key: 'Backspace', label: 'Go back', category: 'Navigation' },
     goBackAlt:      { key: 'b', ctrl: true, label: 'Go back (alt)', category: 'Navigation' },
     goForward:      { key: 'b', ctrl: true, shift: true, label: 'Go forward', category: 'Navigation' },

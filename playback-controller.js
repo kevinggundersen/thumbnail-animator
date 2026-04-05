@@ -716,6 +716,7 @@ class MediaControlBar {
         this._controller = null;
         this._hideTimer = null;
         this._isDragging = false;
+        this._isHoveringControls = false;
         this._isVisible = true;
         this._hideDelay = parseInt(localStorage.getItem('controlBarHideDelay')) || 3000;
 
@@ -808,6 +809,16 @@ class MediaControlBar {
             }
         };
         this._mouseLeaveHandler = () => this._startHideTimer();
+
+        // Keep controls visible while cursor is over them
+        this._container.addEventListener('mouseenter', () => {
+            this._isHoveringControls = true;
+            this._stopHideTimer();
+        });
+        this._container.addEventListener('mouseleave', () => {
+            this._isHoveringControls = false;
+            this._startHideTimer();
+        });
     }
 
     bind(controller) {
@@ -1024,7 +1035,7 @@ class MediaControlBar {
         this._stopHideTimer();
         this._hideTimer = setTimeout(() => {
             // Don't hide while dragging or paused
-            if (!this._isDragging && this._controller?.isPlaying) {
+            if (!this._isDragging && !this._isHoveringControls && this._controller?.isPlaying) {
                 this._isVisible = false;
                 this._container.classList.add('mc-hidden');
             }

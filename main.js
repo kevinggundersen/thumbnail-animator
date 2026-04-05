@@ -2285,6 +2285,39 @@ ipcMain.handle('open-with-default', async (event, filePath) => {
     }
 });
 
+// Start native OS drag of one or more files. Called when renderer wants the
+// user to drag files OUT of the Electron window into another app (Explorer,
+// email, chat). Using `ipcMain.on` (not handle) because startDrag is fire-and-
+// forget from the renderer's perspective.
+ipcMain.on('start-drag-files', (event, filePaths) => {
+    if (!Array.isArray(filePaths) || filePaths.length === 0) return;
+    try {
+        let icon = null;
+        // Try the first image file as the drag icon.
+        const firstPath = filePaths[0];
+        const ext = path.extname(firstPath).toLowerCase();
+        const imageExts = ['.jpg', '.jpeg', '.png', '.webp', '.bmp'];
+        if (imageExts.includes(ext)) {
+            const img = nativeImage.createFromPath(firstPath);
+            if (img && !img.isEmpty()) {
+                icon = img.resize({ width: 64, quality: 'good' });
+            }
+        }
+        // Fallback: a 1x1 transparent PNG. startDrag requires a non-empty icon.
+        if (!icon || icon.isEmpty()) {
+            icon = nativeImage.createFromDataURL(
+                'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='
+            );
+        }
+        event.sender.startDrag({
+            files: filePaths,
+            icon
+        });
+    } catch (err) {
+        console.error('start-drag-files failed:', err);
+    }
+});
+
 ipcMain.handle('copy-image-to-clipboard', async (event, filePath) => {
     try {
         // Copy file to clipboard so it can be pasted in file explorers

@@ -9293,13 +9293,19 @@ function isDroppedFileSupported(fileName) {
 }
 
 // Helper to get file paths from internal drag or external file drop
+// Tracks the paths currently being dragged via a native (startDrag) session.
+// Used by drop handlers to distinguish an "internal" move (drag from this
+// app's own grid) from an "external" copy (drag from Explorer / another app).
+let _nativeDragPaths = null;
+let _nativeDragClearTimer = null;
+
 function getDroppedFilePaths(dataTransfer) {
-    // Check for internal app drag (media card)
+    // Check for internal app drag (media card) via legacy MIME (Shift+drag path)
     const internalPath = dataTransfer.getData('application/x-thumbnail-animator-path');
     if (internalPath) {
         return { paths: [internalPath], isInternal: true };
     }
-    // Check for external files dropped from Explorer
+    // Check for external files dropped from Explorer / native drag
     if (dataTransfer.files && dataTransfer.files.length > 0) {
         const paths = [];
         for (const file of dataTransfer.files) {
@@ -9308,7 +9314,11 @@ function getDroppedFilePaths(dataTransfer) {
                 paths.push(filePath);
             }
         }
-        return { paths, isInternal: false };
+        // If every dropped path matches what we just native-dragged out, treat
+        // this as an internal move (not an external copy).
+        const isInternal = paths.length > 0 && _nativeDragPaths
+            && paths.every(p => _nativeDragPaths.has(p));
+        return { paths, isInternal };
     }
     return { paths: [], isInternal: false };
 }
@@ -9383,6 +9393,56 @@ function _resolveDragFolderCard(e) {
     return null;
 }
 
+// Delegated dragstart that bubbles from the <img>/<video> inside a card.
+// Converts the HTML drag into a native OS drag via webContents.startDrag so
+// files can be dropped into Explorer / email / external apps. The native drag
+// also dispatches drop events back inside the window (with e.dataTransfer.files
+// populated), so in-app drops on the collections sidebar still work.
+// Shift+drag keeps the legacy HTML drag so the existing folder-move behavior
+// (drop card onto a folder card in the grid) is preserved.
+gridContainer.addEventListener('dragstart', (e) => {
+    const card = e.target.closest('.video-card');
+    if (!card || !card.dataset.path) return;
+    const path = card.dataset.path;
+
+    // If this card is part of a larger selection, drag the whole selection
+    let paths;
+    if (typeof selectedCardPaths !== 'undefined' && selectedCardPaths.has(path) && selectedCardPaths.size > 1) {
+        paths = Array.from(selectedCardPaths).filter(Boolean);
+    } else {
+        paths = [path];
+    }
+
+    // Shift+drag: keep HTML drag for legacy in-app folder-move behavior
+    if (e.shiftKey) {
+        try {
+            e.dataTransfer.setData('application/x-tcat-files', JSON.stringify({ paths }));
+        } catch { /* some MIME combos can throw — ignore */ }
+        card.classList.add('dragging');
+        return;
+    }
+
+    // Default: native OS drag (the only reliable way to produce a real file
+    // drag on Windows). Cancel the HTML drag and hand off to Electron.
+    e.preventDefault();
+    // Remember which paths are being native-dragged so that in-app drops
+    // (folder cards, collections) can still distinguish "internal" moves.
+    _nativeDragPaths = new Set(paths);
+    // Safety: clear the tag after 30s in case we never see a drop event
+    // (e.g. user dragged to Explorer, never came back to this window).
+    if (_nativeDragClearTimer) clearTimeout(_nativeDragClearTimer);
+    _nativeDragClearTimer = setTimeout(() => { _nativeDragPaths = null; }, 30000);
+    window.electronAPI.startDragFiles(paths);
+});
+
+gridContainer.addEventListener('dragend', (e) => {
+    const card = e.target.closest('.video-card');
+    if (card) card.classList.remove('dragging');
+    // Also clear any leftover drag-over highlights on collection rows
+    document.querySelectorAll('.collection-item.collection-drag-over')
+        .forEach(el => el.classList.remove('collection-drag-over'));
+});
+
 // Drop on grid — copy external files into current folder
 gridContainer.addEventListener('dragenter', (e) => {
     const folderCard = _resolveDragFolderCard(e);
@@ -9432,6 +9492,10 @@ gridContainer.addEventListener('drop', async (e) => {
     gridContainer.querySelectorAll('.folder-card.drag-over').forEach(c => c.classList.remove('drag-over'));
 
     const { paths, isInternal } = getDroppedFilePaths(e.dataTransfer);
+    // Consumed — clear the native-drag tag so future external drops don't
+    // accidentally look "internal".
+    _nativeDragPaths = null;
+    if (_nativeDragClearTimer) { clearTimeout(_nativeDragClearTimer); _nativeDragClearTimer = null; }
     if (paths.length === 0) return;
 
     // Check if dropped on a folder card
@@ -9524,6 +9588,9 @@ document.addEventListener('dragover', (e) => {
 document.addEventListener('drop', (e) => {
     e.preventDefault();
     hideDragLabel();
+    // Clear native-drag tag after any drop (safety net for sidebar / other targets)
+    _nativeDragPaths = null;
+    if (_nativeDragClearTimer) { clearTimeout(_nativeDragClearTimer); _nativeDragClearTimer = null; }
 });
 document.addEventListener('dragend', () => {
     hideDragLabel();
@@ -14331,6 +14398,67 @@ async function renderCollectionsSidebar() {
 
         item.addEventListener('click', () => loadCollectionIntoGrid(col.id));
         item.addEventListener('contextmenu', (e) => showCollectionContextMenu(e, col));
+
+        // Drop target: dragging cards onto a static collection adds them to it.
+        // Accepts both in-app HTML drag (Shift+drag sets 'application/x-tcat-files')
+        // and the native OS drag that startDrag produces (dataTransfer.Files).
+        if (col.type === 'static') {
+            const hasDraggedFiles = (dt) => {
+                if (!dt) return false;
+                if (dt.types && dt.types.includes('application/x-tcat-files')) return true;
+                if (dt.types && dt.types.includes('Files')) return true;
+                return false;
+            };
+            item.addEventListener('dragover', (e) => {
+                if (!hasDraggedFiles(e.dataTransfer)) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'copy';
+                item.classList.add('collection-drag-over');
+            });
+            item.addEventListener('dragleave', () => {
+                item.classList.remove('collection-drag-over');
+            });
+            item.addEventListener('drop', async (e) => {
+                item.classList.remove('collection-drag-over');
+                if (!hasDraggedFiles(e.dataTransfer)) return;
+                e.preventDefault();
+                e.stopPropagation();
+                // Consumed — clear native-drag tag
+                _nativeDragPaths = null;
+                if (_nativeDragClearTimer) { clearTimeout(_nativeDragClearTimer); _nativeDragClearTimer = null; }
+                try {
+                    let paths = [];
+                    // 1) Preferred: our custom in-app MIME (Shift+drag)
+                    const data = e.dataTransfer.getData('application/x-tcat-files');
+                    if (data) {
+                        const payload = JSON.parse(data);
+                        if (Array.isArray(payload.paths)) paths = payload.paths.filter(Boolean);
+                    }
+                    // 2) Fall back to native dragged files (startDrag path)
+                    if (paths.length === 0 && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                        for (const f of e.dataTransfer.files) {
+                            const p = window.electronAPI.getPathForFile ? window.electronAPI.getPathForFile(f) : (f.path || '');
+                            if (p) paths.push(p);
+                        }
+                    }
+                    if (paths.length === 0) return;
+                    const added = await addFilesToCollection(col.id, paths);
+                    if (added > 0) {
+                        const n = added;
+                        showToast(`Added ${n} ${n === 1 ? 'file' : 'files'} to "${col.name}"`, 'success', { duration: 2500 });
+                        // Refresh this row's count badge
+                        getCollectionFiles(col.id).then(files => {
+                            const badge = item.querySelector(`[data-col-count="${col.id}"]`);
+                            if (badge) badge.textContent = files.length;
+                        });
+                    } else {
+                        showToast('Already in collection', 'info', { duration: 2000 });
+                    }
+                } catch (err) {
+                    showToast(`Could not add to collection: ${friendlyError(err)}`, 'error');
+                }
+            });
+        }
 
         collectionsListEl.appendChild(item);
 

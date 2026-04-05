@@ -585,6 +585,16 @@ button:active:not(:disabled):not(.lightbox-nav-btn) {
     color: var(--accent);
 }
 
+.collection-item.collection-drag-over {
+    background-color: var(--accent-muted);
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+
+.video-card.dragging {
+    opacity: 0.5;
+}
+
 .collection-item-icon {
     flex-shrink: 0;
     width: 16px;

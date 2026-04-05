@@ -12213,7 +12213,11 @@ function openLightbox(mediaUrl, filePath, fileName) {
     const isWebp = urlLower.endsWith('.webp');
 
     if (mediaType === 'image') {
-        // Hide video
+        // Hide video — pause and clear src so audio from the previous clip
+        // stops even though the element is just being hidden.
+        lightboxVideo.pause();
+        lightboxVideo.removeAttribute('src');
+        lightboxVideo.load();
         lightboxVideo.style.display = 'none';
         stopLightboxGifProgress();
 

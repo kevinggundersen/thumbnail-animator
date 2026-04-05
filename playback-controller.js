@@ -188,7 +188,7 @@ function getWebPXMux() {
     if (!_webpxmuxReady) {
         const wasmPath = 'webpxmux.wasm';
         const inst = WebPXMux(wasmPath);
-        _webpxmuxReady = inst.waitRuntime().then(() => inst);
+        _webpxmuxReady = inst.waitRuntime().then(() => inst).catch(err => { console.warn('webpxmux wasm load:', err); _webpxmuxReady = null; throw err; });
     }
     return _webpxmuxReady;
 }

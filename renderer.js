@@ -778,7 +778,7 @@ function vsUpdateDOM(startIndex, endIndex) {
                     tagCards.forEach(c => {
                         if (c.dataset.path) updateCardTagBadges(c);
                     });
-                });
+                }).catch(err => console.warn('warmFileTagsCache (vs):', err));
             } else {
                 tagCards.forEach(c => updateCardTagBadges(c));
             }
@@ -907,13 +907,11 @@ function vsPopulateExistingCard(card, item) {
         info.className = 'video-info';
         setCardFilenameContent(info, item.name);
 
-        if (!cardInfoSettings.extension) extensionLabel.style.display = 'none';
         card.appendChild(extensionLabel);
 
         syncStarRatingOnCard(card, item.path);
         syncPinIndicator(card, item.path);
         syncCardMetaRow(card, item, null);
-        if (!cardInfoSettings.filename) info.style.display = 'none';
         card.appendChild(info);
 
         // Show relative path when in recursive search mode
@@ -928,6 +926,7 @@ function vsPopulateExistingCard(card, item) {
             }
         }
 
+        applyCardInfoVisibility(card);
         applyCardInfoLayoutClasses(card);
 
         // Apply duplicate highlight if active
@@ -1720,8 +1719,8 @@ function showPromptDialog(title, { defaultValue = '', placeholder = '', confirmL
             resolve(value);
         };
         const onKey = (e) => {
-            if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); cleanup(null); }
-            else if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); cleanup(input.value); }
+            if (matchesShortcut(e, 'dialogCancel')) { e.preventDefault(); e.stopPropagation(); cleanup(null); }
+            else if (matchesShortcut(e, 'dialogConfirm')) { e.preventDefault(); e.stopPropagation(); cleanup(input.value); }
         };
         document.addEventListener('keydown', onKey, true);
         okBtn.addEventListener('click', () => cleanup(input.value));
@@ -1737,8 +1736,8 @@ confirmDialog.addEventListener('click', (e) => {
 });
 document.addEventListener('keydown', (e) => {
     if (!confirmDialog.classList.contains('hidden')) {
-        if (e.key === 'Escape') { e.preventDefault(); _closeConfirmDialog(false); }
-        if (e.key === 'Enter') { e.preventDefault(); _closeConfirmDialog(true); }
+        if (matchesShortcut(e, 'dialogCancel')) { e.preventDefault(); _closeConfirmDialog(false); }
+        if (matchesShortcut(e, 'dialogConfirm')) { e.preventDefault(); _closeConfirmDialog(true); }
     }
 });
 
@@ -1893,7 +1892,7 @@ fileConflictDialog.addEventListener('click', (e) => {
 });
 document.addEventListener('keydown', (e) => {
     if (!fileConflictDialog.classList.contains('hidden')) {
-        if (e.key === 'Escape') { e.preventDefault(); _closeConflictDialog('skip'); }
+        if (matchesShortcut(e, 'dialogCancel')) { e.preventDefault(); _closeConflictDialog('skip'); }
     }
 });
 
@@ -2079,6 +2078,18 @@ let findSimilarThreshold = 0.60;       // Similarity threshold (0-1)
 let findSimilarAllFolders = false;     // Cross-folder toggle
 let findSimilarPreviousItems = null;   // Stashed currentItems to restore on clear
 let findSimilarPreviousFolder = null;  // Stashed currentFolderPath to restore on clear
+
+// Silent reset of find-similar state + banner (no re-render).
+function clearFindSimilarState() {
+    if (!findSimilarActive) return;
+    findSimilarActive = false;
+    findSimilarEmbedding = null;
+    findSimilarSourcePath = null;
+    findSimilarPreviousItems = null;
+    findSimilarPreviousFolder = null;
+    const fsBanner = document.getElementById('find-similar-banner');
+    if (fsBanner) fsBanner.classList.add('hidden');
+}
 
 // Track layout mode: 'masonry' (dynamic) or 'grid' (rigid row-based)
 let layoutMode = 'masonry'; // Default to masonry
@@ -2901,16 +2912,7 @@ let _collectionLoadToken = 0;
 let _aiForegroundScanCollectionId = null;
 
 async function loadCollectionIntoGrid(collectionId) {
-    // Clear find-similar state (silent reset)
-    if (findSimilarActive) {
-        findSimilarActive = false;
-        findSimilarEmbedding = null;
-        findSimilarSourcePath = null;
-        findSimilarPreviousItems = null;
-        findSimilarPreviousFolder = null;
-        const fsBanner = document.getElementById('find-similar-banner');
-        if (fsBanner) fsBanner.classList.add('hidden');
-    }
+    clearFindSimilarState();
     // Hand off any in-flight foreground AI scan from the previous collection to the background scanner
     if (_aiForegroundScanCollectionId && _aiForegroundScanCollectionId !== collectionId) {
         const handoffId = _aiForegroundScanCollectionId;
@@ -3229,7 +3231,7 @@ async function loadCollectionIntoGrid(collectionId) {
                                             if (sim >= aiThreshold) newMatchCount++;
                                         }
                                     }
-                                    if (toCache.length > 0) cacheEmbeddings(toCache).catch(() => {});
+                                    if (toCache.length > 0) cacheEmbeddings(toCache).catch(err => console.warn('cacheEmbeddings (foreground):', err));
                                     done += batch.length;
                                 } catch { done += batch.length; }
 
@@ -3471,7 +3473,7 @@ async function backgroundScanSmartCollection(collectionId) {
                                         if (sim >= aiThreshold) newMatches = true;
                                     }
                                 }
-                                if (toCache.length > 0) cacheEmbeddings(toCache).catch(() => {});
+                                if (toCache.length > 0) cacheEmbeddings(toCache).catch(err => console.warn('cacheEmbeddings (background):', err));
                                 done += batch.length;
                             } catch { done += batch.length; }
 
@@ -4185,8 +4187,8 @@ async function hydrateMissingDimensionsInBackground(folderPath, items) {
     }
 
     if (cacheEntries.length > 0) {
-        cacheDimensions(cacheEntries).catch(() => {});
-        storeFolderInIndexedDB(folderPath, items).catch(() => {});
+        cacheDimensions(cacheEntries).catch(err => console.warn('cacheDimensions:', err));
+        storeFolderInIndexedDB(folderPath, items).catch(err => console.warn('storeFolderInIndexedDB:', err));
     }
 
     perfTest.end('backgroundDimensions (IPC)', perfStart, {
@@ -5268,7 +5270,7 @@ function resumeThumbnailVideos() {
     allVideos.forEach(video => {
         const playPromise = video.play();
         if (playPromise !== undefined) {
-            playPromise.catch(() => {});
+            playPromise.catch(() => {}); // autoplay restrictions — intentional silent
         }
     });
     // Restore animated GIFs by hiding static overlay
@@ -6080,6 +6082,17 @@ function syncStarRatingOnCard(card, filePath) {
     }
 }
 
+function applyCardInfoVisibility(card) {
+    const ext = card.querySelector('.extension-label');
+    if (ext) ext.style.display = cardInfoSettings.extension ? '' : 'none';
+    const snd = card.querySelector('.sound-label');
+    if (snd) snd.style.display = cardInfoSettings.audioLabel ? '' : 'none';
+    const info = card.querySelector('.video-info');
+    if (info) info.style.display = cardInfoSettings.filename ? '' : 'none';
+    const tags = card.querySelector('.card-tags');
+    if (tags) tags.style.display = cardInfoSettings.tags ? '' : 'none';
+}
+
 function applyCardInfoLayoutClasses(card) {
     card.classList.toggle('ci-no-ext', !cardInfoSettings.extension);
     card.classList.toggle('ci-no-filename', !cardInfoSettings.filename);
@@ -6123,21 +6136,7 @@ function refreshAllVisibleMediaCardInfo() {
         const h = item?.height || parseInt(card.dataset.height || '0', 10);
         createResolutionLabel(card, w, h);
 
-        // Toggle extension label visibility
-        const extLabel = card.querySelector('.extension-label');
-        if (extLabel) extLabel.style.display = cardInfoSettings.extension ? '' : 'none';
-
-        // Toggle audio/sound label visibility
-        const sndLabel = card.querySelector('.sound-label');
-        if (sndLabel) sndLabel.style.display = cardInfoSettings.audioLabel ? '' : 'none';
-
-        // Toggle filename visibility
-        const infoEl = card.querySelector('.video-info');
-        if (infoEl) infoEl.style.display = cardInfoSettings.filename ? '' : 'none';
-
-        // Toggle tag badges visibility
-        const tagContainer = card.querySelector('.card-tags');
-        if (tagContainer) tagContainer.style.display = cardInfoSettings.tags ? '' : 'none';
+        applyCardInfoVisibility(card);
 
         // Apply responsive layout classes
         applyCardInfoLayoutClasses(card);
@@ -6860,16 +6859,15 @@ function createCardFromItem(item, skipAnimation = false) {
         info.className = 'video-info';
         setCardFilenameContent(info, item.name);
 
-        if (!cardInfoSettings.extension) extensionLabel.style.display = 'none';
         card.appendChild(extensionLabel);
 
         syncStarRatingOnCard(card, item.path);
         syncPinIndicator(card, item.path);
         syncCardMetaRow(card, item, null);
 
-        if (!cardInfoSettings.filename) info.style.display = 'none';
         card.appendChild(info);
 
+        applyCardInfoVisibility(card);
         applyCardInfoLayoutClasses(card);
 
         // Mark missing files (dead links in collections)
@@ -14926,16 +14924,7 @@ function scheduleStreamingLayoutRefresh() {
 }
 
 async function loadVideos(folderPath, useCache = true, preservedScrollTop = null) {
-    // Clear find-similar state on folder navigation (silent reset, no re-render)
-    if (findSimilarActive) {
-        findSimilarActive = false;
-        findSimilarEmbedding = null;
-        findSimilarSourcePath = null;
-        findSimilarPreviousItems = null;
-        findSimilarPreviousFolder = null;
-        const fsBanner = document.getElementById('find-similar-banner');
-        if (fsBanner) fsBanner.classList.add('hidden');
-    }
+    clearFindSimilarState();
     // Clear card selection on folder navigation
     clearCardSelection();
     // Stop periodic cleanup during folder switch
@@ -16660,6 +16649,10 @@ console.log('[Tags] renderer.js fully loaded, end of file reached');
     if (!dropdown || !searchBox) return;
 
     function getHistory() {
+        // Prefer a pending deferred write so rapid save→read sees fresh data
+        if (_pendingStorageWrites.has(SEARCH_HISTORY_KEY)) {
+            try { return JSON.parse(_pendingStorageWrites.get(SEARCH_HISTORY_KEY)); } catch { /* fall through */ }
+        }
         try { return JSON.parse(localStorage.getItem(SEARCH_HISTORY_KEY) || '[]'); } catch { return []; }
     }
 
@@ -16668,7 +16661,7 @@ console.log('[Tags] renderer.js fully loaded, end of file reached');
         let h = getHistory().filter(s => s !== query.trim());
         h.unshift(query.trim());
         if (h.length > MAX_SEARCH_HISTORY) h = h.slice(0, MAX_SEARCH_HISTORY);
-        localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(h));
+        deferLocalStorageWrite(SEARCH_HISTORY_KEY, JSON.stringify(h));
     }
 
     function renderDropdown() {
@@ -16697,7 +16690,7 @@ console.log('[Tags] renderer.js fully loaded, end of file reached');
                 ev.preventDefault();
                 ev.stopPropagation();
                 const h = getHistory().filter(s => s !== q);
-                localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(h));
+                deferLocalStorageWrite(SEARCH_HISTORY_KEY, JSON.stringify(h));
                 renderDropdown();
                 searchBox.focus();
             });
@@ -18717,6 +18710,8 @@ const DEFAULT_SHORTCUTS = {
     lb_exportTrim:      { key: 'e', ctrl: true, label: 'Export trimmed range', category: 'Lightbox' },
     lb_toggleInspector: { key: 'p', label: 'Toggle inspector',   category: 'Lightbox' },
     convertFile:        { key: 'e', ctrl: true, shift: true, label: 'Convert file', category: 'File Actions' },
+    dialogConfirm:  { key: 'Enter', label: 'Confirm dialog', category: 'Dialogs' },
+    dialogCancel:   { key: 'Escape', label: 'Cancel dialog', category: 'Dialogs' },
 };
 
 // Merge user overrides over defaults

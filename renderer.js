@@ -571,9 +571,10 @@ function vsCalculatePositions(items, containerWidth, mode, zoom) {
  * Returns { startIndex, endIndex } (endIndex is exclusive).
  */
 function vsGetVisibleRange(scrollTop, viewportHeight) {
-    if (!vsState.positions || vsState.sortedItems.length === 0) return { startIndex: 0, endIndex: 0 };
-
+    const positions = vsState.positions;
     const itemCount = vsState.sortedItems.length;
+    if (!positions || itemCount === 0) return { startIndex: 0, endIndex: 0 };
+
     const visibleTop = scrollTop - VS_BUFFER_PX;
     const visibleBottom = scrollTop + viewportHeight + VS_BUFFER_PX;
 
@@ -586,7 +587,7 @@ function vsGetVisibleRange(scrollTop, viewportHeight) {
         while (lo < hi) {
             const mid = (lo + hi) >>> 1;
             const idx = mid * 4;
-            if (vsState.positions[idx + 1] + vsState.positions[idx + 3] < visibleTop) {
+            if (positions[idx + 1] + positions[idx + 3] < visibleTop) {
                 lo = mid + 1;
             } else {
                 hi = mid;
@@ -596,7 +597,7 @@ function vsGetVisibleRange(scrollTop, viewportHeight) {
     } else {
         for (let i = 0; i < itemCount; i++) {
             const idx = i * 4;
-            if (vsState.positions[idx + 1] + vsState.positions[idx + 3] >= visibleTop) {
+            if (positions[idx + 1] + positions[idx + 3] >= visibleTop) {
                 startIndex = i;
                 break;
             }
@@ -608,7 +609,7 @@ function vsGetVisibleRange(scrollTop, viewportHeight) {
     let endIndex = itemCount;
     for (let i = startIndex; i < itemCount; i++) {
         const idx = i * 4;
-        if (vsState.positions[idx + 1] > visibleBottom) {
+        if (positions[idx + 1] > visibleBottom) {
             endIndex = i;
             break;
         }
@@ -628,8 +629,14 @@ function vsUpdateDOM(startIndex, endIndex) {
         return;
     }
 
+    // Hoist hot-path state refs to locals for fast access
+    const activeCards = vsState.activeCards;
+    const recyclePool = vsState.recyclePool;
+    const positions = vsState.positions;
+    const sortedItems = vsState.sortedItems;
+
     // Remove cards outside visible range
-    for (const [itemIdx, card] of vsState.activeCards) {
+    for (const [itemIdx, card] of activeCards) {
         if (itemIdx < startIndex || itemIdx >= endIndex) {
             // Clean up media using cached reference (avoids querySelectorAll)
             if (card._mediaEl) {
@@ -659,11 +666,11 @@ function vsUpdateDOM(startIndex, endIndex) {
 
             observer.unobserve(card);
             card.remove();
-            vsState.activeCards.delete(itemIdx);
+            activeCards.delete(itemIdx);
 
             // Add to recycle pool
-            if (vsState.recyclePool.length < VS_MAX_POOL_SIZE) {
-                vsState.recyclePool.push(card);
+            if (recyclePool.length < VS_MAX_POOL_SIZE) {
+                recyclePool.push(card);
             }
         }
     }
@@ -673,14 +680,14 @@ function vsUpdateDOM(startIndex, endIndex) {
     const newCards = [];
 
     for (let i = startIndex; i < endIndex; i++) {
-        if (vsState.activeCards.has(i)) {
+        if (activeCards.has(i)) {
             // Card already exists, just update position if needed
-            const card = vsState.activeCards.get(i);
+            const card = activeCards.get(i);
             const idx = i * 4;
-            const newLeft = vsState.positions[idx];
-            const newTop = vsState.positions[idx + 1];
-            const newWidth = vsState.positions[idx + 2];
-            const newHeight = vsState.positions[idx + 3];
+            const newLeft = positions[idx];
+            const newTop = positions[idx + 1];
+            const newWidth = positions[idx + 2];
+            const newHeight = positions[idx + 3];
             // Only update if position changed (avoids style recalc)
             if (card._vsLeft !== newLeft || card._vsTop !== newTop ||
                 card._vsWidth !== newWidth || card._vsHeight !== newHeight) {
@@ -696,15 +703,15 @@ function vsUpdateDOM(startIndex, endIndex) {
             continue;
         }
 
-        const item = vsState.sortedItems[i];
+        const item = sortedItems[i];
         const idx = i * 4;
-        const left = vsState.positions[idx];
-        const top = vsState.positions[idx + 1];
-        const width = vsState.positions[idx + 2];
-        const height = vsState.positions[idx + 3];
+        const left = positions[idx];
+        const top = positions[idx + 1];
+        const width = positions[idx + 2];
+        const height = positions[idx + 3];
 
         // Try to recycle a card
-        let card = vsState.recyclePool.pop();
+        let card = recyclePool.pop();
         if (card) {
             // Reset the recycled card
             vsResetCard(card);
@@ -739,7 +746,7 @@ function vsUpdateDOM(startIndex, endIndex) {
             card.classList.add('selected');
         }
 
-        vsState.activeCards.set(i, card);
+        activeCards.set(i, card);
         fragment.appendChild(card);
 
         if (isMedia) {
@@ -763,7 +770,7 @@ function vsUpdateDOM(startIndex, endIndex) {
             const needTagPaths = [];
             const tagCards = [];
             for (let i = startIndex; i < endIndex; i++) {
-                const card = vsState.activeCards.get(i);
+                const card = activeCards.get(i);
                 if (card && card.classList.contains('video-card') && card.dataset.path) {
                     const np = normalizePath(card.dataset.path);
                     if (!fileTagsCache.has(np)) {
@@ -937,6 +944,11 @@ function vsPopulateExistingCard(card, item) {
     }
 }
 
+// Scroll velocity tracking for media-loading gate (px/s threshold)
+let _vsLastScrollTop = 0;
+let _vsLastScrollTime = 0;
+const VS_FAST_SCROLL_PX_PER_SEC = 2000;
+
 /**
  * Handle scroll events for virtual scrolling.
  */
@@ -962,10 +974,20 @@ function vsOnScroll() {
             vsUpdateDOM(startIndex, endIndex);
         }
 
-        // Guarantee every card currently in the viewport has media loading.
-        // This bypasses IntersectionObserver entirely — using pre-computed
-        // positions from the Float64Array to check visibility in O(active cards).
-        vsEnsureVisibleMedia(scrollTop, viewportHeight);
+        // Compute scroll velocity; skip media-load safety net during fast scroll
+        // to avoid creating thumbnails the user is scrolling past. The scroll-settle
+        // debounce below will call vsEnsureVisibleMedia once scrolling stops.
+        const now = performance.now();
+        const dt = now - _vsLastScrollTime;
+        const velocity = dt > 0 ? Math.abs(scrollTop - _vsLastScrollTop) / dt * 1000 : 0;
+        _vsLastScrollTop = scrollTop;
+        _vsLastScrollTime = now;
+        if (velocity < VS_FAST_SCROLL_PX_PER_SEC) {
+            // Guarantee every card currently in the viewport has media loading.
+            // This bypasses IntersectionObserver entirely — using pre-computed
+            // positions from the Float64Array to check visibility in O(active cards).
+            vsEnsureVisibleMedia(scrollTop, viewportHeight);
+        }
     });
 
     // Throttle cleanup — run periodically during continuous scroll so that
@@ -981,6 +1003,8 @@ function vsOnScroll() {
     cleanupScrollTimeout = setTimeout(() => {
         invalidateScrollCaches();
         runCleanupCycle();
+        // Catch up on any visible cards whose media was deferred during fast scroll
+        vsEnsureVisibleMedia(gridContainer.scrollTop, gridContainer.clientHeight);
     }, SCROLL_DEBOUNCE_MS);
 }
 
@@ -990,14 +1014,15 @@ function vsOnScroll() {
  * Uses pre-computed vsState.positions (no DOM measurement, no IntersectionObserver).
  */
 function vsEnsureVisibleMedia(scrollTop, viewportHeight) {
-    if (!vsState.positions) return;
+    const positions = vsState.positions;
+    if (!positions) return;
     const visibleTop = scrollTop;
     const visibleBottom = scrollTop + viewportHeight;
 
     for (const [idx, card] of vsState.activeCards) {
         const posIdx = idx * 4;
-        const cardTop = vsState.positions[posIdx + 1];
-        const cardBottom = cardTop + vsState.positions[posIdx + 3];
+        const cardTop = positions[posIdx + 1];
+        const cardBottom = cardTop + positions[posIdx + 3];
 
         // Skip cards outside the actual viewport (no buffer)
         if (cardBottom < visibleTop || cardTop > visibleBottom) continue;

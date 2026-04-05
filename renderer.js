@@ -14155,15 +14155,40 @@ const autoTagStatus = document.getElementById('auto-tag-status');
 const autoTagThreshold = document.getElementById('auto-tag-threshold');
 const autoTagThresholdValue = document.getElementById('auto-tag-threshold-value');
 const autoTagApply = document.getElementById('auto-tag-apply');
+const autoTagViewFileEl = document.getElementById('auto-tag-view-file');
+const autoTagViewTagEl = document.getElementById('auto-tag-view-tag');
+const autoTagProgressEl = document.getElementById('auto-tag-progress');
+const autoTagProgressFill = document.getElementById('auto-tag-progress-fill');
+const autoTagProgressText = document.getElementById('auto-tag-progress-text');
+const autoTagSelectionCountEl = document.getElementById('auto-tag-selection-count');
+const autoTagSmartSelectEl = document.getElementById('auto-tag-smart-select');
 
 let autoTagFilePaths = [];
-let autoTagData = []; // [{ path, name, thumbUrl, suggestions: [{ label, score }] }]
+let autoTagData = []; // [{ path, name, thumbType, thumbSrc, suggestions: [{ label, score }] }]
 let autoTagLabelEmbeddings = null; // Map<label, Float32Array>
+let autoTagSelection = new Map(); // Map<path, Set<label>>
+let autoTagView = 'file'; // 'file' | 'tag'
+let autoTagByTag = new Map(); // Map<label, Array<{path, score}>> — derived from autoTagData + threshold
+let autoTagCollapsedTags = new Set();
+let autoTagCancelScan = false;
+let autoTagIO = null; // IntersectionObserver for File view cards
+let autoTagTileIO = null; // IntersectionObserver for Tag view tiles
 
 function closeAutoTag() {
     autoTagOverlay.classList.add('hidden');
     autoTagFilePaths = [];
     autoTagData = [];
+    autoTagSelection.clear();
+    autoTagByTag.clear();
+    autoTagCollapsedTags.clear();
+    autoTagCancelScan = false;
+    if (autoTagIO) { try { autoTagIO.disconnect(); } catch {} autoTagIO = null; }
+    if (autoTagTileIO) { try { autoTagTileIO.disconnect(); } catch {} autoTagTileIO = null; }
+    autoTagShowProgress(false);
+    autoTagViewFileEl.innerHTML = '';
+    autoTagViewTagEl.innerHTML = '';
+    autoTagStatus.textContent = '';
+    autoTagUpdateCounter();
 }
 
 async function embedTagLabels() {
@@ -14187,8 +14212,23 @@ async function embedTagLabels() {
 async function openAutoTag(filePaths) {
     autoTagFilePaths = filePaths;
     autoTagOverlay.classList.remove('hidden');
-    autoTagResults.innerHTML = '';
+    autoTagData = [];
+    autoTagSelection.clear();
+    autoTagByTag.clear();
+    autoTagCollapsedTags.clear();
+    autoTagCancelScan = false;
+    autoTagViewFileEl.innerHTML = '';
+    autoTagViewTagEl.innerHTML = '';
     autoTagApply.disabled = true;
+    autoTagUpdateCounter();
+
+    // Restore last-used view preference
+    try {
+        const saved = localStorage.getItem('autoTagLastView');
+        autoTagView = (saved === 'tag' || saved === 'file') ? saved : 'file';
+    } catch { autoTagView = 'file'; }
+    autoTagApplyViewToggle();
+
     autoTagStatus.textContent = 'Checking AI model...';
 
     // Check if user has any tags
@@ -14222,12 +14262,14 @@ async function openAutoTag(filePaths) {
         return;
     }
 
-    // Get/generate image embeddings
-    autoTagStatus.textContent = `Analyzing ${filePaths.length} file${filePaths.length === 1 ? '' : 's'}...`;
-    autoTagData = [];
+    // Get/generate image embeddings (show progress bar for hundreds of files)
+    autoTagStatus.textContent = '';
+    autoTagShowProgress(true);
+    autoTagUpdateProgress(0, filePaths.length);
     const BATCH = 8;
 
     for (let i = 0; i < filePaths.length; i += BATCH) {
+        if (autoTagCancelScan) break;
         const batch = filePaths.slice(i, i + BATCH);
         const items = batch.map(fp => {
             const item = vsSortedItems.find(it => it.path === fp);
@@ -14260,7 +14302,7 @@ async function openAutoTag(filePaths) {
             } catch {}
         }
 
-        // Score each file against all labels
+        // Score each file against all labels (no sync poster fetch — done lazily on render)
         for (const fp of batch) {
             const emb = embeddings.get(fp);
             if (!emb) continue;
@@ -14273,19 +14315,27 @@ async function openAutoTag(filePaths) {
 
             const name = fp.split(/[\\/]/).pop();
             const item = vsSortedItems.find(it => it.path === fp);
-            let thumbUrl = '';
-            if (item) {
-                thumbUrl = item.type === 'video'
-                    ? ((await requestVideoPosterUrl(fp)) || '')
-                    : (item.url || '');
-            }
-            autoTagData.push({ path: fp, name, thumbUrl, suggestions });
+            const isVideo = item && item.type === 'video';
+            autoTagData.push({
+                path: fp,
+                name,
+                thumbType: isVideo ? 'video' : 'image',
+                thumbSrc: isVideo ? null : (item ? (item.url || '') : ''),
+                suggestions,
+            });
         }
 
-        autoTagStatus.textContent = `Analyzing... ${Math.min(i + BATCH, filePaths.length)}/${filePaths.length}`;
+        autoTagUpdateProgress(Math.min(i + BATCH, filePaths.length), filePaths.length);
+        // Incremental render after each batch so users see results as they stream in
+        renderAutoTagResults();
     }
 
-    autoTagStatus.textContent = `Done. ${autoTagData.length} file${autoTagData.length === 1 ? '' : 's'} analyzed.`;
+    autoTagShowProgress(false);
+    const cancelled = autoTagCancelScan;
+    const analyzed = autoTagData.length;
+    autoTagStatus.textContent = cancelled
+        ? `Cancelled. ${analyzed} file${analyzed === 1 ? '' : 's'} analyzed.`
+        : `Done. ${analyzed} file${analyzed === 1 ? '' : 's'} analyzed.`;
     renderAutoTagResults();
 }
 
@@ -14294,64 +14344,377 @@ function clipScoreToDisplayPct(score) {
     return Math.round(Math.min(100, Math.max(0, (score - 0.15) / 0.25 * 100)));
 }
 
-function renderAutoTagResults() {
-    const threshold = (parseInt(autoTagThreshold.value) || 25) / 100;
-    autoTagResults.innerHTML = '';
-    let totalChecked = 0;
+function autoTagGetThreshold() {
+    return (parseInt(autoTagThreshold.value) || 25) / 100;
+}
+
+function autoTagRebuildByTag() {
+    const threshold = autoTagGetThreshold();
+    autoTagByTag.clear();
+    for (const file of autoTagData) {
+        for (const s of file.suggestions) {
+            if (s.score < threshold) continue;
+            if (!autoTagByTag.has(s.label)) autoTagByTag.set(s.label, []);
+            autoTagByTag.get(s.label).push({ path: file.path, score: s.score });
+        }
+    }
+    for (const arr of autoTagByTag.values()) arr.sort((a, b) => b.score - a.score);
+}
+
+function autoTagIsSelected(path, label) {
+    const set = autoTagSelection.get(path);
+    return !!(set && set.has(label));
+}
+
+function autoTagToggleSelection(path, label) {
+    let set = autoTagSelection.get(path);
+    if (!set) { set = new Set(); autoTagSelection.set(path, set); }
+    if (set.has(label)) {
+        set.delete(label);
+        if (set.size === 0) autoTagSelection.delete(path);
+    } else {
+        set.add(label);
+    }
+}
+
+function autoTagSetSelection(path, label, enabled) {
+    let set = autoTagSelection.get(path);
+    if (enabled) {
+        if (!set) { set = new Set(); autoTagSelection.set(path, set); }
+        set.add(label);
+    } else if (set) {
+        set.delete(label);
+        if (set.size === 0) autoTagSelection.delete(path);
+    }
+}
+
+function autoTagClearSelection() {
+    autoTagSelection.clear();
+}
+
+function autoTagSelectAllAboveThreshold() {
+    const threshold = autoTagGetThreshold();
+    for (const file of autoTagData) {
+        for (const s of file.suggestions) {
+            if (s.score >= threshold) autoTagSetSelection(file.path, s.label, true);
+        }
+    }
+}
+
+function autoTagSelectForTag(label, enable) {
+    const matches = autoTagByTag.get(label);
+    if (!matches) return;
+    for (const m of matches) autoTagSetSelection(m.path, label, enable);
+}
+
+function autoTagSmartSelect(mode) {
+    autoTagClearSelection();
+    if (mode === 'top1') {
+        const threshold = autoTagGetThreshold();
+        for (const file of autoTagData) {
+            const top = file.suggestions[0];
+            if (top && top.score >= threshold) autoTagSetSelection(file.path, top.label, true);
+        }
+        return;
+    }
+    const pct = parseInt(mode, 10);
+    if (!Number.isFinite(pct)) return;
+    // Reverse clipScoreToDisplayPct: score = pct/100 * 0.25 + 0.15
+    const scoreThreshold = (pct / 100) * 0.25 + 0.15;
+    const uiThreshold = autoTagGetThreshold();
+    const effective = Math.max(uiThreshold, scoreThreshold);
+    for (const file of autoTagData) {
+        for (const s of file.suggestions) {
+            if (s.score >= effective) autoTagSetSelection(file.path, s.label, true);
+        }
+    }
+}
+
+function autoTagGetCounts() {
+    let tagCount = 0;
+    for (const set of autoTagSelection.values()) tagCount += set.size;
+    return { tagCount, fileCount: autoTagSelection.size };
+}
+
+function autoTagUpdateCounter() {
+    const { tagCount, fileCount } = autoTagGetCounts();
+    if (tagCount === 0) {
+        autoTagSelectionCountEl.textContent = '';
+    } else {
+        autoTagSelectionCountEl.textContent = `${tagCount} tag${tagCount === 1 ? '' : 's'} across ${fileCount} file${fileCount === 1 ? '' : 's'}`;
+    }
+    autoTagApply.disabled = tagCount === 0;
+}
+
+function updateAutoTagApplyBtn() { autoTagUpdateCounter(); }
+
+function autoTagShowProgress(show) {
+    autoTagProgressEl.classList.toggle('hidden', !show);
+}
+
+function autoTagUpdateProgress(done, total) {
+    const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+    autoTagProgressFill.style.width = `${pct}%`;
+    autoTagProgressText.textContent = `${done} / ${total}`;
+}
+
+function cancelAutoTagScan() {
+    autoTagCancelScan = true;
+}
+
+function autoTagApplyViewToggle() {
+    const buttons = autoTagOverlay.querySelectorAll('.auto-tag-view-toggle button');
+    buttons.forEach(b => {
+        const active = b.dataset.view === autoTagView;
+        b.classList.toggle('active', active);
+        b.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    autoTagViewFileEl.classList.toggle('hidden', autoTagView !== 'file');
+    autoTagViewTagEl.classList.toggle('hidden', autoTagView !== 'tag');
+}
+
+function autoTagSetView(view) {
+    if (view !== 'file' && view !== 'tag') return;
+    if (view === autoTagView) return;
+    autoTagView = view;
+    try { localStorage.setItem('autoTagLastView', view); } catch {}
+    autoTagApplyViewToggle();
+    renderAutoTagResults();
+}
+
+function autoTagSetupObservers() {
+    if (autoTagIO) { try { autoTagIO.disconnect(); } catch {} }
+    if (autoTagTileIO) { try { autoTagTileIO.disconnect(); } catch {} }
+    autoTagIO = new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+            if (entry.isIntersecting) {
+                autoTagLoadCardThumb(entry.target);
+                autoTagIO.unobserve(entry.target);
+            }
+        }
+    }, { root: autoTagResults, rootMargin: '300px 0px' });
+    autoTagTileIO = new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+            if (entry.isIntersecting) {
+                autoTagLoadTileThumb(entry.target);
+                autoTagTileIO.unobserve(entry.target);
+            }
+        }
+    }, { root: autoTagResults, rootMargin: '200px 0px 200px 200px' });
+}
+
+function autoTagSetThumbImage(thumbEl, url) {
+    thumbEl.style.backgroundImage = `url(${JSON.stringify(url)})`;
+    thumbEl.classList.add('has-image');
+    thumbEl.classList.remove('is-video');
+}
+
+function autoTagLoadCardThumb(cardEl) {
+    const idx = parseInt(cardEl.dataset.idx, 10);
+    const data = autoTagData[idx];
+    if (!data) return;
+    const thumbEl = cardEl.querySelector('.auto-tag-card-thumb');
+    if (!thumbEl) return;
+    if (data.thumbType === 'video') {
+        thumbEl.classList.add('is-video');
+        requestVideoPosterUrl(data.path).then((url) => {
+            if (url) autoTagSetThumbImage(thumbEl, url);
+        }).catch(() => {});
+    } else if (data.thumbSrc) {
+        autoTagSetThumbImage(thumbEl, data.thumbSrc);
+    }
+}
+
+function autoTagLoadTileThumb(tileEl) {
+    const path = tileEl.dataset.path;
+    const data = autoTagData.find(d => d.path === path);
+    if (!data) return;
+    const thumbEl = tileEl.querySelector('.auto-tag-tag-tile-thumb');
+    if (!thumbEl) return;
+    if (data.thumbType === 'video') {
+        thumbEl.classList.add('is-video');
+        requestVideoPosterUrl(data.path).then((url) => {
+            if (url) autoTagSetThumbImage(thumbEl, url);
+        }).catch(() => {});
+    } else if (data.thumbSrc) {
+        autoTagSetThumbImage(thumbEl, data.thumbSrc);
+    }
+}
+
+function escapeHtml(str) {
+    return String(str).replace(/[&<>"']/g, (c) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+}
+
+function renderAutoTagFileView() {
+    autoTagViewFileEl.innerHTML = '';
+    const threshold = autoTagGetThreshold();
 
     if (autoTagData.length === 0) {
-        autoTagResults.innerHTML = '<div class="auto-tag-empty">No files could be analyzed.</div>';
-        autoTagApply.disabled = true;
+        autoTagViewFileEl.innerHTML = '<div class="auto-tag-empty">No files analyzed yet.</div>';
         return;
     }
 
-    for (const file of autoTagData) {
+    const frag = document.createDocumentFragment();
+    for (let idx = 0; idx < autoTagData.length; idx++) {
+        const file = autoTagData[idx];
         const matching = file.suggestions.filter(s => s.score >= threshold);
-        if (matching.length === 0) continue;
+        const selectedSet = autoTagSelection.get(file.path);
+        const hasSelection = !!(selectedSet && selectedSet.size > 0);
 
-        const group = document.createElement('div');
-        group.className = 'auto-tag-file-group';
+        const card = document.createElement('div');
+        card.className = 'auto-tag-card' + (hasSelection ? ' has-selection' : '');
+        card.dataset.idx = String(idx);
+        card.dataset.path = file.path;
 
-        const header = document.createElement('div');
-        header.className = 'auto-tag-file-header';
-        header.innerHTML = `
-            ${file.thumbUrl ? `<img src="${file.thumbUrl}" alt="">` : ''}
-            <span class="auto-tag-filename" title="${file.name}">${file.name}</span>
-        `;
-        group.appendChild(header);
+        const thumb = document.createElement('div');
+        thumb.className = 'auto-tag-card-thumb' + (file.thumbType === 'video' ? ' is-video' : '');
+        card.appendChild(thumb);
+
+        const nameEl = document.createElement('div');
+        nameEl.className = 'auto-tag-card-name';
+        nameEl.title = file.name;
+        nameEl.textContent = file.name;
+        card.appendChild(nameEl);
 
         const chips = document.createElement('div');
-        chips.className = 'auto-tag-suggestions';
-
-        for (const s of matching) {
-            const pct = clipScoreToDisplayPct(s.score);
-            const chip = document.createElement('span');
-            chip.className = 'auto-tag-chip selected';
-            chip.dataset.path = file.path;
-            chip.dataset.label = s.label;
-            chip.innerHTML = `${s.label} <span class="auto-tag-conf">${pct}%</span>`;
-            chip.addEventListener('click', () => {
-                chip.classList.toggle('selected');
-                updateAutoTagApplyBtn();
-            });
-            chips.appendChild(chip);
-            totalChecked++;
+        chips.className = 'auto-tag-card-chips';
+        if (matching.length === 0) {
+            const none = document.createElement('span');
+            none.className = 'auto-tag-card-none';
+            none.textContent = 'no matches';
+            chips.appendChild(none);
+        } else {
+            for (const s of matching) {
+                const chip = document.createElement('span');
+                const isSel = autoTagIsSelected(file.path, s.label);
+                chip.className = 'auto-tag-chip' + (isSel ? ' selected' : '');
+                chip.dataset.path = file.path;
+                chip.dataset.label = s.label;
+                chip.dataset.role = 'chip';
+                chip.innerHTML = `${escapeHtml(s.label)} <span class="auto-tag-conf">${clipScoreToDisplayPct(s.score)}%</span>`;
+                chips.appendChild(chip);
+            }
         }
-        group.appendChild(chips);
-        autoTagResults.appendChild(group);
+        card.appendChild(chips);
+        frag.appendChild(card);
     }
+    autoTagViewFileEl.appendChild(frag);
 
-    if (autoTagResults.children.length === 0) {
-        autoTagResults.innerHTML = '<div class="auto-tag-empty">No tags above threshold. Try lowering the confidence slider.</div>';
+    // Observe cards for lazy thumbnail loading
+    if (autoTagIO) {
+        autoTagViewFileEl.querySelectorAll('.auto-tag-card').forEach(el => autoTagIO.observe(el));
     }
-
-    autoTagApply.disabled = totalChecked === 0;
 }
 
-function updateAutoTagApplyBtn() {
-    const selected = autoTagResults.querySelectorAll('.auto-tag-chip.selected');
-    autoTagApply.disabled = selected.length === 0;
+function renderAutoTagTagView() {
+    autoTagViewTagEl.innerHTML = '';
+
+    if (autoTagData.length === 0) {
+        autoTagViewTagEl.innerHTML = '<div class="auto-tag-empty">No files analyzed yet.</div>';
+        return;
+    }
+    if (autoTagByTag.size === 0) {
+        autoTagViewTagEl.innerHTML = '<div class="auto-tag-empty">No tags above threshold. Try lowering the confidence slider.</div>';
+        return;
+    }
+
+    // Sort tags by match count descending
+    const entries = Array.from(autoTagByTag.entries()).sort((a, b) => b[1].length - a[1].length);
+    const frag = document.createDocumentFragment();
+
+    const chevronSvg = '<svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>';
+
+    for (const [label, matches] of entries) {
+        const collapsed = autoTagCollapsedTags.has(label);
+        const selectedCount = matches.reduce((n, m) => n + (autoTagIsSelected(m.path, label) ? 1 : 0), 0);
+
+        const row = document.createElement('div');
+        row.className = 'auto-tag-tag-row' + (collapsed ? ' collapsed' : '');
+        row.dataset.label = label;
+
+        const header = document.createElement('div');
+        header.className = 'auto-tag-tag-row-header';
+        const title = document.createElement('div');
+        title.className = 'auto-tag-tag-row-title';
+        title.dataset.role = 'tag-toggle';
+        title.dataset.label = label;
+        title.innerHTML = `${chevronSvg}<span class="auto-tag-tag-row-name" title="${escapeHtml(label)}">${escapeHtml(label)}</span><span class="auto-tag-tag-row-count">${selectedCount}/${matches.length} selected</span>`;
+        header.appendChild(title);
+
+        const actions = document.createElement('div');
+        actions.className = 'auto-tag-tag-row-actions';
+        actions.innerHTML = `<button type="button" data-role="tag-all" data-label="${escapeHtml(label)}">All</button><button type="button" data-role="tag-none" data-label="${escapeHtml(label)}">None</button>`;
+        header.appendChild(actions);
+        row.appendChild(header);
+
+        const strip = document.createElement('div');
+        strip.className = 'auto-tag-tag-row-strip';
+        for (const m of matches) {
+            const data = autoTagData.find(d => d.path === m.path);
+            if (!data) continue;
+            const tile = document.createElement('div');
+            const isSel = autoTagIsSelected(m.path, label);
+            tile.className = 'auto-tag-tag-tile' + (isSel ? ' selected' : '');
+            tile.dataset.path = m.path;
+            tile.dataset.label = label;
+            tile.dataset.role = 'tile';
+            tile.title = data.name;
+
+            const tileThumb = document.createElement('div');
+            tileThumb.className = 'auto-tag-tag-tile-thumb' + (data.thumbType === 'video' ? ' is-video' : '');
+            tile.appendChild(tileThumb);
+
+            const check = document.createElement('div');
+            check.className = 'auto-tag-tag-tile-check';
+            check.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+            tile.appendChild(check);
+
+            const scoreEl = document.createElement('div');
+            scoreEl.className = 'auto-tag-tag-tile-score';
+            scoreEl.textContent = `${clipScoreToDisplayPct(m.score)}%`;
+            tile.appendChild(scoreEl);
+
+            const nameEl = document.createElement('div');
+            nameEl.className = 'auto-tag-tag-tile-name';
+            nameEl.textContent = data.name;
+            tile.appendChild(nameEl);
+
+            strip.appendChild(tile);
+        }
+        row.appendChild(strip);
+        frag.appendChild(row);
+    }
+
+    // Note about tags with no matches
+    const tagsWithNoMatches = allTagsCache.length - autoTagByTag.size;
+    if (tagsWithNoMatches > 0) {
+        const note = document.createElement('div');
+        note.className = 'auto-tag-no-tags-note';
+        note.textContent = `${tagsWithNoMatches} tag${tagsWithNoMatches === 1 ? '' : 's'} had no matches above threshold.`;
+        frag.appendChild(note);
+    }
+
+    autoTagViewTagEl.appendChild(frag);
+
+    if (autoTagTileIO) {
+        autoTagViewTagEl.querySelectorAll('.auto-tag-tag-tile').forEach(el => autoTagTileIO.observe(el));
+    }
 }
+
+function renderAutoTagResults() {
+    autoTagRebuildByTag();
+    if (!autoTagIO || !autoTagTileIO) autoTagSetupObservers();
+    if (autoTagView === 'file') {
+        renderAutoTagFileView();
+    } else {
+        renderAutoTagTagView();
+    }
+    autoTagUpdateCounter();
+}
+
+// ── Wiring ──
 
 autoTagThreshold.addEventListener('input', () => {
     autoTagThresholdValue.textContent = `${clipScoreToDisplayPct(parseInt(autoTagThreshold.value) / 100)}%`;
@@ -14361,17 +14724,101 @@ autoTagThreshold.addEventListener('input', () => {
 document.getElementById('auto-tag-close').addEventListener('click', closeAutoTag);
 document.getElementById('auto-tag-cancel').addEventListener('click', closeAutoTag);
 autoTagOverlay.addEventListener('click', (e) => { if (e.target === autoTagOverlay) closeAutoTag(); });
+document.getElementById('auto-tag-cancel-scan').addEventListener('click', cancelAutoTagScan);
+
+autoTagOverlay.querySelectorAll('.auto-tag-view-toggle button').forEach(btn => {
+    btn.addEventListener('click', () => autoTagSetView(btn.dataset.view));
+});
 
 document.getElementById('auto-tag-select-all').addEventListener('click', () => {
-    const chips = autoTagResults.querySelectorAll('.auto-tag-chip');
-    const allSelected = Array.from(chips).every(c => c.classList.contains('selected'));
-    chips.forEach(c => c.classList.toggle('selected', !allSelected));
-    updateAutoTagApplyBtn();
+    autoTagSelectAllAboveThreshold();
+    renderAutoTagResults();
+});
+
+document.getElementById('auto-tag-deselect-all').addEventListener('click', () => {
+    autoTagClearSelection();
+    renderAutoTagResults();
+});
+
+autoTagSmartSelectEl.addEventListener('change', () => {
+    const mode = autoTagSmartSelectEl.value;
+    autoTagSmartSelectEl.value = '';
+    if (!mode) return;
+    autoTagSmartSelect(mode);
+    renderAutoTagResults();
+});
+
+// Delegated click handler for chips, tiles, tag-row toggles, and tag-row bulk buttons
+autoTagResults.addEventListener('click', (e) => {
+    const target = e.target;
+    if (!(target instanceof Element)) return;
+
+    const chip = target.closest('[data-role="chip"]');
+    if (chip) {
+        const path = chip.dataset.path;
+        const label = chip.dataset.label;
+        if (path && label) {
+            autoTagToggleSelection(path, label);
+            chip.classList.toggle('selected');
+            const card = chip.closest('.auto-tag-card');
+            if (card) {
+                const set = autoTagSelection.get(path);
+                card.classList.toggle('has-selection', !!(set && set.size > 0));
+            }
+            autoTagUpdateCounter();
+        }
+        return;
+    }
+
+    const tile = target.closest('[data-role="tile"]');
+    if (tile) {
+        const path = tile.dataset.path;
+        const label = tile.dataset.label;
+        if (path && label) {
+            autoTagToggleSelection(path, label);
+            tile.classList.toggle('selected');
+            // Update the header count for this row
+            const row = tile.closest('.auto-tag-tag-row');
+            if (row) {
+                const matches = autoTagByTag.get(label) || [];
+                const selectedCount = matches.reduce((n, m) => n + (autoTagIsSelected(m.path, label) ? 1 : 0), 0);
+                const countEl = row.querySelector('.auto-tag-tag-row-count');
+                if (countEl) countEl.textContent = `${selectedCount}/${matches.length} selected`;
+            }
+            autoTagUpdateCounter();
+        }
+        return;
+    }
+
+    const tagToggle = target.closest('[data-role="tag-toggle"]');
+    if (tagToggle) {
+        const label = tagToggle.dataset.label;
+        if (label) {
+            if (autoTagCollapsedTags.has(label)) autoTagCollapsedTags.delete(label);
+            else autoTagCollapsedTags.add(label);
+            const row = tagToggle.closest('.auto-tag-tag-row');
+            if (row) row.classList.toggle('collapsed');
+        }
+        return;
+    }
+
+    const tagAll = target.closest('[data-role="tag-all"]');
+    if (tagAll) {
+        const label = tagAll.dataset.label;
+        if (label) { autoTagSelectForTag(label, true); renderAutoTagResults(); }
+        return;
+    }
+    const tagNone = target.closest('[data-role="tag-none"]');
+    if (tagNone) {
+        const label = tagNone.dataset.label;
+        if (label) { autoTagSelectForTag(label, false); renderAutoTagResults(); }
+        return;
+    }
 });
 
 autoTagApply.addEventListener('click', async () => {
-    const selected = autoTagResults.querySelectorAll('.auto-tag-chip.selected');
-    if (selected.length === 0) return;
+    const { tagCount } = autoTagGetCounts();
+    if (tagCount === 0) return;
 
     autoTagApply.disabled = true;
     autoTagApply.textContent = 'Applying...';
@@ -14379,13 +14826,13 @@ autoTagApply.addEventListener('click', async () => {
     try {
         await refreshTagsCache();
 
-        // Group by label -> collect file paths
+        // Group by label -> collect file paths (from selection Map)
         const labelToFiles = new Map();
-        for (const chip of selected) {
-            const label = chip.dataset.label;
-            const fp = chip.dataset.path;
-            if (!labelToFiles.has(label)) labelToFiles.set(label, []);
-            labelToFiles.get(label).push(fp);
+        for (const [path, set] of autoTagSelection) {
+            for (const label of set) {
+                if (!labelToFiles.has(label)) labelToFiles.set(label, []);
+                labelToFiles.get(label).push(path);
+            }
         }
 
         for (const [label, filePaths] of labelToFiles) {
@@ -14404,8 +14851,9 @@ autoTagApply.addEventListener('click', async () => {
 
         await refreshTagsCache();
         refreshVisibleCardTags();
+        const fileCount = autoTagSelection.size;
         closeAutoTag();
-        showToast(`Applied ${selected.length} tag${selected.length === 1 ? '' : 's'} across ${autoTagFilePaths.length} file${autoTagFilePaths.length === 1 ? '' : 's'}`, 'success');
+        showToast(`Applied ${tagCount} tag${tagCount === 1 ? '' : 's'} across ${fileCount} file${fileCount === 1 ? '' : 's'}`, 'success');
     } catch (error) {
         showToast(`Auto-tag failed: ${friendlyError(error)}`, 'error');
     } finally {

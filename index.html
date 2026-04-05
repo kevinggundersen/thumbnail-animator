@@ -654,17 +654,41 @@
                 <button id="auto-tag-close" class="settings-modal-close-btn" title="Close"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
             </div>
             <div class="auto-tag-controls">
-                <label class="batch-rename-label">Confidence threshold</label>
+                <div class="auto-tag-view-toggle" role="tablist" aria-label="View">
+                    <button type="button" data-view="file" class="active" role="tab" aria-selected="true" title="By File">By File</button>
+                    <button type="button" data-view="tag" role="tab" aria-selected="false" title="By Tag">By Tag</button>
+                </div>
                 <div class="auto-tag-threshold-row">
+                    <label class="auto-tag-threshold-label">Threshold</label>
                     <input type="range" id="auto-tag-threshold" min="15" max="35" step="1" value="25">
                     <span id="auto-tag-threshold-value">40%</span>
                 </div>
+                <div class="auto-tag-select-controls">
+                    <select id="auto-tag-smart-select" class="auto-tag-smart-select" title="Smart select">
+                        <option value="">Smart select…</option>
+                        <option value="50">Select matches ≥ 50%</option>
+                        <option value="60">Select matches ≥ 60%</option>
+                        <option value="70">Select matches ≥ 70%</option>
+                        <option value="80">Select matches ≥ 80%</option>
+                        <option value="top1">Top match per file</option>
+                    </select>
+                    <button id="auto-tag-select-all" type="button" class="auto-tag-sel-btn" title="Select all above threshold">Select all</button>
+                    <button id="auto-tag-deselect-all" type="button" class="auto-tag-sel-btn" title="Clear selection">Deselect</button>
+                </div>
+            </div>
+            <div id="auto-tag-progress" class="auto-tag-progress hidden">
+                <div class="auto-tag-progress-bar"><div id="auto-tag-progress-fill" class="auto-tag-progress-fill"></div></div>
+                <span id="auto-tag-progress-text" class="auto-tag-progress-text">0 / 0</span>
+                <button id="auto-tag-cancel-scan" type="button" class="auto-tag-cancel-scan">Cancel scan</button>
             </div>
             <div id="auto-tag-status" class="auto-tag-status"></div>
-            <div id="auto-tag-results" class="auto-tag-results"></div>
+            <div id="auto-tag-results" class="auto-tag-results">
+                <div id="auto-tag-view-file" class="auto-tag-view-file"></div>
+                <div id="auto-tag-view-tag" class="auto-tag-view-tag hidden"></div>
+            </div>
             <div class="auto-tag-footer">
+                <span id="auto-tag-selection-count" class="auto-tag-selection-count"></span>
                 <button id="auto-tag-cancel" class="search-btn">Cancel</button>
-                <button id="auto-tag-select-all" class="search-btn">Select All</button>
                 <button id="auto-tag-apply" class="search-btn btn-primary" disabled>Apply Tags</button>
             </div>
         </div>

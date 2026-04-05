@@ -42,6 +42,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     generateImageThumbnail: (filePath, maxSize) => ipcRenderer.invoke('generate-image-thumbnail', filePath, maxSize),
     scanFileDimensions: (files) => ipcRenderer.invoke('scan-file-dimensions', files),
     hasFfmpeg: () => ipcRenderer.invoke('has-ffmpeg'),
+    // FFmpeg-backed video trimming & conversion
+    runFfmpeg: (job) => ipcRenderer.invoke('ffmpeg-run', job),
+    cancelFfmpeg: (jobId) => ipcRenderer.invoke('ffmpeg-cancel', jobId),
+    onFfmpegProgress: (callback) => ipcRenderer.on('ffmpeg-progress', callback),
+    removeFfmpegProgressListener: (callback) => {
+        if (callback) ipcRenderer.removeListener('ffmpeg-progress', callback);
+        else ipcRenderer.removeAllListeners('ffmpeg-progress');
+    },
+    showSaveDialog: (opts) => ipcRenderer.invoke('show-save-dialog', opts),
+    showFolderPicker: (opts) => ipcRenderer.invoke('show-folder-picker', opts),
     generateThumbnailBatch: (items) => ipcRenderer.invoke('generate-thumbnails-batch', items),
     getFolderPreview: (folderPath, previewCount) => ipcRenderer.invoke('get-folder-preview', folderPath, previewCount),
     // Duplicate detection

@@ -735,6 +735,7 @@ class MediaControlBar {
         this._volumeSlider = containerEl.querySelector('.mc-volume-slider');
         this._volumeGroup = containerEl.querySelector('.mc-volume-group');
         this._saveFrameBtn = containerEl.querySelector('.mc-save-frame');
+        this._trimBtn = containerEl.querySelector('.mc-trim-btn');
 
         try {
             const customSpeeds = JSON.parse(localStorage.getItem('playbackSpeeds'));
@@ -770,6 +771,11 @@ class MediaControlBar {
             if (typeof window.saveCurrentFrame === 'function') {
                 window.saveCurrentFrame(e.shiftKey);
             }
+        });
+
+        // Trim button (Ctrl+E): export loop-marked range via ffmpeg
+        this._trimBtn?.addEventListener('click', () => {
+            if (typeof window.exportTrim === 'function') window.exportTrim();
         });
 
         // Volume button (mute toggle)
@@ -829,6 +835,12 @@ class MediaControlBar {
         // Show/hide volume controls based on media type
         if (this._volumeGroup) {
             this._volumeGroup.style.display = controller.hasAudio ? '' : 'none';
+        }
+
+        // Show/hide trim button: only for moving media (video / animated)
+        if (this._trimBtn) {
+            const mt = controller.mediaType;
+            this._trimBtn.style.display = (mt === 'video' || mt === 'gif' || mt === 'webp') ? '' : 'none';
         }
 
         // Show controls

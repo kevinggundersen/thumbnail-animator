@@ -149,6 +149,22 @@ function initKeyboardShortcuts() {
             return;
         }
 
+        // Convert selected files (Ctrl+Shift+E)
+        if (matchesShortcut(e, 'convertFile')) {
+            e.preventDefault();
+            // In lightbox: convert the open file. In grid: convert selection.
+            if (!lightbox.classList.contains('hidden')) {
+                const p = window.currentLightboxFilePath;
+                if (p) openConvertDialog([p], { fromLightbox: true });
+            } else {
+                const paths = Array.from(document.querySelectorAll('.video-card.selected'))
+                    .map(c => c.dataset.path).filter(Boolean);
+                if (paths.length) openConvertDialog(paths, { fromLightbox: false });
+                else showToast('Select one or more files to convert', 'info');
+            }
+            return;
+        }
+
         // Arrow keys: Navigate thumbnails (always use direct key check — not remappable)
         if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
             e.preventDefault();
@@ -3615,6 +3631,9 @@ function initNewFeatures() {
             } else if (matchesShortcut(e, 'lb_saveFrame')) {
                 e.preventDefault();
                 saveCurrentFrame(e.shiftKey);
+            } else if (matchesShortcut(e, 'lb_exportTrim')) {
+                e.preventDefault();
+                exportTrim();
             } else if (matchesShortcut(e, 'lb_toggleInspector')) {
                 e.preventDefault();
                 toggleInspectorPanel();

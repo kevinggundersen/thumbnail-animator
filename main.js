@@ -3773,6 +3773,324 @@ ipcMain.handle('has-ffmpeg', async () => {
     return { ffmpeg: !!ffmpegPath, ffprobe: !!ffprobePath };
 });
 
+// ─── Video Trimming & File Conversion (ffmpeg-backed) ──────────────────
+// A generic ffmpeg runner exposed over IPC. Supports two operations:
+//   'trim'    — cut a video/animated file between startSec and endSec
+//   'convert' — re-encode into a different container/format
+//
+// Jobs are tracked by jobId in _ffmpegJobs so the renderer can cancel them.
+// Progress is streamed back via 'ffmpeg-progress' events, parsed from ffmpeg's
+// `-progress pipe:1` output (machine-readable key=value lines).
+
+const _ffmpegJobs = new Map(); // jobId -> { child, outputPath, canceled }
+
+function _pickSaveAsDialog(defaultPath, filters) {
+    return dialog.showSaveDialog({
+        title: 'Save As',
+        defaultPath: defaultPath || undefined,
+        filters: filters || [],
+    });
+}
+
+ipcMain.handle('show-save-dialog', async (_event, opts) => {
+    try {
+        const result = await _pickSaveAsDialog(opts?.defaultPath, opts?.filters);
+        if (result.canceled || !result.filePath) return { canceled: true };
+        return { canceled: false, filePath: result.filePath };
+    } catch (err) {
+        return { canceled: true, error: err.message };
+    }
+});
+
+ipcMain.handle('show-folder-picker', async (_event, opts) => {
+    try {
+        const result = await dialog.showOpenDialog({
+            title: opts?.title || 'Choose folder',
+            defaultPath: opts?.defaultPath || undefined,
+            properties: ['openDirectory', 'createDirectory'],
+        });
+        if (result.canceled || !result.filePaths[0]) return { canceled: true };
+        return { canceled: false, folderPath: result.filePaths[0] };
+    } catch (err) {
+        return { canceled: true, error: err.message };
+    }
+});
+
+// Quality presets → codec-specific parameters
+function _qualityToParams(outputKind, quality) {
+    // quality: 'low' | 'medium' | 'high'
+    const q = quality || 'medium';
+    switch (outputKind) {
+        case 'mp4':
+        case 'mov':
+            return { crf: q === 'low' ? 26 : q === 'high' ? 18 : 22 };
+        case 'webm':
+            return { crf: q === 'low' ? 36 : q === 'high' ? 24 : 30 };
+        case 'gif':
+            return { palette: q === 'low' ? 64 : q === 'high' ? 256 : 128 };
+        case 'webp-animated':
+        case 'webp':
+            return { qv: q === 'low' ? 50 : q === 'high' ? 90 : 75 };
+        case 'png':
+            return {}; // PNG is lossless
+        case 'jpg':
+            return { qv: q === 'low' ? 8 : q === 'high' ? 2 : 4 };
+        default:
+            return {};
+    }
+}
+
+// Build the ffmpeg argv for a given job. Throws if inputs are bad.
+function buildFfmpegArgs(job) {
+    const { inputPath, outputPath, operation, params } = job;
+    const args = ['-y', '-hide_banner', '-loglevel', 'error', '-progress', 'pipe:1', '-nostats'];
+
+    if (operation === 'trim') {
+        const { startSec, endSec } = params;
+        if (!isFinite(startSec) || !isFinite(endSec) || endSec <= startSec) {
+            throw new Error('Invalid trim range');
+        }
+        const inExt = path.extname(inputPath).toLowerCase();
+        const outExt = path.extname(outputPath).toLowerCase();
+        let mode = params.mode || 'copy';
+        // Smart: if container differs, re-encode
+        if (mode === 'copy' && inExt !== outExt) mode = 'reencode';
+
+        if (mode === 'copy') {
+            // Stream-copy: place -ss before -i for fast seek, snap to keyframe
+            args.push('-ss', String(startSec), '-to', String(endSec),
+                '-i', inputPath,
+                '-c', 'copy', '-avoid_negative_ts', 'make_zero',
+                outputPath);
+        } else {
+            // Frame-accurate: seek after -i for precision, re-encode
+            args.push('-i', inputPath,
+                '-ss', String(startSec), '-to', String(endSec),
+                '-c:v', 'libx264', '-preset', 'medium', '-crf', '20',
+                '-c:a', 'aac', '-b:a', '128k',
+                '-pix_fmt', 'yuv420p',
+                outputPath);
+        }
+        return args;
+    }
+
+    if (operation === 'convert') {
+        const { outputKind, fps, width, quality, frameOnly, seekSec } = params;
+        const qp = _qualityToParams(outputKind, quality);
+        const w = width && width > 0 ? width : null;
+
+        // Single-frame image extraction
+        if (frameOnly) {
+            const seek = seekSec != null && isFinite(seekSec) ? seekSec : 0;
+            args.push('-ss', String(seek), '-i', inputPath, '-vframes', '1');
+            if (w) args.push('-vf', `scale=${w}:-2:flags=lanczos`);
+            if (outputKind === 'jpg' && qp.qv != null) args.push('-q:v', String(qp.qv));
+            if (outputKind === 'webp' && qp.qv != null) args.push('-quality', String(qp.qv));
+            args.push(outputPath);
+            return args;
+        }
+
+        const vfParts = [];
+        if (fps && fps > 0) vfParts.push(`fps=${fps}`);
+        if (w) vfParts.push(`scale=${w}:-2:flags=lanczos`);
+        const vfBase = vfParts.join(',');
+
+        switch (outputKind) {
+            case 'mp4':
+            case 'mov': {
+                args.push('-i', inputPath);
+                // yuv420p scale filter must produce even dims, so use -2 above
+                const vf = vfBase || 'format=yuv420p';
+                args.push('-vf', vfBase ? `${vfBase},format=yuv420p` : vf);
+                args.push('-c:v', 'libx264', '-preset', 'medium', '-crf', String(qp.crf),
+                    '-c:a', 'aac', '-b:a', '128k',
+                    outputPath);
+                return args;
+            }
+            case 'webm': {
+                args.push('-i', inputPath);
+                if (vfBase) args.push('-vf', vfBase);
+                args.push('-c:v', 'libvpx-vp9', '-b:v', '0', '-crf', String(qp.crf),
+                    '-c:a', 'libopus',
+                    outputPath);
+                return args;
+            }
+            case 'gif': {
+                const fpsFilter = fps && fps > 0 ? `fps=${fps}` : 'fps=12';
+                const scaleFilter = w ? `scale=${w}:-1:flags=lanczos` : '';
+                const pre = [fpsFilter, scaleFilter].filter(Boolean).join(',');
+                const filter = `${pre},split[s0][s1];[s0]palettegen=max_colors=${qp.palette}[p];[s1][p]paletteuse=dither=bayer:bayer_scale=3`;
+                args.push('-i', inputPath, '-vf', filter, '-loop', '0', outputPath);
+                return args;
+            }
+            case 'webp-animated': {
+                args.push('-i', inputPath);
+                if (vfBase) args.push('-vf', vfBase);
+                args.push('-c:v', 'libwebp', '-lossless', '0',
+                    '-quality', String(qp.qv), '-loop', '0',
+                    outputPath);
+                return args;
+            }
+            case 'png': {
+                args.push('-i', inputPath);
+                if (w) args.push('-vf', `scale=${w}:-2:flags=lanczos`);
+                args.push('-vframes', '1', outputPath);
+                return args;
+            }
+            case 'jpg': {
+                args.push('-i', inputPath);
+                if (w) args.push('-vf', `scale=${w}:-2:flags=lanczos`);
+                args.push('-vframes', '1', '-q:v', String(qp.qv), outputPath);
+                return args;
+            }
+            case 'webp': {
+                args.push('-i', inputPath);
+                if (w) args.push('-vf', `scale=${w}:-2:flags=lanczos`);
+                args.push('-vframes', '1', '-quality', String(qp.qv), outputPath);
+                return args;
+            }
+            default:
+                throw new Error(`Unknown outputKind: ${outputKind}`);
+        }
+    }
+
+    throw new Error(`Unknown operation: ${operation}`);
+}
+
+// Parse `-progress pipe:1` output (stdout) for out_time_ms / out_time_us
+// and return a percent 0..100 when totalSec is known.
+function _parseFfmpegProgressChunk(chunk, totalSec) {
+    // Chunk is text with lines like "out_time_us=1234567" and "progress=continue"
+    const lines = chunk.toString().split(/\r?\n/);
+    let outTimeSec = null;
+    let isEnd = false;
+    for (const line of lines) {
+        if (line.startsWith('out_time_us=')) {
+            const us = parseInt(line.slice('out_time_us='.length), 10);
+            if (isFinite(us) && us >= 0) outTimeSec = us / 1_000_000;
+        } else if (line.startsWith('out_time_ms=')) {
+            const ms = parseInt(line.slice('out_time_ms='.length), 10);
+            // ffmpeg's "out_time_ms" is actually microseconds in some versions;
+            // if the number is > totalSec*1000 by a big margin, assume μs.
+            if (isFinite(ms) && ms >= 0) {
+                const asSec = ms / 1_000_000;
+                if (outTimeSec == null) outTimeSec = asSec;
+            }
+        } else if (line.startsWith('progress=')) {
+            if (line.slice('progress='.length).trim() === 'end') isEnd = true;
+        }
+    }
+    if (outTimeSec == null) return { percent: null, isEnd };
+    if (!totalSec || totalSec <= 0) return { percent: null, isEnd };
+    const pct = Math.max(0, Math.min(99, (outTimeSec / totalSec) * 100));
+    return { percent: pct, isEnd };
+}
+
+ipcMain.handle('ffmpeg-run', async (event, job) => {
+    if (!ffmpegPath) {
+        return { success: false, error: 'ffmpeg not found' };
+    }
+    if (!job || !job.jobId || !job.inputPath || !job.outputPath || !job.operation) {
+        return { success: false, error: 'Invalid job descriptor' };
+    }
+
+    // Ensure parent dir exists
+    try {
+        const parent = path.dirname(path.resolve(job.outputPath));
+        if (!fs.existsSync(parent)) {
+            fs.mkdirSync(parent, { recursive: true });
+        }
+    } catch (err) {
+        return { success: false, error: `Cannot create output folder: ${err.message}` };
+    }
+
+    // Prevent overwriting the input file
+    try {
+        if (path.resolve(job.inputPath).toLowerCase() === path.resolve(job.outputPath).toLowerCase()) {
+            return { success: false, error: 'Output cannot be the same as input' };
+        }
+    } catch { /* path resolve failed, continue */ }
+
+    let args;
+    try {
+        args = buildFfmpegArgs(job);
+    } catch (err) {
+        return { success: false, error: err.message };
+    }
+
+    const { spawn } = require('child_process');
+    const totalSec = job.totalSec || null; // renderer passes expected output duration for progress calc
+
+    return new Promise((resolve) => {
+        let child;
+        try {
+            child = spawn(ffmpegPath, args, { windowsHide: true });
+        } catch (err) {
+            resolve({ success: false, error: `Failed to spawn ffmpeg: ${err.message}` });
+            return;
+        }
+
+        const jobState = { child, outputPath: job.outputPath, canceled: false };
+        _ffmpegJobs.set(job.jobId, jobState);
+
+        let stderrBuf = '';
+        let lastReport = 0;
+
+        child.stdout.on('data', (chunk) => {
+            try {
+                const { percent, isEnd } = _parseFfmpegProgressChunk(chunk, totalSec);
+                const now = Date.now();
+                if (percent != null && (now - lastReport > 250 || isEnd)) {
+                    lastReport = now;
+                    try { event.sender.send('ffmpeg-progress', { jobId: job.jobId, percent }); } catch {}
+                }
+            } catch { /* ignore */ }
+        });
+
+        child.stderr.on('data', (chunk) => {
+            const s = chunk.toString();
+            // Cap stderr buffer at ~16KB to avoid memory growth on long runs
+            if (stderrBuf.length < 16_000) stderrBuf += s;
+        });
+
+        child.on('error', (err) => {
+            _ffmpegJobs.delete(job.jobId);
+            try { fs.unlinkSync(job.outputPath); } catch {}
+            resolve({ success: false, error: `ffmpeg failed to start: ${err.message}` });
+        });
+
+        child.on('close', (code, signal) => {
+            _ffmpegJobs.delete(job.jobId);
+            if (jobState.canceled || signal === 'SIGKILL' || signal === 'SIGTERM') {
+                try { fs.unlinkSync(job.outputPath); } catch {}
+                resolve({ success: false, canceled: true });
+                return;
+            }
+            if (code === 0) {
+                // Final progress tick so the UI can show 100%
+                try { event.sender.send('ffmpeg-progress', { jobId: job.jobId, percent: 100 }); } catch {}
+                resolve({ success: true, outputPath: job.outputPath });
+            } else {
+                try { fs.unlinkSync(job.outputPath); } catch {}
+                const tail = stderrBuf.trim().split(/\r?\n/).slice(-4).join(' | ');
+                resolve({ success: false, error: `ffmpeg exited with code ${code}: ${tail || 'unknown error'}` });
+            }
+        });
+    });
+});
+
+ipcMain.handle('ffmpeg-cancel', async (_event, jobId) => {
+    const j = _ffmpegJobs.get(jobId);
+    if (!j) return { success: false, error: 'Job not running' };
+    j.canceled = true;
+    try {
+        j.child.kill('SIGKILL');
+        return { success: true };
+    } catch (err) {
+        return { success: false, error: err.message };
+    }
+});
+
 // --- AI Visual Search (CLIP) IPC handlers ---
 // Inference runs directly in the main process (no worker threads)
 // to avoid Electron ABI incompatibility with onnxruntime-node in workers.

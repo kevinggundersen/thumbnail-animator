@@ -3,7 +3,7 @@
 const Database = require('better-sqlite3');
 const path = require('path');
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 class AppDatabase {
     constructor(dbPath) {
@@ -131,8 +131,22 @@ class AppDatabase {
             this._setSchemaVersion(1);
         }
 
-        // Future migrations go here:
-        // if (currentVersion < 2) { ... this._setSchemaVersion(2); }
+        if (currentVersion < 2) {
+            this.db.exec(`
+                -- Saved searches (query + filters, optionally scoped to a folder)
+                CREATE TABLE IF NOT EXISTS saved_searches (
+                    id           TEXT PRIMARY KEY,
+                    name         TEXT NOT NULL,
+                    query        TEXT NOT NULL DEFAULT '',
+                    filters_json TEXT,
+                    folder_path  TEXT,
+                    created_at   INTEGER NOT NULL,
+                    used_at      INTEGER
+                );
+                CREATE INDEX IF NOT EXISTS idx_saved_searches_used_at ON saved_searches(used_at);
+            `);
+            this._setSchemaVersion(2);
+        }
     }
 
     _getSchemaVersion() {
@@ -796,6 +810,61 @@ class AppDatabase {
             migrationComplete: this.getMeta('migration_complete') === '1',
             migrationVerified: this.getMeta('migration_verified') === '1'
         };
+    }
+
+    // ── Saved searches ───────────────────────────────────────────────────
+
+    saveSearch(entry) {
+        const id = entry.id || ('ss_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8));
+        const now = Date.now();
+        const name = String(entry.name || '').trim().slice(0, 200) || 'Untitled';
+        const q = String(entry.query || '');
+        const filtersJson = entry.filters ? JSON.stringify(entry.filters) : null;
+        const folderPath = entry.folderPath || null;
+        this.db.prepare(`
+            INSERT INTO saved_searches (id, name, "query", filters_json, folder_path, created_at, used_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                "query" = excluded."query",
+                filters_json = excluded.filters_json,
+                folder_path = excluded.folder_path
+        `).run(id, name, q, filtersJson, folderPath, entry.createdAt || now, entry.usedAt || null);
+        return id;
+    }
+
+    getAllSavedSearches() {
+        const rows = this.db.prepare(`
+            SELECT id, name, "query" AS query, filters_json, folder_path, created_at, used_at
+            FROM saved_searches
+            ORDER BY COALESCE(used_at, created_at) DESC, created_at DESC
+        `).all();
+        // JSON round-trip to strip any better-sqlite3 prototype or hidden props
+        // that would make the result non-cloneable across IPC.
+        const mapped = rows.map(r => ({
+            id: String(r.id || ''),
+            name: String(r.name || ''),
+            query: String(r.query || ''),
+            filters: r.filters_json ? (() => { try { return JSON.parse(r.filters_json); } catch { return null; } })() : null,
+            folderPath: r.folder_path ? String(r.folder_path) : null,
+            createdAt: Number(r.created_at) || 0,
+            usedAt: r.used_at == null ? null : Number(r.used_at)
+        }));
+        return JSON.parse(JSON.stringify(mapped));
+    }
+
+    deleteSavedSearch(id) {
+        this.db.prepare('DELETE FROM saved_searches WHERE id = ?').run(id);
+    }
+
+    touchSavedSearch(id) {
+        this.db.prepare('UPDATE saved_searches SET used_at = ? WHERE id = ?').run(Date.now(), id);
+    }
+
+    renameSavedSearch(id, newName) {
+        const name = String(newName || '').trim().slice(0, 200);
+        if (!name) return;
+        this.db.prepare('UPDATE saved_searches SET name = ? WHERE id = ?').run(name, id);
     }
 
     // ── Lifecycle ────────────────────────────────────────────────────────

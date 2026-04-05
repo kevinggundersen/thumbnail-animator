@@ -1688,6 +1688,48 @@ function _closeConfirmDialog(result) {
     }
 }
 
+// Simple text-prompt dialog (Electron disables window.prompt). Returns the
+// entered string, or null if the user cancelled.
+function showPromptDialog(title, { defaultValue = '', placeholder = '', confirmLabel = 'OK' } = {}) {
+    return new Promise((resolve) => {
+        const overlay = document.createElement('div');
+        overlay.className = 'confirm-dialog';
+        overlay.innerHTML = `
+            <div class="confirm-dialog-content">
+                <h3 class="confirm-dialog-title"></h3>
+                <input type="text" class="prompt-dialog-input" autocomplete="off" spellcheck="false">
+                <div class="confirm-dialog-buttons">
+                    <button class="confirm-dialog-cancel">Cancel</button>
+                    <button class="confirm-dialog-ok"></button>
+                </div>
+            </div>
+        `;
+        overlay.querySelector('.confirm-dialog-title').textContent = title;
+        const input = overlay.querySelector('.prompt-dialog-input');
+        input.value = defaultValue;
+        input.placeholder = placeholder;
+        const okBtn = overlay.querySelector('.confirm-dialog-ok');
+        okBtn.textContent = confirmLabel;
+        const cancelBtn = overlay.querySelector('.confirm-dialog-cancel');
+        document.body.appendChild(overlay);
+        setTimeout(() => { input.focus(); input.select(); }, 0);
+
+        const cleanup = (value) => {
+            document.removeEventListener('keydown', onKey, true);
+            overlay.remove();
+            resolve(value);
+        };
+        const onKey = (e) => {
+            if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); cleanup(null); }
+            else if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); cleanup(input.value); }
+        };
+        document.addEventListener('keydown', onKey, true);
+        okBtn.addEventListener('click', () => cleanup(input.value));
+        cancelBtn.addEventListener('click', () => cleanup(null));
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) cleanup(null); });
+    });
+}
+
 confirmDialogOk.addEventListener('click', () => _closeConfirmDialog(true));
 confirmDialogCancel.addEventListener('click', () => _closeConfirmDialog(false));
 confirmDialog.addEventListener('click', (e) => {
@@ -8201,6 +8243,7 @@ function updateItemCount() {
     }
 
     updateStatusBar();
+    if (typeof updateSaveSearchButtonState === 'function') updateSaveSearchButtonState();
 }
 
 function updateStatusBar() {
@@ -10550,6 +10593,8 @@ async function goForward() {
 searchBox.addEventListener('input', (e) => {
     searchClearBtn.style.display = e.target.value ? '' : 'none';
     performSearch(e.target.value);
+    // Update save-search button state immediately on input (don't wait for filter round-trip)
+    if (typeof updateSaveSearchButtonState === 'function') updateSaveSearchButtonState();
 });
 
 // Clear search button
@@ -10747,6 +10792,10 @@ async function exportSettings() {
         if (tagsResult.success) data.json.tags = tagsResult.data;
     } catch {}
     try {
+        const savedSearchesResult = await window.electronAPI.dbGetSavedSearches();
+        if (savedSearchesResult && savedSearchesResult.success) data.json.savedSearches = savedSearchesResult.data;
+    } catch {}
+    try {
         const result = await window.electronAPI.exportSettingsDialog(JSON.stringify(data, null, 2));
         if (result.canceled) return;
         if (result.success) {
@@ -10822,6 +10871,11 @@ async function importSettings() {
         }
         if (data.json && data.json.tags) {
             await window.electronAPI.dbImportTags(data.json.tags);
+        }
+        if (data.json && Array.isArray(data.json.savedSearches)) {
+            for (const ss of data.json.savedSearches) {
+                try { await window.electronAPI.dbSaveSearch(ss); } catch {}
+            }
         }
     } catch (e) {
         importErrors.push('database metadata');
@@ -14661,6 +14715,8 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
 
 const collectionsListEl = document.getElementById('collections-list');
 const newCollectionBtn = document.getElementById('new-collection-btn');
+const savedSearchesListEl = document.getElementById('saved-searches-list');
+const saveCurrentSearchBtn = document.getElementById('save-current-search-btn');
 
 async function renderCollectionsSidebar() {
     await getAllCollections();
@@ -14762,6 +14818,240 @@ async function renderCollectionsSidebar() {
             });
         }
     }
+}
+
+// ── Saved searches ──────────────────────────────────────────────────────
+
+let savedSearchesCache = [];
+
+async function refreshSavedSearches() {
+    try {
+        if (!window.electronAPI || typeof window.electronAPI.dbGetSavedSearches !== 'function') {
+            console.warn('dbGetSavedSearches IPC not available — restart the app to pick up main-process changes');
+            savedSearchesCache = [];
+            renderSavedSearchesSidebar();
+            return;
+        }
+        const result = await window.electronAPI.dbGetSavedSearches();
+        if (result && result.success) {
+            savedSearchesCache = Array.isArray(result.data) ? result.data : [];
+        } else {
+            console.error('dbGetSavedSearches failed:', result && result.error);
+            savedSearchesCache = [];
+        }
+    } catch (err) {
+        console.error('refreshSavedSearches threw:', err);
+        savedSearchesCache = [];
+    }
+    if (!Array.isArray(savedSearchesCache)) savedSearchesCache = [];
+    renderSavedSearchesSidebar();
+}
+
+function renderSavedSearchesSidebar() {
+    const listEl = document.getElementById('saved-searches-list');
+    if (!listEl) return;
+    if (savedSearchesCache.length === 0) {
+        listEl.innerHTML = '<div class="collections-list-empty">No saved searches yet</div>';
+        return;
+    }
+    listEl.innerHTML = '';
+    for (const ss of savedSearchesCache) {
+        const item = document.createElement('div');
+        item.className = 'collection-item';
+        item.dataset.savedSearchId = ss.id;
+        const iconSvg = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>';
+        item.innerHTML = `<span class="collection-item-icon">${iconSvg}</span>` +
+            `<span class="collection-item-name">${escapeHtml(ss.name)}</span>`;
+        item.title = ss.query || ss.name;
+        item.addEventListener('click', () => runSavedSearch(ss.id));
+        item.addEventListener('contextmenu', (e) => showSavedSearchContextMenu(e, ss));
+        listEl.appendChild(item);
+    }
+}
+
+// Capture a snapshot of the currently active search filters.
+function _captureCurrentSearchSnapshot() {
+    // Build a fully primitive snapshot. advancedSearchFilters may have picked
+    // up non-cloneable values from operators / worker stamping, so explicitly
+    // coerce each field.
+    const adv = advancedSearchFilters || {};
+    const cleanAdv = {
+        sizeOperator: adv.sizeOperator == null ? '' : String(adv.sizeOperator),
+        sizeValue: adv.sizeValue == null ? null : Number(adv.sizeValue),
+        dateFrom: adv.dateFrom == null ? null : Number(adv.dateFrom),
+        dateTo: adv.dateTo == null ? null : Number(adv.dateTo),
+        width: adv.width == null ? null : Number(adv.width),
+        height: adv.height == null ? null : Number(adv.height),
+        aspectRatio: adv.aspectRatio == null ? '' : String(adv.aspectRatio),
+        starRating: adv.starRating == null || adv.starRating === '' ? '' : Number(adv.starRating)
+    };
+    return {
+        query: searchBox ? String(searchBox.value || '') : '',
+        filters: {
+            advancedSearchFilters: cleanAdv,
+            currentFilter: String(currentFilter || 'all'),
+            starFilterActive: !!starFilterActive,
+            starSortOrder: String(starSortOrder || 'none'),
+            recursiveSearchEnabled: !!recursiveSearchEnabled,
+            aiSearchActive: !!aiSearchActive
+        },
+        folderPath: currentFolderPath ? String(currentFolderPath) : null
+    };
+}
+
+// Is there anything worth saving? Used to enable/disable the save button.
+function _hasActiveSearchToSave() {
+    if (!searchBox) return false;
+    if (searchBox.value.trim()) return true;
+    if (currentFilter !== 'all') return true;
+    if (starFilterActive) return true;
+    if (aiSearchActive) return true;
+    const adv = advancedSearchFilters;
+    if (adv.sizeValue != null || adv.dateFrom != null || adv.dateTo != null) return true;
+    if (adv.width != null || adv.height != null) return true;
+    if (adv.aspectRatio || (adv.starRating !== '' && adv.starRating != null)) return true;
+    return false;
+}
+
+function updateSaveSearchButtonState() {
+    const btn = document.getElementById('save-current-search-btn');
+    if (!btn) return;
+    btn.disabled = !_hasActiveSearchToSave();
+}
+
+async function promptAndSaveCurrentSearch() {
+    if (!_hasActiveSearchToSave()) return;
+    const snapshot = _captureCurrentSearchSnapshot();
+    const defaultName = snapshot.query.trim() || 'Saved search';
+    const name = await showPromptDialog('Save Search', {
+        defaultValue: defaultName,
+        placeholder: 'Name this saved search',
+        confirmLabel: 'Save'
+    });
+    if (name === null) return;
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    try {
+        // JSON round-trip as a safety net to strip any non-cloneable props
+        // before crossing the IPC boundary.
+        const payload = JSON.parse(JSON.stringify({
+            name: trimmed,
+            query: snapshot.query,
+            filters: snapshot.filters,
+            folderPath: snapshot.folderPath
+        }));
+        const res = await window.electronAPI.dbSaveSearch(payload);
+        if (res && res.success) {
+            showToast(`Saved "${trimmed}"`, 'success', { duration: 2000 });
+            await refreshSavedSearches();
+        } else {
+            showToast(`Could not save search: ${friendlyError(res && res.error)}`, 'error');
+        }
+    } catch (err) {
+        showToast(`Could not save search: ${friendlyError(err)}`, 'error');
+    }
+}
+
+async function runSavedSearch(id) {
+    const ss = savedSearchesCache.find(s => s.id === id);
+    if (!ss) return;
+    // If scoped to a folder, navigate there first
+    if (ss.folderPath && ss.folderPath !== currentFolderPath) {
+        try {
+            await navigateToFolder(ss.folderPath);
+        } catch (err) {
+            showToast(`Could not open folder: ${friendlyError(err)}`, 'error');
+            return;
+        }
+    }
+    // Restore filters
+    const f = ss.filters || {};
+    if (f.advancedSearchFilters) {
+        advancedSearchFilters = { ...advancedSearchFilters, ...f.advancedSearchFilters };
+    }
+    if (typeof f.currentFilter === 'string') {
+        currentFilter = f.currentFilter;
+        if (typeof filterAllBtn !== 'undefined') {
+            filterAllBtn.classList.toggle('active', currentFilter === 'all');
+            filterVideosBtn.classList.toggle('active', currentFilter === 'video');
+            filterImagesBtn.classList.toggle('active', currentFilter === 'image');
+        }
+    }
+    if (typeof f.starFilterActive === 'boolean') starFilterActive = f.starFilterActive;
+    if (typeof f.starSortOrder === 'string') starSortOrder = f.starSortOrder;
+    // Restore AI search mode (only if the model is available; otherwise silently skip)
+    if (typeof f.aiSearchActive === 'boolean' && aiVisualSearchEnabled) {
+        aiSearchActive = f.aiSearchActive;
+        const aiToggleBtnEl = document.getElementById('ai-search-toggle-btn');
+        const searchBoxEl = document.getElementById('search-box');
+        if (aiToggleBtnEl) {
+            aiToggleBtnEl.classList.toggle('active', aiSearchActive);
+            aiToggleBtnEl.title = aiSearchActive
+                ? 'AI Search: On (click to disable)'
+                : 'AI Search: Off (click to enable)';
+        }
+        if (searchBoxEl) {
+            searchBoxEl.placeholder = aiSearchActive
+                ? 'Search by content (e.g. "dog", "ocean")...'
+                : 'Search files...';
+        }
+        if (!aiSearchActive) currentTextEmbedding = null;
+    }
+    // Restore query text + re-parse operators
+    if (searchBox) {
+        searchBox.value = ss.query || '';
+        if (searchClearBtn) searchClearBtn.style.display = searchBox.value ? '' : 'none';
+    }
+    // Fire performSearch so operators re-parse + worker filters run
+    performSearch(ss.query || '');
+    // Record usage
+    try { await window.electronAPI.dbTouchSavedSearch(id); } catch {}
+    updateSaveSearchButtonState();
+}
+
+function showSavedSearchContextMenu(e, ss) {
+    e.preventDefault();
+    e.stopPropagation();
+    document.querySelectorAll('.collection-context-menu').forEach(el => el.remove());
+    const menu = document.createElement('div');
+    menu.className = 'collection-context-menu';
+    menu.innerHTML = `
+        <div class="context-menu-item" data-action="rename-ss">Rename</div>
+        <div class="context-menu-divider"></div>
+        <div class="context-menu-item context-menu-item-danger" data-action="delete-ss">Delete</div>
+    `;
+    menu.style.left = e.clientX + 'px';
+    menu.style.top = e.clientY + 'px';
+    document.body.appendChild(menu);
+    const rect = menu.getBoundingClientRect();
+    if (rect.right > window.innerWidth) menu.style.left = (window.innerWidth - rect.width - 4) + 'px';
+    if (rect.bottom > window.innerHeight) menu.style.top = (window.innerHeight - rect.height - 4) + 'px';
+    const close = () => { menu.remove(); document.removeEventListener('click', close); };
+    setTimeout(() => document.addEventListener('click', close), 0);
+    menu.addEventListener('click', async (ev) => {
+        const action = ev.target.closest('[data-action]')?.dataset.action;
+        if (!action) return;
+        close();
+        if (action === 'rename-ss') {
+            const newName = await showPromptDialog('Rename Saved Search', {
+                defaultValue: ss.name,
+                placeholder: 'New name',
+                confirmLabel: 'Rename'
+            });
+            if (newName && newName.trim() && newName.trim() !== ss.name) {
+                try {
+                    await window.electronAPI.dbRenameSavedSearch(ss.id, newName.trim());
+                    await refreshSavedSearches();
+                } catch (err) { showToast(`Rename failed: ${friendlyError(err)}`, 'error'); }
+            }
+        } else if (action === 'delete-ss') {
+            try {
+                await window.electronAPI.dbDeleteSavedSearch(ss.id);
+                await refreshSavedSearches();
+                showToast(`Deleted "${ss.name}"`, 'success', { duration: 2000 });
+            } catch (err) { showToast(`Delete failed: ${friendlyError(err)}`, 'error'); }
+        }
+    });
 }
 
 function showCollectionContextMenu(e, collection) {
@@ -15159,8 +15449,21 @@ if (newCollectionBtn) {
     newCollectionBtn.addEventListener('click', () => openCollectionDialog());
 }
 
-// Load collections on startup
+// Wire up saved-search save button
+{
+    const btn = document.getElementById('save-current-search-btn');
+    if (btn) {
+        btn.addEventListener('click', () => promptAndSaveCurrentSearch());
+    } else {
+        console.warn('save-current-search-btn not found in DOM');
+    }
+}
+
+// Load collections + saved searches on startup
 initIndexedDB().then(() => renderCollectionsSidebar()).catch(() => {});
+refreshSavedSearches().catch(() => {});
+// Ensure the save button's initial disabled state reflects current filters
+if (typeof updateSaveSearchButtonState === 'function') updateSaveSearchButtonState();
 
 // Initialize theme system (must be after all let/const declarations to avoid TDZ errors)
 ThemeManager.init();

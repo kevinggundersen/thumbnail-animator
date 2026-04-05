@@ -537,6 +537,14 @@ button:active:not(:disabled):not(.lightbox-nav-btn) {
     background-color: var(--bg-hover);
     color: var(--text-primary);
 }
+.sidebar-collections-add-btn:disabled {
+    opacity: 0.35;
+    cursor: default;
+}
+.sidebar-collections-add-btn:disabled:hover {
+    background-color: transparent;
+    color: var(--text-tertiary);
+}
 
 .collections-list {
     overflow-y: auto;
@@ -7124,6 +7132,22 @@ video.blow-up-media {
     color: var(--text-secondary);
     font-size: 13px;
     line-height: 1.5;
+}
+
+.prompt-dialog-input {
+    width: 100%;
+    margin: 8px 0 20px 0;
+    padding: 8px 10px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    box-sizing: border-box;
+}
+.prompt-dialog-input:focus {
+    outline: none;
+    border-color: var(--accent);
 }
 
 .confirm-dialog-buttons {

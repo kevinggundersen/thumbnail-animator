@@ -4961,6 +4961,41 @@ ipcMain.handle('db-query-files-by-tags', async (event, expression) => {
     try { return { success: true, data: await appDb.queryFilesByTags(expression) }; }
     catch (e) { return { success: false, error: e.message }; }
 });
+ipcMain.handle('db-save-search', async (event, entry) => {
+    try { return { success: true, data: String((await appDb.saveSearch(entry)) || '') }; }
+    catch (e) { return { success: false, error: String(e && e.message || e) }; }
+});
+ipcMain.handle('db-get-saved-searches', async () => {
+    try {
+        const raw = await appDb.getAllSavedSearches();
+        const arr = Array.isArray(raw) ? raw : [];
+        const data = arr.map(r => ({
+            id: String(r && r.id || ''),
+            name: String(r && r.name || ''),
+            query: String(r && r.query || ''),
+            filters: r && r.filters ? JSON.parse(JSON.stringify(r.filters)) : null,
+            folderPath: r && r.folderPath ? String(r.folderPath) : null,
+            createdAt: r && r.createdAt != null ? Number(r.createdAt) : 0,
+            usedAt: r && r.usedAt != null ? Number(r.usedAt) : null
+        }));
+        return { success: true, data };
+    } catch (e) {
+        console.error('[main] db-get-saved-searches failed:', e);
+        return { success: false, error: String(e && e.message || e) };
+    }
+});
+ipcMain.handle('db-delete-saved-search', async (event, id) => {
+    try { await appDb.deleteSavedSearch(id); return { success: true }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+ipcMain.handle('db-rename-saved-search', async (event, id, name) => {
+    try { await appDb.renameSavedSearch(id, name); return { success: true }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
+ipcMain.handle('db-touch-saved-search', async (event, id) => {
+    try { await appDb.touchSavedSearch(id); return { success: true }; }
+    catch (e) { return { success: false, error: e.message }; }
+});
 ipcMain.handle('db-suggest-tags', async (event, filePath) => {
     try { return { success: true, data: await appDb.suggestTagsForFile(filePath) }; }
     catch (e) { return { success: false, error: e.message }; }

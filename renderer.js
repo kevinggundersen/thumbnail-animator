@@ -1952,6 +1952,8 @@ const cardInfoTagsLabel = document.getElementById('card-info-tags-label');
 const cardInfoTagsHoverToggle = document.getElementById('card-info-tags-hover-toggle');
 const cardInfoTagsHoverLabel = document.getElementById('card-info-tags-hover-label');
 const cardInfoTagsHoverRow = document.getElementById('card-info-tags-hover-row');
+const cardInfoHoverTooltipToggle = document.getElementById('card-info-hover-tooltip-toggle');
+const cardInfoHoverTooltipLabel = document.getElementById('card-info-hover-tooltip-label');
 const useSystemTrashToggle = document.getElementById('use-system-trash-toggle');
 const useSystemTrashLabel = document.getElementById('use-system-trash-label');
 let useSystemTrash = localStorage.getItem('useSystemTrash') === 'true';
@@ -2101,7 +2103,8 @@ const DEFAULT_CARD_INFO = Object.freeze({
     starRatingOnlyOnHover: true,
     audioLabelOnlyOnHover: false,
     filenameOnlyOnHover: true,
-    tagsOnlyOnHover: false
+    tagsOnlyOnHover: false,
+    hoverTooltip: true
 });
 let cardInfoSettings = { ...DEFAULT_CARD_INFO };
 
@@ -5667,6 +5670,7 @@ function syncCardInfoToggleLabels() {
     if (cardInfoFilenameHoverRow) cardInfoFilenameHoverRow.style.display = cardInfoSettings.filename ? '' : 'none';
     if (cardInfoTagsHoverLabel) cardInfoTagsHoverLabel.textContent = cardInfoSettings.tagsOnlyOnHover ? 'On' : 'Off';
     if (cardInfoTagsHoverRow) cardInfoTagsHoverRow.style.display = cardInfoSettings.tags ? '' : 'none';
+    if (cardInfoHoverTooltipLabel) cardInfoHoverTooltipLabel.textContent = cardInfoSettings.hoverTooltip ? 'On' : 'Off';
 }
 
 function syncCardInfoTogglesFromState() {
@@ -5687,6 +5691,7 @@ function syncCardInfoTogglesFromState() {
     if (cardInfoAudioHoverToggle) cardInfoAudioHoverToggle.checked = cardInfoSettings.audioLabelOnlyOnHover;
     if (cardInfoFilenameHoverToggle) cardInfoFilenameHoverToggle.checked = cardInfoSettings.filenameOnlyOnHover;
     if (cardInfoTagsHoverToggle) cardInfoTagsHoverToggle.checked = cardInfoSettings.tagsOnlyOnHover;
+    if (cardInfoHoverTooltipToggle) cardInfoHoverTooltipToggle.checked = cardInfoSettings.hoverTooltip;
     syncCardInfoToggleLabels();
 }
 
@@ -5730,6 +5735,9 @@ function onCardInfoSettingsChanged() {
     cardInfoSettings.audioLabelOnlyOnHover = !!cardInfoAudioHoverToggle?.checked;
     cardInfoSettings.filenameOnlyOnHover = !!cardInfoFilenameHoverToggle?.checked;
     cardInfoSettings.tagsOnlyOnHover = !!cardInfoTagsHoverToggle?.checked;
+    cardInfoSettings.hoverTooltip = !!cardInfoHoverTooltipToggle?.checked;
+    // Hide any existing tooltip immediately when setting is turned off
+    if (!cardInfoSettings.hoverTooltip && typeof _hideCardTooltip === 'function') _hideCardTooltip();
     syncCardInfoToggleLabels();
     saveCardInfoSettings();
     refreshAllVisibleMediaCardInfo();
@@ -9024,6 +9032,129 @@ gridContainer.addEventListener('mouseout', (e) => {
     }
 });
 
+// --- Card metadata hover tooltip ---
+// Shows full metadata (size, date, dimensions, duration, tags, rating) after a
+// short hover delay. Uses delegated listeners on gridContainer so it plays nice
+// with virtual-scroll card recycling.
+let _cardTooltipEl = null;
+let _cardTooltipShowTimer = null;
+let _cardTooltipCurrentCard = null;
+
+function _ensureCardTooltipEl() {
+    if (_cardTooltipEl) return _cardTooltipEl;
+    _cardTooltipEl = document.createElement('div');
+    _cardTooltipEl.className = 'card-hover-tooltip';
+    document.body.appendChild(_cardTooltipEl);
+    return _cardTooltipEl;
+}
+
+function _buildCardTooltipHtml(card) {
+    const path = card.dataset.path;
+    if (!path) return null;
+    // Pull authoritative item data from vsSortedItems when available
+    let item = null;
+    if (typeof card._vsItemIndex === 'number' && typeof vsSortedItems !== 'undefined' && vsSortedItems[card._vsItemIndex]) {
+        item = vsSortedItems[card._vsItemIndex];
+    }
+    const name = (item && item.name) || card.dataset.name || '';
+    const width = (item && item.width) || parseInt(card.dataset.width || '0', 10) || 0;
+    const height = (item && item.height) || parseInt(card.dataset.height || '0', 10) || 0;
+    const mtime = (item && item.mtime) || Number(card.dataset.mtime || 0);
+    const size = item && item.size;
+    const duration = item && item.duration;
+    const rating = typeof getFileRating === 'function' ? getFileRating(path) : 0;
+    const tags = fileTagsCache.get(normalizePath(path)) || [];
+
+    const rows = [];
+    // Filename as heading
+    rows.push(`<div class="cht-name">${escapeHtml(name)}</div>`);
+    // Truncated path
+    rows.push(`<div class="cht-path">${escapeHtml(path)}</div>`);
+
+    const details = [];
+    if (width > 0 && height > 0) details.push(`${width}\u00d7${height}`);
+    if (size != null && size > 0) details.push(formatBytesForCardLabel(size));
+    if (duration != null && duration > 0) details.push(formatMediaDuration(duration));
+    if (mtime > 0) details.push(formatCardDate(mtime));
+    if (details.length > 0) {
+        rows.push(`<div class="cht-details">${details.map(d => escapeHtml(d)).join('  \u2022  ')}</div>`);
+    }
+
+    if (rating > 0) {
+        rows.push(`<div class="cht-rating">${'\u2605'.repeat(rating)}${'\u2606'.repeat(5 - rating)}</div>`);
+    }
+
+    if (tags.length > 0) {
+        const chips = tags.slice(0, 8).map(t => {
+            const color = t.color ? ` style="background:${escapeHtml(t.color)}"` : '';
+            return `<span class="cht-tag"${color}>${escapeHtml(t.name)}</span>`;
+        }).join('');
+        const more = tags.length > 8 ? `<span class="cht-tag cht-tag-more">+${tags.length - 8}</span>` : '';
+        rows.push(`<div class="cht-tags">${chips}${more}</div>`);
+    }
+
+    return rows.join('');
+}
+
+function _positionCardTooltip(tooltip, card) {
+    const rect = card.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    // Measure tooltip after content assigned
+    const tw = tooltip.offsetWidth;
+    const th = tooltip.offsetHeight;
+    // Prefer below-right of the card; flip if not enough room
+    let left = rect.left;
+    let top = rect.bottom + 8;
+    if (top + th > vh - 8) top = Math.max(8, rect.top - th - 8);
+    if (left + tw > vw - 8) left = Math.max(8, vw - tw - 8);
+    tooltip.style.left = `${Math.round(left)}px`;
+    tooltip.style.top = `${Math.round(top)}px`;
+}
+
+function _hideCardTooltip() {
+    if (_cardTooltipShowTimer) { clearTimeout(_cardTooltipShowTimer); _cardTooltipShowTimer = null; }
+    if (_cardTooltipEl) _cardTooltipEl.classList.remove('visible');
+    _cardTooltipCurrentCard = null;
+}
+
+function _scheduleCardTooltip(card) {
+    if (!cardInfoSettings.hoverTooltip) return;
+    if (_cardTooltipCurrentCard === card) return;
+    _hideCardTooltip();
+    _cardTooltipCurrentCard = card;
+    _cardTooltipShowTimer = setTimeout(() => {
+        _cardTooltipShowTimer = null;
+        if (_cardTooltipCurrentCard !== card) return;
+        // Don't show while scrubbing a video — the scrubber UI is more useful
+        if (card._scrubbing) return;
+        const html = _buildCardTooltipHtml(card);
+        if (!html) return;
+        const el = _ensureCardTooltipEl();
+        el.innerHTML = html;
+        el.classList.add('visible');
+        _positionCardTooltip(el, card);
+    }, 500);
+}
+
+gridContainer.addEventListener('mouseover', (e) => {
+    if (marqueeActive) return;
+    const card = e.target.closest('.video-card');
+    if (card) _scheduleCardTooltip(card);
+    else _hideCardTooltip();
+});
+
+gridContainer.addEventListener('mouseout', (e) => {
+    const from = e.target.closest('.video-card');
+    const to = e.relatedTarget ? e.relatedTarget.closest('.video-card') : null;
+    if (from && from !== to) _hideCardTooltip();
+});
+
+// Hide tooltip when user starts scrolling, clicks, or opens context menu
+gridContainer.addEventListener('scroll', _hideCardTooltip, { passive: true });
+gridContainer.addEventListener('mousedown', _hideCardTooltip, true);
+document.addEventListener('contextmenu', _hideCardTooltip, true);
+
 // --- Drag & Drop Support ---
 
 // Floating drag label
@@ -10545,7 +10676,7 @@ useSystemTrashLabel.textContent = useSystemTrash ? 'On' : 'Off';
 if (useSystemTrash) window.electronAPI.setUseSystemTrash(true);
 
 // Card info toggles
-[cardInfoExtensionToggle, cardInfoResolutionToggle, cardInfoSizeToggle, cardInfoDateToggle, cardInfoDurationToggle, cardInfoStarsToggle, cardInfoAudioToggle, cardInfoFilenameToggle, cardInfoTagsToggle, cardInfoExtensionHoverToggle, cardInfoResolutionHoverToggle, cardInfoSizeHoverToggle, cardInfoDateHoverToggle, cardInfoStarsHoverToggle, cardInfoAudioHoverToggle, cardInfoFilenameHoverToggle, cardInfoTagsHoverToggle]
+[cardInfoExtensionToggle, cardInfoResolutionToggle, cardInfoSizeToggle, cardInfoDateToggle, cardInfoDurationToggle, cardInfoStarsToggle, cardInfoAudioToggle, cardInfoFilenameToggle, cardInfoTagsToggle, cardInfoExtensionHoverToggle, cardInfoResolutionHoverToggle, cardInfoSizeHoverToggle, cardInfoDateHoverToggle, cardInfoStarsHoverToggle, cardInfoAudioHoverToggle, cardInfoFilenameHoverToggle, cardInfoTagsHoverToggle, cardInfoHoverTooltipToggle]
     .filter(Boolean)
     .forEach(el => el.addEventListener('change', () => onCardInfoSettingsChanged()));
 

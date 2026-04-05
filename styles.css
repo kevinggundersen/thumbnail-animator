@@ -7212,6 +7212,71 @@ video.blow-up-media {
 }
 
 /* ===== Toast Notifications ===== */
+.card-hover-tooltip {
+    position: fixed;
+    max-width: 360px;
+    padding: 10px 12px;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-lg);
+    font-size: 12px;
+    line-height: 1.4;
+    pointer-events: none;
+    opacity: 0;
+    z-index: 9100;
+    transform: translateY(-2px);
+    transition: opacity 0.12s ease-out, transform 0.12s ease-out;
+}
+.card-hover-tooltip.visible {
+    opacity: 1;
+    transform: translateY(0);
+}
+.card-hover-tooltip .cht-name {
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--text-primary);
+    word-break: break-all;
+    margin-bottom: 2px;
+}
+.card-hover-tooltip .cht-path {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    word-break: break-all;
+    margin-bottom: 6px;
+    max-height: 2.8em;
+    overflow: hidden;
+}
+.card-hover-tooltip .cht-details {
+    color: var(--text-secondary);
+    margin-bottom: 4px;
+}
+.card-hover-tooltip .cht-rating {
+    color: var(--warning);
+    letter-spacing: 1px;
+    margin-bottom: 4px;
+}
+.card-hover-tooltip .cht-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 4px;
+}
+.card-hover-tooltip .cht-tag {
+    display: inline-block;
+    padding: 2px 6px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-hover);
+    color: #fff;
+    font-size: 10px;
+    line-height: 1.4;
+    white-space: nowrap;
+}
+.card-hover-tooltip .cht-tag-more {
+    background: #555 !important;
+}
+
 .zoom-pill {
     position: fixed;
     top: 50%;

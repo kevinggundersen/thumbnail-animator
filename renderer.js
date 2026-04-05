@@ -2288,6 +2288,190 @@ let advancedSearchFilters = {
     starRating: ''
 };
 
+// Parsed operators from the search box (tag:, size:, type:, rating:, date:, dim:, ratio:).
+// Separate from advancedSearchFilters so the Advanced Search modal stays authoritative
+// while operators overlay on top during filtering.
+let _parsedSearchQuery = {
+    freeText: '',
+    operators: {
+        sizeOperator: null, sizeValue: null,
+        dateFrom: null, dateTo: null,
+        width: null, height: null,
+        aspectRatio: null, starRating: null,
+        typeFilter: null,
+        tagNames: [], tagExcludeNames: [],
+        _includedPaths: null, _excludedPaths: null
+    }
+};
+
+function _parseDateOperand(v) {
+    if (/^\d{4}$/.test(v)) {
+        const y = parseInt(v, 10);
+        return { start: new Date(y, 0, 1).getTime(), end: new Date(y + 1, 0, 1).getTime() - 1 };
+    }
+    if (/^\d{4}-\d{1,2}$/.test(v)) {
+        const [y, m] = v.split('-').map(Number);
+        return { start: new Date(y, m - 1, 1).getTime(), end: new Date(y, m, 1).getTime() - 1 };
+    }
+    if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(v)) {
+        const [y, m, d] = v.split('-').map(Number);
+        return { start: new Date(y, m - 1, d).getTime(), end: new Date(y, m - 1, d + 1).getTime() - 1 };
+    }
+    return null;
+}
+
+function parseSearchQuery(input) {
+    const ops = {
+        sizeOperator: null, sizeValue: null,
+        dateFrom: null, dateTo: null,
+        width: null, height: null,
+        aspectRatio: null, starRating: null,
+        typeFilter: null,
+        tagNames: [], tagExcludeNames: [],
+        _includedPaths: null, _excludedPaths: null
+    };
+    const freeTextParts = [];
+    const tokens = [];
+    const re = /"([^"]*)"|(\S+)/g;
+    let m;
+    while ((m = re.exec(input)) !== null) {
+        if (m[1] !== undefined) tokens.push({ kind: 'quoted', value: m[1] });
+        else tokens.push({ kind: 'bare', value: m[2] });
+    }
+    for (const tok of tokens) {
+        if (tok.kind === 'quoted') { freeTextParts.push(tok.value); continue; }
+        const t = tok.value;
+        let match;
+        if ((match = t.match(/^-tag:(.+)$/i))) { ops.tagExcludeNames.push(match[1].toLowerCase()); continue; }
+        if ((match = t.match(/^tag:(.+)$/i))) { ops.tagNames.push(match[1].toLowerCase()); continue; }
+        if ((match = t.match(/^type:(video|image|gif|folder)$/i))) { ops.typeFilter = match[1].toLowerCase(); continue; }
+        if ((match = t.match(/^size:(>=|<=|>|<|=)?\s*(\d+(?:\.\d+)?)\s*(b|kb|mb|gb|tb)?$/i))) {
+            const op = match[1] || '=';
+            const val = parseFloat(match[2]);
+            const unit = (match[3] || 'b').toLowerCase();
+            const mults = { b: 1, kb: 1024, mb: 1048576, gb: 1073741824, tb: 1099511627776 };
+            ops.sizeOperator = op;
+            ops.sizeValue = val * mults[unit];
+            continue;
+        }
+        if ((match = t.match(/^rating:(>=|<=|>|<|=)?\s*([0-5])$/i))) {
+            ops.starRating = parseInt(match[2], 10);
+            continue;
+        }
+        if ((match = t.match(/^date:(>=|<=|>|<|=)?(\d{4}(?:-\d{1,2}(?:-\d{1,2})?)?)$/i))) {
+            const op = match[1] || '=';
+            const range = _parseDateOperand(match[2]);
+            if (range) {
+                if (op === '=' || op === '>=' || op === '>') {
+                    ops.dateFrom = op === '>' ? range.end + 1 : range.start;
+                }
+                if (op === '=' || op === '<=' || op === '<') {
+                    ops.dateTo = op === '<' ? range.start - 1 : range.end;
+                }
+            }
+            continue;
+        }
+        if ((match = t.match(/^dim:(\d+)x(\d+)$/i))) {
+            ops.width = parseInt(match[1], 10);
+            ops.height = parseInt(match[2], 10);
+            continue;
+        }
+        if ((match = t.match(/^ratio:(\d+:\d+)$/i))) { ops.aspectRatio = match[1]; continue; }
+        // No operator matched → free text token
+        freeTextParts.push(t);
+    }
+    return { freeText: freeTextParts.join(' '), operators: ops };
+}
+
+// Returns true if the parsed operators contain anything that needs filter enforcement
+function _operatorsHaveFilters(ops) {
+    return !!(ops.typeFilter || ops.sizeValue != null || ops.dateFrom != null || ops.dateTo != null
+        || ops.width != null || ops.height != null || ops.aspectRatio || ops.starRating != null
+        || ops.tagNames.length || ops.tagExcludeNames.length);
+}
+
+// Build a human-readable list of chips describing each active operator.
+// Returns array of { label, tokenMatcher } where tokenMatcher identifies the
+// source token in the search box so we can remove it on click.
+function _summarizeSearchOperators(ops) {
+    const chips = [];
+    const bytesHuman = (b) => {
+        if (b == null) return '';
+        if (b >= 1073741824) return `${(b / 1073741824).toFixed(b % 1073741824 === 0 ? 0 : 1)}GB`;
+        if (b >= 1048576) return `${(b / 1048576).toFixed(b % 1048576 === 0 ? 0 : 1)}MB`;
+        if (b >= 1024) return `${(b / 1024).toFixed(b % 1024 === 0 ? 0 : 1)}KB`;
+        return `${b}B`;
+    };
+    if (ops.typeFilter) chips.push({ label: `type: ${ops.typeFilter}`, re: /^type:\S+$/i });
+    if (ops.starRating != null) chips.push({ label: `rating: ${ops.starRating}`, re: /^rating:\S+$/i });
+    if (ops.sizeValue != null) chips.push({ label: `size ${ops.sizeOperator || '='} ${bytesHuman(ops.sizeValue)}`, re: /^size:\S+$/i });
+    if (ops.dateFrom != null || ops.dateTo != null) chips.push({ label: `date`, re: /^date:\S+$/i });
+    if (ops.width != null && ops.height != null) chips.push({ label: `${ops.width}\u00d7${ops.height}`, re: /^dim:\S+$/i });
+    if (ops.aspectRatio) chips.push({ label: `ratio ${ops.aspectRatio}`, re: /^ratio:\S+$/i });
+    const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    for (const name of ops.tagNames) chips.push({ label: `tag: ${name}`, re: new RegExp('^tag:' + escRe(name) + '$', 'i') });
+    for (const name of ops.tagExcludeNames) chips.push({ label: `-tag: ${name}`, re: new RegExp('^-tag:' + escRe(name) + '$', 'i') });
+    return chips;
+}
+
+function renderSearchOperatorChips() {
+    const container = document.getElementById('search-operator-chips');
+    if (!container) return;
+    const ops = _parsedSearchQuery.operators;
+    const chips = _summarizeSearchOperators(ops);
+    container.innerHTML = '';
+    if (chips.length === 0) return;
+    for (const chip of chips) {
+        const el = document.createElement('span');
+        el.className = 'search-op-chip';
+        el.title = chip.label;
+        const label = document.createElement('span');
+        label.className = 'search-op-chip-label';
+        label.textContent = chip.label;
+        el.appendChild(label);
+        const btn = document.createElement('button');
+        btn.className = 'search-op-chip-remove';
+        btn.type = 'button';
+        btn.textContent = '\u00d7';
+        btn.title = 'Remove filter';
+        btn.addEventListener('click', () => _removeSearchOperatorToken(chip.re));
+        el.appendChild(btn);
+        container.appendChild(el);
+    }
+}
+
+// Rebuild the search query string with the matching token removed.
+function _removeSearchOperatorToken(tokenRe) {
+    const input = searchBox.value || '';
+    const re = /"([^"]*)"|(\S+)/g;
+    const kept = [];
+    let m;
+    while ((m = re.exec(input)) !== null) {
+        if (m[1] !== undefined) {
+            kept.push(`"${m[1]}"`);
+        } else if (!tokenRe.test(m[2])) {
+            kept.push(m[2]);
+        }
+    }
+    const newValue = kept.join(' ');
+    searchBox.value = newValue;
+    if (searchClearBtn) searchClearBtn.style.display = newValue ? '' : 'none';
+    performSearch(newValue);
+}
+
+// Merge parsed operators over a base advancedSearchFilters object. Operators win when set.
+function _mergeOperatorFilters(baseFilters, ops) {
+    const out = { ...baseFilters };
+    if (ops.sizeValue != null) { out.sizeOperator = ops.sizeOperator; out.sizeValue = ops.sizeValue; }
+    if (ops.dateFrom != null) out.dateFrom = ops.dateFrom;
+    if (ops.dateTo != null) out.dateTo = ops.dateTo;
+    if (ops.width != null) out.width = ops.width;
+    if (ops.height != null) out.height = ops.height;
+    if (ops.aspectRatio) out.aspectRatio = ops.aspectRatio;
+    if (ops.starRating != null) out.starRating = ops.starRating;
+    return out;
+}
+
 let recursiveSearchEnabled = localStorage.getItem('recursiveSearch') === 'true';
 
 // Track video playback state
@@ -8289,7 +8473,11 @@ function applyFilterWorkerResult(msg) {
         }
     }
     // Compact out any null holes (shouldn't happen unless currentItems mutated)
-    const finalItems = nulled > 0 ? items.filter(x => x != null) : items;
+    let finalItems = nulled > 0 ? items.filter(x => x != null) : items;
+    // Main-thread post-filter for operator filters that the worker doesn't know about:
+    // - tag:/-tag: name-based path include/exclude
+    // - type:gif and type:folder synthetic types
+    finalItems = _applyOperatorPostFilter(finalItems);
 
     if (vsEnabled) {
         vsUpdateItems(finalItems, { preserveScroll: true });
@@ -8302,6 +8490,53 @@ function applyFilterWorkerResult(msg) {
     clearSearchDebounceIndicator();
     // Refresh filename highlights for the new query across visible cards
     if (typeof refreshVisibleFilenameHighlights === 'function') refreshVisibleFilenameHighlights();
+}
+
+// Applies search-operator filters that run on the main thread (size/date,
+// tag include/exclude by name, plus synthetic type:gif / type:folder). These
+// are handled here because the worker pipeline doesn't support them directly.
+function _applyOperatorPostFilter(items) {
+    const ops = _parsedSearchQuery.operators;
+    const needsSize = ops.sizeValue != null && ops.sizeOperator;
+    const needsDate = ops.dateFrom != null || ops.dateTo != null;
+    const needsTagFilter = (ops._includedPaths && ops.tagNames.length > 0)
+        || (ops._excludedPaths && ops.tagExcludeNames.length > 0);
+    const needsGifFilter = ops.typeFilter === 'gif';
+    const needsFolderFilter = ops.typeFilter === 'folder';
+    if (!needsSize && !needsDate && !needsTagFilter && !needsGifFilter && !needsFolderFilter) return items;
+
+    return items.filter(item => {
+        if (!item || item.type === 'group-header') return true;
+        if (needsFolderFilter && item.type !== 'folder') return false;
+        if (needsGifFilter) {
+            if (item.type === 'folder') return false;
+            const lower = (item.name || '').toLowerCase();
+            if (!lower.endsWith('.gif') && !lower.endsWith('.webp')) return false;
+        }
+        if (item.type !== 'folder' && needsSize) {
+            const s = item.size;
+            if (s == null) return false;
+            const v = ops.sizeValue;
+            switch (ops.sizeOperator) {
+                case '>':  if (!(s > v)) return false; break;
+                case '>=': if (!(s >= v)) return false; break;
+                case '<':  if (!(s < v)) return false; break;
+                case '<=': if (!(s <= v)) return false; break;
+                case '=':  if (s !== v) return false; break;
+            }
+        }
+        if (item.type !== 'folder' && needsDate) {
+            const m = item.mtime || 0;
+            if (ops.dateFrom != null && m < ops.dateFrom) return false;
+            if (ops.dateTo != null && m > ops.dateTo) return false;
+        }
+        if (needsTagFilter && item.type !== 'folder' && item.path) {
+            const np = normalizePath(item.path);
+            if (ops.tagNames.length > 0 && ops._includedPaths && !ops._includedPaths.has(np)) return false;
+            if (ops.tagExcludeNames.length > 0 && ops._excludedPaths && ops._excludedPaths.has(np)) return false;
+        }
+        return true;
+    });
 }
 
 /**
@@ -8328,9 +8563,20 @@ function applyFiltersViaWorker() {
     const token = ++_filterWorkerToken;
     _filterWorkerLastToken = token;
 
+    // Operator-aware state: freeText goes to worker as query; operator values
+    // overlay on advancedSearchFilters and currentFilter.
+    const ops = _parsedSearchQuery.operators;
+    const effectiveAdvanced = _operatorsHaveFilters(ops)
+        ? _mergeOperatorFilters(advancedSearchFilters, ops)
+        : advancedSearchFilters;
+    let effectiveFilter = currentFilter;
+    if (ops.typeFilter === 'video' || ops.typeFilter === 'image') effectiveFilter = ops.typeFilter;
+    // Note: 'gif' and 'folder' operator types aren't first-class in the worker
+    // filter pipeline yet, so they fall through (may be filtered on main thread).
+
     const state = {
-        query: searchBox.value,
-        currentFilter,
+        query: _parsedSearchQuery.freeText,
+        currentFilter: effectiveFilter,
         includeMovingImages,
         starFilterActive,
         starSortOrder,
@@ -8342,7 +8588,7 @@ function applyFiltersViaWorker() {
         aiSearchActive,
         aiSimilarityThreshold,
         aiClusteringMode,
-        advancedSearchFilters,
+        advancedSearchFilters: effectiveAdvanced,
         sortType,
         sortOrder,
         groupByDate,
@@ -8363,7 +8609,8 @@ function applyFilters() {
         return;
     }
 
-    const query = searchBox.value.toLowerCase().trim();
+    // Main-thread fallback: use the parsed free text for filename match.
+    const query = (_parsedSearchQuery.freeText || '').toLowerCase().trim();
 
     // Filter items array (works with virtual scrolling - no DOM iteration needed)
     const filteredItems = currentItems.filter(item => {
@@ -8507,6 +8754,9 @@ function applyFilters() {
         sortedFiltered = pinnedFolders.concat(unpinnedFolders, pinnedFiles, unpinnedFiles);
     }
 
+    // Operator post-filter (tag:/-tag:/type:gif/type:folder)
+    sortedFiltered = _applyOperatorPostFilter(sortedFiltered);
+
     // Update virtual scrolling with filtered items
     if (vsEnabled) {
         vsUpdateItems(sortedFiltered, { preserveScroll: true });
@@ -8531,9 +8781,47 @@ function performSearch(searchQuery) {
         searchDebounceDotEl.classList.toggle('pulsing', !!searchQuery);
     }
     filterDebounceTimer = setTimeout(async () => {
-        if (aiVisualSearchEnabled && aiSearchActive && searchQuery.trim()) {
+        // Parse operators out of the search box. Operators overlay on
+        // advancedSearchFilters at filter-apply time; freeText goes to the
+        // worker as the filename-match query.
+        _parsedSearchQuery = parseSearchQuery(searchQuery || '');
+
+        // Resolve tag-name operators → file paths (async DB query)
+        const ops = _parsedSearchQuery.operators;
+        if (ops.tagNames.length || ops.tagExcludeNames.length) {
             try {
-                const embedding = await window.electronAPI.clipEmbedText(searchQuery.trim());
+                if (!Array.isArray(allTagsCache) || allTagsCache.length === 0) {
+                    await refreshTagsCache();
+                }
+                const nameToId = new Map();
+                for (const t of allTagsCache) nameToId.set(String(t.name).toLowerCase(), t.id);
+                const includeIds = ops.tagNames.map(n => nameToId.get(n)).filter(x => x != null);
+                const excludeIds = ops.tagExcludeNames.map(n => nameToId.get(n)).filter(x => x != null);
+                if (ops.tagNames.length > 0) {
+                    if (includeIds.length > 0) {
+                        const result = await window.electronAPI.dbQueryFilesByTags({ op: 'AND', tagIds: includeIds });
+                        ops._includedPaths = result && result.success ? new Set(result.data || []) : new Set();
+                    } else {
+                        // All requested tag names unknown → no matches
+                        ops._includedPaths = new Set();
+                    }
+                }
+                if (ops.tagExcludeNames.length > 0) {
+                    if (excludeIds.length > 0) {
+                        const result = await window.electronAPI.dbQueryFilesByTags({ op: 'OR', tagIds: excludeIds });
+                        ops._excludedPaths = result && result.success ? new Set(result.data || []) : new Set();
+                    } else {
+                        ops._excludedPaths = new Set();
+                    }
+                }
+            } catch { /* swallow, tags are best-effort */ }
+        }
+
+        // AI text embedding uses the free text only, not operator tokens
+        const aiQuery = _parsedSearchQuery.freeText.trim();
+        if (aiVisualSearchEnabled && aiSearchActive && aiQuery) {
+            try {
+                const embedding = await window.electronAPI.clipEmbedText(aiQuery);
                 currentTextEmbedding = embedding ? l2Normalize(new Float32Array(embedding)) : null;
             } catch {
                 currentTextEmbedding = null;
@@ -8541,6 +8829,7 @@ function performSearch(searchQuery) {
         } else {
             currentTextEmbedding = null;
         }
+        renderSearchOperatorChips();
         applyFilters();
     }, delay);
 }
@@ -8571,8 +8860,9 @@ function clearSearchDebounceIndicator() {
 // scoring doesn't map to substrings).
 function getActiveSearchHighlightQuery() {
     if (aiVisualSearchEnabled && aiSearchActive) return '';
-    const q = searchBox.value.trim();
-    return q ? q.toLowerCase() : '';
+    // Highlight the free-text portion only, not operator tokens like "tag:cat".
+    const q = (_parsedSearchQuery && _parsedSearchQuery.freeText) || '';
+    return q ? q.trim().toLowerCase() : '';
 }
 
 function buildHighlightedFilenameHtml(text, queryLower) {
@@ -10167,6 +10457,8 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
         
         updateBreadcrumb(folderPath);
         searchBox.value = ''; // Clear search when navigating
+        _parsedSearchQuery = { freeText: '', operators: parseSearchQuery('').operators };
+        renderSearchOperatorChips();
         currentFilter = 'all'; // Reset filter when navigating
         filterAllBtn.classList.add('active');
         filterVideosBtn.classList.remove('active');

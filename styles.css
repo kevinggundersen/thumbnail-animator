@@ -2357,6 +2357,58 @@ header {
     max-width: 120px;
 }
 
+.search-operator-chips {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 4px;
+    align-self: center;
+    margin-right: 4px;
+    overflow: hidden;
+    max-width: 360px;
+}
+.search-operator-chips:empty {
+    display: none;
+}
+.search-op-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 4px 2px 7px;
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--text-primary);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    white-space: nowrap;
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.search-op-chip .search-op-chip-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.search-op-chip .search-op-chip-remove {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    border: none;
+    background: transparent;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    border-radius: 2px;
+    padding: 0;
+    font-size: 14px;
+    line-height: 1;
+}
+.search-op-chip .search-op-chip-remove:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
 .search-debounce-dot {
     position: absolute;
     left: 10px;

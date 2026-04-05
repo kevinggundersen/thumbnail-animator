@@ -3259,12 +3259,13 @@ video.blow-up-media {
     max-width: 80%;
     /* Smaller max width to feel more like a popup */
     max-height: 80%;
+    margin-right: var(--lb-inspector-width, 0px);
     display: flex;
     flex-direction: column;
     justify-content: center;
     align-items: center;
     transform: scale(1);
-    transition: transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    transition: transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275), margin-right 0.18s ease;
     /* Pop effect */
     padding-bottom: 80px; /* Space for file info below */
     overflow: visible;
@@ -3357,7 +3358,7 @@ video.blow-up-media {
 .lightbox-zoom-controls {
     position: fixed;
     top: 38px;
-    right: 60px;
+    right: calc(60px + var(--lb-inspector-width, 0px));
     background-color: rgba(0, 0, 0, 0.75);
     padding: 10px var(--space-4);
     border-radius: 0 0 var(--radius-md) var(--radius-md);
@@ -3365,6 +3366,7 @@ video.blow-up-media {
     border-top: none;
     z-index: 1001;
     min-width: 280px;
+    transition: right 0.18s ease;
 }
 
 .lightbox-zoom-label {

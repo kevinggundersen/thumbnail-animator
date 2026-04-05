@@ -13235,7 +13235,10 @@ let blowUpSuppressContextMenu = false;
 
 document.addEventListener('mousedown', (e) => {
     if (e.button !== 2) return;
-    const card = e.target.closest('.video-card') || e.target.closest('.duplicate-item');
+    const card =
+        e.target.closest('.video-card') ||
+        e.target.closest('.duplicate-item') ||
+        e.target.closest('.lb-insp-similar-card');
     if (!card) return;
 
     // Suppress ALL context menus while we're detecting hold vs quick click
@@ -18222,11 +18225,16 @@ class InspectorPanel {
             const card = document.createElement('div');
             card.className = 'lb-insp-similar-card';
             card.dataset.path = r.path;
-            card.title = r.path.split(/[\\/]/).pop();
+            card.dataset.name = r.path.split(/[\\/]/).pop();
+            card.dataset.src = 'file:///' + r.path.replace(/\\/g, '/');
+            card.title = card.dataset.name;
             const item = (typeof currentItems !== 'undefined')
                 ? currentItems.find(i => i.path === r.path)
                 : null;
             const isVideo = item && item.type === 'video';
+            card.dataset.mediaType = isVideo ? 'video' : 'image';
+            if (item && item.width) card.dataset.width = String(item.width);
+            if (item && item.height) card.dataset.height = String(item.height);
             const img = document.createElement('img');
             img.loading = 'lazy';
             if (isVideo) {

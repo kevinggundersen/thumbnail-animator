@@ -63,8 +63,8 @@ function initKeyboardShortcuts() {
         if (matchesShortcut(e, 'redo') || ((e.ctrlKey || e.metaKey) && e.key === 'y')) {
             e.preventDefault();
             window.electronAPI.redoFileOperation().then(result => {
-                if (result.success) {
-                    showToast(`Redo: ${result.description}`, 'success');
+                if (result.ok) {
+                    showToast(`Redo: ${result.value && result.value.description}`, 'success');
                     if (currentFolderPath) {
                         invalidateFolderCache(currentFolderPath);
                         const previousScrollTop = gridContainer.scrollTop;
@@ -90,8 +90,8 @@ function initKeyboardShortcuts() {
                 }
                 try {
                     const result = await window.electronAPI.undoFileOperation();
-                    if (result.success) {
-                        showToast(`Undo: ${result.description}`, 'success');
+                    if (result.ok) {
+                        showToast(`Undo: ${result.value && result.value.description}`, 'success');
                         if (currentFolderPath) {
                             invalidateFolderCache(currentFolderPath);
                             const previousScrollTop = gridContainer.scrollTop;
@@ -217,7 +217,8 @@ function initKeyboardShortcuts() {
                         const result = await window.electronAPI.deleteFilesBatch(paths);
                         window.electronAPI.removeBatchDeleteProgressListener();
                         hideProgress();
-                        const failCount = result.failed ? result.failed.length : 0;
+                        const batchVal = (result && result.ok) ? (result.value || {}) : {};
+                        const failCount = Array.isArray(batchVal.failed) ? batchVal.failed.length : 0;
                         const successCount = count - failCount;
                         if (successCount > 0) {
                             const msg = useSystemTrash
@@ -229,7 +230,7 @@ function initKeyboardShortcuts() {
                                 actionLabel: useSystemTrash ? undefined : 'Undo',
                                 actionCallback: useSystemTrash ? undefined : () => {
                                     window.electronAPI.undoFileOperation().then(undoResult => {
-                                        if (undoResult.success) {
+                                        if (undoResult.ok) {
                                             showToast(`Restored ${successCount} files`, 'success');
                                             if (currentFolderPath) {
                                                 invalidateFolderCache(currentFolderPath);
@@ -272,13 +273,13 @@ function initKeyboardShortcuts() {
                         setStatusActivity(`Deleting ${name}...`);
                         window.electronAPI.deleteFile(path).then(result => {
                             setStatusActivity('');
-                            if (result.success) {
+                            if (result.ok) {
                                 showToast(`Deleted "${name}"`, 'success', {
                                     duration: 8000,
                                     actionLabel: 'Undo',
                                     actionCallback: () => {
                                         window.electronAPI.undoFileOperation().then(undoResult => {
-                                            if (undoResult.success) {
+                                            if (undoResult.ok) {
                                                 showToast(`Restored "${name}"`, 'success');
                                                 if (currentFolderPath) {
                                                     invalidateFolderCache(currentFolderPath);
@@ -669,8 +670,8 @@ function defaultFavoritesStructure() {
 async function loadFavorites() {
     try {
         const result = await window.electronAPI.dbGetFavorites();
-        if (result.success && result.data && result.data.groups && result.data.groups.length > 0) {
-            favorites = result.data;
+        if (result.ok && result.value && result.value.groups && result.value.groups.length > 0) {
+            favorites = result.value;
             // Ensure each item has a 'name' derived from path (SQLite only stores path)
             for (const group of favorites.groups) {
                 for (const item of group.items) {
@@ -1074,9 +1075,9 @@ function promptFavGroupName(callback, defaultValue = '') {
 async function loadRecentFiles() {
     try {
         const result = await window.electronAPI.dbGetRecentFiles(recentFilesLimitSetting);
-        if (result.success && result.data) {
+        if (result.ok && result.value) {
             // SQLite only stores {path, addedAt}. Derive name/type/url for rendering.
-            recentFiles = result.data.map(r => {
+            recentFiles = result.value.map(r => {
                 const p = r.path;
                 const name = p.split(/[/\\]/).pop();
                 const ext = (name.split('.').pop() || '').toLowerCase();
@@ -2292,7 +2293,8 @@ let _pluginInfoSections = null;
 async function getPluginInfoSections() {
     if (_pluginInfoSections !== null) return _pluginInfoSections;
     try {
-        _pluginInfoSections = await window.electronAPI.getPluginInfoSections();
+        const _pisRes = await window.electronAPI.getPluginInfoSections();
+        _pluginInfoSections = _pisRes && _pisRes.ok ? (_pisRes.value || []) : [];
     } catch {
         _pluginInfoSections = [];
     }
@@ -2310,8 +2312,8 @@ async function appendPluginInfoSections(detailsEl, filePath, pluginMetadata) {
             const res = await window.electronAPI.renderPluginInfoSection(
                 section.pluginId, section.id, filePath, pluginMetadata
             );
-            if (!res || !res.success || !res.result) continue;
-            const { title, html, actions } = res.result;
+            if (!res || !res.ok || !res.value) continue;
+            const { title, html, actions } = res.value;
             if (!html) continue;
 
             const wrapper = document.createElement('div');
@@ -2427,8 +2429,8 @@ async function showFileInfo(filePath) {
     
     try {
         const result = await window.electronAPI.getFileInfo(filePath);
-        if (result && result.success && result.info) {
-            const info = result.info;
+        if (result && result.ok && result.value) {
+            const info = result.value;
             console.log('File info received:', {
                 hasComfyUIWorkflow: !!info.comfyUIWorkflow,
                 workflowData: info.comfyUIWorkflow
@@ -2560,8 +2562,8 @@ function saveRatings() {
 async function loadRatings() {
     try {
         const result = await window.electronAPI.dbGetAllRatings();
-        if (result.success && result.data) {
-            fileRatings = result.data;
+        if (result.ok && result.value) {
+            fileRatings = result.value;
         }
     } catch (error) {
         console.error('Error loading ratings:', error);
@@ -2611,8 +2613,8 @@ function savePins() {
 async function loadPins() {
     try {
         const result = await window.electronAPI.dbGetAllPinned();
-        if (result.success && result.data) {
-            pinnedFiles = result.data;
+        if (result.ok && result.value) {
+            pinnedFiles = result.value;
         }
     } catch (error) {
         console.error('Error loading pins:', error);
@@ -2886,7 +2888,7 @@ async function createFolder(folderName) {
     if (!currentFolderPath || !folderName) return;
     try {
         const result = await window.electronAPI.createFolder(currentFolderPath, folderName);
-        if (result.success) {
+        if (result.ok) {
             showToast(`Created folder "${folderName}"`, 'success');
             await navigateToFolder(currentFolderPath);
         } else {
@@ -2908,15 +2910,15 @@ async function _moveFilesBatch(filePaths, destFolder, progressOffset, progressTo
         const fileName = filePath.replace(/^.*[\\/]/, '');
         try {
             let result = await window.electronAPI.moveFile(filePath, destFolder, fileName);
-            if (result.conflict) {
+            if (result.ok && result.value && result.value.status === 'conflict') {
                 const resolution = savedResolution
-                    || (await showFileConflictDialog(result.fileName, filePath, result.destPath, i < filePaths.length - 1));
+                    || (await showFileConflictDialog(result.value.fileName, filePath, result.value.destPath, i < filePaths.length - 1));
                 if (resolution.applyToAll) savedResolution = resolution;
                 result = await window.electronAPI.moveFile(filePath, destFolder, fileName, resolution.resolution);
             }
-            if (result.success && !result.skipped) {
+            if (result.ok && result.value && result.value.status !== 'skipped') {
                 success++;
-            } else if (!result.success) {
+            } else if (!result.ok) {
                 failed++;
             }
         } catch (error) {
@@ -2966,8 +2968,8 @@ async function organizeByDate() {
         const item = items[i];
         try {
             const result = await window.electronAPI.getFileInfo(item.path);
-            if (result.success && result.info) {
-                const date = new Date(result.info.modified);
+            if (result.ok && result.value) {
+                const date = new Date(result.value.modified);
                 const folderName = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 
                 if (!dateFolders[folderName]) {
@@ -3114,7 +3116,7 @@ async function startWatchingFolder(folderPath) {
     // Start watching new folder
     try {
         const result = await window.electronAPI.watchFolder(folderPath);
-        if (result.success) {
+        if (result.ok) {
             currentWatchedFolder = folderPath;
         }
     } catch (error) {
@@ -3730,15 +3732,17 @@ function initDuplicateDetection() {
         const result = await window.electronAPI.deleteFilesBatch([...duplicateMarkedForDeletion]);
         window.electronAPI.removeBatchDeleteProgressListener();
         hideProgress();
-        const failCount = result.failed ? result.failed.length : 0;
+        const batchVal = (result && result.ok) ? (result.value || {}) : {};
+        const failedArr = Array.isArray(batchVal.failed) ? batchVal.failed : [];
+        const failCount = failedArr.length;
         const successCount = count - failCount;
         if (failCount > 0 && successCount > 0) {
-            const errorSummary = groupBatchErrors(result.failed);
+            const errorSummary = groupBatchErrors(failedArr);
             showToast(`Deleted ${successCount} file(s), ${failCount} failed: ${errorSummary}`, 'warning');
         } else if (failCount > 0) {
-            const errorSummary = groupBatchErrors(result.failed);
+            const errorSummary = groupBatchErrors(failedArr);
             showToast(`Failed to delete ${failCount} file(s): ${errorSummary}`, 'error');
-        } else if (result.trashed) {
+        } else if (batchVal.trashed) {
             showToast(`Moved ${count} file(s) to Recycle Bin`, 'success');
         } else {
             showToast(`Deleted ${count} file(s)`, 'success', {
@@ -3746,7 +3750,7 @@ function initDuplicateDetection() {
                 actionLabel: 'Undo',
                 actionCallback: () => {
                     window.electronAPI.undoFileOperation().then(undoResult => {
-                        if (undoResult.success) {
+                        if (undoResult.ok) {
                             showToast(`Restored ${count} file(s)`, 'success');
                             if (currentFolderPath) {
                                 invalidateFolderCache(currentFolderPath);
@@ -3836,16 +3840,18 @@ async function startDuplicateScan() {
         scanning.classList.add('hidden');
         window.electronAPI.removeDuplicateScanProgressListener();
 
-        cachedHashData = result.hashData || null;
+        if (!result.ok) throw new Error(result.error || 'scan failed');
+        const dupVal = result.value || {};
+        cachedHashData = dupVal.hashData || null;
 
         const allGroups = [];
-        if (result.exactGroups) {
-            for (const group of result.exactGroups) {
+        if (dupVal.exactGroups) {
+            for (const group of dupVal.exactGroups) {
                 allGroups.push({ type: 'exact', files: group });
             }
         }
-        if (result.similarGroups) {
-            for (const group of result.similarGroups) {
+        if (dupVal.similarGroups) {
+            for (const group of dupVal.similarGroups) {
                 allGroups.push({ type: 'similar', files: group });
             }
         }
@@ -3867,15 +3873,16 @@ async function regroupFromCache() {
     const threshold = parseInt(thresholdInput.value);
 
     const result = await window.electronAPI.regroupDuplicates(cachedHashData, threshold);
+    const rv = (result && result.ok) ? (result.value || {}) : {};
 
     const allGroups = [];
-    if (result.exactGroups) {
-        for (const group of result.exactGroups) {
+    if (rv.exactGroups) {
+        for (const group of rv.exactGroups) {
             allGroups.push({ type: 'exact', files: group });
         }
     }
-    if (result.similarGroups) {
-        for (const group of result.similarGroups) {
+    if (rv.similarGroups) {
+        for (const group of rv.similarGroups) {
             allGroups.push({ type: 'similar', files: group });
         }
     }
@@ -4689,7 +4696,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     // Check ffmpeg availability for video thumbnail generation
     try {
         const ffStatus = await window.electronAPI.hasFfmpeg();
-        hasFfmpegAvailable = ffStatus && ffStatus.ffmpeg;
+        hasFfmpegAvailable = ffStatus && ffStatus.ok && ffStatus.value && ffStatus.value.ffmpeg;
     } catch { /* ffmpeg not available */ }
 
     // Restore remember folder preference
@@ -4889,7 +4896,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     // SQLite migration: check if we need to migrate from localStorage/IndexedDB
     try {
         const migrationStatus = await window.electronAPI.dbCheckMigrationStatus();
-        if (migrationStatus.success && !migrationStatus.data.migrationComplete) {
+        if (migrationStatus.ok && !migrationStatus.value.migrationComplete) {
             console.log('[SQLite] Running one-time migration from localStorage/IndexedDB...');
             const migrationData = {};
             // Gather ratings from localStorage
@@ -4927,7 +4934,7 @@ window.addEventListener('DOMContentLoaded', async () => {
             } catch {}
             // Run migration
             const migResult = await window.electronAPI.dbRunMigration(migrationData);
-            if (migResult.success) {
+            if (migResult.ok) {
                 console.log('[SQLite] Migration complete.');
             } else {
                 console.error('[SQLite] Migration failed:', migResult.error);
@@ -4957,7 +4964,8 @@ window.addEventListener('DOMContentLoaded', async () => {
         if (lastFolderPath) {
             try {
                 const skipStats = sortType === 'name';
-                const items = await window.electronAPI.scanFolder(lastFolderPath, { skipStats });
+                const scanRes = await window.electronAPI.scanFolder(lastFolderPath, { skipStats });
+                if (!scanRes || !scanRes.ok) throw new Error(scanRes && scanRes.error || 'scan failed');
                 if (activeTab) {
                     activeTab.path = lastFolderPath;
                     activeTab.name = lastFolderPath.split(/[/\\]/).pop();

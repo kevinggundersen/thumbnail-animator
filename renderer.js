@@ -1868,8 +1868,8 @@ async function _populateConflictComparison(sourcePath, destPath) {
         // Dialog may have been closed while loading — bail out
         if (fileConflictDialog.classList.contains('hidden')) return;
 
-        const srcInfo = srcResult.success ? srcResult.info : null;
-        const dstInfo = dstResult.success ? dstResult.info : null;
+        const srcInfo = srcResult.ok ? srcResult.value : null;
+        const dstInfo = dstResult.ok ? dstResult.value : null;
 
         _renderConflictMeta(conflictSourceMeta, srcInfo, dstInfo);
         _renderConflictMeta(conflictExistingMeta, dstInfo, srcInfo);
@@ -2795,8 +2795,8 @@ function generateCollectionFileId() {
 async function getAllCollections() {
     try {
         const result = await window.electronAPI.dbGetAllCollections();
-        if (result.success) {
-            collectionsCache = result.data || [];
+        if (result.ok) {
+            collectionsCache = result.value || [];
             return collectionsCache;
         }
     } catch {}
@@ -2806,7 +2806,7 @@ async function getAllCollections() {
 async function getCollection(id) {
     try {
         const result = await window.electronAPI.dbGetCollection(id);
-        if (result.success) return result.data;
+        if (result.ok) return result.value;
     } catch {}
     return null;
 }
@@ -2841,7 +2841,7 @@ async function deleteCollection(id) {
 async function getCollectionFiles(collectionId) {
     try {
         const result = await window.electronAPI.dbGetCollectionFiles(collectionId);
-        if (result.success) return result.data || [];
+        if (result.ok) return result.value || [];
     } catch (e) {
         console.error('Error loading collection files:', e);
     }
@@ -2852,7 +2852,7 @@ async function addFilesToCollection(collectionId, filePaths) {
     if (filePaths.length === 0) return 0;
     try {
         const result = await window.electronAPI.dbAddFilesToCollection(collectionId, filePaths);
-        if (result.success) return result.data || 0;
+        if (result.ok) return result.value || 0;
     } catch (e) {
         console.error('Error adding files to collection:', e);
         showToast('Failed to add files to collection', 'error');
@@ -3118,7 +3118,7 @@ async function loadCollectionIntoGrid(collectionId) {
             if (loadToken !== _collectionLoadToken) return;
 
             // Final render with full results (including dimension data)
-            items = (result.items || []).filter(item => matchesSmartRules(item, collection.rules));
+            items = ((result.ok && result.value && result.value.items) || []).filter(item => matchesSmartRules(item, collection.rules));
 
             // Update in-memory cache for instant re-opens
             smartCollectionCache.set(collectionId, { items, timestamp: Date.now() });
@@ -3141,8 +3141,8 @@ async function loadCollectionIntoGrid(collectionId) {
 
             if (loadToken !== _collectionLoadToken) return;
 
-            items = result.items || [];
-            missingPaths = result.missing || [];
+            items = (result.ok && result.value && result.value.items) || [];
+            missingPaths = (result.ok && result.value && result.value.missing) || [];
 
             for (const mp of missingPaths) {
                 const name = mp.split(/[/\\]/).pop() || mp;
@@ -3167,12 +3167,12 @@ async function loadCollectionIntoGrid(collectionId) {
                 let modelReady = false;
                 try {
                     const status = await window.electronAPI.clipStatus();
-                    if (status.loaded) {
+                    if (status.value?.loaded) {
                         modelReady = true;
                     } else if (aiVisualSearchEnabled && aiModelDownloadConfirmed) {
                         setStatusActivity('Loading AI model...');
                         const init = await window.electronAPI.clipInit(getClipGpuMode());
-                        modelReady = init.success;
+                        modelReady = init.ok;
                     }
                 } catch { /* model unavailable */ }
 
@@ -3184,7 +3184,7 @@ async function loadCollectionIntoGrid(collectionId) {
                     let textEmb = null;
                     try {
                         const raw = await window.electronAPI.clipEmbedText(aiQuery);
-                        textEmb = raw ? new Float32Array(raw) : null;
+                        textEmb = raw && raw.ok && raw.value ? new Float32Array(raw.value) : null;
                     } catch { /* skip */ }
 
                     if (loadToken !== _collectionLoadToken) return;
@@ -3277,9 +3277,10 @@ async function loadCollectionIntoGrid(collectionId) {
                                 );
                                 const batch = uncached.slice(i, i + BATCH_SIZE);
                                 try {
-                                    const results = await window.electronAPI.clipEmbedImages(
+                                    const resp = await window.electronAPI.clipEmbedImages(
                                         batch.map(item => ({ path: item.path, mtime: item.mtime || 0, thumbPath: null }))
                                     );
+                                    const results = resp && resp.ok ? (resp.value || []) : [];
                                     const toCache = [];
                                     for (const r of results) {
                                         if (r && r.embedding) {
@@ -3441,7 +3442,7 @@ async function backgroundScanSmartCollection(collectionId) {
 
         if (scanState.abort) return;
 
-        let items = (result.items || []).filter(item => matchesSmartRules(item, collection.rules));
+        let items = ((result.ok && result.value && result.value.items) || []).filter(item => matchesSmartRules(item, collection.rules));
 
         // --- Background AI Content Search ---
         const aiQuery = collection.rules?.aiQuery;
@@ -3452,11 +3453,11 @@ async function backgroundScanSmartCollection(collectionId) {
             let modelReady = false;
             try {
                 const status = await window.electronAPI.clipStatus();
-                if (status.loaded) {
+                if (status.ok && status.value.loaded) {
                     modelReady = true;
                 } else if (aiVisualSearchEnabled && aiModelDownloadConfirmed) {
                     const init = await window.electronAPI.clipInit(getClipGpuMode());
-                    modelReady = init.success;
+                    modelReady = init.ok;
                 }
             } catch { /* model unavailable */ }
 
@@ -3466,7 +3467,7 @@ async function backgroundScanSmartCollection(collectionId) {
                 let textEmb = null;
                 try {
                     const raw = await window.electronAPI.clipEmbedText(aiQuery);
-                    textEmb = raw ? new Float32Array(raw) : null;
+                    textEmb = raw && raw.ok && raw.value ? new Float32Array(raw.value) : null;
                 } catch { /* skip */ }
 
                 if (scanState.abort) return;
@@ -3520,9 +3521,10 @@ async function backgroundScanSmartCollection(collectionId) {
 
                             const batch = uncached.slice(i, i + BG_BATCH_SIZE);
                             try {
-                                const results = await window.electronAPI.clipEmbedImages(
+                                const resp = await window.electronAPI.clipEmbedImages(
                                     batch.map(item => ({ path: item.path, mtime: item.mtime || 0, thumbPath: null }))
                                 );
+                                const results = resp && resp.ok ? (resp.value || []) : [];
                                 const toCache = [];
                                 for (const r of results) {
                                     if (r && r.embedding) {
@@ -3885,9 +3887,9 @@ async function activateFindSimilar(filePath, fileName) {
         showToast('Computing embedding for source image...', 'info', { duration: 2000 });
         try {
             const status = await window.electronAPI.clipStatus();
-            if (!status.loaded) {
+            if (!status.value?.loaded) {
                 const init = await window.electronAPI.clipInit(getClipGpuMode());
-                if (!init.success) {
+                if (!init.ok) {
                     showToast('Could not load AI model', 'error');
                     return;
                 }
@@ -3895,8 +3897,9 @@ async function activateFindSimilar(filePath, fileName) {
             // Find mtime for the source file
             const sourceItem = currentItems.find(i => i.path === filePath);
             const mtime = sourceItem ? (sourceItem.mtime || 0) : 0;
-            const results = await window.electronAPI.clipEmbedImages([{ path: filePath, mtime, thumbPath: null }]);
-            if (results && results.length > 0 && results[0].embedding) {
+            const resp = await window.electronAPI.clipEmbedImages([{ path: filePath, mtime, thumbPath: null }]);
+            const results = resp && resp.ok ? (resp.value || []) : [];
+            if (results.length > 0 && results[0].embedding) {
                 embedding = l2Normalize(new Float32Array(results[0].embedding));
                 currentEmbeddings.set(filePath, embedding);
                 // Also cache to IndexedDB
@@ -4209,10 +4212,11 @@ async function hydrateMissingDimensionsInBackground(folderPath, items) {
             .filter(item => !item.width || !item.height);
         if (chunk.length === 0) continue;
 
-        const results = await window.electronAPI.scanFileDimensions(
+        const r = await window.electronAPI.scanFileDimensions(
             chunk.map(item => ({ path: item.path, isImage: item.type === 'image' }))
         );
         if (scanToken !== activeDimensionHydrationToken || currentFolderPath !== folderPath) return;
+        const results = r && r.ok ? r.value : [];
 
         const updatedPaths = new Set();
         for (const result of results || []) {
@@ -4274,7 +4278,8 @@ let _pluginMenuItems = null; // lazily populated
 async function getPluginMenuItems() {
     if (_pluginMenuItems !== null) return _pluginMenuItems;
     try {
-        const manifests = await window.electronAPI.getPluginManifests();
+        const _manRes = await window.electronAPI.getPluginManifests();
+        const manifests = _manRes && _manRes.ok ? (_manRes.value || []) : [];
         _pluginMenuItems = [];
         for (const manifest of manifests) {
             if (!isPluginEnabled(manifest.id)) continue;
@@ -4453,7 +4458,8 @@ async function loadTreeNodeChildren(node, depth, isDrive = false, { forceReload 
     children.appendChild(loading);
 
     try {
-        const subdirs = await window.electronAPI.listSubdirectories(nodePath);
+        const _subRes = await window.electronAPI.listSubdirectories(nodePath);
+        const subdirs = _subRes && _subRes.ok ? (_subRes.value || []) : [];
         children.innerHTML = '';
         children.dataset.loaded = '1';
 
@@ -4735,7 +4741,8 @@ async function initSidebar() {
 
     // Load drive nodes
     try {
-        const drives = await window.electronAPI.getDrives();
+        const _drvRes = await window.electronAPI.getDrives();
+        const drives = _drvRes && _drvRes.ok ? (_drvRes.value || []) : [];
         if (drives && drives.length > 0) {
             for (const drive of drives) {
                 const node = createTreeNode(
@@ -5431,7 +5438,7 @@ function _flushThumbnailBatch() {
                 : window.electronAPI.generateImageThumbnail(item.filePath, item.maxSize);
             fallback
                 .then(result => {
-                    const url = result && result.success && result.url ? result.url : null;
+                    const url = result && result.ok && result.value && result.value.url ? result.value.url : null;
                     item.resolve(url);
                 })
                 .catch(() => item.resolve(null));
@@ -5450,10 +5457,11 @@ function _flushThumbnailBatch() {
     }));
 
     window.electronAPI.generateThumbnailBatch(batchItems)
-        .then(results => {
+        .then(response => {
+            const results = response && response.ok ? response.value : null;
             for (let i = 0; i < batch.length; i++) {
-                const r = results[i];
-                const url = r && r.success && r.url ? r.url : null;
+                const r = results ? results[i] : null;
+                const url = r && r.ok && r.url ? r.url : null;
                 batch[i].resolve(url);
             }
         })
@@ -5701,7 +5709,8 @@ function requestFolderPreview(folderPath) {
     }
 
     const request = window.electronAPI.getFolderPreview(folderPath, folderPreviewCountSetting)
-        .then(results => {
+        .then(resp => {
+            const results = resp && resp.ok ? (resp.value || []) : [];
             const urls = results.filter(r => r.url).map(r => r.url);
             folderPreviewCache.set(folderPath, { urls, ts: Date.now() });
             // Cap cache size
@@ -8916,7 +8925,7 @@ function performSearch(searchQuery) {
                 if (ops.tagNames.length > 0) {
                     if (includeIds.length > 0) {
                         const result = await window.electronAPI.dbQueryFilesByTags({ op: 'AND', tagIds: includeIds });
-                        ops._includedPaths = result && result.success ? new Set(result.data || []) : new Set();
+                        ops._includedPaths = result && result.ok ? new Set(result.value || []) : new Set();
                     } else {
                         // All requested tag names unknown → no matches
                         ops._includedPaths = new Set();
@@ -8925,7 +8934,7 @@ function performSearch(searchQuery) {
                 if (ops.tagExcludeNames.length > 0) {
                     if (excludeIds.length > 0) {
                         const result = await window.electronAPI.dbQueryFilesByTags({ op: 'OR', tagIds: excludeIds });
-                        ops._excludedPaths = result && result.success ? new Set(result.data || []) : new Set();
+                        ops._excludedPaths = result && result.ok ? new Set(result.value || []) : new Set();
                     } else {
                         ops._excludedPaths = new Set();
                     }
@@ -8938,7 +8947,7 @@ function performSearch(searchQuery) {
         if (aiVisualSearchEnabled && aiSearchActive && aiQuery) {
             try {
                 const embedding = await window.electronAPI.clipEmbedText(aiQuery);
-                currentTextEmbedding = embedding ? l2Normalize(new Float32Array(embedding)) : null;
+                currentTextEmbedding = embedding && embedding.ok && embedding.value ? l2Normalize(new Float32Array(embedding.value)) : null;
             } catch {
                 currentTextEmbedding = null;
             }
@@ -9758,13 +9767,13 @@ async function copyFilesToFolder(filePaths, destFolder) {
 
         try {
             let result = await window.electronAPI.copyFile(filePath, destFolder, fileName);
-            if (result.conflict) {
+            if (result.ok && result.value && result.value.status === 'conflict') {
                 const resolution = savedResolution
-                    || (await showFileConflictDialog(result.fileName, filePath, result.destPath, i < filePaths.length - 1));
+                    || (await showFileConflictDialog(result.value.fileName, filePath, result.value.destPath, i < filePaths.length - 1));
                 if (resolution.applyToAll) savedResolution = resolution;
                 result = await window.electronAPI.copyFile(filePath, destFolder, fileName, resolution.resolution);
             }
-            if (result.success) {
+            if (result.ok) {
                 success++;
             } else {
                 failed++;
@@ -10032,7 +10041,8 @@ window.addEventListener('beforeunload', () => {
 selectFolderBtn.addEventListener('click', async () => {
     // Get the last folder path from localStorage if remembering is enabled
     const lastFolderPath = rememberLastFolder ? localStorage.getItem('lastFolderPath') : null;
-    const folderPath = await window.electronAPI.selectFolder(lastFolderPath);
+    const _selectRes = await window.electronAPI.selectFolder(lastFolderPath);
+    const folderPath = _selectRes && _selectRes.ok ? _selectRes.value : null;
     if (folderPath) {
         // Save the selected folder path to localStorage if remembering is enabled
         if (rememberLastFolder) {
@@ -10118,7 +10128,8 @@ window.addEventListener('auxclick', (e) => {
 // Function to show drives selection
 async function showDrivesSelection() {
     try {
-        const drives = await window.electronAPI.getDrives();
+        const _drvRes = await window.electronAPI.getDrives();
+        const drives = _drvRes && _drvRes.ok ? (_drvRes.value || []) : [];
         if (drives.length === 0) {
             return; // No drives available or not on Windows
         }
@@ -10559,7 +10570,8 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
                 // Validate path exists by trying to scan it
                 // Skip stats only when neither sorting nor card metadata needs them.
                 const skipStats = sortType === 'name' && !cardInfoSettings.fileSize && !cardInfoSettings.date;
-                await window.electronAPI.scanFolder(folderPath, { skipStats });
+                const _validateRes = await window.electronAPI.scanFolder(folderPath, { skipStats });
+                if (!_validateRes || !_validateRes.ok) throw new Error(_validateRes && _validateRes.error || 'scan failed');
             } finally {
                 // Hide loading indicator after a short delay to prevent flicker
                 setTimeout(() => hideLoadingIndicator(), 100);
@@ -10869,20 +10881,20 @@ async function exportSettings() {
             window.electronAPI.dbGetRecentFiles(recentFilesLimitSetting),
             window.electronAPI.dbExportTags()
         ]);
-        if (ratingsResult.success) data.json.fileRatings = ratingsResult.data;
-        if (pinnedResult.success) data.json.pinnedFiles = pinnedResult.data;
-        if (favoritesResult.success) data.json.favorites = favoritesResult.data;
-        if (recentResult.success) data.json.recentFiles = recentResult.data;
-        if (tagsResult.success) data.json.tags = tagsResult.data;
+        if (ratingsResult.ok) data.json.fileRatings = ratingsResult.value;
+        if (pinnedResult.ok) data.json.pinnedFiles = pinnedResult.value;
+        if (favoritesResult.ok) data.json.favorites = favoritesResult.value;
+        if (recentResult.ok) data.json.recentFiles = recentResult.value;
+        if (tagsResult.ok) data.json.tags = tagsResult.value;
     } catch {}
     try {
         const savedSearchesResult = await window.electronAPI.dbGetSavedSearches();
-        if (savedSearchesResult && savedSearchesResult.success) data.json.savedSearches = savedSearchesResult.data;
+        if (savedSearchesResult && savedSearchesResult.ok) data.json.savedSearches = savedSearchesResult.value;
     } catch {}
     try {
         const result = await window.electronAPI.exportSettingsDialog(JSON.stringify(data, null, 2));
-        if (result.canceled) return;
-        if (result.success) {
+        if (result.ok && result.value && result.value.canceled) return;
+        if (result.ok) {
             showSettingsDataStatus('Settings exported successfully.', 'success');
         } else {
             showSettingsDataStatus('Export failed: ' + friendlyError(result.error), 'error');
@@ -10900,12 +10912,12 @@ async function importSettings() {
         showSettingsDataStatus('Import failed: ' + err.message, 'error');
         return;
     }
-    if (!result.success) {
-        if (result.canceled) return;
+    if (!result.ok) {
         showSettingsDataStatus('Import failed: ' + friendlyError(result.error || 'Unknown error'), 'error');
         return;
     }
-    const data = result.data;
+    if (result.value && result.value.canceled) return;
+    const data = result.value;
     if (!data || !data.meta || data.meta.app !== 'thumbnail-animator') {
         showSettingsDataStatus('This file was not exported from Thumbnail Animator.', 'error');
         return;
@@ -11020,7 +11032,8 @@ document.getElementById('import-settings-btn').addEventListener('click', importS
     async function updateCacheUsage() {
         if (!window.electronAPI?.getCacheInfo) return;
         try {
-            const info = await window.electronAPI.getCacheInfo();
+            const _ciRes = await window.electronAPI.getCacheInfo();
+            const info = _ciRes && _ciRes.ok ? _ciRes.value : null;
             if (!info) return;
             const fmt = (b) => b < 1024 * 1024 ? (b / 1024).toFixed(0) + ' KB' : (b / 1024 / 1024).toFixed(1) + ' MB';
             const videoEl = document.getElementById('video-cache-usage');
@@ -11048,8 +11061,10 @@ document.getElementById('import-settings-btn').addEventListener('click', importS
             try {
                 const videoResult = await window.electronAPI.evictCache('video');
                 const imageResult = await window.electronAPI.evictCache('image');
-                const totalDeleted = (videoResult?.deleted || 0) + (imageResult?.deleted || 0);
-                const totalFreed = ((videoResult?.freed || 0) + (imageResult?.freed || 0)) / 1024 / 1024;
+                const vv = videoResult?.ok ? videoResult.value : null;
+                const iv = imageResult?.ok ? imageResult.value : null;
+                const totalDeleted = (vv?.deleted || 0) + (iv?.deleted || 0);
+                const totalFreed = ((vv?.freed || 0) + (iv?.freed || 0)) / 1024 / 1024;
                 showSettingsDataStatus(
                     totalDeleted > 0
                         ? `Cleared ${totalDeleted} thumbnails (freed ${totalFreed.toFixed(1)} MB)`
@@ -11071,7 +11086,8 @@ document.getElementById('import-settings-btn').addEventListener('click', importS
 async function injectPluginSettingsPanels() {
     let panels;
     try {
-        panels = await window.electronAPI.getPluginSettingsPanels();
+        const _resp = await window.electronAPI.getPluginSettingsPanels();
+        panels = _resp && _resp.ok ? (_resp.value || []) : [];
     } catch {
         return;
     }
@@ -11118,8 +11134,8 @@ async function injectPluginSettingsPanels() {
         // Load existing settings into inputs
         try {
             const loaded = await window.electronAPI.executePluginSettingsAction(panel.pluginId, 'load', null);
-            if (loaded && loaded.success && loaded.result) {
-                Object.entries(loaded.result).forEach(([key, val]) => {
+            if (loaded && loaded.ok && loaded.value) {
+                Object.entries(loaded.value).forEach(([key, val]) => {
                     const input = contentEl.querySelector(`[data-plugin-setting-key="${key}"]`);
                     if (!input) return;
                     if (input.type === 'checkbox') input.checked = Boolean(val);
@@ -11159,10 +11175,12 @@ async function initPluginsTab() {
 
     let manifests, states;
     try {
-        [manifests, states] = await Promise.all([
+        const [_mRes, _sRes] = await Promise.all([
             window.electronAPI.getPluginManifests(),
             window.electronAPI.getPluginStates(),
         ]);
+        manifests = _mRes && _mRes.ok ? (_mRes.value || []) : [];
+        states = _sRes && _sRes.ok ? (_sRes.value || {}) : {};
     } catch (err) {
         container.innerHTML = `<div class="settings-item"><span class="settings-label" style="color:var(--color-danger)">Failed to load plugins: ${err.message}</span></div>`;
         return;
@@ -11526,7 +11544,8 @@ hoverScaleZ200.addEventListener('input', () => {
 
     function refreshGpuStatus() {
         if (!gpuStatusText || !window.electronAPI.clipGpuStatus) return;
-        window.electronAPI.clipGpuStatus().then((s) => {
+        window.electronAPI.clipGpuStatus().then((resp) => {
+            const s = resp && resp.ok ? resp.value : null;
             if (!s) { gpuStatusText.textContent = ''; return; }
             const parts = [];
             if (s.lastProvider) parts.push(`using: ${s.lastProvider}`);
@@ -11634,7 +11653,7 @@ hoverScaleZ200.addEventListener('input', () => {
         setAiStatus('loading', 'Loading model...');
         try {
             const result = await window.electronAPI.clipInit(getClipGpuMode());
-            if (result.success) {
+            if (result.ok) {
                 setAiStatus('loaded', 'Model loaded');
                 if (aiAutoScan && currentFolderPath) {
                     scheduleBackgroundEmbedding(currentItems);
@@ -11707,7 +11726,7 @@ hoverScaleZ200.addEventListener('input', () => {
             updateAiToggleBtnState();
             if (scanNowBtn) scanNowBtn.disabled = false;
             window.electronAPI.clipStatus().then(s => {
-                if (s.loaded) {
+                if (s.ok && s.value.loaded) {
                     setAiStatus('loaded', 'Model loaded');
                 } else {
                     doLoadModel(); // Safe: user already confirmed the download
@@ -11951,9 +11970,9 @@ async function scheduleBackgroundEmbedding(items) {
     // Ensure model is loaded
     try {
         const status = await window.electronAPI.clipStatus();
-        if (!status.loaded) {
+        if (!status.value?.loaded) {
             const init = await window.electronAPI.clipInit(getClipGpuMode());
-            if (!init.success) { hideEmbedProgressUI(); return; }
+            if (!init.ok) { hideEmbedProgressUI(); return; }
         }
     } catch { hideEmbedProgressUI(); return; }
 
@@ -11974,9 +11993,10 @@ async function scheduleBackgroundEmbedding(items) {
 
         const batch = uncached.slice(i, i + BATCH_SIZE);
         try {
-            const results = await window.electronAPI.clipEmbedImages(
+            const resp = await window.electronAPI.clipEmbedImages(
                 batch.map(item => ({ path: item.path, mtime: item.mtime || 0, thumbPath: null }))
             );
+            const results = resp && resp.ok ? (resp.value || []) : [];
             const toCache = [];
             for (const r of results) {
                 if (r && r.embedding) {
@@ -12034,7 +12054,7 @@ async function _startIdlePreEmbedding() {
 
     let status;
     try { status = await window.electronAPI.clipStatus(); } catch { return; }
-    if (!status || !status.loaded) return;
+    if (!status || !status.value?.loaded) return;
 
     const mediaItems = (currentItems || []).filter(i => i.type !== 'folder');
     if (mediaItems.length === 0) return;
@@ -12056,9 +12076,10 @@ async function _startIdlePreEmbedding() {
 
         const batch = uncached.slice(i, i + IDLE_BATCH_SIZE);
         try {
-            const results = await window.electronAPI.clipEmbedImages(
+            const resp = await window.electronAPI.clipEmbedImages(
                 batch.map(item => ({ path: item.path, mtime: item.mtime || 0, thumbPath: null }))
             );
+            const results = resp && resp.ok ? (resp.value || []) : [];
             const toCache = [];
             for (const r of results) {
                 if (r && r.embedding) {
@@ -13107,7 +13128,7 @@ if (copyImageBtn) {
             // For images and GIFs, copy the actual file for paste in file explorers
             try {
                 const result = await window.electronAPI.copyImageToClipboard(filePath);
-                success = result.success;
+                success = result.ok;
                 if (!success) showToast(`Could not copy image: ${friendlyError(result.error)}`, 'error');
             } catch (error) {
                 showToast(`Could not copy image: ${friendlyError(error)}`, 'error');
@@ -13595,15 +13616,16 @@ contextMenu.addEventListener('click', async (e) => {
                     setStatusActivity(`Deleting ${fileName}...`);
                     const result = await window.electronAPI.deleteFile(filePath);
                     setStatusActivity('');
-                    if (result.success) {
-                        const toastOpts = result.trashed
+                    if (result.ok) {
+                        const trashed = result.value && result.value.trashed;
+                        const toastOpts = trashed
                             ? { duration: 4000 }
                             : {
                                 duration: 8000,
                                 actionLabel: 'Undo',
                                 actionCallback: () => {
                                     window.electronAPI.undoFileOperation().then(undoResult => {
-                                        if (undoResult.success) {
+                                        if (undoResult.ok) {
                                             showToast(`Restored "${fileName}"`, 'success');
                                             if (currentFolderPath) {
                                                 invalidateFolderCache(currentFolderPath);
@@ -13616,7 +13638,7 @@ contextMenu.addEventListener('click', async (e) => {
                                     });
                                 }
                             };
-                        const toastMsg = result.trashed ? `Moved "${fileName}" to Recycle Bin` : `Deleted "${fileName}"`;
+                        const toastMsg = trashed ? `Moved "${fileName}" to Recycle Bin` : `Deleted "${fileName}"`;
                         showToast(toastMsg, 'success', toastOpts);
                         if (currentFolderPath) {
                             invalidateFolderCache(currentFolderPath);
@@ -13663,7 +13685,7 @@ contextMenu.addEventListener('click', async (e) => {
         case 'copy-file': {
             try {
                 const result = await window.electronAPI.copyImageToClipboard(filePath);
-                if (result.success) {
+                if (result.ok) {
                     showToast('Copied to clipboard', 'success');
                 } else {
                     showToast(`Could not copy: ${friendlyError(result.error)}`, 'error');
@@ -13799,11 +13821,11 @@ contextMenu.addEventListener('click', async (e) => {
                 const [, pluginId, actionId] = action.split(':');
                 try {
                     const result = await window.electronAPI.executePluginAction(pluginId, actionId, filePath, null);
-                    if (!result.success) {
+                    if (!result.ok) {
                         showToast(`Plugin action failed: ${friendlyError(result.error)}`, 'error');
-                    } else if (result.result?.json) {
+                    } else if (result.value?.json) {
                         // If the plugin returned JSON text, copy it to clipboard
-                        navigator.clipboard.writeText(result.result.json).then(() => {
+                        navigator.clipboard.writeText(result.value.json).then(() => {
                             showToast('Copied to clipboard', 'success');
                         });
                     }
@@ -13881,13 +13903,13 @@ folderContextMenu.addEventListener('click', async (e) => {
                     setStatusActivity(`Deleting ${folderName}...`);
                     const result = await window.electronAPI.deleteFile(folderPath);
                     setStatusActivity('');
-                    if (result.success) {
+                    if (result.ok) {
                         showToast(`Deleted "${folderName}"`, 'success', {
                             duration: 8000,
                             actionLabel: 'Undo',
                             actionCallback: () => {
                                 window.electronAPI.undoFileOperation().then(undoResult => {
-                                    if (undoResult.success) {
+                                    if (undoResult.ok) {
                                         showToast(`Restored "${folderName}"`, 'success');
                                         if (currentFolderPath) {
                                             invalidateFolderCache(currentFolderPath);
@@ -13931,7 +13953,7 @@ async function handleRenameConfirm() {
         setStatusActivity(`Renaming to ${newName}...`);
         const result = await window.electronAPI.renameFile(renamePendingFile.filePath, newName);
         setStatusActivity('');
-        if (result.success) {
+        if (result.ok) {
             renameDialog.classList.add('hidden');
             const oldPath = renamePendingFile.filePath;
             renamePendingFile = null;
@@ -14194,18 +14216,19 @@ batchRenameApply.addEventListener('click', async () => {
         const result = await window.electronAPI.batchRename(batchRenameFilePaths, type, opts);
         setStatusActivity('');
 
-        if (result.success) {
+        if (result.ok) {
             closeBatchRename();
-            const failedResults = (result.results || []).filter(r => r.success === false);
+            const v = result.value || {};
+            const failedResults = (v.results || []).filter(r => r.ok === false);
             if (failedResults.length > 0) {
                 const errorSummary = groupBatchErrors(failedResults);
                 showToast(
-                    `Renamed ${result.successCount} of ${result.totalCount} files`,
+                    `Renamed ${v.successCount} of ${v.totalCount} files`,
                     'warning',
                     { details: `${failedResults.length} failed: ${errorSummary}`, duration: 8000 }
                 );
             } else {
-                showToast(`Renamed ${result.successCount} of ${result.totalCount} files`, 'success');
+                showToast(`Renamed ${v.successCount} of ${v.totalCount} files`, 'success');
             }
             if (currentFolderPath) {
                 invalidateFolderCache(currentFolderPath);
@@ -14281,7 +14304,7 @@ async function embedTagLabels() {
         autoTagStatus.textContent = `Embedding tags... ${i + 1}/${allTagsCache.length}`;
         try {
             const raw = await window.electronAPI.clipEmbedText(`a photo of ${tag.name}`);
-            if (raw) autoTagState.labelEmbeddings.set(tag.name, new Float32Array(raw));
+            if (raw && raw.ok && raw.value) autoTagState.labelEmbeddings.set(tag.name, new Float32Array(raw.value));
         } catch {}
     }
     return autoTagState.labelEmbeddings.size > 0;
@@ -14319,10 +14342,10 @@ async function openAutoTag(filePaths) {
     // Ensure CLIP is loaded
     try {
         const status = await window.electronAPI.clipStatus();
-        if (!status.loaded) {
+        if (!status.value?.loaded) {
             autoTagStatus.textContent = 'Loading AI model...';
             const init = await window.electronAPI.clipInit(getClipGpuMode());
-            if (!init.success) {
+            if (!init.ok) {
                 autoTagStatus.textContent = 'Could not load AI model. Enable AI search in settings first.';
                 return;
             }
@@ -14369,7 +14392,8 @@ async function openAutoTag(filePaths) {
         // Generate missing embeddings
         if (needsEmbed.length > 0) {
             try {
-                const results = await window.electronAPI.clipEmbedImages(needsEmbed);
+                const resp = await window.electronAPI.clipEmbedImages(needsEmbed);
+                const results = resp && resp.ok ? (resp.value || []) : [];
                 for (const r of results) {
                     if (r && r.embedding) {
                         const emb = new Float32Array(r.embedding);
@@ -14982,7 +15006,7 @@ function scanFolderStreaming(folderPath, options, callbacks) {
 
     // Fire the IPC; the returned scanId binds subsequent chunks.
     window.electronAPI.scanFolderStream(folderPath, options).then(result => {
-        if (result && result.scanId) _activeScanId = result.scanId;
+        if (result && result.ok && result.value && result.value.scanId) _activeScanId = result.value.scanId;
     }).catch(err => {
         console.error('scanFolderStream error:', err);
         cancelActiveStream();
@@ -15189,10 +15213,11 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
                 });
             } else {
                 // Fallback: non-streaming (original synchronous path)
-                items = await window.electronAPI.scanFolder(folderPath, {
+                const _scanRes = await window.electronAPI.scanFolder(folderPath, {
                     skipStats, scanImageDimensions, scanVideoDimensions,
                     recursive: recursiveSearchEnabled
                 });
+                items = _scanRes && _scanRes.ok ? (_scanRes.value || []) : [];
             }
             perfTest.end('scanFolder (IPC stream)', scanPerfStart, { itemCount: items ? items.length : 0 });
 
@@ -15431,8 +15456,8 @@ async function refreshSavedSearches() {
             return;
         }
         const result = await window.electronAPI.dbGetSavedSearches();
-        if (result && result.success) {
-            savedSearchesCache = Array.isArray(result.data) ? result.data : [];
+        if (result && result.ok) {
+            savedSearchesCache = Array.isArray(result.value) ? result.value : [];
         } else {
             console.error('dbGetSavedSearches failed:', result && result.error);
             savedSearchesCache = [];
@@ -15539,7 +15564,7 @@ async function promptAndSaveCurrentSearch() {
             folderPath: snapshot.folderPath
         }));
         const res = await window.electronAPI.dbSaveSearch(payload);
-        if (res && res.success) {
+        if (res && res.ok) {
             showToast(`Saved "${trimmed}"`, 'success', { duration: 2000 });
             await refreshSavedSearches();
         } else {
@@ -15894,8 +15919,9 @@ function openCollectionDialog(existingCollection = null, onCreated = null) {
     // Add folder button
     document.getElementById('col-dialog-add-folder').addEventListener('click', async () => {
         const result = await window.electronAPI.selectFolder();
-        if (result && !sourceFolders.some(f => f.path === result)) {
-            sourceFolders.push({ path: result, recursive: false });
+        const folderPath = result && result.ok ? result.value : null;
+        if (folderPath && !sourceFolders.some(f => f.path === folderPath)) {
+            sourceFolders.push({ path: folderPath, recursive: false });
             renderFoldersList();
         }
     });
@@ -16156,7 +16182,7 @@ let allTagsCache = [];
 async function refreshTagsCache() {
     try {
         const result = await window.electronAPI.dbGetAllTags();
-        if (result.success) allTagsCache = result.data || [];
+        if (result.ok) allTagsCache = result.value || [];
     } catch {}
 }
 
@@ -16169,8 +16195,8 @@ async function warmFileTagsCache(filePaths) {
     if (!filePaths.length) return;
     try {
         const result = await window.electronAPI.dbGetTagsForFiles(filePaths);
-        if (result.success && result.data) {
-            for (const [fp, tags] of Object.entries(result.data)) {
+        if (result.ok && result.value) {
+            for (const [fp, tags] of Object.entries(result.value)) {
                 fileTagsCache.set(fp, tags);
             }
             // Mark files with no tags so we don't refetch
@@ -16280,15 +16306,15 @@ async function renderTagPickerList(filter) {
             if (isMulti) {
                 const normalizedPaths = tagPickerFilePaths.map(fp => normalizePath(fp));
                 const result = await window.electronAPI.dbGetTagsForFiles(normalizedPaths);
-                if (result.success && result.data) {
-                    for (const tags of Object.values(result.data)) {
+                if (result.ok && result.value) {
+                    for (const tags of Object.values(result.value)) {
                         for (const t of tags) tagCounts.set(t.id, (tagCounts.get(t.id) || 0) + 1);
                     }
                 }
             } else {
                 const result = await window.electronAPI.dbGetTagsForFile(normalizePath(tagPickerFilePaths[0]));
-                if (result.success && result.data) {
-                    for (const t of result.data) tagCounts.set(t.id, 1);
+                if (result.ok && result.value) {
+                    for (const t of result.value) tagCounts.set(t.id, 1);
                 }
             }
         } catch {}
@@ -16308,15 +16334,15 @@ async function renderTagPickerList(filter) {
         createItem.addEventListener('click', async () => {
             try {
                 const result = await window.electronAPI.dbCreateTag(filter.trim(), null, '#6366f1');
-                if (result.success && result.data) {
+                if (result.ok && result.value) {
                     await refreshTagsCache();
                     // Auto-assign to files
                     const normalizedPaths = tagPickerFilePaths.map(fp => normalizePath(fp));
-                    const newTagName = result.data.name || filter.trim();
+                    const newTagName = result.value.name || filter.trim();
                     if (isMulti) {
-                        await tagBulkAdd(normalizedPaths, result.data.id, newTagName);
+                        await tagBulkAdd(normalizedPaths, result.value.id, newTagName);
                     } else {
-                        await tagAddToFile(normalizedPaths[0], result.data.id, newTagName);
+                        await tagAddToFile(normalizedPaths[0], result.value.id, newTagName);
                     }
                     document.getElementById('tag-picker-search').value = '';
                     await renderTagPickerList();
@@ -16378,8 +16404,8 @@ async function renderTagPickerSuggestions() {
 
     try {
         const result = await window.electronAPI.dbSuggestTags(tagPickerFilePaths[0]);
-        if (!result.success || !result.data || result.data.length === 0) return;
-        for (const sug of result.data.slice(0, 6)) {
+        if (!result.ok || !result.value || result.value.length === 0) return;
+        for (const sug of result.value.slice(0, 6)) {
             const chip = document.createElement('span');
             chip.className = 'tag-suggestion';
             chip.innerHTML = `<span class="tag-picker-item-dot" style="background:${sug.tag.color || '#6366f1'}"></span>${sug.tag.name}`;
@@ -16536,8 +16562,8 @@ async function toggleTagFilter(tag) {
         };
         try {
             const result = await window.electronAPI.dbQueryFilesByTags(expression);
-            if (result.success) {
-                tagFilteredPaths = new Set(result.data || []);
+            if (result.ok) {
+                tagFilteredPaths = new Set(result.value || []);
             }
         } catch {
             tagFilteredPaths = new Set();
@@ -16564,7 +16590,7 @@ function renderActiveTagFilters() {
                     const expression = { op: tagFilterOperator, tagIds: activeTagFilters.map(t => t.tagId) };
                     try {
                         const result = await window.electronAPI.dbQueryFilesByTags(expression);
-                        if (result.success) tagFilteredPaths = new Set(result.data || []);
+                        if (result.ok) tagFilteredPaths = new Set(result.value || []);
                     } catch { tagFilteredPaths = new Set(); }
                     applyFilters();
                 }
@@ -16596,7 +16622,7 @@ async function renderTagsManagement() {
     let topTags = [];
     try {
         const result = await window.electronAPI.dbGetTopTags(999);
-        if (result.success) topTags = result.data || [];
+        if (result.ok) topTags = result.value || [];
     } catch {}
     const countMap = {};
     for (const t of topTags) countMap[t.id] = t.file_count || 0;
@@ -16695,7 +16721,7 @@ document.getElementById('tag-create-btn').addEventListener('click', async () => 
     if (!name) return;
     try {
         const result = await window.electronAPI.dbCreateTag(name, null, colorInput.value);
-        if (result.success) {
+        if (result.ok) {
             nameInput.value = '';
             renderTagsManagement();
         } else {
@@ -17841,8 +17867,8 @@ class InspectorPanel {
         try {
             const res = await window.electronAPI.getFileInfo(path);
             if (path !== this._currentPath) return; // navigated away
-            if (res && res.success && res.info) {
-                const info = res.info;
+            if (res && res.ok && res.value) {
+                const info = res.value;
                 this._fields.size.textContent = info.sizeFormatted || (info.size ? info.size + ' bytes' : '—');
                 this._fields.type.textContent = info.type || '—';
                 this._fields.dim.textContent = (info.width && info.height) ? `${info.width} × ${info.height}` : '—';
@@ -17996,9 +18022,10 @@ class InspectorPanel {
                 try {
                     const item = currentItems.find(i => i.path === path);
                     const mtime = item ? (item.mtime || 0) : 0;
-                    const embResults = await window.electronAPI.clipEmbedImages([{ path, mtime, thumbPath: null }]);
+                    const embResp = await window.electronAPI.clipEmbedImages([{ path, mtime, thumbPath: null }]);
                     if (this._currentPath !== path) return;  // user navigated away
-                    if (embResults && embResults[0] && embResults[0].embedding) {
+                    const embResults = embResp && embResp.ok ? (embResp.value || []) : [];
+                    if (embResults[0] && embResults[0].embedding) {
                         currentEmbeddings.set(path, l2Normalize(new Float32Array(embResults[0].embedding)));
                         this._renderSimilar();
                     }
@@ -18022,8 +18049,9 @@ class InspectorPanel {
                 const item = currentItems.find(i => i.path === path);
                 const mtime = item ? (item.mtime || 0) : 0;
                 try {
-                    const embResults = await window.electronAPI.clipEmbedImages([{ path, mtime, thumbPath: null }]);
-                    if (embResults && embResults[0] && embResults[0].embedding) {
+                    const embResp = await window.electronAPI.clipEmbedImages([{ path, mtime, thumbPath: null }]);
+                    const embResults = embResp && embResp.ok ? (embResp.value || []) : [];
+                    if (embResults[0] && embResults[0].embedding) {
                         const emb = l2Normalize(new Float32Array(embResults[0].embedding));
                         currentEmbeddings.set(path, emb);
                         this._renderSimilar();
@@ -18052,14 +18080,13 @@ class InspectorPanel {
                         batch.push({ path: it.path, mtime: it.mtime || 0, thumbPath: null });
                     }
                     if (batch.length > 0) {
-                        const embResults = await window.electronAPI.clipEmbedImages(batch);
+                        const embResp = await window.electronAPI.clipEmbedImages(batch);
                         if (this._currentPath !== path) return;
-                        if (Array.isArray(embResults)) {
-                            for (let i = 0; i < embResults.length; i++) {
-                                const r = embResults[i];
-                                if (r && r.embedding) {
-                                    currentEmbeddings.set(batch[i].path, l2Normalize(new Float32Array(r.embedding)));
-                                }
+                        const embResults = embResp && embResp.ok ? (embResp.value || []) : [];
+                        for (let i = 0; i < embResults.length; i++) {
+                            const r = embResults[i];
+                            if (r && r.embedding) {
+                                currentEmbeddings.set(batch[i].path, l2Normalize(new Float32Array(r.embedding)));
                             }
                         }
                         this._renderSimilar();
@@ -18212,10 +18239,10 @@ async function saveCurrentFrame(promptDialog = false) {
         const t = activePlaybackController.currentTime || 0;
         const defaultPath = `${dir}${sep}${base}_frame_${t.toFixed(3)}s.png`;
         const result = await window.electronAPI.saveFrameAs({ defaultPath, dataBase64: base64, promptDialog });
-        if (result && result.success) {
-            const name = (result.filePath || '').split(/[\\/]/).pop();
+        if (result && result.ok && result.value && !result.value.canceled) {
+            const name = (result.value.filePath || '').split(/[\\/]/).pop();
             showToast(`Saved ${name}`, 'success');
-        } else if (result && result.canceled) {
+        } else if (result && result.ok && result.value && result.value.canceled) {
             /* silent */
         } else {
             showToast('Save failed: ' + (result && result.error || 'unknown'), 'error');
@@ -18241,7 +18268,7 @@ let _ffmpegAvailable = null;
 (async () => {
     try {
         const r = await window.electronAPI.hasFfmpeg();
-        _ffmpegAvailable = !!(r && r.ffmpeg);
+        _ffmpegAvailable = !!(r && r.ok && r.value && r.value.ffmpeg);
     } catch { _ffmpegAvailable = false; }
 })();
 
@@ -18395,7 +18422,8 @@ async function exportTrim() {
         defaultPath,
         filters: [{ name: ext.slice(1).toUpperCase() || 'Media', extensions: [ext.slice(1) || 'mp4'] }],
     });
-    if (!saveRes || saveRes.canceled) return;
+    if (!saveRes || !saveRes.ok || !saveRes.value || saveRes.value.canceled) return;
+    const savedFilePath = saveRes.value.filePath;
 
     const jobId = `trim-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const dur = b - a;
@@ -18417,7 +18445,7 @@ async function exportTrim() {
     const result = await runFfmpegJob({
         jobId,
         inputPath: srcPath,
-        outputPath: saveRes.filePath,
+        outputPath: savedFilePath,
         operation: 'trim',
         params: { startSec: a, endSec: b, mode: opts.mode },
         totalSec: dur,
@@ -18429,13 +18457,13 @@ async function exportTrim() {
         if (closeBtn) closeBtn.click();
     }
 
-    if (result && result.success) {
-        const outName = saveRes.filePath.split(/[\\/]/).pop();
+    if (result && result.ok && result.value && !result.value.canceled) {
+        const outName = savedFilePath.split(/[\\/]/).pop();
         showToast(`Saved ${outName}`, 'success', {
             actionLabel: 'Reveal',
-            actionCallback: () => window.electronAPI.revealInExplorer(saveRes.filePath),
+            actionCallback: () => window.electronAPI.revealInExplorer(savedFilePath),
         });
-    } else if (result && result.canceled) {
+    } else if (result && result.ok && result.value && result.value.canceled) {
         showToast('Trim canceled', 'info');
     } else {
         showToast('Trim failed: ' + (result?.error || 'unknown'), 'error');
@@ -18614,7 +18642,8 @@ async function runConvertBatch(paths, opts, ctx = {}) {
             title: 'Choose output folder',
             defaultPath: firstDir,
         });
-        if (!fres || fres.canceled) return;
+        if (!fres || !fres.ok || !fres.value || fres.value.canceled) return;
+        const chosenFolder = fres.value.folderPath;
         const usedNames = new Set();
         for (const p of paths) {
             const { stem, sep } = _ffGetPathParts(p);
@@ -18625,7 +18654,7 @@ async function runConvertBatch(paths, opts, ctx = {}) {
                 counter++;
             }
             usedNames.add(name.toLowerCase());
-            outputPaths.push(_ffJoin(fres.folderPath, name, sep));
+            outputPaths.push(_ffJoin(chosenFolder, name, sep));
         }
     }
 
@@ -18679,8 +18708,8 @@ async function runConvertBatch(paths, opts, ctx = {}) {
             totalSec,
         }, (pct) => setToastText(i, pct));
 
-        if (r && r.success) successes++;
-        else if (r && r.canceled) { canceledCount++; if (canceledAll) break; }
+        if (r && r.ok && r.value && !r.value.canceled) successes++;
+        else if (r && r.ok && r.value && r.value.canceled) { canceledCount++; if (canceledAll) break; }
         else { failures++; lastErr = r?.error || 'unknown'; }
     }
     currentJobId = null;

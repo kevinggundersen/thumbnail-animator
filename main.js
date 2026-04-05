@@ -1054,15 +1054,23 @@ app.whenReady().then(() => {
         });
     }, 5000);
 
-    ipcMain.handle('download-update', () => {
-        return autoUpdater.downloadUpdate().catch((err) => {
+    ipcMain.handle('download-update', async () => {
+        try {
+            const value = await autoUpdater.downloadUpdate();
+            return { ok: true, value };
+        } catch (err) {
             console.error('Download update failed:', err.message);
-            return { error: err.message };
-        });
+            return { ok: false, error: err.message };
+        }
     });
 
     ipcMain.handle('install-update', () => {
-        autoUpdater.quitAndInstall(true, true);
+        try {
+            autoUpdater.quitAndInstall(true, true);
+            return { ok: true, value: null };
+        } catch (err) {
+            return { ok: false, error: err.message };
+        }
     });
 
     app.on('activate', () => {
@@ -1080,17 +1088,21 @@ app.on('window-all-closed', () => {
 
 // IPC Handlers
 ipcMain.handle('select-folder', async (event, defaultPath) => {
-    const result = await dialog.showOpenDialog({
-        properties: ['openDirectory'],
-        defaultPath: defaultPath || undefined
-    });
-    return result.filePaths[0] || null;
+    try {
+        const result = await dialog.showOpenDialog({
+            properties: ['openDirectory'],
+            defaultPath: defaultPath || undefined
+        });
+        return { ok: true, value: result.filePaths[0] || null };
+    } catch (err) {
+        return { ok: false, error: err.message };
+    }
 });
 
 ipcMain.handle('save-frame-as', async (event, opts) => {
     try {
         const { defaultPath, dataBase64, promptDialog } = opts || {};
-        if (!dataBase64) return { success: false, error: 'No image data' };
+        if (!dataBase64) return { ok: false, error:'No image data' };
         let targetPath = defaultPath;
         if (promptDialog) {
             const result = await dialog.showSaveDialog({
@@ -1098,10 +1110,10 @@ ipcMain.handle('save-frame-as', async (event, opts) => {
                 defaultPath: defaultPath || 'frame.png',
                 filters: [{ name: 'PNG Image', extensions: ['png'] }]
             });
-            if (result.canceled || !result.filePath) return { success: false, canceled: true };
+            if (result.canceled || !result.filePath) return { ok: true, value: { canceled: true } };
             targetPath = result.filePath;
         }
-        if (!targetPath) return { success: false, error: 'No target path' };
+        if (!targetPath) return { ok: false, error:'No target path' };
         // If file exists and we didn't prompt, append a counter rather than overwrite
         if (!promptDialog) {
             let counter = 1;
@@ -1115,9 +1127,9 @@ ipcMain.handle('save-frame-as', async (event, opts) => {
         }
         const buf = Buffer.from(dataBase64, 'base64');
         await fs.promises.writeFile(targetPath, buf);
-        return { success: true, filePath: targetPath };
+        return { ok: true, value: { filePath: targetPath } };
     } catch (err) {
-        return { success: false, error: err.message };
+        return { ok: false, error:err.message };
     }
 });
 
@@ -1128,11 +1140,11 @@ ipcMain.handle('export-settings-dialog', async (event, jsonString) => {
             defaultPath: 'thumbnail-animator-settings.json',
             filters: [{ name: 'JSON Files', extensions: ['json'] }]
         });
-        if (result.canceled || !result.filePath) return { success: false, canceled: true };
+        if (result.canceled || !result.filePath) return { ok: true, value: { canceled: true } };
         fs.writeFileSync(result.filePath, jsonString, 'utf-8');
-        return { success: true, filePath: result.filePath };
+        return { ok: true, value: { filePath: result.filePath } };
     } catch (err) {
-        return { success: false, error: err.message };
+        return { ok: false, error:err.message };
     }
 });
 
@@ -1143,12 +1155,12 @@ ipcMain.handle('import-settings-dialog', async () => {
             filters: [{ name: 'JSON Files', extensions: ['json'] }],
             properties: ['openFile']
         });
-        if (result.canceled || !result.filePaths[0]) return { success: false, canceled: true };
+        if (result.canceled || !result.filePaths[0]) return { ok: true, value: { canceled: true } };
         const raw = fs.readFileSync(result.filePaths[0], 'utf-8');
         const data = JSON.parse(raw);
-        return { success: true, data };
+        return { ok: true, value: data };
     } catch (err) {
-        return { success: false, error: err.message };
+        return { ok: false, error:err.message };
     }
 });
 
@@ -1159,9 +1171,9 @@ ipcMain.handle('sync-plugin-states-from-import', async (event, states) => {
                 pluginRegistry.setPluginEnabled(pluginId, !!enabled);
             }
         }
-        return { success: true };
+        return { ok: true, value: null };
     } catch (err) {
-        return { success: false, error: err.message };
+        return { ok: false, error:err.message };
     }
 });
 
@@ -1170,42 +1182,43 @@ ipcMain.handle('trigger-gc', () => {
         global.gc();
         // console.log('GC Triggered');
     }
+    return { ok: true, value: null };
 });
 
-ipcMain.handle('get-startup-timeline', () => startupTimeline);
+ipcMain.handle('get-startup-timeline', () => ({ ok: true, value: startupTimeline }));
 
 ipcMain.handle('get-memory-info', () => {
     const mem = process.memoryUsage();
-    return {
+    return { ok: true, value: {
         rss: mem.rss,
         heapUsed: mem.heapUsed,
         heapTotal: mem.heapTotal,
         external: mem.external,
-    };
+    } };
 });
 
 ipcMain.handle('get-cache-info', () => {
-    if (!nativeScanner || !nativeScanner.getCacheInfo) return null;
+    if (!nativeScanner || !nativeScanner.getCacheInfo) return { ok: true, value: null };
     const video = nativeScanner.getCacheInfo(videoThumbDir || '');
     const image = nativeScanner.getCacheInfo(imageThumbDir || '');
     const folder = nativeScanner.getCacheInfo(folderPreviewDir || '');
-    return {
+    return { ok: true, value: {
         video: { size: video.totalSize, files: video.fileCount, maxSize: VIDEO_CACHE_MAX_BYTES },
         image: { size: image.totalSize, files: image.fileCount, maxSize: IMAGE_CACHE_MAX_BYTES },
         folder: { size: folder.totalSize, files: folder.fileCount },
-    };
+    } };
 });
 
 ipcMain.handle('evict-cache', (event, cacheType) => {
-    if (!nativeScanner || !nativeScanner.planCacheEviction) return { deleted: 0, freed: 0 };
+    if (!nativeScanner || !nativeScanner.planCacheEviction) return { ok: true, value: { deleted: 0, freed: 0 } };
     const dir = cacheType === 'video' ? videoThumbDir : imageThumbDir;
     const maxBytes = cacheType === 'video' ? VIDEO_CACHE_MAX_BYTES : IMAGE_CACHE_MAX_BYTES;
-    if (maxBytes === 0) return { deleted: 0, freed: 0 }; // unlimited
+    if (maxBytes === 0) return { ok: true, value: { deleted: 0, freed: 0 } }; // unlimited
     // Force evict to 80% of max to avoid re-evicting on every call
     const plan = nativeScanner.planCacheEviction(dir, Math.floor(maxBytes * 0.8));
-    if (plan.filesToDelete.length === 0) return { deleted: 0, freed: 0 };
+    if (plan.filesToDelete.length === 0) return { ok: true, value: { deleted: 0, freed: 0 } };
     const deleted = nativeScanner.deleteFiles(plan.filesToDelete);
-    return { deleted, freed: plan.bytesToFree };
+    return { ok: true, value: { deleted, freed: plan.bytesToFree } };
 });
 
 ipcMain.handle('set-cache-limits', (event, videoCacheMB, imageCacheMB) => {
@@ -1214,10 +1227,12 @@ ipcMain.handle('set-cache-limits', (event, videoCacheMB, imageCacheMB) => {
     try {
         fs.writeFileSync(cacheLimitsFile, JSON.stringify({ videoCacheMB, imageCacheMB }));
     } catch { /* non-critical */ }
+    return { ok: true, value: null };
 });
 
 ipcMain.handle('set-use-system-trash', (event, enabled) => {
     useSystemTrash = !!enabled;
+    return { ok: true, value: null };
 });
 
 // Concurrency-limited async pool: runs at most `limit` tasks at a time, preserves result order
@@ -1249,6 +1264,7 @@ ipcMain.handle('update-main-setting', (event, key, value) => {
         case 'videoThumbWidth': mainVideoThumbWidth = parseInt(value) || 320; break;
         case 'videoThumbSeekPct': mainVideoThumbSeekPct = parseFloat(value) / 100 || 0.25; break;
     }
+    return { ok: true, value: null };
 });
 
 // Core folder scan logic extracted for reuse by collections
@@ -1561,7 +1577,7 @@ ipcMain.handle('get-folder-preview', async (event, folderPath, previewCount) => 
             const folderStats = await fs.promises.stat(folderPath);
             folderMtime = folderStats.mtimeMs;
         } catch {
-            return [];
+            return { ok: true, value: [] };
         }
 
         // Check disk cache
@@ -1580,7 +1596,7 @@ ipcMain.handle('get-folder-preview', async (event, folderPath, previewCount) => 
                 });
                 if (allExist) {
                     logPerf('get-folder-preview', startTime, { cached: 1, count: cacheData.results.length });
-                    return cacheData.results.slice(0, effectiveCount);
+                    return { ok: true, value: cacheData.results.slice(0, effectiveCount) };
                 }
             }
         } catch { /* cache miss */ }
@@ -1593,11 +1609,11 @@ ipcMain.handle('get-folder-preview', async (event, folderPath, previewCount) => 
                 fs.promises.writeFile(cachePath, JSON.stringify({ folderMtime, results: [] }))
             ).catch(() => {});
             logPerf('get-folder-preview', startTime, { cached: 0, count: 0 });
-            return [];
+            return { ok: true, value: [] };
         }
 
         // Generate thumbnails at 192px using existing pipeline
-        if (!thumbnailPool) return [];
+        if (!thumbnailPool) return { ok: true, value: [] };
 
         const thumbItems = files.map(f => ({
             type: f.type,
@@ -1623,20 +1639,20 @@ ipcMain.handle('get-folder-preview', async (event, folderPath, previewCount) => 
         ).catch(() => {});
 
         logPerf('get-folder-preview', startTime, { cached: 0, count: results.length });
-        return results;
+        return { ok: true, value: results };
     } catch (error) {
         logPerf('get-folder-preview', startTime, { error: 1 });
-        return [];
+        return { ok: false, error: error.message };
     }
 });
 
 ipcMain.handle('scan-folder', async (event, folderPath, options = {}) => {
     try {
         const { folders, mediaFiles } = await scanFolderInternal(folderPath, options);
-        return folders.length + mediaFiles.length > 0 ? [...folders, ...mediaFiles] : [];
+        return { ok: true, value: folders.length + mediaFiles.length > 0 ? [...folders, ...mediaFiles] : [] };
     } catch (error) {
         console.error('Error scanning folder:', error);
-        return [];
+        return { ok: false, error: error.message };
     }
 });
 
@@ -1738,11 +1754,11 @@ ipcMain.handle('scan-folder-stream', async (event, folderPath, options = {}) => 
         }
 
         send({ scanId, phase: 'complete' });
-        return { scanId, success: true, totalFolders: folders.length, totalFiles: mediaFiles.length };
+        return { ok: true, value: { scanId, totalFolders: folders.length, totalFiles: mediaFiles.length } };
     } catch (error) {
         console.error('Error streaming folder scan:', error);
         send({ scanId, phase: 'complete', error: error.message });
-        return { scanId, success: false, error: error.message };
+        return { ok: false, error: error.message };
     }
 });
 
@@ -1812,7 +1828,7 @@ ipcMain.handle('resolve-file-paths', async (event, filePaths, options = {}) => {
         items.push(obj);
     }
 
-    return { items, missing };
+    return { ok: true, value: { items, missing } };
 });
 
 // Scan multiple folders and return combined file items (no folders) for smart collections
@@ -2064,7 +2080,7 @@ ipcMain.handle('scan-folders-for-smart-collection', async (event, folderEntries,
     }
 
     logPerf('smart-collection.total', scanStart, { folders: folderEntries.length, files: allFiles.length });
-    return { items: allFiles, errors };
+    return { ok: true, value: { items: allFiles, errors } };
 });
 
 // Cheap rule matching for pre-filtering (no dimension/aspect/rating checks)
@@ -2090,10 +2106,10 @@ ipcMain.handle('reveal-in-explorer', async (event, filePath) => {
     try {
         // shell.showItemInFolder opens the file's parent folder and selects the file
         shell.showItemInFolder(filePath);
-        return { success: true };
+        return { ok: true, value: null };
     } catch (error) {
         console.error('Error revealing file in explorer:', error);
-        return { success: false, error: error.message };
+        return { ok: false, error:error.message };
     }
 });
 
@@ -2101,14 +2117,14 @@ ipcMain.handle('rename-file', async (event, filePath, newName) => {
     try {
         // Validate newName doesn't contain path traversal
         if (newName !== path.basename(newName)) {
-            return { success: false, error: 'Invalid file name' };
+            return { ok: false, error:'Invalid file name' };
         }
         const dir = path.dirname(filePath);
         const newPath = path.join(dir, newName);
         
         // Check if new name already exists
         if (fs.existsSync(newPath)) {
-            return { success: false, error: 'A file with this name already exists' };
+            return { ok: false, error:'A file with this name already exists' };
         }
         
         await fs.promises.rename(filePath, newPath);
@@ -2120,10 +2136,10 @@ ipcMain.handle('rename-file', async (event, filePath, newName) => {
             description: `Rename "${path.basename(filePath)}" → "${newName}"`,
             operations: [{ type: 'rename', oldPath: filePath, newPath }]
         });
-        return { success: true, newPath };
+        return { ok: true, value: { newPath } };
     } catch (error) {
         console.error('Error renaming file:', error);
-        return { success: false, error: error.message };
+        return { ok: false, error:error.message };
     }
 });
 
@@ -2165,7 +2181,7 @@ ipcMain.handle('batch-rename', async (event, filePaths, patternType, patternOpti
                             const regex = new RegExp(patternOptions.find, flags);
                             newName = fullName.replace(regex, patternOptions.replace || '');
                         } catch (e) {
-                            return { success: false, error: `Invalid regex: ${e.message}` };
+                            return { ok: false, error:`Invalid regex: ${e.message}` };
                         }
                     } else {
                         // Escape special regex chars for literal search
@@ -2176,15 +2192,15 @@ ipcMain.handle('batch-rename', async (event, filePaths, patternType, patternOpti
                     break;
                 }
                 default:
-                    return { success: false, error: `Unknown pattern type: ${patternType}` };
+                    return { ok: false, error:`Unknown pattern type: ${patternType}` };
             }
 
             // Validate
             if (newName !== path.basename(newName)) {
-                return { success: false, error: `Invalid name "${newName}" contains path separators` };
+                return { ok: false, error:`Invalid name "${newName}" contains path separators` };
             }
             if (!newName || newName.trim() === '') {
-                return { success: false, error: `Pattern produces empty name for "${path.basename(fp)}"` };
+                return { ok: false, error:`Pattern produces empty name for "${path.basename(fp)}"` };
             }
 
             const newPath = path.join(dir, newName);
@@ -2195,7 +2211,7 @@ ipcMain.handle('batch-rename', async (event, filePaths, patternType, patternOpti
         const newPaths = new Set();
         for (const p of planned) {
             if (newPaths.has(p.newPath.toLowerCase())) {
-                return { success: false, error: `Duplicate name in batch: "${p.newName}"` };
+                return { ok: false, error:`Duplicate name in batch: "${p.newName}"` };
             }
             newPaths.add(p.newPath.toLowerCase());
         }
@@ -2205,7 +2221,7 @@ ipcMain.handle('batch-rename', async (event, filePaths, patternType, patternOpti
         for (const p of planned) {
             if (p.oldPath === p.newPath) continue; // Same name, skip
             if (!oldPathSet.has(p.newPath.toLowerCase()) && fs.existsSync(p.newPath)) {
-                return { success: false, error: `"${p.newName}" already exists on disk` };
+                return { ok: false, error:`"${p.newName}" already exists on disk` };
             }
         }
 
@@ -2219,9 +2235,9 @@ ipcMain.handle('batch-rename', async (event, filePaths, patternType, patternOpti
                 await fs.promises.rename(p.oldPath, p.newPath);
                 operations.push({ type: 'rename', oldPath: p.oldPath, newPath: p.newPath });
                 renamedPairs.push({ oldPath: p.oldPath, newPath: p.newPath });
-                results.push({ oldPath: p.oldPath, newPath: p.newPath, success: true });
+                results.push({ oldPath: p.oldPath, newPath: p.newPath, ok: true });
             } catch (err) {
-                results.push({ oldPath: p.oldPath, newPath: p.newPath, success: false, error: err.message });
+                results.push({ oldPath: p.oldPath, newPath: p.newPath, ok: false, error: err.message });
             }
         }
 
@@ -2237,11 +2253,11 @@ ipcMain.handle('batch-rename', async (event, filePaths, patternType, patternOpti
             });
         }
 
-        const successCount = results.filter(r => r.success).length;
-        return { success: true, results, successCount, totalCount: filePaths.length };
+        const successCount = results.filter(r => r.ok).length;
+        return { ok: true, value: { results, successCount, totalCount: filePaths.length } };
     } catch (error) {
         console.error('Error in batch rename:', error);
-        return { success: false, error: error.message };
+        return { ok: false, error:error.message };
     }
 });
 
@@ -2250,7 +2266,7 @@ ipcMain.handle('delete-file', async (event, filePath) => {
         const basename = path.basename(filePath);
         if (useSystemTrash) {
             await shell.trashItem(filePath);
-            return { success: true, trashed: true };
+            return { ok: true, value: { trashed: true } };
         }
         const stagingPath = await moveToStaging(filePath);
         pushUndoEntry({
@@ -2258,19 +2274,19 @@ ipcMain.handle('delete-file', async (event, filePath) => {
             description: `Delete "${basename}"`,
             operations: [{ type: 'delete', originalPath: filePath, stagingPath }]
         });
-        return { success: true };
+        return { ok: true, value: { trashed: false } };
     } catch (error) {
         console.error('Error deleting file:', error);
-        return { success: false, error: error.message };
+        return { ok: false, error:error.message };
     }
 });
 
 ipcMain.handle('open-url', async (event, url) => {
     try {
         await shell.openExternal(url);
-        return { success: true };
+        return { ok: true, value: null };
     } catch (error) {
-        return { success: false, error: error.message };
+        return { ok: false, error:error.message };
     }
 });
 
@@ -2278,10 +2294,10 @@ ipcMain.handle('open-with-default', async (event, filePath) => {
     try {
         // shell.openPath opens the file with the system's default application
         await shell.openPath(filePath);
-        return { success: true };
+        return { ok: true, value: null };
     } catch (error) {
         console.error('Error opening file with default app:', error);
-        return { success: false, error: error.message };
+        return { ok: false, error:error.message };
     }
 });
 
@@ -2342,13 +2358,13 @@ ipcMain.handle('copy-image-to-clipboard', async (event, filePath) => {
                 image = nativeImage.createFromPath(filePath);
             }
             if (image.isEmpty()) {
-                return { success: false, error: 'Could not load image' };
+                return { ok: false, error:'Could not load image' };
             }
             clipboard.writeImage(image);
         }
-        return { success: true };
+        return { ok: true, value: null };
     } catch (error) {
-        return { success: false, error: error.message };
+        return { ok: false, error:error.message };
     }
 });
 
@@ -2363,7 +2379,7 @@ ipcMain.handle('open-with', async (event, filePath) => {
             // Verify the file exists
             if (!fs.existsSync(absolutePath)) {
                 console.error('File does not exist:', absolutePath);
-                return { success: false, error: 'File does not exist' };
+                return { ok: false, error:'File does not exist' };
             }
 
             // Use execFile to avoid shell injection - passes args as array, not through shell
@@ -2373,20 +2389,20 @@ ipcMain.handle('open-with', async (event, filePath) => {
                 }, (error) => {
                     if (error) {
                         console.error('Error executing open-with command:', error);
-                        resolve({ success: false, error: error.message });
+                        resolve({ ok: false, error:error.message });
                     } else {
-                        resolve({ success: true });
+                        resolve({ ok: true, value: null });
                     }
                 });
             });
         } else {
             // For non-Windows, fall back to default app
             await shell.openPath(filePath);
-            return { success: true };
+            return { ok: true, value: null };
         }
     } catch (error) {
         console.error('Error opening file with dialog:', error);
-        return { success: false, error: error.message };
+        return { ok: false, error:error.message };
     }
 });
 
@@ -2395,7 +2411,7 @@ ipcMain.handle('get-drives', async () => {
     try {
         if (process.platform !== 'win32') {
             // For non-Windows, return empty array or root paths
-            return [];
+            return { ok: true, value: [] };
         }
         
         const drives = [];
@@ -2420,10 +2436,10 @@ ipcMain.handle('get-drives', async () => {
             }
         }
         
-        return drives;
+        return { ok: true, value: drives };
     } catch (error) {
         console.error('Error getting drives:', error);
-        return [];
+        return { ok: false, error: error.message };
     }
 });
 
@@ -2436,7 +2452,7 @@ ipcMain.handle('list-subdirectories', async (event, folderPath) => {
         if (nativeScanner) {
             const results = nativeScanner.listSubdirectories(folderPath);
             logPerf('list-subdirectories', listStart, { count: results.length, native: 1 });
-            return results;
+            return { ok: true, value: results };
         }
 
         // JS fallback
@@ -2467,11 +2483,11 @@ ipcMain.handle('list-subdirectories', async (event, folderPath) => {
 
         results.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base', numeric: true }));
         logPerf('list-subdirectories', listStart, { count: results.length, limit: IO_CONCURRENCY_LIMIT });
-        return results;
+        return { ok: true, value: results };
     } catch (error) {
         logPerf('list-subdirectories', listStart, { error: 1 });
         console.error('Error listing subdirectories:', error);
-        return [];
+        return { ok: false, error: error.message };
     }
 });
 
@@ -2792,11 +2808,11 @@ ipcMain.handle('get-file-info', async (event, filePath) => {
         }
 
         logPerf('get-file-info', infoStart, { type: info.type });
-        return { success: true, info };
+        return { ok: true, value: info };
     } catch (error) {
         logPerf('get-file-info', infoStart, { error: 1 });
         console.error('Error getting file info:', error);
-        return { success: false, error: error.message };
+        return { ok: false, error:error.message };
     }
 });
 
@@ -2813,17 +2829,17 @@ ipcMain.handle('create-folder', async (event, folderPath, folderName) => {
     try {
         // Validate folderName doesn't contain path traversal
         if (folderName !== path.basename(folderName)) {
-            return { success: false, error: 'Invalid folder name' };
+            return { ok: false, error:'Invalid folder name' };
         }
         const newFolderPath = path.join(folderPath, folderName);
         if (fs.existsSync(newFolderPath)) {
-            return { success: false, error: 'Folder already exists' };
+            return { ok: false, error:'Folder already exists' };
         }
         await fs.promises.mkdir(newFolderPath, { recursive: true });
-        return { success: true, path: newFolderPath };
+        return { ok: true, value: { path: newFolderPath } };
     } catch (error) {
         console.error('Error creating folder:', error);
-        return { success: false, error: error.message };
+        return { ok: false, error:error.message };
     }
 });
 
@@ -2842,10 +2858,10 @@ ipcMain.handle('copy-file', async (event, sourcePath, destFolderOrPath, fileName
         let finalPath = destPath;
         if (fs.existsSync(finalPath)) {
             if (!conflictResolution) {
-                return { conflict: true, fileName: path.basename(destPath), destPath };
+                return { ok: true, value: { status: 'conflict', fileName: path.basename(destPath), destPath } };
             }
             if (conflictResolution === 'skip') {
-                return { success: true, skipped: true };
+                return { ok: true, value: { status: 'skipped' } };
             } else if (conflictResolution === 'keep-both') {
                 const ext = path.extname(destPath);
                 const base = path.basename(destPath, ext);
@@ -2859,10 +2875,10 @@ ipcMain.handle('copy-file', async (event, sourcePath, destFolderOrPath, fileName
             // 'replace' — use original finalPath (overwrite)
         }
         await fs.promises.copyFile(sourcePath, finalPath);
-        return { success: true };
+        return { ok: true, value: { status: 'copied', destPath: finalPath } };
     } catch (error) {
         console.error('Error copying file:', error);
-        return { success: false, error: error.message };
+        return { ok: false, error:error.message };
     }
 });
 
@@ -2882,10 +2898,10 @@ ipcMain.handle('move-file', async (event, sourcePath, destFolderOrPath, fileName
         let finalPath = destPath;
         if (fs.existsSync(destPath) && path.normalize(sourcePath) !== path.normalize(destPath)) {
             if (!conflictResolution) {
-                return { conflict: true, fileName: path.basename(destPath), destPath };
+                return { ok: true, value: { status: 'conflict', fileName: path.basename(destPath), destPath } };
             }
             if (conflictResolution === 'skip') {
-                return { success: true, skipped: true };
+                return { ok: true, value: { status: 'skipped' } };
             } else if (conflictResolution === 'keep-both') {
                 const ext = path.extname(destPath);
                 const base = path.basename(destPath, ext);
@@ -2911,10 +2927,10 @@ ipcMain.handle('move-file', async (event, sourcePath, destFolderOrPath, fileName
             description: `Move "${path.basename(sourcePath)}"`,
             operations: [{ type: 'move', sourcePath, destPath: finalPath }]
         });
-        return { success: true };
+        return { ok: true, value: { status: 'moved', destPath: finalPath } };
     } catch (error) {
         console.error('Error moving file:', error);
-        return { success: false, error: error.message };
+        return { ok: false, error:error.message };
     }
 });
 
@@ -2922,7 +2938,7 @@ ipcMain.handle('move-file', async (event, sourcePath, destFolderOrPath, fileName
 ipcMain.handle('watch-folder', async (event, folderPath) => {
     try {
         if (!chokidar) {
-            return { success: false, error: 'File watching not available' };
+            return { ok: false, error:'File watching not available' };
         }
         
         // Normalize path for consistent comparison
@@ -2992,10 +3008,10 @@ ipcMain.handle('watch-folder', async (event, folderPath) => {
         });
         
         watchedFolders.set(normalizedPath, watcher);
-        return { success: true };
+        return { ok: true, value: null };
     } catch (error) {
         console.error('Error watching folder:', error);
-        return { success: false, error: error.message };
+        return { ok: false, error:error.message };
     }
 });
 
@@ -3016,10 +3032,10 @@ ipcMain.handle('unwatch-folder', async (event, folderPath) => {
             await watcher.close();
             watchedFolders.delete(normalizedPath);
         }
-        return { success: true };
+        return { ok: true, value: null };
     } catch (error) {
         console.error('Error unwatching folder:', error);
-        return { success: false, error: error.message };
+        return { ok: false, error:error.message };
     }
 });
 
@@ -3027,7 +3043,7 @@ ipcMain.handle('unwatch-folder', async (event, folderPath) => {
 ipcMain.handle('generate-video-thumbnail', async (event, filePath) => {
     const startTime = performance.now();
     try {
-        if (!thumbnailPool) return { success: false };
+        if (!thumbnailPool) return { ok: false, error: 'thumbnail pool unavailable' };
         const stats = await fs.promises.stat(filePath);
         const thumbPath = getThumbCachePath(filePath, stats.mtimeMs);
         const workerT0 = performance.now();
@@ -3036,13 +3052,13 @@ ipcMain.handle('generate-video-thumbnail', async (event, filePath) => {
         _bumpThumbStats(0, 0, 0, 0, 1, workerMs);
         if (result.success && result.thumbPath) {
             logPerf('generate-video-thumbnail.ipc', startTime, { success: 1, worker: 1 });
-            return { success: true, url: pathToFileUrl(result.thumbPath) };
+            return { ok: true, value: { url: pathToFileUrl(result.thumbPath) } };
         }
         logPerf('generate-video-thumbnail.ipc', startTime, { success: 0, worker: 1 });
-        return { success: false };
+        return { ok: false, error: 'thumbnail generation failed' };
     } catch (error) {
         logPerf('generate-video-thumbnail.ipc', startTime, { error: 1 });
-        return { success: false, error: error.message };
+        return { ok: false, error:error.message };
     }
 });
 
@@ -3063,25 +3079,25 @@ ipcMain.handle('generate-image-thumbnail', async (event, filePath, maxSize = 512
             if (results && results[0] && results[0].success) {
                 _bumpThumbStats(1, nativeMs, 0, 0, 0, 0);
                 logPerf('generate-image-thumbnail.ipc', startTime, { success: 1, maxSize, native: 1 });
-                return { success: true, url: pathToFileUrl(thumbPath) };
+                return { ok: true, value: { url: pathToFileUrl(thumbPath) } };
             }
             // If native failed, fall through to sharp (covers formats native can't handle, e.g. SVG)
         }
 
-        if (!thumbnailPool) return { success: false };
+        if (!thumbnailPool) return { ok: false, error: 'thumbnail pool unavailable' };
         const workerT0 = performance.now();
         const result = await thumbnailPool.generate({ type: 'image', filePath, thumbPath, maxSize });
         const workerMs = performance.now() - workerT0;
         _bumpThumbStats(0, 0, 1, workerMs, 0, 0);
         if (result.success && result.thumbPath) {
             logPerf('generate-image-thumbnail.ipc', startTime, { success: 1, maxSize, worker: 1 });
-            return { success: true, url: pathToFileUrl(result.thumbPath) };
+            return { ok: true, value: { url: pathToFileUrl(result.thumbPath) } };
         }
         logPerf('generate-image-thumbnail.ipc', startTime, { success: 0, maxSize, worker: 1 });
-        return { success: false };
+        return { ok: false, error: 'thumbnail generation failed' };
     } catch (error) {
         logPerf('generate-image-thumbnail.ipc', startTime, { error: 1, maxSize });
-        return { success: false, error: error.message };
+        return { ok: false, error:error.message };
     }
 });
 
@@ -3121,7 +3137,7 @@ function _bumpThumbStats(nativeCount, nativeMs, sharpCount, sharpMs, ffmpegCount
 ipcMain.handle('generate-thumbnails-batch', async (event, items) => {
     const startTime = performance.now();
     try {
-        if (!Array.isArray(items) || items.length === 0) return [];
+        if (!Array.isArray(items) || items.length === 0) return { ok: true, value: [] };
 
         // Build thumb paths and stat files in parallel
         const prepared = await Promise.all(items.map(async (item) => {
@@ -3167,7 +3183,7 @@ ipcMain.handle('generate-thumbnails-batch', async (event, items) => {
                     nativeSuccesses++;
                     resultMap.set(r.filePath, {
                         filePath: r.filePath,
-                        success: true,
+                        ok: true,
                         url: pathToFileUrl(r.thumbPath)
                     });
                 } else {
@@ -3191,13 +3207,13 @@ ipcMain.handle('generate-thumbnails-batch', async (event, items) => {
                 const r = results[i];
                 resultMap.set(item.filePath, {
                     filePath: item.filePath,
-                    success: r && r.success,
+                    ok: !!(r && r.success),
                     url: r && r.success && r.thumbPath ? pathToFileUrl(r.thumbPath) : null
                 });
             });
         } else if (workerItems.length > 0) {
             for (const item of workerItems) {
-                resultMap.set(item.filePath, { filePath: item.filePath, success: false, url: null });
+                resultMap.set(item.filePath, { filePath: item.filePath, ok: false, url: null });
             }
         }
         // Distribute the worker-path time across sharp (images) and ffmpeg (videos)
@@ -3208,21 +3224,21 @@ ipcMain.handle('generate-thumbnails-batch', async (event, items) => {
         _bumpThumbStats(nativeSuccesses, nativeMs, nativeFailures.length, sharpMs, videoBatch.length, ffmpegMs);
 
         for (const item of invalidItems) {
-            resultMap.set(item.filePath, { filePath: item.filePath, success: false, url: null });
+            resultMap.set(item.filePath, { filePath: item.filePath, ok: false, url: null });
         }
 
-        const output = items.map(item => resultMap.get(item.filePath) || { filePath: item.filePath, success: false, url: null });
+        const output = items.map(item => resultMap.get(item.filePath) || { filePath: item.filePath, ok: false, url: null });
         const nativeCount = imageBatch.length - nativeFailures.length;
         logPerf('generate-thumbnails-batch', startTime, {
             count: items.length,
-            success: output.filter(r => r.success).length,
+            success: output.filter(r => r.ok).length,
             native: nativeCount,
             worker: workerItems.length
         });
-        return output;
+        return { ok: true, value: output };
     } catch (error) {
         logPerf('generate-thumbnails-batch', startTime, { error: 1 });
-        return items.map(item => ({ filePath: item.filePath, success: false, url: null }));
+        return { ok: false, error: error.message };
     }
 });
 
@@ -3231,7 +3247,7 @@ ipcMain.handle('scan-file-dimensions', async (event, files) => {
     try {
         if (!Array.isArray(files) || files.length === 0) {
             logPerf('scan-file-dimensions', startTime, { files: 0, hits: 0 });
-            return [];
+            return { ok: true, value: [] };
         }
 
         const sanitizedFiles = files.filter(file =>
@@ -3239,7 +3255,7 @@ ipcMain.handle('scan-file-dimensions', async (event, files) => {
         );
         if (sanitizedFiles.length === 0) {
             logPerf('scan-file-dimensions', startTime, { files: 0, hits: 0 });
-            return [];
+            return { ok: true, value: [] };
         }
 
         const results = sanitizedFiles.map(f => ({ path: f.path, width: undefined, height: undefined }));
@@ -3276,10 +3292,10 @@ ipcMain.handle('scan-file-dimensions', async (event, files) => {
         }
 
         logPerf('scan-file-dimensions', startTime, { files: sanitizedFiles.length, hits: results.filter(r => r.width).length });
-        return results;
+        return { ok: true, value: results };
     } catch (error) {
         logPerf('scan-file-dimensions', startTime, { error: 1 });
-        return [];
+        return { ok: false, error: error.message };
     }
 });
 
@@ -3376,7 +3392,7 @@ ipcMain.handle('scan-duplicates', async (event, folderPath, options = {}) => {
         }
         await Promise.all(statPromises);
 
-        if (files.length === 0) return { exactGroups: [], similarGroups: [] };
+        if (files.length === 0) return { ok: true, value: { exactGroups: [], similarGroups: [] } };
 
         event.sender.send('duplicate-scan-progress', { current: 0, total: files.length, phase: 'hashing' });
 
@@ -3630,10 +3646,10 @@ ipcMain.handle('scan-duplicates', async (event, folderPath, options = {}) => {
             };
         });
 
-        return { exactGroups, similarGroups, hashData };
+        return { ok: true, value: { exactGroups, similarGroups, hashData } };
     } catch (error) {
         console.error('Error scanning duplicates:', error);
-        return { exactGroups: [], similarGroups: [], error: error.message };
+        return { ok: false, error: error.message };
     }
 });
 
@@ -3728,10 +3744,10 @@ ipcMain.handle('regroup-duplicates', async (event, hashData, newThreshold) => {
             if (group.length >= 2) similarGroups.push(group);
         }
 
-        return { exactGroups, similarGroups };
+        return { ok: true, value: { exactGroups, similarGroups } };
     } catch (error) {
         console.error('Error regrouping duplicates:', error);
-        return { exactGroups: [], similarGroups: [], error: error.message };
+        return { ok: false, error: error.message };
     }
 });
 
@@ -3765,12 +3781,12 @@ ipcMain.handle('delete-files-batch', async (event, filePaths) => {
             operations
         });
     }
-    return { deleted, failed, trashed: useSystemTrash };
+    return { ok: true, value: { deleted, failed, trashed: useSystemTrash } };
 });
 
 // Check if ffmpeg is available (renderer can adapt UI accordingly)
 ipcMain.handle('has-ffmpeg', async () => {
-    return { ffmpeg: !!ffmpegPath, ffprobe: !!ffprobePath };
+    return { ok: true, value: { ffmpeg: !!ffmpegPath, ffprobe: !!ffprobePath } };
 });
 
 // ─── Video Trimming & File Conversion (ffmpeg-backed) ──────────────────
@@ -3795,10 +3811,10 @@ function _pickSaveAsDialog(defaultPath, filters) {
 ipcMain.handle('show-save-dialog', async (_event, opts) => {
     try {
         const result = await _pickSaveAsDialog(opts?.defaultPath, opts?.filters);
-        if (result.canceled || !result.filePath) return { canceled: true };
-        return { canceled: false, filePath: result.filePath };
+        if (result.canceled || !result.filePath) return { ok: true, value: { canceled: true } };
+        return { ok: true, value: { canceled: false, filePath: result.filePath } };
     } catch (err) {
-        return { canceled: true, error: err.message };
+        return { ok: false, error: err.message };
     }
 });
 
@@ -3809,10 +3825,10 @@ ipcMain.handle('show-folder-picker', async (_event, opts) => {
             defaultPath: opts?.defaultPath || undefined,
             properties: ['openDirectory', 'createDirectory'],
         });
-        if (result.canceled || !result.filePaths[0]) return { canceled: true };
-        return { canceled: false, folderPath: result.filePaths[0] };
+        if (result.canceled || !result.filePaths[0]) return { ok: true, value: { canceled: true } };
+        return { ok: true, value: { canceled: false, folderPath: result.filePaths[0] } };
     } catch (err) {
-        return { canceled: true, error: err.message };
+        return { ok: false, error: err.message };
     }
 });
 
@@ -3988,10 +4004,10 @@ function _parseFfmpegProgressChunk(chunk, totalSec) {
 
 ipcMain.handle('ffmpeg-run', async (event, job) => {
     if (!ffmpegPath) {
-        return { success: false, error: 'ffmpeg not found' };
+        return { ok: false, error:'ffmpeg not found' };
     }
     if (!job || !job.jobId || !job.inputPath || !job.outputPath || !job.operation) {
-        return { success: false, error: 'Invalid job descriptor' };
+        return { ok: false, error:'Invalid job descriptor' };
     }
 
     // Ensure parent dir exists
@@ -4001,13 +4017,13 @@ ipcMain.handle('ffmpeg-run', async (event, job) => {
             fs.mkdirSync(parent, { recursive: true });
         }
     } catch (err) {
-        return { success: false, error: `Cannot create output folder: ${err.message}` };
+        return { ok: false, error:`Cannot create output folder: ${err.message}` };
     }
 
     // Prevent overwriting the input file
     try {
         if (path.resolve(job.inputPath).toLowerCase() === path.resolve(job.outputPath).toLowerCase()) {
-            return { success: false, error: 'Output cannot be the same as input' };
+            return { ok: false, error:'Output cannot be the same as input' };
         }
     } catch { /* path resolve failed, continue */ }
 
@@ -4015,7 +4031,7 @@ ipcMain.handle('ffmpeg-run', async (event, job) => {
     try {
         args = buildFfmpegArgs(job);
     } catch (err) {
-        return { success: false, error: err.message };
+        return { ok: false, error:err.message };
     }
 
     const { spawn } = require('child_process');
@@ -4026,7 +4042,7 @@ ipcMain.handle('ffmpeg-run', async (event, job) => {
         try {
             child = spawn(ffmpegPath, args, { windowsHide: true });
         } catch (err) {
-            resolve({ success: false, error: `Failed to spawn ffmpeg: ${err.message}` });
+            resolve({ ok: false, error:`Failed to spawn ffmpeg: ${err.message}` });
             return;
         }
 
@@ -4056,24 +4072,24 @@ ipcMain.handle('ffmpeg-run', async (event, job) => {
         child.on('error', (err) => {
             _ffmpegJobs.delete(job.jobId);
             try { fs.unlinkSync(job.outputPath); } catch {}
-            resolve({ success: false, error: `ffmpeg failed to start: ${err.message}` });
+            resolve({ ok: false, error:`ffmpeg failed to start: ${err.message}` });
         });
 
         child.on('close', (code, signal) => {
             _ffmpegJobs.delete(job.jobId);
             if (jobState.canceled || signal === 'SIGKILL' || signal === 'SIGTERM') {
                 try { fs.unlinkSync(job.outputPath); } catch {}
-                resolve({ success: false, canceled: true });
+                resolve({ ok: true, value: { canceled: true } });
                 return;
             }
             if (code === 0) {
                 // Final progress tick so the UI can show 100%
                 try { event.sender.send('ffmpeg-progress', { jobId: job.jobId, percent: 100 }); } catch {}
-                resolve({ success: true, outputPath: job.outputPath });
+                resolve({ ok: true, value: { outputPath: job.outputPath } });
             } else {
                 try { fs.unlinkSync(job.outputPath); } catch {}
                 const tail = stderrBuf.trim().split(/\r?\n/).slice(-4).join(' | ');
-                resolve({ success: false, error: `ffmpeg exited with code ${code}: ${tail || 'unknown error'}` });
+                resolve({ ok: false, error:`ffmpeg exited with code ${code}: ${tail || 'unknown error'}` });
             }
         });
     });
@@ -4081,13 +4097,13 @@ ipcMain.handle('ffmpeg-run', async (event, job) => {
 
 ipcMain.handle('ffmpeg-cancel', async (_event, jobId) => {
     const j = _ffmpegJobs.get(jobId);
-    if (!j) return { success: false, error: 'Job not running' };
+    if (!j) return { ok: false, error:'Job not running' };
     j.canceled = true;
     try {
         j.child.kill('SIGKILL');
-        return { success: true };
+        return { ok: true, value: null };
     } catch (err) {
-        return { success: false, error: err.message };
+        return { ok: false, error:err.message };
     }
 });
 
@@ -4177,17 +4193,17 @@ ipcMain.handle('clip-gpu-reset', async () => {
         try { fs.unlinkSync(p); removed++; } catch { /* not present */ }
     }
     _clipLastGpuFallbackReason = null;
-    return { ok: true, removed };
+    return { ok: true, value: { removed } };
 });
 
 ipcMain.handle('clip-gpu-status', async () => {
-    return {
+    return { ok: true, value: {
         lastProvider: _clipLastGpuProvider,
         fallbackReason: _clipLastGpuFallbackReason,
         knownBad: fs.existsSync(getGpuKnownBadPath()),
         sentinelPresent: fs.existsSync(getGpuSentinelPath()),
         envOverride: process.env.CLIP_GPU || null,
-    };
+    } };
 });
 
 ipcMain.handle('clip-check-cache', async () => {
@@ -4197,15 +4213,15 @@ ipcMain.handle('clip-check-cache', async () => {
         const onnxFile = path.join(cacheDir, 'Xenova', 'clip-vit-base-patch32', 'onnx', 'model.onnx');
         const onnxQuantized = path.join(cacheDir, 'Xenova', 'clip-vit-base-patch32', 'onnx', 'model_quantized.onnx');
         const cached = fs.existsSync(onnxFile) || fs.existsSync(onnxQuantized);
-        return { cached };
+        return { ok: true, value: { cached } };
     } catch {
-        return { cached: false };
+        return { ok: true, value: { cached: false } };
     }
 });
 
 ipcMain.handle('clip-init', async (event, payload = {}) => {
     try {
-        if (clipModel) return { success: true };
+        if (clipModel) return { ok: true, value: { gpuMode: _clipLastGpuProvider } };
 
         // Resolve GPU mode first so we know which dtype to download.
         const requestedMode = payload && typeof payload.gpuMode === 'string' ? payload.gpuMode : 'auto';
@@ -4318,11 +4334,11 @@ ipcMain.handle('clip-init', async (event, payload = {}) => {
             }
         }
 
-        return { success: true, gpuMode: _clipLastGpuProvider };
+        return { ok: true, value: { gpuMode: _clipLastGpuProvider } };
     } catch (err) {
         clipModel = null;
         console.error('clip-init error:', err);
-        return { success: false, error: err.message };
+        return { ok: false, error:err.message };
     }
 });
 
@@ -4505,7 +4521,7 @@ async function clipEmbedMultiFrame(framePaths) {
 }
 
 ipcMain.handle('clip-embed-images', async (event, files) => {
-    if (!clipModel) return [];
+    if (!clipModel) return { ok: true, value: [] };
 
     // Phase 1: Pre-extract frames for all video/animated files in parallel.
     // FFmpeg is I/O-bound so we can safely run multiple files concurrently.
@@ -4815,11 +4831,11 @@ ipcMain.handle('clip-embed-images', async (event, files) => {
         for (const fp of framePaths) fs.promises.unlink(fp).catch(() => {});
     }
 
-    return results;
+    return { ok: true, value: results };
 });
 
 ipcMain.handle('clip-embed-text', async (event, text) => {
-    if (!clipModel) return null;
+    if (!clipModel) return { ok: false, error: 'CLIP model not loaded' };
     try {
         const { tokenizer, textModel } = clipModel;
 
@@ -4839,7 +4855,7 @@ ipcMain.handle('clip-embed-text', async (event, text) => {
                 const embDim = flat.length / batchSize;
                 const out = new Array(embDim);
                 for (let j = 0; j < embDim; j++) out[j] = flat[j];
-                return out;
+                return { ok: true, value: out };
             } catch (e) {
                 console.warn('[clip] native text inference failed, falling back to onnxruntime-node:', e.message);
             }
@@ -4855,15 +4871,15 @@ ipcMain.handle('clip-embed-text', async (event, text) => {
         const out = new Array(raw.length);
         for (let i = 0; i < raw.length; i++) out[i] = raw[i] / mag;
 
-        return out;
+        return { ok: true, value: out };
     } catch (err) {
         console.error('clip-embed-text error:', err);
-        return null;
+        return { ok: false, error: err.message };
     }
 });
 
 ipcMain.handle('clip-status', async () => {
-    return { loaded: !!clipModel, native: clipNativeReady };
+    return { ok: true, value: { loaded: !!clipModel, native: clipNativeReady } };
 });
 
 ipcMain.handle('clip-terminate', async () => {
@@ -4878,87 +4894,92 @@ ipcMain.handle('clip-terminate', async () => {
         clipInferenceWorkers[i] = null;
     }
     clipNativeReady = false;
-    return { success: true };
+    return { ok: true, value: null };
 });
 
 // Plugin system IPC handlers
 ipcMain.handle('get-plugin-manifests', () => {
-    return pluginRegistry.getManifests();
+    try { return { ok: true, value: pluginRegistry.getManifests() }; }
+    catch (err) { return { ok: false, error: err.message }; }
 });
 
 ipcMain.handle('execute-plugin-action', async (event, pluginId, actionId, filePath, metadata) => {
     try {
         const result = await pluginRegistry.executeAction(pluginId, actionId, filePath, metadata);
-        return { success: true, result };
+        return { ok: true, value: result };
     } catch (err) {
         console.warn(`[Plugin action] ${pluginId}/${actionId} failed:`, err.message);
-        return { success: false, error: err.message };
+        return { ok: false, error:err.message };
     }
 });
 
 ipcMain.handle('get-plugin-info-sections', () => {
-    return pluginRegistry.getAllInfoSections();
+    try { return { ok: true, value: pluginRegistry.getAllInfoSections() }; }
+    catch (err) { return { ok: false, error: err.message }; }
 });
 
 ipcMain.handle('render-plugin-info-section', async (event, pluginId, sectionId, filePath, pluginMetadata) => {
     try {
         const result = await pluginRegistry.renderInfoSection(pluginId, sectionId, filePath, pluginMetadata);
-        return { success: true, result };
+        return { ok: true, value: result };
     } catch (err) {
         console.warn(`[Plugin info section] ${pluginId}/${sectionId} failed:`, err.message);
-        return { success: false, error: err.message };
+        return { ok: false, error:err.message };
     }
 });
 
 ipcMain.handle('get-plugin-batch-operations', () => {
-    return pluginRegistry.getAllBatchOperations();
+    try { return { ok: true, value: pluginRegistry.getAllBatchOperations() }; }
+    catch (err) { return { ok: false, error: err.message }; }
 });
 
 ipcMain.handle('execute-plugin-batch-operation', async (event, pluginId, operationId, filePaths, options) => {
     try {
         const result = await pluginRegistry.executeBatchOperation(pluginId, operationId, filePaths, options || {});
-        return { success: true, result };
+        return { ok: true, value: result };
     } catch (err) {
         console.warn(`[Plugin batch op] ${pluginId}/${operationId} failed:`, err.message);
-        return { success: false, error: err.message };
+        return { ok: false, error:err.message };
     }
 });
 
 ipcMain.handle('get-plugin-settings-panels', () => {
-    return pluginRegistry.getAllSettingsPanels();
+    try { return { ok: true, value: pluginRegistry.getAllSettingsPanels() }; }
+    catch (err) { return { ok: false, error: err.message }; }
 });
 
 ipcMain.handle('execute-plugin-settings-action', async (event, pluginId, action, data) => {
     try {
         const result = await pluginRegistry.executeSettingsAction(pluginId, action, data);
-        return { success: true, result };
+        return { ok: true, value: result };
     } catch (err) {
         console.warn(`[Plugin settings] ${pluginId}/${action} failed:`, err.message);
-        return { success: false, error: err.message };
+        return { ok: false, error:err.message };
     }
 });
 
 ipcMain.handle('plugin-generate-thumbnail', async (event, filePath, ext) => {
     try {
         const result = await pluginRegistry.generateThumbnail(filePath, ext);
-        return { success: true, result };
+        return { ok: true, value: result };
     } catch (err) {
         console.warn(`[Plugin thumbnail] ${filePath} failed:`, err.message);
-        return { success: false, error: err.message };
+        return { ok: false, error:err.message };
     }
 });
 
 ipcMain.handle('get-plugin-states', () => {
-    return pluginRegistry.getPluginStates();
+    try { return { ok: true, value: pluginRegistry.getPluginStates() }; }
+    catch (err) { return { ok: false, error: err.message }; }
 });
 
 ipcMain.handle('set-plugin-enabled', (event, pluginId, enabled) => {
     try {
         pluginRegistry.setPluginEnabled(pluginId, enabled);
-        return { success: true };
+        return { ok: true, value: null };
     } catch (err) {
         console.warn(`[Plugin toggle] ${pluginId} failed:`, err.message);
-        return { success: false, error: err.message };
+        return { ok: false, error:err.message };
     }
 });
 
@@ -4966,7 +4987,7 @@ ipcMain.handle('set-plugin-enabled', (event, pluginId, enabled) => {
 // Undo file operation
 ipcMain.handle('undo-file-operation', async () => {
     if (undoStack.length === 0) {
-        return { success: false, error: 'Nothing to undo' };
+        return { ok: false, error:'Nothing to undo' };
     }
     const entry = undoStack.pop();
     const completedOps = [];
@@ -4990,7 +5011,7 @@ ipcMain.handle('undo-file-operation', async () => {
             completedOps.push(op);
         }
         redoStack.push(entry);
-        return { success: true, description: entry.description, canUndo: undoStack.length > 0, canRedo: true };
+        return { ok: true, value: { description: entry.description, canUndo: undoStack.length > 0, canRedo: true } };
     } catch (error) {
         console.error('Undo failed:', error);
         // Roll back already-completed operations to restore consistent state
@@ -5012,14 +5033,14 @@ ipcMain.handle('undo-file-operation', async () => {
             }
         }
         undoStack.push(entry);
-        return { success: false, error: error.message, description: entry.description };
+        return { ok: false, error: `${entry.description}: ${error.message}` };
     }
 });
 
 // Redo file operation
 ipcMain.handle('redo-file-operation', async () => {
     if (redoStack.length === 0) {
-        return { success: false, error: 'Nothing to redo' };
+        return { ok: false, error:'Nothing to redo' };
     }
     const entry = redoStack.pop();
     const completedOps = [];
@@ -5042,7 +5063,7 @@ ipcMain.handle('redo-file-operation', async () => {
             completedOps.push(op);
         }
         undoStack.push(entry);
-        return { success: true, description: entry.description, canUndo: true, canRedo: redoStack.length > 0 };
+        return { ok: true, value: { description: entry.description, canUndo: true, canRedo: redoStack.length > 0 } };
     } catch (error) {
         console.error('Redo failed:', error);
         // Roll back already-completed operations to restore consistent state
@@ -5065,7 +5086,7 @@ ipcMain.handle('redo-file-operation', async () => {
             }
         }
         redoStack.push(entry);
-        return { success: false, error: error.message, description: entry.description };
+        return { ok: false, error: `${entry.description}: ${error.message}` };
     }
 });
 
@@ -5107,20 +5128,20 @@ app.on('before-quit', async () => {
 
 // Migration
 ipcMain.handle('db-check-migration-status', async () => {
-    try { return { success: true, data: await appDb.checkMigrationStatus() }; }
-    catch (e) { return { success: false, error: e.message }; }
+    try { return { ok: true, value:await appDb.checkMigrationStatus() }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 ipcMain.handle('db-run-migration', async (event, data) => {
-    try { await appDb.runMigration(data); return { success: true }; }
-    catch (e) { return { success: false, error: e.message }; }
+    try { await appDb.runMigration(data); return { ok: true, value: null }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 ipcMain.handle('db-get-meta', async (event, key) => {
-    try { return { success: true, data: await appDb.getMeta(key) }; }
-    catch (e) { return { success: false, error: e.message }; }
+    try { return { ok: true, value:await appDb.getMeta(key) }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 ipcMain.handle('db-set-meta', async (event, key, value) => {
-    try { await appDb.setMeta(key, value); return { success: true }; }
-    catch (e) { return { success: false, error: e.message }; }
+    try { await appDb.setMeta(key, value); return { ok: true, value: null }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 
 // IPC result caches for frequently-fetched full-table queries
@@ -5129,159 +5150,159 @@ const _ipcCache = { ratings: null, pinned: null, tags: null, collections: null }
 // Ratings
 ipcMain.handle('db-get-all-ratings', async () => {
     try {
-        if (!_ipcCache.ratings) _ipcCache.ratings = { success: true, data: await appDb.getAllRatings() };
+        if (!_ipcCache.ratings) _ipcCache.ratings = { ok: true, value:await appDb.getAllRatings() };
         return _ipcCache.ratings;
     }
-    catch (e) { return { success: false, error: e.message }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 ipcMain.handle('db-set-rating', async (event, filePath, rating) => {
-    try { await appDb.setRating(filePath, rating); _ipcCache.ratings = null; return { success: true }; }
-    catch (e) { return { success: false, error: e.message }; }
+    try { await appDb.setRating(filePath, rating); _ipcCache.ratings = null; return { ok: true, value: null }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 
 // Pins
 ipcMain.handle('db-get-all-pinned', async () => {
     try {
-        if (!_ipcCache.pinned) _ipcCache.pinned = { success: true, data: await appDb.getAllPinned() };
+        if (!_ipcCache.pinned) _ipcCache.pinned = { ok: true, value:await appDb.getAllPinned() };
         return _ipcCache.pinned;
     }
-    catch (e) { return { success: false, error: e.message }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 ipcMain.handle('db-set-pinned', async (event, filePath, pinned) => {
-    try { await appDb.setPinned(filePath, pinned); _ipcCache.pinned = null; return { success: true }; }
-    catch (e) { return { success: false, error: e.message }; }
+    try { await appDb.setPinned(filePath, pinned); _ipcCache.pinned = null; return { ok: true, value: null }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 
 // Favorites
 ipcMain.handle('db-get-favorites', async () => {
-    try { return { success: true, data: await appDb.getFavorites() }; }
-    catch (e) { return { success: false, error: e.message }; }
+    try { return { ok: true, value:await appDb.getFavorites() }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 ipcMain.handle('db-save-favorites', async (event, favObj) => {
-    try { await appDb.saveFavorites(favObj); return { success: true }; }
-    catch (e) { return { success: false, error: e.message }; }
+    try { await appDb.saveFavorites(favObj); return { ok: true, value: null }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 
 // Recent files
 ipcMain.handle('db-get-recent-files', async (event, limit) => {
-    try { return { success: true, data: await appDb.getRecentFiles(limit || 50) }; }
-    catch (e) { return { success: false, error: e.message }; }
+    try { return { ok: true, value:await appDb.getRecentFiles(limit || 50) }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 ipcMain.handle('db-add-recent-file', async (event, entry, limit) => {
-    try { await appDb.addRecentFile(entry, limit || 50); return { success: true }; }
-    catch (e) { return { success: false, error: e.message }; }
+    try { await appDb.addRecentFile(entry, limit || 50); return { ok: true, value: null }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 ipcMain.handle('db-clear-recent-files', async () => {
-    try { await appDb.clearRecentFiles(); return { success: true }; }
-    catch (e) { return { success: false, error: e.message }; }
+    try { await appDb.clearRecentFiles(); return { ok: true, value: null }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 
 // Collections
 ipcMain.handle('db-get-all-collections', async () => {
     try {
-        if (!_ipcCache.collections) _ipcCache.collections = { success: true, data: await appDb.getAllCollections() };
+        if (!_ipcCache.collections) _ipcCache.collections = { ok: true, value:await appDb.getAllCollections() };
         return _ipcCache.collections;
     }
-    catch (e) { return { success: false, error: e.message }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 ipcMain.handle('db-get-collection', async (event, id) => {
-    try { return { success: true, data: await appDb.getCollection(id) }; }
-    catch (e) { return { success: false, error: e.message }; }
+    try { return { ok: true, value:await appDb.getCollection(id) }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 ipcMain.handle('db-save-collection', async (event, col) => {
-    try { _ipcCache.collections = null; return { success: true, data: await appDb.saveCollection(col) }; }
-    catch (e) { return { success: false, error: e.message }; }
+    try { _ipcCache.collections = null; return { ok: true, value:await appDb.saveCollection(col) }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 ipcMain.handle('db-delete-collection', async (event, id) => {
-    try { await appDb.deleteCollection(id); _ipcCache.collections = null; return { success: true }; }
-    catch (e) { return { success: false, error: e.message }; }
+    try { await appDb.deleteCollection(id); _ipcCache.collections = null; return { ok: true, value: null }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 ipcMain.handle('db-get-collection-files', async (event, collectionId) => {
-    try { return { success: true, data: await appDb.getCollectionFiles(collectionId) }; }
-    catch (e) { return { success: false, error: e.message }; }
+    try { return { ok: true, value:await appDb.getCollectionFiles(collectionId) }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 ipcMain.handle('db-add-files-to-collection', async (event, collectionId, filePaths) => {
-    try { return { success: true, data: await appDb.addFilesToCollection(collectionId, filePaths) }; }
-    catch (e) { return { success: false, error: e.message }; }
+    try { return { ok: true, value:await appDb.addFilesToCollection(collectionId, filePaths) }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 ipcMain.handle('db-remove-file-from-collection', async (event, collectionId, filePath) => {
-    try { await appDb.removeFileFromCollection(collectionId, filePath); return { success: true }; }
-    catch (e) { return { success: false, error: e.message }; }
+    try { await appDb.removeFileFromCollection(collectionId, filePath); return { ok: true, value: null }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 ipcMain.handle('db-remove-files-from-collection', async (event, collectionId, filePaths) => {
-    try { await appDb.removeFilesFromCollection(collectionId, filePaths); return { success: true }; }
-    catch (e) { return { success: false, error: e.message }; }
+    try { await appDb.removeFilesFromCollection(collectionId, filePaths); return { ok: true, value: null }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 
 // Tags
 ipcMain.handle('db-create-tag', async (event, name, description, color) => {
-    try { _ipcCache.tags = null; return { success: true, data: await appDb.createTag(name, description, color) }; }
-    catch (e) { return { success: false, error: e.message }; }
+    try { _ipcCache.tags = null; return { ok: true, value:await appDb.createTag(name, description, color) }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 ipcMain.handle('db-update-tag', async (event, id, updates) => {
-    try { _ipcCache.tags = null; return { success: true, data: await appDb.updateTag(id, updates) }; }
-    catch (e) { return { success: false, error: e.message }; }
+    try { _ipcCache.tags = null; return { ok: true, value:await appDb.updateTag(id, updates) }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 ipcMain.handle('db-delete-tag', async (event, id) => {
-    try { await appDb.deleteTag(id); _ipcCache.tags = null; return { success: true }; }
-    catch (e) { return { success: false, error: e.message }; }
+    try { await appDb.deleteTag(id); _ipcCache.tags = null; return { ok: true, value: null }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 ipcMain.handle('db-get-all-tags', async () => {
     try {
-        if (!_ipcCache.tags) _ipcCache.tags = { success: true, data: await appDb.getAllTags() };
+        if (!_ipcCache.tags) _ipcCache.tags = { ok: true, value:await appDb.getAllTags() };
         return _ipcCache.tags;
     }
-    catch (e) { return { success: false, error: e.message }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 ipcMain.handle('db-get-tag', async (event, id) => {
-    try { return { success: true, data: await appDb.getTag(id) }; }
-    catch (e) { return { success: false, error: e.message }; }
+    try { return { ok: true, value:await appDb.getTag(id) }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 ipcMain.handle('db-search-tags', async (event, query) => {
-    try { return { success: true, data: await appDb.searchTags(query) }; }
-    catch (e) { return { success: false, error: e.message }; }
+    try { return { ok: true, value:await appDb.searchTags(query) }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 ipcMain.handle('db-get-top-tags', async (event, limit) => {
-    try { return { success: true, data: await appDb.getTopTags(limit) }; }
-    catch (e) { return { success: false, error: e.message }; }
+    try { return { ok: true, value:await appDb.getTopTags(limit) }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 
 // File-tag associations
 ipcMain.handle('db-add-tag-to-file', async (event, filePath, tagId) => {
-    try { await appDb.addTagToFile(filePath, tagId); return { success: true }; }
-    catch (e) { return { success: false, error: e.message }; }
+    try { await appDb.addTagToFile(filePath, tagId); return { ok: true, value: null }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 ipcMain.handle('db-remove-tag-from-file', async (event, filePath, tagId) => {
-    try { await appDb.removeTagFromFile(filePath, tagId); return { success: true }; }
-    catch (e) { return { success: false, error: e.message }; }
+    try { await appDb.removeTagFromFile(filePath, tagId); return { ok: true, value: null }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 ipcMain.handle('db-get-tags-for-file', async (event, filePath) => {
-    try { return { success: true, data: await appDb.getTagsForFile(filePath) }; }
-    catch (e) { return { success: false, error: e.message }; }
+    try { return { ok: true, value:await appDb.getTagsForFile(filePath) }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 ipcMain.handle('db-get-tags-for-files', async (event, filePaths) => {
-    try { return { success: true, data: await appDb.getTagsForFiles(filePaths) }; }
-    catch (e) { return { success: false, error: e.message }; }
+    try { return { ok: true, value:await appDb.getTagsForFiles(filePaths) }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 ipcMain.handle('db-get-files-for-tag', async (event, tagId) => {
-    try { return { success: true, data: await appDb.getFilesForTag(tagId) }; }
-    catch (e) { return { success: false, error: e.message }; }
+    try { return { ok: true, value:await appDb.getFilesForTag(tagId) }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 ipcMain.handle('db-bulk-tag-files', async (event, filePaths, tagId) => {
-    try { await appDb.bulkTagFiles(filePaths, tagId); return { success: true }; }
-    catch (e) { return { success: false, error: e.message }; }
+    try { await appDb.bulkTagFiles(filePaths, tagId); return { ok: true, value: null }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 ipcMain.handle('db-bulk-remove-tag-from-files', async (event, filePaths, tagId) => {
-    try { await appDb.bulkRemoveTagFromFiles(filePaths, tagId); return { success: true }; }
-    catch (e) { return { success: false, error: e.message }; }
+    try { await appDb.bulkRemoveTagFromFiles(filePaths, tagId); return { ok: true, value: null }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 ipcMain.handle('db-query-files-by-tags', async (event, expression) => {
-    try { return { success: true, data: await appDb.queryFilesByTags(expression) }; }
-    catch (e) { return { success: false, error: e.message }; }
+    try { return { ok: true, value:await appDb.queryFilesByTags(expression) }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 ipcMain.handle('db-save-search', async (event, entry) => {
-    try { return { success: true, data: String((await appDb.saveSearch(entry)) || '') }; }
-    catch (e) { return { success: false, error: String(e && e.message || e) }; }
+    try { return { ok: true, value:String((await appDb.saveSearch(entry)) || '') }; }
+    catch (e) { return { ok: false, error:String(e && e.message || e) }; }
 });
 ipcMain.handle('db-get-saved-searches', async () => {
     try {
@@ -5296,33 +5317,33 @@ ipcMain.handle('db-get-saved-searches', async () => {
             createdAt: r && r.createdAt != null ? Number(r.createdAt) : 0,
             usedAt: r && r.usedAt != null ? Number(r.usedAt) : null
         }));
-        return { success: true, data };
+        return { ok: true, value: data };
     } catch (e) {
         console.error('[main] db-get-saved-searches failed:', e);
-        return { success: false, error: String(e && e.message || e) };
+        return { ok: false, error: String(e && e.message || e) };
     }
 });
 ipcMain.handle('db-delete-saved-search', async (event, id) => {
-    try { await appDb.deleteSavedSearch(id); return { success: true }; }
-    catch (e) { return { success: false, error: e.message }; }
+    try { await appDb.deleteSavedSearch(id); return { ok: true, value: null }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 ipcMain.handle('db-rename-saved-search', async (event, id, name) => {
-    try { await appDb.renameSavedSearch(id, name); return { success: true }; }
-    catch (e) { return { success: false, error: e.message }; }
+    try { await appDb.renameSavedSearch(id, name); return { ok: true, value: null }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 ipcMain.handle('db-touch-saved-search', async (event, id) => {
-    try { await appDb.touchSavedSearch(id); return { success: true }; }
-    catch (e) { return { success: false, error: e.message }; }
+    try { await appDb.touchSavedSearch(id); return { ok: true, value: null }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 ipcMain.handle('db-suggest-tags', async (event, filePath) => {
-    try { return { success: true, data: await appDb.suggestTagsForFile(filePath) }; }
-    catch (e) { return { success: false, error: e.message }; }
+    try { return { ok: true, value:await appDb.suggestTagsForFile(filePath) }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 ipcMain.handle('db-export-tags', async () => {
-    try { return { success: true, data: await appDb.exportTags() }; }
-    catch (e) { return { success: false, error: e.message }; }
+    try { return { ok: true, value:await appDb.exportTags() }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });
 ipcMain.handle('db-import-tags', async (event, data) => {
-    try { await appDb.importTags(data); return { success: true }; }
-    catch (e) { return { success: false, error: e.message }; }
+    try { await appDb.importTags(data); return { ok: true, value: null }; }
+    catch (e) { return { ok: false, error:e.message }; }
 });

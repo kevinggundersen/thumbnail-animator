@@ -4870,6 +4870,11 @@ const lightboxVideo = document.getElementById('lightbox-video');
 const lightboxImage = document.getElementById('lightbox-image');
 const lightboxGifCanvas = document.getElementById('lightbox-gif-canvas');
 const closeLightboxBtn = document.getElementById('close-lightbox');
+const lightboxZoomControls = document.getElementById('lightbox-zoom-controls');
+const lightboxZoomFloatingMount = document.getElementById('lightbox-zoom-floating-mount');
+const lightboxZoomDockMount = document.getElementById('lb-insp-view-mount');
+const lightboxZoomDockSection = document.getElementById('lb-insp-view-sec');
+const lightboxInspector = document.getElementById('lb-inspector');
 const lightboxZoomSlider = document.getElementById('lightbox-zoom-slider');
 const lightboxZoomValue = document.getElementById('lightbox-zoom-value');
 
@@ -4881,6 +4886,23 @@ let dragStartX = 0;
 let dragStartY = 0;
 let currentTranslateX = 0;
 let currentTranslateY = 0;
+
+function syncLightboxZoomControlsPlacement() {
+    if (!lightboxZoomControls || !lightboxZoomFloatingMount || !lightboxZoomDockMount) return;
+
+    const shouldDock = !lightbox.classList.contains('hidden')
+        && !!lightboxInspector
+        && !lightboxInspector.hidden
+        && !inspectorCollapsed;
+    const targetMount = shouldDock ? lightboxZoomDockMount : lightboxZoomFloatingMount;
+
+    if (lightboxZoomControls.parentElement !== targetMount) {
+        targetMount.appendChild(lightboxZoomControls);
+    }
+
+    lightboxZoomControls.dataset.placement = shouldDock ? 'docked' : 'floating';
+    if (lightboxZoomDockSection) lightboxZoomDockSection.hidden = !shouldDock;
+}
 
 // Context Menu Elements
 const contextMenu = document.getElementById('context-menu');
@@ -17819,13 +17841,18 @@ class InspectorPanel {
     _applyCollapsedState() {
         this._root.classList.toggle('collapsed', inspectorCollapsed);
         document.documentElement.style.setProperty('--lb-inspector-width', inspectorCollapsed ? '0px' : '340px');
+        syncLightboxZoomControlsPlacement();
     }
 
     show() {
         this._root.hidden = false;
         this._applyCollapsedState();
     }
-    hide() { this._root.hidden = true; document.documentElement.style.setProperty('--lb-inspector-width', '0px'); }
+    hide() {
+        this._root.hidden = true;
+        document.documentElement.style.setProperty('--lb-inspector-width', '0px');
+        syncLightboxZoomControlsPlacement();
+    }
 
     toggle() {
         inspectorCollapsed = !inspectorCollapsed;
@@ -18885,6 +18912,7 @@ function _enhancedLightboxOnOpen(filePath, controller, mediaUrl) {
     if (inspectorPanelInstance) {
         inspectorPanelInstance.bind(filePath, controller);
     }
+    syncLightboxZoomControlsPlacement();
 }
 
 function _enhancedLightboxOnClose() {
@@ -18896,6 +18924,7 @@ function _enhancedLightboxOnClose() {
     if (filmstripInstance) filmstripInstance.hide();
     if (inspectorPanelInstance) inspectorPanelInstance.unbind();
     if (inspectorPanelInstance) inspectorPanelInstance.hide();
+    syncLightboxZoomControlsPlacement();
 }
 
 // ============================================================================

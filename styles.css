@@ -3356,17 +3356,34 @@ video.blow-up-media {
 }
 
 .lightbox-zoom-controls {
+    background-color: rgba(0, 0, 0, 0.75);
+    padding: 10px var(--space-4);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    z-index: 1001;
+    min-width: 280px;
+}
+
+.lightbox-zoom-controls[data-placement="floating"] {
     position: fixed;
     top: 38px;
     right: calc(60px + var(--lb-inspector-width, 0px));
-    background-color: rgba(0, 0, 0, 0.75);
-    padding: 10px var(--space-4);
     border-radius: 0 0 var(--radius-md) var(--radius-md);
-    border: 1px solid rgba(255, 255, 255, 0.08);
     border-top: none;
-    z-index: 1001;
-    min-width: 280px;
     transition: right 0.18s ease;
+}
+
+.lightbox-zoom-controls[data-placement="docked"] {
+    position: relative;
+    top: auto;
+    right: auto;
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    padding: 0;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
 }
 
 .lightbox-zoom-label {
@@ -9361,6 +9378,10 @@ body.reduce-motion *::after {
     transition: background var(--duration-normal);
 }
 .lb-insp-copy:hover { background: var(--bg-hover); color: var(--accent); }
+
+.lb-insp-view-sec {
+    margin-bottom: 18px;
+}
 
 .lb-insp-actions {
     display: flex;

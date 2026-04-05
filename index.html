@@ -189,19 +189,21 @@
             <button id="close-lightbox"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
             <button id="lightbox-prev" class="lightbox-nav-btn" title="Previous (←)"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg></button>
             <button id="lightbox-next" class="lightbox-nav-btn" title="Next (→)"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg></button>
-            <div class="lightbox-zoom-controls">
-                <label class="lightbox-zoom-label">
-                    <span>Zoom:</span>
-                    <input type="range" id="lightbox-zoom-slider" min="25" max="500" value="100" step="5" class="lightbox-zoom-slider">
-                    <span class="lightbox-zoom-value" id="lightbox-zoom-value">100%</span>
-                </label>
-                <label class="lightbox-zoom-fit-label">
-                    <span>Fit:</span>
-                    <div class="toggle-switch small">
-                        <input type="checkbox" id="lightbox-zoom-to-fit-toggle" checked>
-                        <span class="toggle-slider"></span>
-                    </div>
-                </label>
+            <div id="lightbox-zoom-floating-mount">
+                <div id="lightbox-zoom-controls" class="lightbox-zoom-controls" data-placement="floating">
+                    <label class="lightbox-zoom-label">
+                        <span>Zoom:</span>
+                        <input type="range" id="lightbox-zoom-slider" min="25" max="500" value="100" step="5" class="lightbox-zoom-slider">
+                        <span class="lightbox-zoom-value" id="lightbox-zoom-value">100%</span>
+                    </label>
+                    <label class="lightbox-zoom-fit-label">
+                        <span>Fit:</span>
+                        <div class="toggle-switch small">
+                            <input type="checkbox" id="lightbox-zoom-to-fit-toggle" checked>
+                            <span class="toggle-slider"></span>
+                        </div>
+                    </label>
+                </div>
             </div>
             <!-- Custom media controls -->
             <div class="media-controls" id="media-controls">
@@ -240,6 +242,10 @@
             <aside id="lb-inspector" class="lb-inspector" hidden>
                 <button class="lb-inspector-toggle" id="lb-inspector-toggle" title="Toggle inspector (P)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg></button>
                 <div class="lb-inspector-scroll">
+                    <section class="lb-insp-sec lb-insp-view-sec" id="lb-insp-view-sec" hidden>
+                        <h4>View</h4>
+                        <div id="lb-insp-view-mount"></div>
+                    </section>
                     <section class="lb-insp-sec">
                         <h4>File</h4>
                         <dl class="lb-insp-kv">

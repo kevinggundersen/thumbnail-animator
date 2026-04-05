@@ -34,8 +34,8 @@ async function extractEXIF(filePath) {
 }
 
 /**
- * Render the info section for the file info panel.
- * Returns { title, html, actions } or null.
+ * Render the info section for the lightbox inspector.
+ * Returns { title, html, actions, summary? } or null.
  */
 async function renderEXIFSection(filePath, pluginMetadata) {
     const tags = pluginMetadata?.['exif-metadata'] ?? await extractEXIF(filePath);
@@ -203,7 +203,18 @@ async function renderEXIFSection(filePath, pluginMetadata) {
 
     const actions = [{ label: 'Copy EXIF JSON', copyText: JSON.stringify(tags, null, 2) }];
 
-    return { title: 'EXIF / Metadata', html, actions };
+    const summaryParts = [];
+    const cameraSummary = model?.startsWith(make ?? '\x00') ? model : [make, model].filter(Boolean).join(' ');
+    if (cameraSummary) summaryParts.push(cameraSummary);
+    if (lensModel) summaryParts.push(lensModel);
+    if (dateTaken) summaryParts.push(dateTaken);
+
+    return {
+        title: 'EXIF / Metadata',
+        html,
+        actions,
+        summary: summaryParts.join(' · ')
+    };
 }
 
 /**

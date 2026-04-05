@@ -255,6 +255,14 @@
                         </dl>
                     </section>
                     <section class="lb-insp-sec">
+                        <h4>Actions</h4>
+                        <div class="lb-insp-actions">
+                            <button class="copy-btn" id="copy-path-btn" title="Copy file path">Copy Path</button>
+                            <button class="copy-btn" id="copy-name-btn" title="Copy file name">Copy Name</button>
+                            <button class="copy-btn" id="copy-image-btn" title="Copy to clipboard">Copy</button>
+                        </div>
+                    </section>
+                    <section class="lb-insp-sec">
                         <h4>Rating</h4>
                         <div class="lb-insp-rating" id="lb-insp-rating"></div>
                     </section>
@@ -267,30 +275,16 @@
                         <h4>Palette</h4>
                         <div class="lb-insp-palette" id="lb-insp-palette"></div>
                     </section>
+                    <section class="lb-insp-sec" id="lb-insp-plugin-sec" hidden>
+                        <h4>Plugin Metadata</h4>
+                        <div class="lb-insp-plugin-sections" id="lb-insp-plugin-sections"></div>
+                    </section>
                     <section class="lb-insp-sec">
                         <h4>Similar Items</h4>
                         <div class="lb-insp-similar" id="lb-insp-similar"></div>
                     </section>
                 </div>
             </aside>
-            <div class="lightbox-file-info">
-                <div class="lightbox-filename" id="lightbox-filename"></div>
-                <div class="lightbox-copy-buttons">
-                    <button class="copy-btn" id="copy-path-btn" title="Copy file path">Copy Path</button>
-                    <button class="copy-btn" id="copy-name-btn" title="Copy file name">Copy Name</button>
-                    <button class="copy-btn" id="copy-image-btn" title="Copy to clipboard">Copy</button>
-                    <button class="copy-btn" id="lightbox-info-btn" title="File Information"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg></button>
-                </div>
-            </div>
-        </div>
-        <div id="file-info-panel" class="file-info-panel hidden">
-            <div class="file-info-content">
-                <div class="file-info-header">
-                    <h3>File Information</h3>
-                    <button id="file-info-close" class="file-info-close-btn"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
-                </div>
-                <div id="file-info-details"></div>
-            </div>
         </div>
         <div id="advanced-search-panel" class="advanced-search-panel hidden">
             <div class="advanced-search-content">

@@ -11240,6 +11240,7 @@ async function initPluginsTab() {
                 _pluginMenuItems = null;
                 // Invalidate info sections cache
                 if (typeof _pluginInfoSections !== 'undefined') _pluginInfoSections = null;
+                InspectorPanel._pluginInfoSectionsCache = null;
                 showToast(`Plugin "${pluginId}" ${enabled ? 'enabled' : 'disabled'}`, 'info');
             } catch (err) {
                 showToast(`Failed to toggle plugin: ${err.message}`, 'error');
@@ -12255,16 +12256,10 @@ function openLightbox(mediaUrl, filePath, fileName) {
     // Add to recent files
     addRecentFile(filePath, fileName, mediaUrl, mediaType);
     
-    // Store file info for copy buttons
-    const lightboxFilename = document.getElementById('lightbox-filename');
+    // Store file info for inspector action buttons
     const copyPathBtn = document.getElementById('copy-path-btn');
     const copyNameBtn = document.getElementById('copy-name-btn');
-    
-    // Display filename
-    if (lightboxFilename && fileName) {
-        lightboxFilename.textContent = fileName;
-    }
-    
+
     // Store file path and name in button data attributes for copying
     if (copyPathBtn && filePath) {
         copyPathBtn.dataset.filePath = filePath;
@@ -12272,14 +12267,7 @@ function openLightbox(mediaUrl, filePath, fileName) {
     if (copyNameBtn && fileName) {
         copyNameBtn.dataset.fileName = fileName;
     }
-    
-    // If file info panel is open, update it with new file info instead of closing
-    const fileInfoPanel = document.getElementById('file-info-panel');
-    if (fileInfoPanel && !fileInfoPanel.classList.contains('hidden')) {
-        // Panel is open, update it with the new file's info
-        showFileInfo(filePath);
-    }
-    
+
     // Pause thumbnail videos while lightbox is open
     pauseThumbnailVideos();
 
@@ -12718,13 +12706,7 @@ function closeLightbox() {
 
     // Reset zoom
     resetZoom();
-    
-    // Close file info panel if open
-    const fileInfoPanel = document.getElementById('file-info-panel');
-    if (fileInfoPanel && !fileInfoPanel.classList.contains('hidden')) {
-        fileInfoPanel.classList.add('hidden');
-    }
-    
+
     lightbox.classList.add('hidden');
 
     // Resume thumbnail videos
@@ -12796,7 +12778,13 @@ function handleLightboxWheel(e) {
         console.log('Lightbox is hidden, ignoring wheel');
         return;
     }
-    if (e.target === lightboxZoomSlider || e.target.closest('.lightbox-zoom-controls')) {
+    if (
+        e.target === lightboxZoomSlider ||
+        e.target.closest('.lightbox-zoom-controls') ||
+        e.target.closest('.lb-inspector') ||
+        e.target.closest('.lightbox-filmstrip') ||
+        e.target.closest('.media-controls')
+    ) {
         console.log('Wheel on controls, ignoring');
         return;
     }
@@ -13972,14 +13960,19 @@ async function handleRenameConfirm() {
                 const newUrl = 'file:///' + newPath.replace(/\\/g, '/');
                 window.currentLightboxFilePath = newPath;
                 window.currentLightboxFileUrl = newUrl;
-                const filenameEl = document.getElementById('lightbox-filename');
-                if (filenameEl) filenameEl.textContent = newName;
+                const copyPathBtn = document.getElementById('copy-path-btn');
+                const copyNameBtn = document.getElementById('copy-name-btn');
+                if (copyPathBtn) copyPathBtn.dataset.filePath = newPath;
+                if (copyNameBtn) copyNameBtn.dataset.fileName = newName;
                 // Update lightboxItems entry
                 const idx = lightboxItems.findIndex(it => it.path === oldPath);
                 if (idx !== -1) {
                     lightboxItems[idx].path = newPath;
                     lightboxItems[idx].name = newName;
                     lightboxItems[idx].url = newUrl;
+                }
+                if (inspectorPanelInstance && inspectorPanelInstance._currentPath === oldPath) {
+                    inspectorPanelInstance.bind(newPath, activePlaybackController);
                 }
             }
         } else {
@@ -17745,6 +17738,12 @@ class InspectorPanel {
         this._copyBtn = rootEl.querySelector('#lb-insp-copy-path');
         this._addTagBtn = rootEl.querySelector('#lb-insp-addtag');
         this._toggleBtn = rootEl.querySelector('#lb-inspector-toggle');
+        this._actionButtons = {
+            copyPath: rootEl.querySelector('#copy-path-btn'),
+            copyName: rootEl.querySelector('#copy-name-btn'),
+        };
+        this._pluginSection = rootEl.querySelector('#lb-insp-plugin-sec');
+        this._pluginSections = rootEl.querySelector('#lb-insp-plugin-sections');
         this._bindEvents();
         this._applyCollapsedState();
     }
@@ -17775,6 +17774,14 @@ class InspectorPanel {
             if (!sw) return;
             const hex = sw.dataset.hex;
             if (hex) navigator.clipboard.writeText(hex).then(() => showToast(`${hex} copied`, 'success'));
+        });
+        this._root.addEventListener('click', (e) => {
+            const gpsLink = e.target.closest('.exif-gps-link');
+            if (!gpsLink) return;
+            e.preventDefault();
+            e.stopPropagation();
+            const url = gpsLink.dataset.url;
+            if (url) window.electronAPI.openUrl(url);
         });
         this._similar.addEventListener('click', (e) => {
             const card = e.target.closest('.lb-insp-similar-card');
@@ -17827,6 +17834,7 @@ class InspectorPanel {
         const isControllerUpgrade = (this._currentPath === filePath) && !this._currentController && controller;
         this._currentPath = filePath;
         this._currentController = controller;
+        this._syncActionButtonData();
         this.show();
 
         if (isControllerUpgrade) {
@@ -17850,6 +17858,9 @@ class InspectorPanel {
     unbind() {
         this._currentPath = null;
         this._currentController = null;
+        this._syncActionButtonData();
+        if (this._pluginSections) this._pluginSections.innerHTML = '';
+        if (this._pluginSection) this._pluginSection.hidden = true;
     }
 
     async _renderFileInfo() {
@@ -17878,6 +17889,7 @@ class InspectorPanel {
                 const hasDuration = info.duration && info.duration > 0;
                 this._durationDtDd.forEach(el => el.style.display = hasDuration ? '' : 'none');
                 if (hasDuration) this._fields.duration.textContent = _lbFormatTime(info.duration);
+                await this._renderPluginSections(info.pluginMetadata || {});
             }
         } catch { /* ignore */ }
 
@@ -17893,6 +17905,106 @@ class InspectorPanel {
             this._fields.frames.textContent = String(fc);
         } else {
             this._framesDtDd.forEach(el => el.style.display = 'none');
+        }
+    }
+
+    _syncActionButtonData() {
+        const path = this._currentPath || '';
+        const name = path ? path.split(/[\\/]/).pop() : '';
+        if (this._actionButtons.copyPath) this._actionButtons.copyPath.dataset.filePath = path;
+        if (this._actionButtons.copyName) this._actionButtons.copyName.dataset.fileName = name;
+    }
+
+    async _renderPluginSections(pluginMetadata) {
+        const path = this._currentPath;
+        if (!this._pluginSection || !this._pluginSections || !path) return;
+        this._pluginSections.innerHTML = '';
+        this._pluginSection.hidden = true;
+        if (!pluginMetadata) return;
+        const sections = await this._getPluginInfoSections();
+        let count = 0;
+        for (const section of sections) {
+            const card = await this._buildPluginSection(section, path, pluginMetadata);
+            if (!card || path !== this._currentPath) continue;
+            this._pluginSections.appendChild(card);
+            count++;
+        }
+        if (path !== this._currentPath) return;
+        this._pluginSection.hidden = count === 0;
+    }
+
+    async _getPluginInfoSections() {
+        if (Array.isArray(InspectorPanel._pluginInfoSectionsCache)) {
+            return InspectorPanel._pluginInfoSectionsCache;
+        }
+        try {
+            const res = await window.electronAPI.getPluginInfoSections();
+            InspectorPanel._pluginInfoSectionsCache = res && res.ok ? (res.value || []) : [];
+        } catch {
+            InspectorPanel._pluginInfoSectionsCache = [];
+        }
+        return InspectorPanel._pluginInfoSectionsCache;
+    }
+
+    async _buildPluginSection(section, filePath, pluginMetadata) {
+        try {
+            const res = await window.electronAPI.renderPluginInfoSection(
+                section.pluginId, section.id, filePath, pluginMetadata
+            );
+            if (!res || !res.ok || !res.value || !res.value.html) return null;
+            const { title, html, actions, summary } = res.value;
+
+            const wrapper = document.createElement('section');
+            wrapper.className = 'lb-insp-plugin-section';
+            wrapper.dataset.pluginSection = `${section.pluginId}:${section.id}`;
+
+            const toggleBtn = document.createElement('button');
+            toggleBtn.type = 'button';
+            toggleBtn.className = 'lb-insp-plugin-toggle';
+            toggleBtn.setAttribute('aria-expanded', 'false');
+            toggleBtn.innerHTML = `
+                <span class="lb-insp-plugin-title">${escapeHtml(title || section.title || 'Plugin Info')}</span>
+                ${summary ? `<span class="lb-insp-plugin-summary">${escapeHtml(summary)}</span>` : ''}
+                <span class="lb-insp-plugin-chevron">›</span>
+            `;
+
+            const contentEl = document.createElement('div');
+            contentEl.className = 'lb-insp-plugin-content hidden';
+            contentEl.innerHTML = html;
+
+            if (Array.isArray(actions)) {
+                const actionsEl = document.createElement('div');
+                actionsEl.className = 'lb-insp-plugin-actions';
+                for (const action of actions) {
+                    if (!action.label || !action.copyText) continue;
+                    const btn = document.createElement('button');
+                    btn.type = 'button';
+                    btn.className = 'copy-btn lb-insp-plugin-action';
+                    btn.textContent = action.label;
+                    btn.addEventListener('click', function() {
+                        navigator.clipboard.writeText(action.copyText).then(() => {
+                            const original = this.textContent;
+                            this.textContent = 'Copied!';
+                            setTimeout(() => { this.textContent = original; }, 2000);
+                        });
+                    });
+                    actionsEl.appendChild(btn);
+                }
+                if (actionsEl.childElementCount > 0) contentEl.appendChild(actionsEl);
+            }
+
+            toggleBtn.addEventListener('click', function() {
+                contentEl.classList.toggle('hidden');
+                const isExpanded = !contentEl.classList.contains('hidden');
+                this.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
+            });
+
+            wrapper.appendChild(toggleBtn);
+            wrapper.appendChild(contentEl);
+            return wrapper;
+        } catch (err) {
+            console.warn(`[Plugin info section] ${section.pluginId}/${section.id} failed:`, err.message);
+            return null;
         }
     }
 

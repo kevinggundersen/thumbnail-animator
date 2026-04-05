@@ -3461,42 +3461,6 @@ video.blow-up-media {
     transform: translateX(14px);
 }
 
-.lightbox-file-info {
-    position: fixed;
-    bottom: var(--space-4);
-    right: var(--space-4);
-    display: flex;
-    flex-direction: row;
-    align-items: center;
-    gap: var(--space-2);
-    max-width: 50%;
-    padding: var(--space-2) var(--space-4);
-    z-index: 1001;
-    background: rgba(0, 0, 0, 0.75);
-    border-radius: var(--radius-full);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-.lightbox-filename {
-    color: var(--text-inverse);
-    font-size: 13px;
-    text-align: left;
-    padding: 0;
-    background: none;
-    border-radius: 0;
-    max-width: 300px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    backdrop-filter: none;
-    margin-right: auto;
-}
-
-.lightbox-copy-buttons {
-    display: flex;
-    gap: 6px;
-}
-
 .copy-btn {
     background-color: rgba(255, 255, 255, 0.08);
     color: rgba(255, 255, 255, 0.8);
@@ -4609,88 +4573,6 @@ video.blow-up-media {
     opacity: 1;
 }
 
-/* File Info Panel */
-.file-info-panel {
-    position: fixed;
-    z-index: 2000;
-    pointer-events: none;
-    display: block;
-}
-
-.file-info-panel.hidden {
-    display: none !important;
-}
-
-.file-info-panel:not(.hidden) {
-    pointer-events: auto;
-    display: block;
-}
-
-.file-info-content {
-    background-color: var(--bg-tertiary);
-    border: 1px solid var(--border-default);
-    border-radius: var(--radius-xl);
-    padding: 0;
-    max-width: 600px;
-    max-height: 80vh;
-    overflow-y: auto;
-    box-shadow: var(--shadow-xl);
-    position: relative;
-    animation: modal-enter var(--modal-enter-duration) var(--ease-out-expo);
-}
-
-.file-info-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: var(--space-4) var(--space-6);
-    border-bottom: 1px solid var(--border-default);
-}
-
-.file-info-header h3 {
-    margin: 0;
-    color: var(--text-color);
-    font-size: 18px;
-    font-weight: bold;
-}
-
-.file-info-close-btn {
-    background: none;
-    border: none;
-    color: var(--text-color);
-    font-size: 24px;
-    cursor: pointer;
-    padding: 0;
-    width: 30px;
-    height: 30px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 4px;
-    transition: background-color 0.2s;
-}
-
-.file-info-close-btn:hover {
-    background-color: var(--border-default);
-}
-
-#file-info-details {
-    padding: var(--space-4) var(--space-6) var(--space-6) var(--space-6);
-}
-
-.file-info-content h3 {
-    margin: 0 0 var(--space-4) 0;
-    color: var(--text-color);
-    font-size: 18px;
-    font-weight: bold;
-}
-
-#file-info-details {
-    color: var(--text-color);
-    font-size: 14px;
-    line-height: 1.6;
-}
-
 .file-info-detail-row {
     display: flex;
     justify-content: space-between;
@@ -4725,47 +4607,6 @@ video.blow-up-media {
     margin-top: var(--space-1);
 }
 
-/* ComfyUI Workflow Section */
-.file-info-comfyui-section,
-.file-info-plugin-section {
-    flex-direction: column;
-    align-items: stretch;
-    border-top: 2px solid var(--accent-muted);
-    margin-top: var(--space-2);
-    padding-top: var(--space-3);
-}
-
-.file-info-comfyui-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    width: 100%;
-    margin-bottom: var(--space-2);
-}
-
-.file-info-toggle-btn {
-    background: none;
-    border: none;
-    color: var(--accent);
-    cursor: pointer;
-    font-size: 12px;
-    padding: var(--space-1) var(--space-2);
-    border-radius: 4px;
-    transition: background-color 0.2s;
-}
-
-.file-info-toggle-btn:hover {
-    background-color: var(--accent-muted);
-}
-
-.file-info-comfyui-content {
-    width: 100%;
-}
-
-.file-info-comfyui-content.hidden {
-    display: none;
-}
-
 .file-info-workflow-json {
     width: 100%;
     margin-top: var(--space-2);
@@ -4793,22 +4634,6 @@ video.blow-up-media {
     word-wrap: break-word;
     margin: 0 0 var(--space-2) 0;
     line-height: 1.4;
-}
-
-.file-info-copy-json-btn {
-    background-color: var(--accent);
-    color: var(--bg-primary);
-    border: none;
-    padding: 6px var(--space-3);
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: 12px;
-    font-weight: bold;
-    transition: opacity 0.2s;
-}
-
-.file-info-copy-json-btn:hover {
-    opacity: 0.9;
 }
 
 /* ComfyUI Parameters Section */
@@ -9537,6 +9362,12 @@ body.reduce-motion *::after {
 }
 .lb-insp-copy:hover { background: var(--bg-hover); color: var(--accent); }
 
+.lb-insp-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
 .lb-insp-rating {
     display: flex;
     gap: var(--space-1);
@@ -9610,6 +9441,94 @@ body.reduce-motion *::after {
     transition: opacity var(--duration-normal);
 }
 .lb-palette-swatch:hover::after { opacity: 1; }
+
+.lb-insp-plugin-sections {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.lb-insp-plugin-section {
+    border: 1px solid var(--border-default);
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.03);
+    overflow: hidden;
+}
+
+.lb-insp-plugin-toggle {
+    width: 100%;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 4px 10px;
+    align-items: center;
+    text-align: left;
+    background: transparent;
+    border: none;
+    color: var(--text-primary);
+    padding: 12px;
+    cursor: pointer;
+}
+
+.lb-insp-plugin-title {
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.lb-insp-plugin-summary {
+    grid-column: 1 / 2;
+    font-size: 11px;
+    color: var(--text-secondary);
+    line-height: 1.4;
+}
+
+.lb-insp-plugin-chevron {
+    grid-column: 2 / 3;
+    grid-row: 1 / span 2;
+    align-self: center;
+    color: var(--accent);
+    font-size: 18px;
+    transition: transform var(--duration-fast);
+}
+
+.lb-insp-plugin-toggle[aria-expanded="true"] .lb-insp-plugin-chevron {
+    transform: rotate(90deg);
+}
+
+.lb-insp-plugin-content {
+    padding: 0 12px 12px;
+}
+
+.lb-insp-plugin-content.hidden {
+    display: none;
+}
+
+.lb-insp-plugin-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.lb-insp-plugin-action {
+    border-radius: 8px;
+}
+
+.lb-insp-plugin-content .file-info-detail-row {
+    border-bottom-color: rgba(255, 255, 255, 0.08);
+}
+
+.lb-insp-plugin-content .file-info-detail-label {
+    font-size: 11px;
+}
+
+.lb-insp-plugin-content .file-info-detail-value,
+.lb-insp-plugin-content .file-info-prompt-value {
+    text-align: left;
+}
+
+.lb-insp-plugin-content .file-info-json-pre {
+    max-height: 260px;
+}
 
 .lb-insp-similar {
     display: grid;

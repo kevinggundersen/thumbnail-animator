@@ -175,7 +175,7 @@ function _decodeChunk(chunk) {
 }
 
 /**
- * infoSection renderer: returns { title, html, actions } for the file info panel.
+ * infoSection renderer: returns { title, html, actions, summary? } for the lightbox inspector.
  */
 function renderInfoSection(filePath, pluginMetadata) {
     const data = pluginMetadata && pluginMetadata['comfyui-workflow'];
@@ -218,7 +218,18 @@ function renderInfoSection(filePath, pluginMetadata) {
         actions.push({ label: 'Copy Raw', copyText: data.raw });
     }
 
-    return { title: 'ComfyUI Workflow', html: rows.join(''), actions };
+    const summaryParts = [];
+    if (params?.model) summaryParts.push(params.model);
+    if (params?.width && params?.height) summaryParts.push(`${params.width} x ${params.height}`);
+    if (params?.steps !== null) summaryParts.push(`${params.steps} steps`);
+    if (summaryParts.length === 0 && data.key) summaryParts.push(`Key: ${data.key}`);
+
+    return {
+        title: 'ComfyUI Workflow',
+        html: rows.join(''),
+        actions,
+        summary: summaryParts.join(' · ')
+    };
 }
 
 /**

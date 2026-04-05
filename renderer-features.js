@@ -541,6 +541,15 @@ function initKeyboardShortcuts() {
             if (selectedCardPaths.size >= 2 && selectedCardPaths.size <= 4) {
                 e.preventDefault();
                 if (typeof openCompareMode === 'function') openCompareMode([...selectedCardPaths]);
+            } else {
+                const lightboxOpen = typeof lightbox !== 'undefined' && lightbox && !lightbox.classList.contains('hidden');
+                const hoveredSimilarCard = lightboxOpen ? document.querySelector('.lb-insp-similar-card:hover') : null;
+                const currentPath = lightboxOpen ? window.currentLightboxFilePath : null;
+                const hoveredPath = hoveredSimilarCard?.dataset.path || null;
+                if (currentPath && hoveredPath && currentPath !== hoveredPath) {
+                    e.preventDefault();
+                    if (typeof openCompareMode === 'function') openCompareMode([currentPath, hoveredPath]);
+                }
             }
             return;
         }

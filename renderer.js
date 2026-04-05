@@ -2439,6 +2439,10 @@ function setCollectionLoading(collectionId, loading) {
 // Monotonic token so stale loads don't clobber the grid
 let _collectionLoadToken = 0;
 
+// When set, the foreground AI embedding pipeline is active for this collection.
+// Used to hand off to backgroundScanSmartCollection() on navigate-away so embedding work resumes silently.
+let _aiForegroundScanCollectionId = null;
+
 async function loadCollectionIntoGrid(collectionId) {
     // Clear find-similar state (silent reset)
     if (findSimilarActive) {
@@ -2450,6 +2454,13 @@ async function loadCollectionIntoGrid(collectionId) {
         const fsBanner = document.getElementById('find-similar-banner');
         if (fsBanner) fsBanner.classList.add('hidden');
     }
+    // Hand off any in-flight foreground AI scan from the previous collection to the background scanner
+    if (_aiForegroundScanCollectionId && _aiForegroundScanCollectionId !== collectionId) {
+        const handoffId = _aiForegroundScanCollectionId;
+        _aiForegroundScanCollectionId = null;
+        backgroundScanSmartCollection(handoffId);
+    }
+
     const loadToken = ++_collectionLoadToken;
     stopPeriodicCleanup();
     activeDimensionHydrationToken++;
@@ -2619,6 +2630,7 @@ async function loadCollectionIntoGrid(collectionId) {
         // --- AI Content Search filtering ---
         const aiQuery = collection.rules?.aiQuery;
         if (aiQuery && collection.type === 'smart') {
+            _aiForegroundScanCollectionId = collectionId;
             const aiThreshold = collection.rules.aiThreshold || 0.28;
             const mediaItems = items.filter(i => i.type !== 'folder' && !i.missing);
             // Keep a reference to all metadata-filtered items for background processing
@@ -2828,6 +2840,7 @@ async function loadCollectionIntoGrid(collectionId) {
         if (badge) badge.textContent = items.filter(i => !i.missing).length;
 
     } finally {
+        if (_aiForegroundScanCollectionId === collectionId) _aiForegroundScanCollectionId = null;
         setCollectionLoading(collectionId, false);
     }
 }
@@ -6110,7 +6123,17 @@ function sortItems(items) {
     // Separate folders and files (single pass)
     const folders = [], files = [];
     for (const item of items) (item.type === 'folder' ? folders : files).push(item);
-    
+
+    // AI smart collections sort files by relevance score (highest confidence first),
+    // overriding sortType. Matches the manual AI search bar behavior.
+    let aiCollectionSort = false;
+    if (currentCollectionId) {
+        const _col = collectionsCache.find(c => c.id === currentCollectionId);
+        if (_col && _col.type === 'smart' && _col.rules && _col.rules.aiQuery) {
+            aiCollectionSort = true;
+        }
+    }
+
     // Sort folders
     folders.sort((a, b) => {
         let comparison = 0;
@@ -6132,7 +6155,14 @@ function sortItems(items) {
     // Sort files
     files.sort((a, b) => {
         let comparison = 0;
-        if ((starFilterActive && starSortOrder !== 'none') || sortType === 'rating') {
+        if (aiCollectionSort) {
+            // Sort by AI relevance score (highest confidence first)
+            comparison = (b._aiScore || 0) - (a._aiScore || 0);
+            if (comparison === 0) {
+                comparison = a.name.localeCompare(b.name, undefined, { numeric: true });
+            }
+            return comparison;
+        } else if ((starFilterActive && starSortOrder !== 'none') || sortType === 'rating') {
             // Sort by rating using starSortOrder (or desc for sortType=rating)
             const aRating = getFileRating(a.path);
             const bRating = getFileRating(b.path);
@@ -9389,6 +9419,12 @@ function restoreGridScrollPosition(targetScrollTop) {
 async function navigateToFolder(folderPath, addToHistory = true, forceReload = false) {
     // Exit collection mode when navigating to a folder
     if (currentCollectionId) {
+        // Hand off any in-flight foreground AI scan to the background scanner
+        if (_aiForegroundScanCollectionId && _aiForegroundScanCollectionId === currentCollectionId) {
+            const handoffId = _aiForegroundScanCollectionId;
+            _aiForegroundScanCollectionId = null;
+            backgroundScanSmartCollection(handoffId);
+        }
         currentCollectionId = null;
         _collectionLoadToken++; // Cancel any in-flight smart collection scan
         highlightActiveCollection(null);

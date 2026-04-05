@@ -2119,6 +2119,55 @@ let tabIdCounter = 1;
 // Track lightbox navigation
 let currentLightboxIndex = -1;
 let lightboxItems = []; // Filtered items for lightbox navigation
+// When set, openLightbox uses this override list instead of getFilteredMediaItems().
+// Used by Inspector's "Similar Items" carousel to navigate among similar results.
+let lightboxItemsOverride = null;
+// Hint: if set, openLightbox uses this as currentLightboxIndex (bypasses path lookup).
+// Consumed once per openLightbox call.
+let _lightboxNextIndexHint = null;
+
+// Browser-style viewing history for mouse back/forward buttons.
+// Each entry: {url, path, name}. _lbHistoryIndex points at the current item.
+// Navigating via arrow keys / similar-click PUSHES onto this stack (truncating forward).
+// Mouse back/forward walks the stack without pushing.
+let _lbHistory = [];
+let _lbHistoryIndex = -1;
+let _lbHistoryBlock = false; // when true, openLightbox doesn't push (during history walk)
+function _lbHistoryPush(entry) {
+    if (_lbHistoryBlock) return;
+    // Truncate forward history
+    if (_lbHistoryIndex < _lbHistory.length - 1) {
+        _lbHistory.length = _lbHistoryIndex + 1;
+    }
+    // Don't push duplicate consecutive entries
+    const top = _lbHistory[_lbHistoryIndex];
+    if (top && top.path === entry.path) return;
+    _lbHistory.push(entry);
+    _lbHistoryIndex = _lbHistory.length - 1;
+    // Cap length
+    if (_lbHistory.length > 200) {
+        _lbHistory.splice(0, _lbHistory.length - 200);
+        _lbHistoryIndex = _lbHistory.length - 1;
+    }
+}
+function _lbHistoryGoBack() {
+    if (_lbHistoryIndex <= 0) return false;
+    _lbHistoryIndex--;
+    const e = _lbHistory[_lbHistoryIndex];
+    if (!e) return false;
+    _lbHistoryBlock = true;
+    try { openLightbox(e.url, e.path, e.name); } finally { _lbHistoryBlock = false; }
+    return true;
+}
+function _lbHistoryGoForward() {
+    if (_lbHistoryIndex >= _lbHistory.length - 1) return false;
+    _lbHistoryIndex++;
+    const e = _lbHistory[_lbHistoryIndex];
+    if (!e) return false;
+    _lbHistoryBlock = true;
+    try { openLightbox(e.url, e.path, e.name); } finally { _lbHistoryBlock = false; }
+    return true;
+}
 
 // Track star ratings
 let fileRatings = {}; // Map<filePath, rating (1-5)>
@@ -9309,21 +9358,45 @@ window.addEventListener('popstate', (event) => {
 });
 
 // Handle mouse back/forward buttons directly
-document.addEventListener('mouseup', (e) => {
-    if (e.button === 3) {
-        e.preventDefault();
-        e.stopPropagation();
-        if (navigationHistory.canGoBack()) {
-            goBack();
+// We capture mousedown early to block any default/inner handlers, but ACT on mouseup
+// (mirroring the original behavior). Use a flag to guarantee one-nav-per-press.
+let _mouseNavPending = null; // 'prev' | 'next' | null
+
+window.addEventListener('mousedown', (e) => {
+    if (e.button !== 3 && e.button !== 4) return;
+    e.preventDefault();
+    e.stopPropagation();
+    _mouseNavPending = (e.button === 3) ? 'prev' : 'next';
+}, true);
+
+window.addEventListener('mouseup', (e) => {
+    if (e.button !== 3 && e.button !== 4) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const dir = _mouseNavPending;
+    _mouseNavPending = null;
+    if (!dir) return;
+    const lb = document.getElementById('lightbox');
+    if (lb && !lb.classList.contains('hidden')) {
+        // Walk lightbox viewing history (like a browser)
+        const moved = (dir === 'prev') ? _lbHistoryGoBack() : _lbHistoryGoForward();
+        if (!moved) {
+            // No more history in that direction — fall back to list navigation
+            navigateLightbox(dir);
         }
-    } else if (e.button === 4) {
-        e.preventDefault();
-        e.stopPropagation();
-        if (navigationHistory.canGoForward()) {
-            goForward();
-        }
+        return;
     }
-});
+    if (dir === 'prev') {
+        if (navigationHistory.canGoBack()) goBack();
+    } else {
+        if (navigationHistory.canGoForward()) goForward();
+    }
+}, true);
+
+// Swallow auxclick for back/forward so nothing else reacts to it
+window.addEventListener('auxclick', (e) => {
+    if (e.button === 3 || e.button === 4) { e.preventDefault(); e.stopPropagation(); }
+}, true);
 
 // Function to show drives selection
 async function showDrivesSelection() {
@@ -11377,12 +11450,32 @@ function openLightbox(mediaUrl, filePath, fileName) {
     const mediaType = getFileType(mediaUrl);
 
     // Track current index for navigation
-    lightboxItems = getFilteredMediaItems();
-    currentLightboxIndex = lightboxItems.findIndex(item => item.path === filePath);
-    if (currentLightboxIndex === -1) {
-        currentLightboxIndex = 0;
+    if (lightboxItemsOverride && lightboxItemsOverride.length > 0) {
+        lightboxItems = lightboxItemsOverride;
+        if (_lightboxNextIndexHint != null && _lightboxNextIndexHint >= 0 && _lightboxNextIndexHint < lightboxItems.length) {
+            currentLightboxIndex = _lightboxNextIndexHint;
+        } else {
+            // Case-insensitive path comparison (Windows paths may differ in case)
+            const targetNorm = String(filePath).toLowerCase().replace(/\\/g, '/');
+            currentLightboxIndex = lightboxItems.findIndex(item => String(item.path).toLowerCase().replace(/\\/g, '/') === targetNorm);
+        }
+        if (currentLightboxIndex === -1) {
+            // Target not in override — exit similar-nav mode
+            lightboxItemsOverride = null;
+            lightboxItems = getFilteredMediaItems();
+            currentLightboxIndex = lightboxItems.findIndex(item => item.path === filePath);
+            if (currentLightboxIndex === -1) currentLightboxIndex = 0;
+        }
+    } else {
+        lightboxItems = getFilteredMediaItems();
+        currentLightboxIndex = lightboxItems.findIndex(item => item.path === filePath);
+        if (currentLightboxIndex === -1) currentLightboxIndex = 0;
     }
-    
+    _lightboxNextIndexHint = null; // consume hint
+
+    // Push onto lightbox viewing history (unless we're walking the history right now)
+    _lbHistoryPush({ url: mediaUrl, path: filePath, name: fileName });
+
     // Store current file info globally for info button
     window.currentLightboxFilePath = filePath;
     window.currentLightboxFileUrl = mediaUrl;
@@ -11469,6 +11562,8 @@ function openLightbox(mediaUrl, filePath, fileName) {
             lightboxImage.style.height = 'auto';
             lightboxImage.dataset.src = mediaUrl;
             lightbox.classList.remove('hidden');
+            // Open inspector with null controller — will be rebound when controller is ready
+            try { _enhancedLightboxOnOpen(filePath, null, mediaUrl); } catch (e) { console.warn('enhanced lightbox open failed:', e); }
             // Track when the <img> actually starts animating (on load, not on src set)
             let imgAnimStart = 0;
             const onImgLoad = () => { imgAnimStart = performance.now(); };
@@ -11483,6 +11578,7 @@ function openLightbox(mediaUrl, filePath, fileName) {
                     if (!parsed || parsed.frameCount <= 1) {
                         // Static WebP — already showing as <img>, just hide controls
                         if (mediaControlBarInstance) mediaControlBarInstance.hide();
+                        try { _enhancedLightboxOnOpen(filePath, null, mediaUrl); } catch (e) { console.warn('enhanced lightbox open failed:', e); }
                         return;
                     }
                 }
@@ -11523,6 +11619,9 @@ function openLightbox(mediaUrl, filePath, fileName) {
                     controller.seek(elapsed % controller.duration);
                 }
                 controller.play();
+
+                // Wire enhanced lightbox (inspector + filmstrip) now that controller is ready
+                try { _enhancedLightboxOnOpen(filePath, controller, mediaUrl); } catch (e) { console.warn('enhanced lightbox open failed:', e); }
             }).catch(err => {
                 console.error('Failed to load animated image for playback:', err);
                 // Already showing <img> as fallback, nothing else needed
@@ -11580,6 +11679,14 @@ function openLightbox(mediaUrl, filePath, fileName) {
         }
 
         lightboxVideo.play();
+
+        // Wire enhanced lightbox (inspector + filmstrip) for video
+        try { _enhancedLightboxOnOpen(filePath, controller, mediaUrl); } catch (e) { console.warn('enhanced lightbox open failed:', e); }
+    }
+
+    // For static images (no controller), still show the inspector without filmstrip
+    if (mediaType === 'image' && !(isGif || isWebp)) {
+        try { _enhancedLightboxOnOpen(filePath, null, mediaUrl); } catch (e) { console.warn('enhanced lightbox open failed:', e); }
     }
 
     // Reset keyboard focus
@@ -11847,6 +11954,9 @@ function closeLightbox() {
     // Resume thumbnail videos
     resumeThumbnailVideos();
 
+    // Enhanced lightbox cleanup
+    try { _enhancedLightboxOnClose(); } catch (e) { console.warn('enhanced lightbox close failed:', e); }
+
     // Trigger GC after closing lightbox too
     scheduleGC();
 }
@@ -11864,6 +11974,8 @@ lightbox.addEventListener('contextmenu', (e) => {
     if (e.target.closest('.lightbox-zoom-controls') ||
         e.target.closest('.media-controls') ||
         e.target.closest('.lightbox-file-info') ||
+        e.target.closest('.lightbox-filmstrip') ||
+        e.target.closest('.lb-inspector') ||
         e.target.closest('#close-lightbox') ||
         e.target.closest('.lightbox-nav-btn')) {
         return;
@@ -14574,6 +14686,10 @@ async function openTagPicker(filePaths) {
 function closeTagPicker() {
     document.getElementById('tag-picker-dialog').classList.add('hidden');
     tagPickerFilePaths = [];
+    // Refresh inspector tags if lightbox is open
+    if (inspectorPanelInstance && inspectorPanelInstance._currentPath) {
+        inspectorPanelInstance._renderTags();
+    }
 }
 
 async function renderTagPickerList(filter) {
@@ -15599,6 +15715,904 @@ function ssUpdateControls() {
 })();
 
 // ============================================================================
+// ENHANCED LIGHTBOX: Filmstrip + A-B Loop + Inspector + Save Frame
+// ============================================================================
+
+// ── Shared state ──
+let filmstripInstance = null;
+let inspectorPanelInstance = null;
+let loopPoints = { in: null, out: null }; // seconds
+
+// Persisted inspector collapsed state
+let inspectorCollapsed = localStorage.getItem('lbInspectorCollapsed') === '1';
+
+// ── Helpers ──
+function _lbFormatTime(sec) {
+    if (!isFinite(sec) || sec < 0) sec = 0;
+    const s = Math.floor(sec) % 60;
+    const m = Math.floor(sec / 60) % 60;
+    const h = Math.floor(sec / 3600);
+    const pad = (n) => n < 10 ? '0' + n : '' + n;
+    return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+}
+
+function _lbFormatDate(d) {
+    if (!d) return '—';
+    try { return new Date(d).toLocaleString(); } catch { return '—'; }
+}
+
+// Palette cache keyed by path|mtime
+const _lbPaletteCache = new Map();
+
+function extractDominantColors(sourceCanvas, k = 5) {
+    if (!sourceCanvas || !sourceCanvas.width || !sourceCanvas.height) return [];
+    try {
+        const maxEdge = 64;
+        const scale = Math.min(1, maxEdge / Math.max(sourceCanvas.width, sourceCanvas.height));
+        const w = Math.max(1, Math.round(sourceCanvas.width * scale));
+        const h = Math.max(1, Math.round(sourceCanvas.height * scale));
+        const tmp = document.createElement('canvas');
+        tmp.width = w; tmp.height = h;
+        const tctx = tmp.getContext('2d', { willReadFrequently: true });
+        tctx.drawImage(sourceCanvas, 0, 0, w, h);
+        const data = tctx.getImageData(0, 0, w, h).data;
+        const buckets = new Map(); // key int -> [count, rSum, gSum, bSum]
+        for (let i = 0; i < data.length; i += 4) {
+            if (data[i + 3] < 128) continue;
+            const r = data[i] >> 4;
+            const g = data[i + 1] >> 4;
+            const b = data[i + 2] >> 4;
+            const key = (r << 8) | (g << 4) | b;
+            let e = buckets.get(key);
+            if (!e) { e = [0, 0, 0, 0]; buckets.set(key, e); }
+            e[0]++; e[1] += data[i]; e[2] += data[i + 1]; e[3] += data[i + 2];
+        }
+        const top = [...buckets.values()].sort((a, b) => b[0] - a[0]).slice(0, k);
+        return top.map(e => [e[1] / e[0] | 0, e[2] / e[0] | 0, e[3] / e[0] | 0]);
+    } catch {
+        return [];
+    }
+}
+
+function _lbRgbToHex(r, g, b) {
+    const h = (n) => n.toString(16).padStart(2, '0');
+    return '#' + h(r) + h(g) + h(b);
+}
+
+function findSimilarInLightbox(filePath, k = 6) {
+    if (!filePath) return null;
+    const src = currentEmbeddings.get(filePath);
+    if (!src) return null;
+    const scored = [];
+    for (const [p, emb] of currentEmbeddings) {
+        if (p === filePath) continue;
+        scored.push({ path: p, score: cosineSimilarity(src, emb) });
+    }
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, k);
+}
+
+// ── FilmstripScrubber ──
+class FilmstripScrubber {
+    constructor(rootEl) {
+        this._root = rootEl;
+        this._track = rootEl.querySelector('#lb-filmstrip-track');
+        this._playhead = rootEl.querySelector('#lb-filmstrip-playhead');
+        this._markerIn = rootEl.querySelector('#lb-filmstrip-marker-in');
+        this._markerOut = rootEl.querySelector('#lb-filmstrip-marker-out');
+        this._loopRange = rootEl.querySelector('#lb-filmstrip-loop-range');
+        this._tooltip = rootEl.querySelector('#lb-filmstrip-tooltip');
+        this._tooltipCanvas = rootEl.querySelector('#lb-filmstrip-tooltip-canvas');
+        this._tooltipTime = rootEl.querySelector('#lb-filmstrip-tooltip-time');
+        this._tooltipCtx = this._tooltipCanvas.getContext('2d');
+        this._controller = null;
+        this._mediaUrl = null;
+        this._tileCount = 18;
+        this._tiles = [];           // canvases
+        this._isDragging = false;
+        this._timeupdateHandler = null;
+        this._offscreenVideo = null;
+        this._pendingSeek = null;
+        this._seekBusy = false;
+        this._scrubRafPending = false;
+        this._lastClickTime = 0;
+        this._tooltipRaf = null;
+        this._pendingTooltipTime = null;
+        this._tooltipSeekBusy = false;
+        this._bindEvents();
+    }
+
+    _bindEvents() {
+        this._track.addEventListener('mousedown', (e) => this._onMouseDown(e));
+        this._track.addEventListener('mousemove', (e) => this._onMouseMove(e));
+        this._track.addEventListener('mouseenter', () => { this._tooltip.hidden = false; });
+        this._track.addEventListener('mouseleave', () => { this._tooltip.hidden = true; this._hoverTime = null; });
+        // Draggable markers
+        this._markerIn.addEventListener('mousedown', (e) => this._onMarkerMouseDown(e, 'in'));
+        this._markerOut.addEventListener('mousedown', (e) => this._onMarkerMouseDown(e, 'out'));
+        // Make markers pointer-interactive even though they're absolute overlay
+        this._markerIn.style.pointerEvents = 'auto';
+        this._markerOut.style.pointerEvents = 'auto';
+        this._markerIn.style.cursor = 'ew-resize';
+        this._markerOut.style.cursor = 'ew-resize';
+    }
+
+    /** Current hover time in seconds over the track, or null if cursor is not over the strip. */
+    getHoverTime() { return this._hoverTime; }
+
+    show() { this._root.classList.remove('hidden'); }
+    hide() { this._root.classList.add('hidden'); this._tooltip.hidden = true; }
+
+    async bind(controller, mediaUrl) {
+        this.unbind();
+        if (!controller) { this.hide(); return; }
+        this._controller = controller;
+        this._mediaUrl = mediaUrl;
+
+        // Decide visibility: videos always (if duration); animated images if frameCount > 2
+        const type = controller.mediaType;
+        const isAnimated = (type === 'gif' || type === 'webp') && controller.frameCount > 2;
+        const isVideo = type === 'video';
+        if (!isVideo && !isAnimated) { this.hide(); return; }
+
+        this.show();
+        this._buildTiles();
+        this._updatePlayhead();
+
+        this._timeupdateHandler = () => this._updatePlayhead();
+        controller.on('timeupdate', this._timeupdateHandler);
+
+        // Render frame thumbnails
+        if (isAnimated) {
+            this._renderAnimatedTiles(controller);
+        } else if (isVideo) {
+            this._renderVideoTiles(mediaUrl);
+        }
+    }
+
+    unbind() {
+        if (this._controller && this._timeupdateHandler) {
+            this._controller.off('timeupdate', this._timeupdateHandler);
+        }
+        this._timeupdateHandler = null;
+        this._controller = null;
+        if (this._offscreenVideo) {
+            try { this._offscreenVideo.pause(); this._offscreenVideo.src = ''; } catch {}
+            this._offscreenVideo = null;
+        }
+        this._pendingSeek = null;
+        this._seekBusy = false;
+        this._pendingTooltipTime = null;
+        this._tooltipSeekBusy = false;
+    }
+
+    _buildTiles() {
+        this._track.innerHTML = '';
+        this._tiles = [];
+        for (let i = 0; i < this._tileCount; i++) {
+            const c = document.createElement('canvas');
+            c.width = 160; c.height = 90;
+            this._track.appendChild(c);
+            this._tiles.push(c);
+        }
+    }
+
+    _renderAnimatedTiles(controller) {
+        const frameCount = controller.frameCount;
+        const count = Math.min(this._tileCount, frameCount);
+        if (count < this._tileCount) {
+            // Rebuild with exact count so flex layout looks right
+            this._track.innerHTML = '';
+            this._tiles = [];
+            for (let i = 0; i < count; i++) {
+                const c = document.createElement('canvas');
+                c.width = 160; c.height = 90;
+                this._track.appendChild(c);
+                this._tiles.push(c);
+            }
+        }
+        for (let i = 0; i < count; i++) {
+            const idx = Math.min(frameCount - 1, Math.floor(i * frameCount / count));
+            const src = controller.getFrameAtIndex(idx);
+            if (src) {
+                const ctx = this._tiles[i].getContext('2d');
+                ctx.drawImage(src, 0, 0, 160, 90);
+            }
+        }
+    }
+
+    async _renderVideoTiles(mediaUrl) {
+        // Use a separate offscreen video to avoid fighting user playback
+        const v = document.createElement('video');
+        v.muted = true;
+        v.preload = 'auto';
+        v.src = mediaUrl;
+        this._offscreenVideo = v;
+        try {
+            await new Promise((resolve, reject) => {
+                const onMeta = () => { v.removeEventListener('loadedmetadata', onMeta); resolve(); };
+                const onErr = (e) => { v.removeEventListener('error', onErr); reject(e); };
+                v.addEventListener('loadedmetadata', onMeta);
+                v.addEventListener('error', onErr);
+            });
+        } catch { return; }
+        const duration = v.duration || 0;
+        if (!isFinite(duration) || duration <= 0) return;
+
+        const count = this._tileCount;
+        for (let i = 0; i < count; i++) {
+            if (this._offscreenVideo !== v) return; // unbound
+            const t = ((i + 0.5) / count) * duration;
+            try {
+                await new Promise((resolve) => {
+                    const onSeeked = () => { v.removeEventListener('seeked', onSeeked); resolve(); };
+                    v.addEventListener('seeked', onSeeked);
+                    v.currentTime = Math.min(duration - 0.01, t);
+                    // Safety timeout in case 'seeked' never fires
+                    setTimeout(() => { v.removeEventListener('seeked', onSeeked); resolve(); }, 1500);
+                });
+                if (this._offscreenVideo !== v) return;
+                const ctx = this._tiles[i]?.getContext('2d');
+                if (ctx && v.videoWidth) ctx.drawImage(v, 0, 0, 160, 90);
+            } catch { /* keep going */ }
+        }
+    }
+
+    _updatePlayhead() {
+        if (!this._controller) return;
+        const dur = this._controller.duration;
+        if (dur <= 0) return;
+        const pct = Math.max(0, Math.min(100, (this._controller.currentTime / dur) * 100));
+        this._playhead.style.left = pct + '%';
+    }
+
+    updateMarkers(points) {
+        if (!this._controller) return;
+        const dur = this._controller.duration;
+        if (dur <= 0) { this._markerIn.hidden = true; this._markerOut.hidden = true; this._loopRange.hidden = true; return; }
+        const { in: a, out: b } = points;
+        if (a != null) {
+            this._markerIn.hidden = false;
+            this._markerIn.style.left = Math.max(0, Math.min(100, (a / dur) * 100)) + '%';
+        } else this._markerIn.hidden = true;
+        if (b != null) {
+            this._markerOut.hidden = false;
+            this._markerOut.style.left = Math.max(0, Math.min(100, (b / dur) * 100)) + '%';
+        } else this._markerOut.hidden = true;
+        if (a != null && b != null && b > a) {
+            this._loopRange.hidden = false;
+            const left = (a / dur) * 100;
+            const width = ((b - a) / dur) * 100;
+            this._loopRange.style.left = left + '%';
+            this._loopRange.style.width = width + '%';
+        } else {
+            this._loopRange.hidden = true;
+        }
+    }
+
+    _eventToTime(e) {
+        if (!this._controller) return 0;
+        const rect = this._track.getBoundingClientRect();
+        const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+        return pct * this._controller.duration;
+    }
+
+    _onMouseDown(e) {
+        if (!this._controller) return;
+        e.preventDefault();
+        this._isDragging = true;
+        this._scrubTo(this._eventToTime(e));
+
+        const moveHandler = (ev) => {
+            this._pendingScrubTime = this._eventToTime(ev);
+            if (!this._scrubRafPending) {
+                this._scrubRafPending = true;
+                requestAnimationFrame(() => {
+                    this._scrubRafPending = false;
+                    if (this._pendingScrubTime != null) {
+                        this._scrubTo(this._pendingScrubTime);
+                        this._pendingScrubTime = null;
+                    }
+                });
+            }
+        };
+        const upHandler = () => {
+            this._isDragging = false;
+            this._pendingScrubTime = null;
+            document.removeEventListener('mousemove', moveHandler);
+            document.removeEventListener('mouseup', upHandler);
+        };
+        document.addEventListener('mousemove', moveHandler);
+        document.addEventListener('mouseup', upHandler);
+    }
+
+    _scrubTo(t) {
+        if (this._controller) this._controller.seek(t);
+    }
+
+    _onMouseMove(e) {
+        if (!this._controller) return;
+        const t = this._eventToTime(e);
+        this._hoverTime = t;
+        // Position tooltip
+        const rect = this._track.getBoundingClientRect();
+        const relX = e.clientX - rect.left;
+        this._tooltip.style.left = relX + 'px';
+        this._tooltipTime.textContent = _lbFormatTime(t);
+        this._tooltip.hidden = false;
+
+        // Render preview into tooltip canvas
+        this._pendingTooltipTime = t;
+        if (this._tooltipRaf) return;
+        this._tooltipRaf = requestAnimationFrame(() => {
+            this._tooltipRaf = null;
+            const pt = this._pendingTooltipTime;
+            if (pt == null) return;
+            this._renderTooltipPreview(pt);
+        });
+    }
+
+    _onMarkerMouseDown(e, which) {
+        if (!this._controller) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const trackRect = this._track.getBoundingClientRect();
+        const dur = this._controller.duration;
+        if (dur <= 0) return;
+        const eventToTime = (ev) => {
+            const pct = Math.max(0, Math.min(1, (ev.clientX - trackRect.left) / trackRect.width));
+            return pct * dur;
+        };
+        const move = (ev) => {
+            const t = eventToTime(ev);
+            if (which === 'in') {
+                if (loopPoints.out != null && t >= loopPoints.out) return;
+                loopPoints.in = t;
+            } else {
+                if (loopPoints.in != null && t <= loopPoints.in) return;
+                loopPoints.out = t;
+            }
+            this.updateMarkers(loopPoints);
+            // Live tooltip update
+            this._tooltip.hidden = false;
+            this._tooltip.style.left = (ev.clientX - trackRect.left) + 'px';
+            this._tooltipTime.textContent = _lbFormatTime(t);
+            this._renderTooltipPreview(t);
+        };
+        const up = () => {
+            document.removeEventListener('mousemove', move);
+            document.removeEventListener('mouseup', up);
+            this._tooltip.hidden = true;
+            syncAbLoop();
+        };
+        document.addEventListener('mousemove', move);
+        document.addEventListener('mouseup', up);
+    }
+
+    _renderTooltipPreview(t) {
+        if (!this._controller) return;
+        const type = this._controller.mediaType;
+        this._tooltipCtx.clearRect(0, 0, 160, 90);
+        if (type === 'gif' || type === 'webp') {
+            const idx = this._controller.getFrameIndexAtTime(t);
+            const src = this._controller.getFrameAtIndex(idx);
+            if (src) this._tooltipCtx.drawImage(src, 0, 0, 160, 90);
+        } else if (type === 'video') {
+            // Approximate: upscale nearest filmstrip tile — seeking the offscreen video mid-hover is too slow.
+            if (this._tiles.length > 0 && this._controller.duration > 0) {
+                const idx = Math.max(0, Math.min(this._tiles.length - 1, Math.floor((t / this._controller.duration) * this._tiles.length)));
+                const tile = this._tiles[idx];
+                if (tile) this._tooltipCtx.drawImage(tile, 0, 0, 160, 90);
+            }
+        }
+    }
+
+    destroy() {
+        this.unbind();
+        this.hide();
+    }
+}
+
+// ── InspectorPanel ──
+class InspectorPanel {
+    constructor(rootEl) {
+        this._root = rootEl;
+        this._currentPath = null;
+        this._currentController = null;
+        this._fields = {
+            name: rootEl.querySelector('#lb-insp-name'),
+            path: rootEl.querySelector('#lb-insp-path'),
+            size: rootEl.querySelector('#lb-insp-size'),
+            type: rootEl.querySelector('#lb-insp-type'),
+            dim:  rootEl.querySelector('#lb-insp-dim'),
+            duration: rootEl.querySelector('#lb-insp-duration'),
+            frames:   rootEl.querySelector('#lb-insp-frames'),
+            modified: rootEl.querySelector('#lb-insp-modified'),
+            created:  rootEl.querySelector('#lb-insp-created'),
+        };
+        this._durationDtDd = rootEl.querySelectorAll('.lb-insp-duration-row');
+        this._framesDtDd = rootEl.querySelectorAll('.lb-insp-frames-row');
+        this._rating = rootEl.querySelector('#lb-insp-rating');
+        this._tags = rootEl.querySelector('#lb-insp-tags');
+        this._palette = rootEl.querySelector('#lb-insp-palette');
+        this._similar = rootEl.querySelector('#lb-insp-similar');
+        this._copyBtn = rootEl.querySelector('#lb-insp-copy-path');
+        this._addTagBtn = rootEl.querySelector('#lb-insp-addtag');
+        this._toggleBtn = rootEl.querySelector('#lb-inspector-toggle');
+        this._bindEvents();
+        this._applyCollapsedState();
+    }
+
+    _bindEvents() {
+        this._copyBtn.addEventListener('click', () => {
+            if (this._currentPath) {
+                navigator.clipboard.writeText(this._currentPath).then(() => showToast('Path copied', 'success'));
+            }
+        });
+        this._addTagBtn.addEventListener('click', () => {
+            if (this._currentPath && typeof openTagPicker === 'function') {
+                openTagPicker([this._currentPath]);
+                // Inspector tags will refresh when tag picker closes (see closeTagPicker hook)
+            }
+        });
+        this._rating.addEventListener('click', (e) => {
+            const star = e.target.closest('.star');
+            if (!star || !this._currentPath) return;
+            const r = parseInt(star.dataset.rating, 10) || 0;
+            const current = typeof getFileRating === 'function' ? getFileRating(this._currentPath) : 0;
+            const newRating = (current === r) ? 0 : r; // click same rating to clear
+            if (typeof setFileRating === 'function') setFileRating(this._currentPath, newRating);
+            this._renderRating();
+        });
+        this._palette.addEventListener('click', (e) => {
+            const sw = e.target.closest('.lb-palette-swatch');
+            if (!sw) return;
+            const hex = sw.dataset.hex;
+            if (hex) navigator.clipboard.writeText(hex).then(() => showToast(`${hex} copied`, 'success'));
+        });
+        this._similar.addEventListener('click', (e) => {
+            const card = e.target.closest('.lb-insp-similar-card');
+            if (!card) return;
+            const path = card.dataset.path;
+            if (!path) return;
+            // Build a navigation list: [source, ...top-K similar] so prev/next
+            // navigate among the similar set rather than the folder behind.
+            if (this._lastSimilarResults && this._currentPath) {
+                const navList = [
+                    { url: 'file:///' + this._currentPath.replace(/\\/g, '/'), path: this._currentPath, name: this._currentPath.split(/[\\/]/).pop(), type: 'image' },
+                    ...this._lastSimilarResults.map(r => ({
+                        url: 'file:///' + r.path.replace(/\\/g, '/'),
+                        path: r.path,
+                        name: r.path.split(/[\\/]/).pop(),
+                        type: 'image'
+                    }))
+                ];
+                lightboxItemsOverride = navList;
+                // Find the clicked item's index in the new list and pass as a hint
+                const clickedIdx = navList.findIndex(it => it.path === path);
+                _lightboxNextIndexHint = clickedIdx >= 0 ? clickedIdx : null;
+                showToast(`Nav: ${clickedIdx + 1}/${navList.length} similar — use ← → to browse`, 'info');
+            }
+            const url = 'file:///' + path.replace(/\\/g, '/');
+            const name = path.split(/[\\/]/).pop();
+            if (typeof openLightbox === 'function') openLightbox(url, path, name);
+        });
+        this._toggleBtn.addEventListener('click', () => this.toggle());
+    }
+
+    _applyCollapsedState() {
+        this._root.classList.toggle('collapsed', inspectorCollapsed);
+        document.documentElement.style.setProperty('--lb-inspector-width', inspectorCollapsed ? '0px' : '340px');
+    }
+
+    show() {
+        this._root.hidden = false;
+        this._applyCollapsedState();
+    }
+    hide() { this._root.hidden = true; document.documentElement.style.setProperty('--lb-inspector-width', '0px'); }
+
+    toggle() {
+        inspectorCollapsed = !inspectorCollapsed;
+        localStorage.setItem('lbInspectorCollapsed', inspectorCollapsed ? '1' : '0');
+        this._applyCollapsedState();
+    }
+
+    async bind(filePath, controller) {
+        const isControllerUpgrade = (this._currentPath === filePath) && !this._currentController && controller;
+        this._currentPath = filePath;
+        this._currentController = controller;
+        this.show();
+
+        if (isControllerUpgrade) {
+            // Upgrade: just refresh the controller-dependent bits
+            this._renderFileInfo();
+            this._renderPaletteAfterReady();
+            return;
+        }
+
+        // Render synchronous sections immediately so panel feels responsive
+        this._renderRating();
+        this._renderTags();
+        this._renderSimilar();
+
+        // Async: file info + palette
+        this._renderFileInfo();
+        // Palette extraction waits for controller to be ready
+        this._renderPaletteAfterReady();
+    }
+
+    unbind() {
+        this._currentPath = null;
+        this._currentController = null;
+    }
+
+    async _renderFileInfo() {
+        const path = this._currentPath;
+        if (!path) return;
+        this._fields.name.textContent = path.split(/[\\/]/).pop();
+        this._fields.path.textContent = path;
+        this._fields.size.textContent = '…';
+        this._fields.type.textContent = '…';
+        this._fields.dim.textContent = '—';
+        this._fields.duration.textContent = '—';
+        this._fields.frames.textContent = '—';
+        this._fields.modified.textContent = '—';
+        this._fields.created.textContent = '—';
+        try {
+            const res = await window.electronAPI.getFileInfo(path);
+            if (path !== this._currentPath) return; // navigated away
+            if (res && res.success && res.info) {
+                const info = res.info;
+                this._fields.size.textContent = info.sizeFormatted || (info.size ? info.size + ' bytes' : '—');
+                this._fields.type.textContent = info.type || '—';
+                this._fields.dim.textContent = (info.width && info.height) ? `${info.width} × ${info.height}` : '—';
+                this._fields.modified.textContent = _lbFormatDate(info.modified);
+                this._fields.created.textContent = _lbFormatDate(info.created);
+                // Duration row (video)
+                const hasDuration = info.duration && info.duration > 0;
+                this._durationDtDd.forEach(el => el.style.display = hasDuration ? '' : 'none');
+                if (hasDuration) this._fields.duration.textContent = _lbFormatTime(info.duration);
+            }
+        } catch { /* ignore */ }
+
+        // Duration fallback from controller (GIF/WebP don't use ffprobe)
+        if (this._currentController && this._currentController.duration > 0 && this._fields.duration.textContent === '—') {
+            this._durationDtDd.forEach(el => el.style.display = '');
+            this._fields.duration.textContent = _lbFormatTime(this._currentController.duration);
+        }
+        // Frames (GIF/WebP only)
+        const fc = this._currentController && this._currentController.frameCount;
+        if (fc && fc > 1) {
+            this._framesDtDd.forEach(el => el.style.display = '');
+            this._fields.frames.textContent = String(fc);
+        } else {
+            this._framesDtDd.forEach(el => el.style.display = 'none');
+        }
+    }
+
+    _renderRating() {
+        const path = this._currentPath;
+        const rating = (typeof getFileRating === 'function' && path) ? getFileRating(path) : 0;
+        this._rating.innerHTML = '';
+        for (let i = 1; i <= 5; i++) {
+            const s = document.createElement('span');
+            s.className = 'star' + (i <= rating ? ' filled' : '');
+            s.dataset.rating = String(i);
+            s.textContent = '★';
+            this._rating.appendChild(s);
+        }
+    }
+
+    _renderTags() {
+        const path = this._currentPath;
+        this._tags.innerHTML = '';
+        if (!path) return;
+        const tags = (typeof fileTagsCache !== 'undefined' && fileTagsCache.get)
+            ? fileTagsCache.get(normalizePath(path))
+            : null;
+        if (!tags || tags.length === 0) {
+            const hint = document.createElement('span');
+            hint.style.cssText = 'font-size:11px;color:var(--text-secondary);';
+            hint.textContent = 'No tags';
+            this._tags.appendChild(hint);
+            return;
+        }
+        tags.forEach(t => {
+            const chip = document.createElement('span');
+            chip.className = 'lb-insp-tag-chip';
+            chip.textContent = t.name || '';
+            if (t.color) {
+                chip.style.background = t.color + '33';
+                chip.style.borderColor = t.color + '66';
+            }
+            this._tags.appendChild(chip);
+        });
+    }
+
+    async _renderPaletteAfterReady() {
+        this._palette.innerHTML = '';
+        const path = this._currentPath;
+        const controller = this._currentController;
+        if (!path) return;
+
+        // Try cache first
+        let mtime = 0;
+        const item = (typeof currentItems !== 'undefined') ? currentItems.find(i => i.path === path) : null;
+        if (item) mtime = item.mtime || 0;
+        const cacheKey = `${path}|${mtime}`;
+        const cached = _lbPaletteCache.get(cacheKey);
+        if (cached) { this._renderPaletteSwatches(cached); return; }
+
+        // Determine source canvas: for image, draw lightboxImage; for video, draw lightboxVideo; for gif/webp, use first frame
+        let sourceCanvas = null;
+        try {
+            if (controller && (controller.mediaType === 'gif' || controller.mediaType === 'webp')) {
+                sourceCanvas = controller.getFrameAtIndex(0);
+            } else if (controller && controller.mediaType === 'video') {
+                // Wait for video to be ready enough to draw
+                const vid = document.getElementById('lightbox-video');
+                if (vid && vid.videoWidth > 0) {
+                    const c = document.createElement('canvas');
+                    c.width = vid.videoWidth; c.height = vid.videoHeight;
+                    c.getContext('2d').drawImage(vid, 0, 0);
+                    sourceCanvas = c;
+                }
+            } else {
+                // Static image — draw lightboxImage into a canvas after load
+                const img = document.getElementById('lightbox-image');
+                if (img && img.complete && img.naturalWidth > 0) {
+                    const c = document.createElement('canvas');
+                    c.width = img.naturalWidth; c.height = img.naturalHeight;
+                    c.getContext('2d').drawImage(img, 0, 0);
+                    sourceCanvas = c;
+                }
+            }
+        } catch { /* ignore */ }
+
+        if (!sourceCanvas) {
+            // Retry once after short delay
+            setTimeout(() => {
+                if (path === this._currentPath) this._renderPaletteAfterReady();
+            }, 400);
+            return;
+        }
+
+        const colors = extractDominantColors(sourceCanvas, 5);
+        if (colors.length === 0) return;
+        _lbPaletteCache.set(cacheKey, colors);
+        if (path !== this._currentPath) return;
+        this._renderPaletteSwatches(colors);
+    }
+
+    _renderPaletteSwatches(colors) {
+        this._palette.innerHTML = '';
+        colors.forEach(([r, g, b]) => {
+            const sw = document.createElement('div');
+            sw.className = 'lb-palette-swatch';
+            const hex = _lbRgbToHex(r, g, b);
+            sw.style.background = `rgb(${r},${g},${b})`;
+            sw.dataset.hex = hex;
+            sw.title = hex;
+            this._palette.appendChild(sw);
+        });
+    }
+
+    _renderSimilar() {
+        this._similar.innerHTML = '';
+        const path = this._currentPath;
+        if (!path) { this._lastSimilarResults = null; return; }
+        const results = findSimilarInLightbox(path, 6);
+        this._lastSimilarResults = results;
+        if (results == null) {
+            const empty = document.createElement('div');
+            empty.className = 'lb-insp-similar-empty';
+            empty.innerHTML = 'No embedding yet.<br><button>Compute now</button>';
+            empty.querySelector('button').addEventListener('click', async () => {
+                const item = currentItems.find(i => i.path === path);
+                const mtime = item ? (item.mtime || 0) : 0;
+                try {
+                    const results = await window.electronAPI.clipEmbedImages([{ path, mtime, thumbPath: null }]);
+                    if (results && results[0] && results[0].embedding) {
+                        const emb = l2Normalize(new Float32Array(results[0].embedding));
+                        currentEmbeddings.set(path, emb);
+                        this._renderSimilar();
+                    }
+                } catch (err) { showToast('Failed to compute embedding', 'error'); }
+            });
+            this._similar.appendChild(empty);
+            return;
+        }
+        if (results.length === 0) {
+            const empty = document.createElement('div');
+            empty.className = 'lb-insp-similar-empty';
+            empty.textContent = 'No similar items in this folder.';
+            this._similar.appendChild(empty);
+            return;
+        }
+        results.forEach(r => {
+            const card = document.createElement('div');
+            card.className = 'lb-insp-similar-card';
+            card.dataset.path = r.path;
+            card.title = r.path.split(/[\\/]/).pop();
+            const img = document.createElement('img');
+            img.loading = 'lazy';
+            img.src = 'file:///' + r.path.replace(/\\/g, '/');
+            card.appendChild(img);
+            const score = document.createElement('span');
+            score.className = 'score';
+            score.textContent = (r.score * 100).toFixed(0) + '%';
+            card.appendChild(score);
+            this._similar.appendChild(card);
+        });
+    }
+
+    destroy() {
+        this.unbind();
+        this.hide();
+    }
+}
+
+// ── A-B Loop helpers ──
+// Prefer the cursor hover position on the filmstrip; fall back to playback time.
+function _lbResolveMarkerTime() {
+    if (filmstripInstance) {
+        const hover = filmstripInstance.getHoverTime();
+        if (hover != null && isFinite(hover) && hover >= 0) return hover;
+    }
+    return activePlaybackController ? activePlaybackController.currentTime : 0;
+}
+
+function markLoopIn() {
+    if (!activePlaybackController) return;
+    const t = _lbResolveMarkerTime();
+    if (!isFinite(t) || t < 0) return;
+    if (loopPoints.out != null && t >= loopPoints.out) {
+        loopPoints.in = loopPoints.out;
+        loopPoints.out = t;
+    } else {
+        loopPoints.in = t;
+    }
+    if (filmstripInstance) filmstripInstance.updateMarkers(loopPoints);
+    syncAbLoop();
+    showToast(`Loop in: ${_lbFormatTime(loopPoints.in)}`, 'info');
+}
+
+function markLoopOut() {
+    if (!activePlaybackController) return;
+    const t = _lbResolveMarkerTime();
+    if (!isFinite(t) || t <= 0) return;
+    if (loopPoints.in != null && t <= loopPoints.in) {
+        const tmp = loopPoints.in;
+        loopPoints.in = t;
+        loopPoints.out = tmp;
+    } else {
+        loopPoints.out = t;
+    }
+    if (filmstripInstance) filmstripInstance.updateMarkers(loopPoints);
+    syncAbLoop();
+    showToast(`Loop out: ${_lbFormatTime(loopPoints.out)}`, 'info');
+}
+
+function clearLoopMarks() {
+    loopPoints = { in: null, out: null };
+    if (filmstripInstance) filmstripInstance.updateMarkers(loopPoints);
+    if (activePlaybackController) activePlaybackController.clearAbLoop();
+    showToast('Loop marks cleared', 'info');
+}
+
+function syncAbLoop() {
+    if (!activePlaybackController) return;
+    const { in: a, out: b } = loopPoints;
+    if (a != null && b != null && b > a) {
+        activePlaybackController.setAbLoop(a, b);
+        // Auto-enable loop so A-B actually engages
+        if (!activePlaybackController.getLoop()) {
+            activePlaybackController.setLoop(true);
+            if (mediaControlBarInstance) mediaControlBarInstance.syncState({ loop: true });
+        }
+    } else {
+        activePlaybackController.clearAbLoop();
+    }
+}
+
+// ── Save current frame ──
+async function saveCurrentFrame(promptDialog = false) {
+    if (!activePlaybackController) { showToast('No media to save', 'info'); return; }
+    const mt = activePlaybackController.mediaType;
+    if (mt !== 'video' && mt !== 'gif' && mt !== 'webp') {
+        showToast('Cannot save frame from static image', 'info');
+        return;
+    }
+    const srcPath = window.currentLightboxFilePath;
+    if (!srcPath) { showToast('No source file path', 'error'); return; }
+
+    // Build source canvas
+    let canvas;
+    try {
+        if (mt === 'video') {
+            const vid = document.getElementById('lightbox-video');
+            if (!vid || !vid.videoWidth) { showToast('Video not ready', 'info'); return; }
+            canvas = document.createElement('canvas');
+            canvas.width = vid.videoWidth;
+            canvas.height = vid.videoHeight;
+            canvas.getContext('2d').drawImage(vid, 0, 0);
+        } else {
+            const gifCanvas = document.getElementById('lightbox-gif-canvas');
+            if (!gifCanvas) { showToast('Canvas not ready', 'info'); return; }
+            canvas = gifCanvas;
+        }
+        const dataUrl = canvas.toDataURL('image/png');
+        const base64 = dataUrl.split(',')[1];
+        // Build default path: next to source file
+        const sep = srcPath.includes('\\') ? '\\' : '/';
+        const lastSep = Math.max(srcPath.lastIndexOf('\\'), srcPath.lastIndexOf('/'));
+        const dir = lastSep >= 0 ? srcPath.slice(0, lastSep) : '.';
+        const base = (lastSep >= 0 ? srcPath.slice(lastSep + 1) : srcPath).replace(/\.[^.]+$/, '');
+        const t = activePlaybackController.currentTime || 0;
+        const defaultPath = `${dir}${sep}${base}_frame_${t.toFixed(3)}s.png`;
+        const result = await window.electronAPI.saveFrameAs({ defaultPath, dataBase64: base64, promptDialog });
+        if (result && result.success) {
+            const name = (result.filePath || '').split(/[\\/]/).pop();
+            showToast(`Saved ${name}`, 'success');
+        } else if (result && result.canceled) {
+            /* silent */
+        } else {
+            showToast('Save failed: ' + (result && result.error || 'unknown'), 'error');
+        }
+    } catch (err) {
+        showToast('Save failed: ' + err.message, 'error');
+    }
+}
+
+function toggleInspectorPanel() {
+    if (inspectorPanelInstance) inspectorPanelInstance.toggle();
+}
+
+// Expose on window so the MediaControlBar (in playback-controller.js) can invoke
+window.saveCurrentFrame = saveCurrentFrame;
+
+// ── Initialize + wire into openLightbox/closeLightbox ──
+function ensureEnhancedLightboxInstances() {
+    if (!filmstripInstance) {
+        const el = document.getElementById('lightbox-filmstrip');
+        if (el) filmstripInstance = new FilmstripScrubber(el);
+    }
+    if (!inspectorPanelInstance) {
+        const el = document.getElementById('lb-inspector');
+        if (el) inspectorPanelInstance = new InspectorPanel(el);
+    }
+}
+
+// Called from openLightbox after controller is bound
+function _enhancedLightboxOnOpen(filePath, controller, mediaUrl) {
+    ensureEnhancedLightboxInstances();
+    // Clear loop points per-file
+    loopPoints = { in: null, out: null };
+    if (filmstripInstance) {
+        if (controller) {
+            filmstripInstance.bind(controller, mediaUrl);
+            filmstripInstance.updateMarkers(loopPoints);
+        } else {
+            filmstripInstance.hide();
+        }
+    }
+    if (inspectorPanelInstance) {
+        inspectorPanelInstance.bind(filePath, controller);
+    }
+}
+
+function _enhancedLightboxOnClose() {
+    loopPoints = { in: null, out: null };
+    lightboxItemsOverride = null; // exit similar-nav mode
+    _lbHistory = [];
+    _lbHistoryIndex = -1;
+    if (filmstripInstance) filmstripInstance.unbind();
+    if (filmstripInstance) filmstripInstance.hide();
+    if (inspectorPanelInstance) inspectorPanelInstance.unbind();
+    if (inspectorPanelInstance) inspectorPanelInstance.hide();
+}
+
+// ============================================================================
 // KEYBOARD SHORTCUT REMAPPING SYSTEM
 // ============================================================================
 const DEFAULT_SHORTCUTS = {
@@ -15633,6 +16647,11 @@ const DEFAULT_SHORTCUTS = {
     lb_playPause:   { key: ' ', label: 'Play / Pause', category: 'Lightbox' },
     lb_speedDown:   { key: '[', label: 'Speed down', category: 'Lightbox' },
     lb_speedUp:     { key: ']', label: 'Speed up', category: 'Lightbox' },
+    lb_markIn:          { key: 'i', label: 'Mark loop in',       category: 'Lightbox' },
+    lb_markOut:         { key: 'o', label: 'Mark loop out',      category: 'Lightbox' },
+    lb_clearMarks:      { key: 'x', label: 'Clear loop marks',   category: 'Lightbox' },
+    lb_saveFrame:       { key: 'e', label: 'Save current frame', category: 'Lightbox' },
+    lb_toggleInspector: { key: 'p', label: 'Toggle inspector',   category: 'Lightbox' },
 };
 
 // Merge user overrides over defaults

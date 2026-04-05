@@ -1087,6 +1087,40 @@ ipcMain.handle('select-folder', async (event, defaultPath) => {
     return result.filePaths[0] || null;
 });
 
+ipcMain.handle('save-frame-as', async (event, opts) => {
+    try {
+        const { defaultPath, dataBase64, promptDialog } = opts || {};
+        if (!dataBase64) return { success: false, error: 'No image data' };
+        let targetPath = defaultPath;
+        if (promptDialog) {
+            const result = await dialog.showSaveDialog({
+                title: 'Save Frame',
+                defaultPath: defaultPath || 'frame.png',
+                filters: [{ name: 'PNG Image', extensions: ['png'] }]
+            });
+            if (result.canceled || !result.filePath) return { success: false, canceled: true };
+            targetPath = result.filePath;
+        }
+        if (!targetPath) return { success: false, error: 'No target path' };
+        // If file exists and we didn't prompt, append a counter rather than overwrite
+        if (!promptDialog) {
+            let counter = 1;
+            const ext = path.extname(targetPath);
+            const base = targetPath.slice(0, targetPath.length - ext.length);
+            while (fs.existsSync(targetPath)) {
+                targetPath = `${base}_${counter}${ext}`;
+                counter++;
+                if (counter > 9999) break;
+            }
+        }
+        const buf = Buffer.from(dataBase64, 'base64');
+        await fs.promises.writeFile(targetPath, buf);
+        return { success: true, filePath: targetPath };
+    } catch (err) {
+        return { success: false, error: err.message };
+    }
+});
+
 ipcMain.handle('export-settings-dialog', async (event, jsonString) => {
     try {
         const result = await dialog.showSaveDialog({
@@ -2697,6 +2731,14 @@ ipcMain.handle('get-file-info', async (event, filePath) => {
             } catch (error) {
                 // Silently fail - dimensions are optional
             }
+        }
+
+        // Get duration for videos via ffprobe (optional — don't fail the whole request)
+        if (isVideo) {
+            try {
+                const dur = await getVideoDuration(filePath);
+                if (dur) info.duration = dur;
+            } catch { /* optional */ }
         }
         
         // Run plugin metadata extractors for this file type

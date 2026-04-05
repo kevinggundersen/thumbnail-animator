@@ -1741,21 +1741,21 @@ function getFilteredMediaItems() {
 
 // Lightbox navigation
 function navigateLightbox(direction) {
-    if (lightboxItems.length === 0) {
+    // When similar-nav override is active, keep using it — don't fall back to folder
+    if ((!lightboxItems || lightboxItems.length === 0) && !lightboxItemsOverride) {
         lightboxItems = getFilteredMediaItems();
     }
-    if (lightboxItems.length === 0) return;
-    
-    if (direction === 'next') {
-        currentLightboxIndex = (currentLightboxIndex + 1) % lightboxItems.length;
-    } else {
-        currentLightboxIndex = (currentLightboxIndex - 1 + lightboxItems.length) % lightboxItems.length;
-    }
-    
-    const item = lightboxItems[currentLightboxIndex];
-    if (item) {
-        openLightbox(item.url, item.path, item.name);
-    }
+    if (!lightboxItems || lightboxItems.length === 0) return;
+
+    const newIdx = (direction === 'next')
+        ? (currentLightboxIndex + 1) % lightboxItems.length
+        : (currentLightboxIndex - 1 + lightboxItems.length) % lightboxItems.length;
+
+    const item = lightboxItems[newIdx];
+    if (!item) return;
+    // Pass the pre-computed index as a hint so openLightbox doesn't need to path-lookup
+    _lightboxNextIndexHint = newIdx;
+    openLightbox(item.url, item.path, item.name);
 }
 
 // Video playback controls
@@ -3467,6 +3467,21 @@ function initNewFeatures() {
                         mediaControlBarInstance.syncState({ speed: speeds[idx + 1] });
                     }
                 }
+            } else if (matchesShortcut(e, 'lb_markIn')) {
+                e.preventDefault();
+                markLoopIn();
+            } else if (matchesShortcut(e, 'lb_markOut')) {
+                e.preventDefault();
+                markLoopOut();
+            } else if (matchesShortcut(e, 'lb_clearMarks')) {
+                e.preventDefault();
+                clearLoopMarks();
+            } else if (matchesShortcut(e, 'lb_saveFrame')) {
+                e.preventDefault();
+                saveCurrentFrame(e.shiftKey);
+            } else if (matchesShortcut(e, 'lb_toggleInspector')) {
+                e.preventDefault();
+                toggleInspectorPanel();
             }
         }
     });

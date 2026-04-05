@@ -14,6 +14,7 @@ class MediaPlaybackController {
         this._speed = 1;
         this._loop = false;
         this._repeat = false;
+        this._abLoop = null; // {a, b} in seconds when set
     }
 
     // Override in subclasses
@@ -38,6 +39,15 @@ class MediaPlaybackController {
     getVolume() { return 1; }
     setMuted(val) {}
     getMuted() { return false; }
+
+    // A-B loop range (both endpoints in seconds). When set AND loop is on,
+    // playback cycles between [a, b] instead of the whole clip.
+    setAbLoop(a, b) {
+        if (a == null || b == null || b <= a) { this.clearAbLoop(); return; }
+        this._abLoop = { a: Math.max(0, a), b: Math.min(this.duration || b, b) };
+    }
+    clearAbLoop() { this._abLoop = null; }
+    getAbLoop() { return this._abLoop; }
 
     get currentTime() { return 0; }
     get duration() { return 0; }
@@ -79,7 +89,16 @@ class VideoPlaybackController extends MediaPlaybackController {
     constructor(videoElement) {
         super();
         this._video = videoElement;
-        this._timeupdateHandler = () => this._emit('timeupdate', { currentTime: this.currentTime, duration: this.duration });
+        this._timeupdateHandler = () => {
+            // A-B loop enforcement: wrap back to 'a' when we cross 'b'.
+            if (this._abLoop && this._loop) {
+                const { a, b } = this._abLoop;
+                const t = this._video.currentTime;
+                if (t >= b) { this._video.currentTime = a; }
+                else if (t < a - 0.05) { this._video.currentTime = a; }
+            }
+            this._emit('timeupdate', { currentTime: this.currentTime, duration: this.duration });
+        };
         this._playHandler = () => this._emit('play');
         this._pauseHandler = () => this._emit('pause');
         this._endedHandler = () => {
@@ -124,7 +143,19 @@ class VideoPlaybackController extends MediaPlaybackController {
 
     setLoop(val) {
         super.setLoop(val);
-        this._video.loop = val;
+        // When A-B is active, our timeupdate handler owns the boundary — disable native loop.
+        this._video.loop = val && !this._abLoop;
+    }
+
+    setAbLoop(a, b) {
+        super.setAbLoop(a, b);
+        // A-B wins over native loop: disable video.loop while A-B is set.
+        this._video.loop = this._loop && !this._abLoop;
+    }
+
+    clearAbLoop() {
+        super.clearAbLoop();
+        this._video.loop = this._loop;
     }
 
     setVolume(val) { this._video.volume = Math.max(0, Math.min(1, val)); }
@@ -505,6 +536,17 @@ class AnimatedImagePlaybackController extends MediaPlaybackController {
         this._lastTimestamp = timestamp;
         this._currentTime += delta;
 
+        // A-B loop: if set AND loop on, clamp playback to [a_ms, b_ms].
+        if (this._abLoop && this._loop) {
+            const aMs = this._abLoop.a * 1000;
+            const bMs = this._abLoop.b * 1000;
+            if (this._currentTime >= bMs) {
+                this._currentTime = aMs + ((this._currentTime - aMs) % Math.max(1, bMs - aMs));
+            } else if (this._currentTime < aMs) {
+                this._currentTime = aMs;
+            }
+        }
+
         // Handle looping
         if (this._currentTime >= this._totalDuration) {
             if (this._loop) {
@@ -625,6 +667,31 @@ class AnimatedImagePlaybackController extends MediaPlaybackController {
     get gifWidth() { return this._gifWidth; }
     get gifHeight() { return this._gifHeight; }
 
+    /**
+     * Return the composited canvas for frame `i`, materializing it on demand.
+     * Callers should NOT hold long references — in windowed mode the canvas
+     * may be evicted. Copy via drawImage() if you need persistence.
+     */
+    getFrameAtIndex(i) {
+        if (i < 0 || i >= this._frames.length) return null;
+        if (!this._composited[i]) {
+            if (this._useWindow) this._ensureWindowAround(i);
+            else this._preRenderRange(this._preRenderedUpTo + 1, i + 1);
+        }
+        return this._composited[i] || null;
+    }
+
+    /** End timestamp (seconds) of frame `i`. */
+    getTimestampAtFrame(i) {
+        if (i < 0 || i >= this._frameTimeline.length) return 0;
+        return (this._frameTimeline[i] || 0) / 1000;
+    }
+
+    /** Resolve a frame index for a given time in seconds. */
+    getFrameIndexAtTime(seconds) {
+        return this._getFrameAtTime(Math.max(0, seconds) * 1000);
+    }
+
     destroy() {
         this.pause();
         this._frames = [];
@@ -667,6 +734,7 @@ class MediaControlBar {
         this._volumeBtn = containerEl.querySelector('.mc-volume-btn');
         this._volumeSlider = containerEl.querySelector('.mc-volume-slider');
         this._volumeGroup = containerEl.querySelector('.mc-volume-group');
+        this._saveFrameBtn = containerEl.querySelector('.mc-save-frame');
 
         try {
             const customSpeeds = JSON.parse(localStorage.getItem('playbackSpeeds'));
@@ -696,6 +764,13 @@ class MediaControlBar {
 
         // Repeat button
         this._repeatBtn?.addEventListener('click', () => this._toggleRepeat());
+
+        // Save frame button (E key; Shift+E for dialog)
+        this._saveFrameBtn?.addEventListener('click', (e) => {
+            if (typeof window.saveCurrentFrame === 'function') {
+                window.saveCurrentFrame(e.shiftKey);
+            }
+        });
 
         // Volume button (mute toggle)
         this._volumeBtn?.addEventListener('click', () => {

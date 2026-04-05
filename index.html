@@ -207,11 +207,61 @@
                 <button class="mc-btn mc-speed-btn" title="Playback speed">1x</button>
                 <button class="mc-btn mc-loop-btn" title="Loop: Off"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="17,1 21,5 17,9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7,23 3,19 7,15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></button>
                 <button class="mc-btn mc-repeat-btn" title="Repeat: Off"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 2l4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/><line x1="12" y1="10" x2="12" y2="14"/></svg></button>
+                <button class="mc-btn mc-save-frame" title="Save current frame (E)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg></button>
                 <div class="mc-volume-group">
                     <button class="mc-btn mc-volume-btn" title="Volume"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11,5 6,9 2,9 2,15 6,15 11,19"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg></button>
                     <input type="range" class="mc-volume-slider" min="0" max="100" value="100" title="Volume">
                 </div>
             </div>
+            <!-- Timeline filmstrip scrubber (videos + animated GIF/WebP) -->
+            <div id="lightbox-filmstrip" class="lightbox-filmstrip hidden">
+                <div class="lb-filmstrip-track" id="lb-filmstrip-track"></div>
+                <div class="lb-filmstrip-loop-range" id="lb-filmstrip-loop-range" hidden></div>
+                <div class="lb-filmstrip-playhead" id="lb-filmstrip-playhead"></div>
+                <div class="lb-filmstrip-marker lb-filmstrip-marker-in" id="lb-filmstrip-marker-in" hidden title="Loop in (I)"></div>
+                <div class="lb-filmstrip-marker lb-filmstrip-marker-out" id="lb-filmstrip-marker-out" hidden title="Loop out (O)"></div>
+                <div class="lb-filmstrip-tooltip" id="lb-filmstrip-tooltip" hidden>
+                    <canvas class="lb-filmstrip-tooltip-canvas" id="lb-filmstrip-tooltip-canvas" width="160" height="90"></canvas>
+                    <div class="lb-filmstrip-tooltip-time" id="lb-filmstrip-tooltip-time">00:00</div>
+                </div>
+            </div>
+            <!-- Inspector side panel -->
+            <aside id="lb-inspector" class="lb-inspector" hidden>
+                <button class="lb-inspector-toggle" id="lb-inspector-toggle" title="Toggle inspector (P)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg></button>
+                <div class="lb-inspector-scroll">
+                    <section class="lb-insp-sec">
+                        <h4>File</h4>
+                        <dl class="lb-insp-kv">
+                            <dt>Name</dt><dd id="lb-insp-name"></dd>
+                            <dt>Path</dt><dd class="lb-insp-pathrow"><span id="lb-insp-path"></span><button class="lb-insp-copy" id="lb-insp-copy-path" title="Copy path">Copy</button></dd>
+                            <dt>Size</dt><dd id="lb-insp-size"></dd>
+                            <dt>Type</dt><dd id="lb-insp-type"></dd>
+                            <dt>Dimensions</dt><dd id="lb-insp-dim"></dd>
+                            <dt class="lb-insp-duration-row">Duration</dt><dd class="lb-insp-duration-row" id="lb-insp-duration"></dd>
+                            <dt class="lb-insp-frames-row">Frames</dt><dd class="lb-insp-frames-row" id="lb-insp-frames"></dd>
+                            <dt>Modified</dt><dd id="lb-insp-modified"></dd>
+                            <dt>Created</dt><dd id="lb-insp-created"></dd>
+                        </dl>
+                    </section>
+                    <section class="lb-insp-sec">
+                        <h4>Rating</h4>
+                        <div class="lb-insp-rating" id="lb-insp-rating"></div>
+                    </section>
+                    <section class="lb-insp-sec">
+                        <h4>Tags</h4>
+                        <div class="lb-insp-tags" id="lb-insp-tags"></div>
+                        <button class="lb-insp-addtag" id="lb-insp-addtag">+ Add tag</button>
+                    </section>
+                    <section class="lb-insp-sec">
+                        <h4>Palette</h4>
+                        <div class="lb-insp-palette" id="lb-insp-palette"></div>
+                    </section>
+                    <section class="lb-insp-sec">
+                        <h4>Similar Items</h4>
+                        <div class="lb-insp-similar" id="lb-insp-similar"></div>
+                    </section>
+                </div>
+            </aside>
             <div class="lightbox-file-info">
                 <div class="lightbox-filename" id="lightbox-filename"></div>
                 <div class="lightbox-copy-buttons">

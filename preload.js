@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     removeWindowRestoredListener: () => ipcRenderer.removeAllListeners('window-restored'),
     // New IPC handlers
     getFileInfo: (filePath) => ipcRenderer.invoke('get-file-info', filePath),
+    saveFrameAs: (opts) => ipcRenderer.invoke('save-frame-as', opts),
     createFolder: (folderPath, folderName) => ipcRenderer.invoke('create-folder', folderPath, folderName),
     moveFile: (sourcePath, destFolder, fileName, conflictResolution) => ipcRenderer.invoke('move-file', sourcePath, destFolder, fileName, conflictResolution),
     copyFile: (sourcePath, destFolder, fileName, conflictResolution) => ipcRenderer.invoke('copy-file', sourcePath, destFolder, fileName, conflictResolution),

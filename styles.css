@@ -64,6 +64,22 @@
     --duration-fast: 0.1s;
     --duration-normal: 0.15s;
     --duration-slow: 0.25s;
+
+    /* Z-index scale — use these instead of magic numbers */
+    --z-sticky: 10;          /* sticky headers within scroll containers */
+    --z-header: 100;         /* app header / nav */
+    --z-dropdown: 1000;      /* menu dropdowns, context menus */
+    --z-modal: 2500;         /* modal overlays (settings, batch rename, etc.) */
+    --z-overlay: 9200;       /* full-screen overlays (compare, slideshow, lightbox) */
+    --z-palette: 10010;      /* command palette (above overlays) */
+    --z-toast: 10020;        /* toasts (above everything) */
+
+    /* Modal / overlay styling */
+    --modal-backdrop: rgba(0, 0, 0, 0.6);
+    --modal-blur: 16px;
+    --modal-blur-strong: 24px;
+    --modal-blur-light: 4px;
+    --modal-enter-duration: 0.2s;
 }
 
 /* Smooth theme color transitions */
@@ -273,6 +289,33 @@ button:active:not(:disabled):not(.lightbox-nav-btn) {
 .status-bar .zoom-value {
     min-width: 30px;
     text-align: right;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.view-menu-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+.view-menu-popover {
+    position: absolute;
+    bottom: 100%;
+    right: 0;
+    margin-bottom: 8px;
+    padding: 8px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-lg);
+    z-index: var(--z-dropdown);
+    min-width: 200px;
+}
+.view-menu-popover.hidden { display: none; }
+.view-menu-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     font-size: 11px;
     color: var(--text-secondary);
 }
@@ -1838,8 +1881,8 @@ header {
     display: flex;
     justify-content: center;
     align-items: center;
-    z-index: 2500;
-    backdrop-filter: blur(16px);
+    z-index: var(--z-modal);
+    backdrop-filter: blur(var(--modal-blur));
 }
 
 .settings-modal.hidden {
@@ -3548,8 +3591,8 @@ video.blow-up-media {
     display: flex;
     justify-content: center;
     align-items: center;
-    z-index: 2500;
-    backdrop-filter: blur(16px);
+    z-index: var(--z-modal);
+    backdrop-filter: blur(var(--modal-blur));
 }
 #batch-rename-overlay.hidden { display: none; }
 .batch-rename-modal .modal-header {
@@ -3713,8 +3756,8 @@ video.blow-up-media {
     display: flex;
     justify-content: center;
     align-items: center;
-    z-index: 2500;
-    backdrop-filter: blur(16px);
+    z-index: var(--z-modal);
+    backdrop-filter: blur(var(--modal-blur));
 }
 .auto-tag-overlay.hidden { display: none; }
 .auto-tag-modal {
@@ -4833,8 +4876,8 @@ video.blow-up-media {
     display: flex;
     justify-content: center;
     align-items: center;
-    z-index: 2500;
-    backdrop-filter: blur(16px);
+    z-index: var(--z-modal);
+    backdrop-filter: blur(var(--modal-blur));
 }
 
 .duplicates-modal.hidden {
@@ -5928,8 +5971,8 @@ video.blow-up-media {
     right: 0;
     bottom: 0;
     background: rgba(0, 0, 0, 0.4);
-    backdrop-filter: blur(4px);
-    z-index: 10010;
+    backdrop-filter: blur(var(--modal-blur-light));
+    z-index: var(--z-palette);
     display: flex;
     align-items: flex-start;
     justify-content: center;
@@ -6995,7 +7038,7 @@ video.blow-up-media {
     position: fixed;
     bottom: 36px;
     right: 16px;
-    z-index: 10000;
+    z-index: var(--z-toast);
     display: flex;
     flex-direction: column-reverse;
     gap: 8px;
@@ -8034,7 +8077,7 @@ video.blow-up-media {
 .compare-mode-overlay {
     position: fixed;
     inset: 0;
-    z-index: 9100;
+    z-index: var(--z-overlay);
     background: #080808;
     display: flex;
     flex-direction: column;
@@ -8161,7 +8204,7 @@ video.cmo-media {
 .slideshow-overlay {
     position: fixed;
     inset: 0;
-    z-index: 9200;
+    z-index: var(--z-overlay);
     background: #000;
     display: flex;
     align-items: center;

@@ -4477,7 +4477,9 @@ window.addEventListener('DOMContentLoaded', async () => {
         groupByDate = true;
         const gbdBtn = document.getElementById('group-by-date-btn');
         const gbdGran = document.getElementById('date-group-granularity-select');
+        const viewMenuBtn = document.getElementById('view-menu-btn');
         if (gbdBtn) gbdBtn.classList.add('active');
+        if (viewMenuBtn) viewMenuBtn.classList.add('active');
         if (gbdGran) {
             gbdGran.classList.remove('date-group-granularity-hidden');
             gbdGran.classList.add('date-group-granularity-visible');

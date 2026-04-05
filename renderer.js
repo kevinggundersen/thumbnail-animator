@@ -15007,6 +15007,8 @@ let preDateGroupSortType = null;
     btn.addEventListener('click', () => {
         groupByDate = !groupByDate;
         btn.classList.toggle('active', groupByDate);
+        const viewBtn = document.getElementById('view-menu-btn');
+        if (viewBtn) viewBtn.classList.toggle('active', groupByDate);
         gran.classList.toggle('date-group-granularity-hidden', !groupByDate);
         gran.classList.toggle('date-group-granularity-visible', groupByDate);
         collapsedDateGroups.clear();
@@ -15032,6 +15034,27 @@ let preDateGroupSortType = null;
         collapsedDateGroups.clear();
         deferLocalStorageWrite('dateGroupGranularity', dateGroupGranularity);
         if (groupByDate) applySorting();
+    });
+})();
+
+// Wire up View menu popover
+(function initViewMenu() {
+    const btn = document.getElementById('view-menu-btn');
+    const popover = document.getElementById('view-menu-popover');
+    if (!btn || !popover) return;
+    btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const wasHidden = popover.classList.contains('hidden');
+        popover.classList.toggle('hidden');
+        btn.setAttribute('aria-expanded', wasHidden ? 'true' : 'false');
+    });
+    document.addEventListener('click', (e) => {
+        if (!popover.classList.contains('hidden') &&
+            !popover.contains(e.target) &&
+            !btn.contains(e.target)) {
+            popover.classList.add('hidden');
+            btn.setAttribute('aria-expanded', 'false');
+        }
     });
 })();
 

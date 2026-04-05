@@ -9476,27 +9476,36 @@ gridContainer.addEventListener('mouseover', (e) => {
             showGifProgress(card);
         }
     }
-    // Check if filename text overlaps with right-aligned tags and shift if needed
+    // Check if filename text overlaps with right-aligned tags and shift if needed.
+    // Deferred via rIC so the three gbcr reads don't force synchronous layout on the
+    // mouseover critical path — was causing ~20ms cumulative reflow during fast scroll.
     if (card && !card.dataset.tagOverlapChecked) {
-        const info = card.querySelector('.video-info');
-        const tagsEl = card.querySelector('.card-tags');
-        if (info && tagsEl) {
+        card.dataset.tagOverlapChecked = '1'; // claim the slot immediately
+        const runCheck = () => {
+            if (!card.isConnected) return;
+            const info = card.querySelector('.video-info');
+            const tagsEl = card.querySelector('.card-tags');
+            if (!info || !tagsEl) return;
             if (!cardInfoSettings.filename || !cardInfoSettings.tags) {
                 tagsEl.classList.remove('tags-shifted');
-            } else {
-                const firstBadge = tagsEl.querySelector('.tag-badge');
-                if (firstBadge) {
-                    const range = document.createRange();
-                    range.selectNodeContents(info);
-                    const textWidth = range.getBoundingClientRect().width;
-                    const cardLeft = card.getBoundingClientRect().left;
-                    const badgeLeft = firstBadge.getBoundingClientRect().left - cardLeft;
-                    tagsEl.classList.toggle('tags-shifted', textWidth + 16 > badgeLeft);
-                } else {
-                    tagsEl.classList.remove('tags-shifted');
-                }
+                return;
             }
-            card.dataset.tagOverlapChecked = '1';
+            const firstBadge = tagsEl.querySelector('.tag-badge');
+            if (!firstBadge) {
+                tagsEl.classList.remove('tags-shifted');
+                return;
+            }
+            const range = document.createRange();
+            range.selectNodeContents(info);
+            const textWidth = range.getBoundingClientRect().width;
+            const cardLeft = card.getBoundingClientRect().left;
+            const badgeLeft = firstBadge.getBoundingClientRect().left - cardLeft;
+            tagsEl.classList.toggle('tags-shifted', textWidth + 16 > badgeLeft);
+        };
+        if ('requestIdleCallback' in window) {
+            requestIdleCallback(runCheck, { timeout: 500 });
+        } else {
+            setTimeout(runCheck, 0);
         }
     }
 });

@@ -295,6 +295,29 @@ function initKeyboardShortcuts() {
             }
         }
 
+        // Ctrl+Shift+C: Copy file path of hovered > first-selected > focused card
+        if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'c') {
+            let targetPath = null;
+            const hoveredCard = document.querySelector('.video-card:hover, .folder-card:hover');
+            if (hoveredCard && hoveredCard.dataset.path) {
+                targetPath = hoveredCard.dataset.path;
+            } else if (typeof selectedCardPaths !== 'undefined' && selectedCardPaths.size > 0) {
+                targetPath = Array.from(selectedCardPaths).find(Boolean) || null;
+            } else if (focusedCardIndex >= 0) {
+                const card = visibleCards[focusedCardIndex];
+                if (card && card.dataset.path) targetPath = card.dataset.path;
+            }
+            if (targetPath) {
+                e.preventDefault();
+                navigator.clipboard.writeText(targetPath).then(() => {
+                    showToast('Path copied', 'success', { duration: 1500 });
+                }).catch(err => {
+                    showToast(`Could not copy path: ${friendlyError(err)}`, 'error');
+                });
+                return;
+            }
+        }
+
         // Rename focused file
         if (matchesShortcut(e, 'rename') && focusedCardIndex >= 0) {
             e.preventDefault();
@@ -334,6 +357,59 @@ function initKeyboardShortcuts() {
             e.preventDefault();
             if (navigationHistory.canGoForward()) goForward();
             return;
+        }
+
+        // Rating shortcuts: Shift+1..5 set rating, Shift+0 / Shift+` clear.
+        // Must run before filter shortcuts because matchesShortcut() is lenient about
+        // the shift modifier for plain keys, so Shift+1 would otherwise fire filterAll.
+        if (e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+            const ratingMap = {
+                '!': 1, '1': 1,
+                '@': 2, '2': 2,
+                '#': 3, '3': 3,
+                '$': 4, '4': 4,
+                '%': 5, '5': 5,
+                ')': 0, '0': 0,
+                '~': 0, '`': 0,
+            };
+            if (Object.prototype.hasOwnProperty.call(ratingMap, e.key)) {
+                const rating = ratingMap[e.key];
+                // Target priority: hovered card > selection > focused card.
+                // Hovered-first means shortcuts work without clicking first.
+                let targets = [];
+                const hoveredCard = document.querySelector('.video-card:hover');
+                if (hoveredCard && hoveredCard.dataset.path) {
+                    targets = [hoveredCard.dataset.path];
+                } else if (typeof selectedCardPaths !== 'undefined' && selectedCardPaths.size > 0) {
+                    targets = Array.from(selectedCardPaths).filter(Boolean);
+                } else if (focusedCardIndex >= 0) {
+                    const card = visibleCards[focusedCardIndex];
+                    if (card && !card.classList.contains('folder-card') && card.dataset.path) {
+                        targets = [card.dataset.path];
+                    }
+                }
+                if (targets.length === 0) return;
+                e.preventDefault();
+
+                // Capture prior ratings so we can push a single grouped undo entry
+                const prev = targets.map(p => ({ path: p, rating: getFileRating(p) }));
+                _skipMetadataUndo = true;
+                try {
+                    for (const p of targets) setFileRating(p, rating);
+                } finally {
+                    _skipMetadataUndo = false;
+                }
+                const starStr = rating === 0 ? '' : '\u2605'.repeat(rating);
+                const baseLabel = rating === 0
+                    ? (targets.length > 1 ? `Cleared rating (${targets.length} files)` : 'Cleared rating')
+                    : (targets.length > 1 ? `Rated ${starStr} (${targets.length} files)` : `Rated ${starStr}`);
+                pushMetadataUndo(
+                    baseLabel,
+                    () => { for (const item of prev) setFileRating(item.path, item.rating); }
+                );
+                showToast(baseLabel, 'success', { duration: 1500 });
+                return;
+            }
         }
 
         // Filters
@@ -382,6 +458,7 @@ function initKeyboardShortcuts() {
             const newZoom = Math.min(200, zoomLevel + 10);
             zoomSlider.value = newZoom;
             zoomLevel = newZoom;
+            if (zoomValue) zoomValue.textContent = `${newZoom}%`;
             applyZoom();
             deferLocalStorageWrite('zoomLevel', zoomLevel.toString());
             updateStatusBar();
@@ -394,6 +471,7 @@ function initKeyboardShortcuts() {
             const newZoom = Math.max(50, zoomLevel - 10);
             zoomSlider.value = newZoom;
             zoomLevel = newZoom;
+            if (zoomValue) zoomValue.textContent = `${newZoom}%`;
             applyZoom();
             deferLocalStorageWrite('zoomLevel', zoomLevel.toString());
             updateStatusBar();
@@ -405,6 +483,7 @@ function initKeyboardShortcuts() {
             e.preventDefault();
             zoomSlider.value = 100;
             zoomLevel = 100;
+            if (zoomValue) zoomValue.textContent = `100%`;
             applyZoom();
             deferLocalStorageWrite('zoomLevel', '100');
             updateStatusBar();
@@ -427,6 +506,41 @@ function initKeyboardShortcuts() {
             return;
         }
     });
+
+    // Ctrl+scroll to zoom the grid (mirrors lightbox zoom pattern)
+    if (gridContainer) {
+        gridContainer.addEventListener('wheel', (e) => {
+            if (!(e.ctrlKey || e.metaKey)) return;
+            e.preventDefault();
+            const step = e.deltaY < 0 ? 10 : -10;
+            const newZoom = Math.max(50, Math.min(200, zoomLevel + step));
+            if (newZoom === zoomLevel) return;
+            zoomLevel = newZoom;
+            if (zoomSlider) zoomSlider.value = newZoom;
+            if (zoomValue) zoomValue.textContent = `${newZoom}%`;
+            applyZoom();
+            deferLocalStorageWrite('zoomLevel', zoomLevel.toString());
+            updateStatusBar();
+            showZoomPill(newZoom);
+        }, { passive: false });
+    }
+}
+
+// Transient zoom pill shown near the cursor during Ctrl+scroll zoom
+let _zoomPillEl = null;
+let _zoomPillHideTimer = null;
+function showZoomPill(pct) {
+    if (!_zoomPillEl) {
+        _zoomPillEl = document.createElement('div');
+        _zoomPillEl.className = 'zoom-pill';
+        document.body.appendChild(_zoomPillEl);
+    }
+    _zoomPillEl.textContent = `${pct}%`;
+    _zoomPillEl.classList.add('visible');
+    if (_zoomPillHideTimer) clearTimeout(_zoomPillHideTimer);
+    _zoomPillHideTimer = setTimeout(() => {
+        if (_zoomPillEl) _zoomPillEl.classList.remove('visible');
+    }, 700);
 }
 
 function navigateCards(direction) {

@@ -12896,6 +12896,26 @@ contextMenu.addEventListener('click', async (e) => {
             break;
         }
 
+        case 'copy-path': {
+            try {
+                await navigator.clipboard.writeText(filePath);
+                showToast('Path copied', 'success', { duration: 1500 });
+            } catch (error) {
+                showToast(`Could not copy path: ${friendlyError(error)}`, 'error');
+            }
+            break;
+        }
+
+        case 'copy-name': {
+            try {
+                await navigator.clipboard.writeText(fileName);
+                showToast('Name copied', 'success', { duration: 1500 });
+            } catch (error) {
+                showToast(`Could not copy name: ${friendlyError(error)}`, 'error');
+            }
+            break;
+        }
+
         case 'add-to-collection': {
             // Gather selected files (multi-select support)
             const selectedCards = document.querySelectorAll('.video-card.selected');

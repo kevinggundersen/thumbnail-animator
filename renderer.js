@@ -4340,6 +4340,8 @@ function normalizePath(path) {
 
 let sidebarWidth = parseInt(localStorage.getItem('sidebarWidth')) || 260;
 let sidebarCollapsed = localStorage.getItem('sidebarCollapsed') === 'true';
+let sidebarLayoutSyncTimeout = null;
+let sidebarTransitionEndHandler = null;
 let sidebarExpandedNodes;
 try {
     sidebarExpandedNodes = new Set(JSON.parse(localStorage.getItem('sidebarExpandedNodes') || '[]'));
@@ -4686,13 +4688,26 @@ function initSidebarResize() {
         document.body.style.cursor = '';
         document.body.style.userSelect = '';
         deferLocalStorageWrite('sidebarWidth', sidebarWidth.toString());
-        // Recalculate grid layout after resize
-        if (layoutMode === 'masonry') {
-            scheduleMasonryLayout();
-        } else {
-            vsRecalculate();
-        }
+        scheduleSidebarLayoutSync();
     });
+}
+
+function relayoutAfterSidebarWidthChange() {
+    if (vsState.enabled) {
+        vsRecalculate();
+        return;
+    }
+    if (layoutMode === 'masonry') {
+        scheduleMasonryLayout();
+    }
+}
+
+function scheduleSidebarLayoutSync(delay = 0) {
+    clearTimeout(sidebarLayoutSyncTimeout);
+    sidebarLayoutSyncTimeout = setTimeout(() => {
+        sidebarLayoutSyncTimeout = null;
+        relayoutAfterSidebarWidthChange();
+    }, delay);
 }
 
 function setSidebarCollapsed(collapsed) {
@@ -4704,17 +4719,25 @@ function setSidebarCollapsed(collapsed) {
     }
     deferLocalStorageWrite('sidebarCollapsed', collapsed.toString());
 
-    // Recalculate grid layout after sidebar transition completes
-    folderSidebar.addEventListener('transitionend', function onEnd(e) {
-        if (e.propertyName === 'width') {
-            folderSidebar.removeEventListener('transitionend', onEnd);
-            if (layoutMode === 'masonry') {
-                scheduleMasonryLayout();
-            } else {
-                vsRecalculate();
-            }
+    if (sidebarTransitionEndHandler) {
+        folderSidebar.removeEventListener('transitionend', sidebarTransitionEndHandler);
+        sidebarTransitionEndHandler = null;
+    }
+
+    // Recalculate layout after the sidebar animation settles. Keep a timeout
+    // fallback as well because width changes can finish without a reliable
+    // transitionend when toggled quickly.
+    sidebarTransitionEndHandler = (e) => {
+        if (e.target !== folderSidebar) return;
+        if (e.propertyName !== 'width' && e.propertyName !== 'min-width') return;
+        if (sidebarTransitionEndHandler) {
+            folderSidebar.removeEventListener('transitionend', sidebarTransitionEndHandler);
+            sidebarTransitionEndHandler = null;
         }
-    });
+        scheduleSidebarLayoutSync();
+    };
+    folderSidebar.addEventListener('transitionend', sidebarTransitionEndHandler);
+    scheduleSidebarLayoutSync(230);
 }
 
 async function initSidebar() {

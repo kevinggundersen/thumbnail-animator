@@ -20,10 +20,21 @@ const MAX_PSD_SIZE = 200 * 1024 * 1024; // 200 MB
 const MAX_SIZE = 512; // thumbnail max edge
 
 let _pdfToolCache = null;
+let _pdfToolDetectionPromise = null;
 
 // ─── Plugin entry point ────────────────────────────────────────────────────────
 
 function activate(api) {
+    // Pre-detect PDF tools at activation time (runs outside the 10s plugin timeout).
+    // The result is cached for the session, so subsequent calls are instant.
+    _detectPDFTool().then(info => {
+        if (info.available) {
+            console.log(`[pdf-psd-preview] PDF tool ready: ${info.tool} (${info.cmd})`);
+        } else {
+            console.log('[pdf-psd-preview] No PDF rendering tool found — placeholders will be used');
+        }
+    }).catch(() => {});
+
     return {
         extractPSDMetadata,
         extractPDFMetadata,
@@ -521,35 +532,105 @@ async function extractPDFMetadata(filePath) {
 
 /**
  * Detect available system tool for PDF rendering.
- * Checks in priority order: pdftoppm (poppler), mutool (mupdf), magick (ImageMagick 7).
+ * Checks in priority order: pdftoppm (poppler), mutool (mupdf), magick (ImageMagick 7),
+ * Ghostscript (probes common install dirs on Windows since GS is often not in PATH).
  * Result is cached for the session.
  */
-async function _detectPDFTool() {
-    if (_pdfToolCache !== null) return _pdfToolCache;
+function _detectPDFTool() {
+    if (_pdfToolCache !== null) return Promise.resolve(_pdfToolCache);
+    // Deduplicate concurrent detection calls — all callers wait on the same promise
+    if (_pdfToolDetectionPromise) return _pdfToolDetectionPromise;
+    _pdfToolDetectionPromise = _doDetectPDFTool().then(result => {
+        _pdfToolCache = result;
+        _pdfToolDetectionPromise = null;
+        return result;
+    });
+    return _pdfToolDetectionPromise;
+}
 
-    const tools = [
+async function _doDetectPDFTool() {
+    const isWin = process.platform === 'win32';
+
+    // Tools to check on PATH first
+    const pathTools = [
         { cmd: 'pdftoppm', args: ['-v'], name: 'pdftoppm' },
         { cmd: 'mutool', args: ['--version'], name: 'mutool' },
         { cmd: 'magick', args: ['--version'], name: 'magick' },
+        ...(isWin ? [
+            { cmd: 'gswin64c', args: ['-v'], name: 'gswin64c' },
+            { cmd: 'gswin32c', args: ['-v'], name: 'gswin32c' },
+        ] : [
+            { cmd: 'gs', args: ['-v'], name: 'gs' },
+        ]),
     ];
 
-    for (const tool of tools) {
-        const available = await _tryExec(tool.cmd, tool.args);
-        if (available) {
-            _pdfToolCache = { available: true, tool: tool.name };
-            return _pdfToolCache;
+    // Check all PATH tools in parallel for speed (ENOENT returns instantly)
+    const pathResults = await Promise.all(pathTools.map(async tool => ({
+        ...tool,
+        available: await _tryExec(tool.cmd, tool.args),
+    })));
+    const found = pathResults.find(r => r.available);
+    if (found) {
+        return { available: true, tool: found.name, cmd: found.cmd };
+    }
+
+    // On Windows, probe common installation directories for Ghostscript
+    if (isWin) {
+        const gsDirs = await _findGhostscriptWindows();
+        for (const gsPath of gsDirs) {
+            const available = await _tryExec(gsPath, ['-v']);
+            if (available) {
+                console.log(`[pdf-psd-preview] Found Ghostscript at: ${gsPath}`);
+                return { available: true, tool: 'gswin64c', cmd: gsPath };
+            }
         }
     }
 
-    _pdfToolCache = { available: false, tool: null };
-    return _pdfToolCache;
+    return { available: false, tool: null, cmd: null };
+}
+
+/**
+ * Search common Windows directories for Ghostscript executables.
+ * Returns an array of full paths to try.
+ */
+async function _findGhostscriptWindows() {
+    const candidates = [];
+    const programDirs = [
+        process.env['ProgramFiles'] || 'C:\\Program Files',
+        process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)',
+    ];
+
+    for (const programDir of programDirs) {
+        const gsRoot = path.join(programDir, 'gs');
+        try {
+            const entries = await fs.promises.readdir(gsRoot, { withFileTypes: true });
+            for (const entry of entries) {
+                if (entry.isDirectory() && entry.name.startsWith('gs')) {
+                    // Check for gswin64c.exe and gswin32c.exe in the bin subdirectory
+                    const binDir = path.join(gsRoot, entry.name, 'bin');
+                    candidates.push(path.join(binDir, 'gswin64c.exe'));
+                    candidates.push(path.join(binDir, 'gswin32c.exe'));
+                }
+            }
+        } catch {
+            // Directory doesn't exist or can't be read
+        }
+    }
+
+    // Sort by version descending (higher version dirs come first)
+    candidates.sort((a, b) => b.localeCompare(a));
+    return candidates;
 }
 
 function _tryExec(cmd, args) {
     return new Promise(resolve => {
-        execFile(cmd, args, { timeout: 3000 }, (err) => {
-            resolve(!err);
-        });
+        try {
+            execFile(cmd, args, { timeout: 1500, windowsHide: true }, (err) => {
+                resolve(!err);
+            });
+        } catch {
+            resolve(false);
+        }
     });
 }
 
@@ -573,7 +654,10 @@ async function generatePDFThumbnail(filePath) {
         const toolInfo = await _detectPDFTool();
 
         if (!toolInfo.available) {
-            return _generatePDFPlaceholder(filePath);
+            // Return null instead of a placeholder — placeholders should not be cached
+            // in the thumbnail cache (they'd prevent real thumbnails from being generated
+            // once a tool is installed). The renderer handles null gracefully.
+            return null;
         }
 
         // Use plugin cache directory for temp files
@@ -586,9 +670,13 @@ async function generatePDFThumbnail(filePath) {
 
         let pngBuffer = null;
 
-        if (toolInfo.tool === 'pdftoppm') {
+        // Use toolInfo.cmd which may be a full path (e.g. for Ghostscript found outside PATH)
+        const toolCmd = toolInfo.cmd;
+        const toolName = toolInfo.tool;
+
+        if (toolName === 'pdftoppm') {
             try {
-                await _execFileAsync('pdftoppm', [
+                await _execFileAsync(toolCmd, [
                     '-png', '-f', '1', '-l', '1', '-scale-to', String(MAX_SIZE),
                     filePath, tempBase
                 ]);
@@ -601,10 +689,10 @@ async function generatePDFThumbnail(filePath) {
             } catch (err) {
                 console.warn('[pdf-psd-preview] pdftoppm failed:', err.message);
             }
-        } else if (toolInfo.tool === 'mutool') {
+        } else if (toolName === 'mutool') {
             const outFile = tempBase + '.png';
             try {
-                await _execFileAsync('mutool', [
+                await _execFileAsync(toolCmd, [
                     'draw', '-o', outFile, '-F', 'png',
                     '-w', String(MAX_SIZE), '-h', String(MAX_SIZE),
                     filePath, '1'
@@ -614,10 +702,10 @@ async function generatePDFThumbnail(filePath) {
             } catch (err) {
                 console.warn('[pdf-psd-preview] mutool failed:', err.message);
             }
-        } else if (toolInfo.tool === 'magick') {
+        } else if (toolName === 'magick') {
             const outFile = tempBase + '.png';
             try {
-                await _execFileAsync('magick', [
+                await _execFileAsync(toolCmd, [
                     filePath + '[0]',
                     '-thumbnail', `${MAX_SIZE}x${MAX_SIZE}`,
                     '-background', 'white', '-alpha', 'remove',
@@ -628,14 +716,35 @@ async function generatePDFThumbnail(filePath) {
             } catch (err) {
                 console.warn('[pdf-psd-preview] magick failed:', err.message);
             }
+        } else if (toolName === 'gswin64c' || toolName === 'gswin32c' || toolName === 'gs') {
+            const outFile = tempBase + '.png';
+            try {
+                await _execFileAsync(toolCmd, [
+                    '-dBATCH', '-dNOPAUSE', '-dQUIET', '-dFirstPage=1', '-dLastPage=1',
+                    '-sDEVICE=png16m', '-r72',
+                    `-sOutputFile=${outFile}`,
+                    filePath
+                ], { timeout: 10000 });
+                pngBuffer = await fs.promises.readFile(outFile);
+                // Resize to MAX_SIZE (GS renders at full page size)
+                if (pngBuffer && sharp) {
+                    const meta = await sharp(pngBuffer).metadata();
+                    if (meta.width > MAX_SIZE || meta.height > MAX_SIZE) {
+                        pngBuffer = await sharp(pngBuffer).resize(MAX_SIZE, MAX_SIZE, { fit: 'inside', withoutEnlargement: true }).png().toBuffer();
+                    }
+                }
+                fs.promises.unlink(outFile).catch(() => {});
+            } catch (err) {
+                console.warn(`[pdf-psd-preview] ${toolName} failed:`, err.message);
+            }
         }
 
-        if (!pngBuffer) return _generatePDFPlaceholder(filePath);
+        if (!pngBuffer) return null;
 
         return 'data:image/png;base64,' + pngBuffer.toString('base64');
     } catch (err) {
         console.warn('[pdf-psd-preview] PDF thumbnail error:', err.message);
-        return _generatePDFPlaceholder(filePath);
+        return null;
     }
 }
 
@@ -699,9 +808,17 @@ function renderPDFInfoSection(filePath, pluginMetadata) {
     if (data.encrypted) rows.push(row('Encrypted', 'Yes'));
     if (data.fileSize) rows.push(row('File Size', _formatBytes(data.fileSize)));
     if (data.hasToolAvailable) {
-        rows.push(row('Preview Tool', data.toolUsed));
+        const toolDisplayNames = {
+            pdftoppm: 'pdftoppm (Poppler)',
+            mutool: 'mutool (MuPDF)',
+            magick: 'magick (ImageMagick)',
+            gswin64c: 'Ghostscript (64-bit)',
+            gswin32c: 'Ghostscript (32-bit)',
+            gs: 'Ghostscript',
+        };
+        rows.push(row('Preview Tool', toolDisplayNames[data.toolUsed] || data.toolUsed));
     } else {
-        rows.push(row('Preview Tool', 'None available (install pdftoppm, mutool, or magick)'));
+        rows.push(row('Preview Tool', 'None found \u2014 install Poppler, MuPDF, ImageMagick, or Ghostscript for thumbnails'));
     }
 
     const html = rows.join('') + `

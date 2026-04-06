@@ -3362,7 +3362,8 @@ ipcMain.handle('generate-thumbnails-batch', async (event, items) => {
             if (!result.ok) {
                 const ext = path.extname(fp).toLowerCase();
                 if (pluginRegistry.hasCustomThumbnailGenerator(ext)) {
-                    pluginFallbackItems.push({ filePath: fp, ext, thumbPath: result.thumbPath || prepared.find(p => p.filePath === fp)?.thumbPath });
+                    const thumbPath = prepared.find(p => p.filePath === fp)?.thumbPath || null;
+                    pluginFallbackItems.push({ filePath: fp, ext, thumbPath });
                 }
             }
         }

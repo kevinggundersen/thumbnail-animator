@@ -4435,7 +4435,9 @@ function getFileType(url) {
     // Image formats
     if (urlLower.endsWith('.gif') || urlLower.endsWith('.jpg') || urlLower.endsWith('.jpeg') ||
         urlLower.endsWith('.png') || urlLower.endsWith('.webp') || urlLower.endsWith('.bmp') ||
-        urlLower.endsWith('.svg')) return 'image';
+        urlLower.endsWith('.svg') || urlLower.endsWith('.psd')) return 'image';
+    // PDF — treated as a special type for embedded viewer
+    if (urlLower.endsWith('.pdf')) return 'pdf';
     // Video formats
     if (urlLower.endsWith('.mp4') || urlLower.endsWith('.webm') ||
         urlLower.endsWith('.ogg') || urlLower.endsWith('.mov')) return 'video';
@@ -6132,12 +6134,29 @@ function createImageForCard(card, imageUrl) {
 
     if (card.dataset.path && !isGif && !isOriginalQuality) {
         requestImageThumbnailUrl(card.dataset.path, thumbMaxSize)
-            .then(url => {
+            .then(async url => {
                 if (!img.isConnected) return;
-                const finalUrl = url || imageUrl;
-                setImageSource(finalUrl, url ? 'thumb' : 'original');
-                // Fire-and-forget: decode bitmap into cache for fast redraw next scroll
-                prefetchImageBitmap(finalUrl, decodeWidth, decodeHeight);
+                if (url) {
+                    setImageSource(url, 'thumb');
+                    prefetchImageBitmap(url, decodeWidth, decodeHeight);
+                    return;
+                }
+                // Batch returned null — try plugin thumbnail generator as fallback
+                // (handles .pdf, .psd, and other plugin-registered types that sharp can't decode)
+                const ext = card.dataset.path.substring(card.dataset.path.lastIndexOf('.')).toLowerCase();
+                if (window.electronAPI?.pluginGenerateThumbnail) {
+                    try {
+                        const pluginResult = await window.electronAPI.pluginGenerateThumbnail(card.dataset.path, ext);
+                        if (pluginResult?.ok && pluginResult.value && img.isConnected) {
+                            setImageSource(pluginResult.value, 'thumb');
+                            prefetchImageBitmap(pluginResult.value, decodeWidth, decodeHeight);
+                            return;
+                        }
+                    } catch { /* plugin fallback failed, continue to original */ }
+                }
+                if (!img.isConnected) return;
+                setImageSource(imageUrl, 'original');
+                prefetchImageBitmap(imageUrl, decodeWidth, decodeHeight);
             })
             .catch(() => {
                 if (!img.isConnected) return;

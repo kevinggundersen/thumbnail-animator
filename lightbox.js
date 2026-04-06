@@ -9,6 +9,7 @@ const lightbox = document.getElementById('lightbox');
 const lightboxVideo = document.getElementById('lightbox-video');
 const lightboxImage = document.getElementById('lightbox-image');
 const lightboxGifCanvas = document.getElementById('lightbox-gif-canvas');
+const lightboxPdfEmbed = document.getElementById('lightbox-pdf-embed');
 const closeLightboxBtn = document.getElementById('close-lightbox');
 const lightboxZoomControls = document.getElementById('lightbox-zoom-controls');
 const lightboxZoomFloatingMount = document.getElementById('lightbox-zoom-floating-mount');
@@ -713,6 +714,7 @@ function openLightbox(mediaUrl, filePath, fileName) {
         lightboxVideo.removeAttribute('src');
         lightboxVideo.load();
         lightboxVideo.style.display = 'none';
+        if (lightboxPdfEmbed) { lightboxPdfEmbed.style.display = 'none'; lightboxPdfEmbed.removeAttribute('src'); }
         stopLightboxGifProgress();
 
         if ((isGif || isWebp) && playbackControlsEnabled) {
@@ -803,11 +805,31 @@ function openLightbox(mediaUrl, filePath, fileName) {
             _showStaticImage(mediaUrl, lightboxImage, lightboxGifCanvas, lightbox, mediaControlBarInstance);
             setLightboxCropAvailability(filePath, true);
         }
+    } else if (mediaType === 'pdf') {
+        // PDF — use Chromium's native PDF viewer via <embed>
+        stopLightboxGifProgress();
+        lightboxVideo.pause();
+        lightboxVideo.removeAttribute('src');
+        lightboxVideo.load();
+        lightboxVideo.style.display = 'none';
+        lightboxImage.style.display = 'none';
+        lightboxGifCanvas.style.display = 'none';
+        if (mediaControlBarInstance) mediaControlBarInstance.hide();
+
+        if (lightboxPdfEmbed) {
+            lightboxPdfEmbed.style.display = 'block';
+            lightboxPdfEmbed.src = mediaUrl;
+            lightboxPdfEmbed.dataset.src = mediaUrl;
+        }
+        lightbox.classList.remove('hidden');
+        setLightboxCropAvailability(filePath, false);
+        try { _enhancedLightboxOnOpen(filePath, null, mediaUrl); } catch (e) { console.warn('enhanced lightbox open failed:', e); }
     } else {
         stopLightboxGifProgress();
         // Hide image and canvas, show video
         lightboxImage.style.display = 'none';
         lightboxGifCanvas.style.display = 'none';
+        if (lightboxPdfEmbed) { lightboxPdfEmbed.style.display = 'none'; lightboxPdfEmbed.removeAttribute('src'); }
         lightboxVideo.style.display = 'block';
         lightboxVideo.src = mediaUrl;
         lightboxVideo.dataset.src = mediaUrl;
@@ -864,6 +886,7 @@ function openLightbox(mediaUrl, filePath, fileName) {
     if (mediaType === 'image' && !(isGif || isWebp)) {
         try { _enhancedLightboxOnOpen(filePath, null, mediaUrl); } catch (e) { console.warn('enhanced lightbox open failed:', e); }
     }
+    // PDF inspector is triggered above in the pdf branch
 
     // Reset keyboard focus
     focusedCardIndex = -1;
@@ -1134,6 +1157,12 @@ function closeLightbox() {
     // Clean up image
     lightboxImage.src = "";
     lightboxImage.removeAttribute('src');
+
+    // Clean up PDF embed
+    if (lightboxPdfEmbed) {
+        lightboxPdfEmbed.style.display = 'none';
+        lightboxPdfEmbed.removeAttribute('src');
+    }
 
     // Clean up GIF canvas
     lightboxGifCanvas.style.display = 'none';

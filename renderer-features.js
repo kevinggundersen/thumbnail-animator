@@ -2435,7 +2435,15 @@ async function appendPluginInfoSections(detailsEl, filePath, pluginMetadata) {
             const res = await window.electronAPI.renderPluginInfoSection(
                 section.pluginId, section.id, filePath, pluginMetadata
             );
-            if (!res || !res.ok || !res.value) continue;
+            if (!res || !res.ok) {
+                if (res && res.error) {
+                    showToastOnce(`plugin-info-err:${section.pluginId}:${section.id}`,
+                        `Plugin "${section.pluginId}" failed to render info section`, 'warning',
+                        { details: res.error, duration: 5000 });
+                }
+                continue;
+            }
+            if (!res.value) continue;
             const { title, html, actions } = res.value;
             if (!html) continue;
 
@@ -2480,6 +2488,9 @@ async function appendPluginInfoSections(detailsEl, filePath, pluginMetadata) {
             detailsEl.appendChild(wrapper);
         } catch (err) {
             console.warn(`[Plugin info section] ${section.pluginId}/${section.id} failed:`, err.message);
+            showToastOnce(`plugin-info-err:${section.pluginId}:${section.id}`,
+                `Plugin "${section.pluginId}" encountered an error`, 'warning',
+                { details: err.message, duration: 5000 });
         }
     }
 }

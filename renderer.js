@@ -13625,7 +13625,15 @@ class InspectorPanel {
             const res = await window.electronAPI.renderPluginInfoSection(
                 section.pluginId, section.id, filePath, pluginMetadata
             );
-            if (!res || !res.ok || !res.value || !res.value.html) return null;
+            if (!res || !res.ok) {
+                if (res && res.error) {
+                    showToastOnce(`plugin-info-err:${section.pluginId}:${section.id}`,
+                        `Plugin "${section.pluginId}" failed to render info section`, 'warning',
+                        { details: res.error, duration: 5000 });
+                }
+                return null;
+            }
+            if (!res.value || !res.value.html) return null;
             const { title, html, actions, summary } = res.value;
 
             const wrapper = document.createElement('section');
@@ -13678,6 +13686,9 @@ class InspectorPanel {
             return wrapper;
         } catch (err) {
             console.warn(`[Plugin info section] ${section.pluginId}/${section.id} failed:`, err.message);
+            showToastOnce(`plugin-info-err:${section.pluginId}:${section.id}`,
+                `Plugin "${section.pluginId}" encountered an error`, 'warning',
+                { details: err.message, duration: 5000 });
             return null;
         }
     }

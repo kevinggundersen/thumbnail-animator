@@ -313,6 +313,15 @@ describe('tags', () => {
         expect(db.searchTags('')).toHaveLength(2);
     });
 
+    it('searchTags falls back to LIKE for FTS-invalid queries', () => {
+        db.createTag('landscape');
+        db.createTag('portrait');
+        // FTS5 chokes on unbalanced quotes — should fall back to LIKE
+        const results = db.searchTags('"land');
+        const names = results.map(t => t.name);
+        expect(names).toContain('landscape');
+    });
+
     it('getTopTags orders by file count descending', () => {
         const t1 = db.createTag('Popular');
         const t2 = db.createTag('Rare');
@@ -444,6 +453,110 @@ describe('queryFilesByTags', () => {
         });
         expect(files).toEqual(['/a.jpg']);
     });
+
+    it('handles compound OR with children', () => {
+        const files = db.queryFilesByTags({
+            op: 'OR',
+            children: [
+                { op: 'OR', tagIds: [t1.id] },
+                { op: 'OR', tagIds: [t3.id] },
+            ],
+        });
+        expect(files).toContain('/a.jpg');
+        expect(files).toContain('/b.jpg');
+        expect(files).toContain('/c.jpg');
+    });
+
+    it('handles compound NOT (EXCEPT) with children', () => {
+        // All files with t1 EXCEPT those with t2
+        const files = db.queryFilesByTags({
+            op: 'NOT',
+            children: [
+                { op: 'OR', tagIds: [t1.id] },
+                { op: 'OR', tagIds: [t2.id] },
+            ],
+        });
+        // /a.jpg has t1 AND t2, /b.jpg has only t1 → b.jpg survives EXCEPT
+        expect(files).toEqual(['/b.jpg']);
+    });
+
+    it('returns empty for unknown compound op', () => {
+        const files = db.queryFilesByTags({
+            op: 'XOR',
+            children: [
+                { op: 'OR', tagIds: [t1.id] },
+                { op: 'OR', tagIds: [t2.id] },
+            ],
+        });
+        expect(files).toEqual([]);
+    });
+
+    it('returns single child result when compound has one valid child', () => {
+        const files = db.queryFilesByTags({
+            op: 'AND',
+            children: [
+                { op: 'OR', tagIds: [t1.id] },
+            ],
+        });
+        expect(files).toContain('/a.jpg');
+        expect(files).toContain('/b.jpg');
+    });
+
+    it('filters out null children in compound expression', () => {
+        const files = db.queryFilesByTags({
+            op: 'AND',
+            children: [
+                { op: 'OR', tagIds: [t1.id] },
+                { op: 'AND' }, // no tagIds or children → returns null
+            ],
+        });
+        // Only one valid child, so returns its result
+        expect(files).toContain('/a.jpg');
+    });
+});
+
+// ── Tag suggestions ───────────────────────────────────────────────────
+
+describe('suggestTagsForFile', () => {
+    it('returns empty when no tags exist', () => {
+        expect(db.suggestTagsForFile('/photos/nature/sunset.jpg')).toEqual([]);
+    });
+
+    it('suggests tags matching folder name tokens', () => {
+        db.createTag('nature');
+        const suggestions = db.suggestTagsForFile('/photos/nature/sunset.jpg');
+        expect(suggestions.length).toBeGreaterThan(0);
+        expect(suggestions[0].tag.name).toBe('nature');
+        expect(suggestions[0].source).toBe('folder');
+    });
+
+    it('suggests tags based on sibling co-occurrence', () => {
+        const tag = db.createTag('landscape');
+        // Tag a sibling file in the same folder
+        db.addTagToFile('/photos/mountains/peak.jpg', tag.id);
+
+        const suggestions = db.suggestTagsForFile('/photos/mountains/valley.jpg');
+        const siblingMatch = suggestions.find(s => s.source === 'sibling');
+        expect(siblingMatch).toBeDefined();
+        expect(siblingMatch.tag.name).toBe('landscape');
+    });
+
+    it('suggests tags based on file extension', () => {
+        db.createTag('video');
+        const suggestions = db.suggestTagsForFile('/media/clip.mp4');
+        const extMatch = suggestions.find(s => s.source === 'extension');
+        expect(extMatch).toBeDefined();
+        expect(extMatch.tag.name).toBe('video');
+    });
+
+    it('sorts suggestions by confidence descending', () => {
+        db.createTag('nature'); // will match folder name with high confidence
+        db.createTag('image'); // will match extension with lower confidence
+        const suggestions = db.suggestTagsForFile('/nature/photo.jpg');
+        if (suggestions.length >= 2) {
+            expect(suggestions[0].confidence).toBeGreaterThanOrEqual(suggestions[1].confidence);
+        }
+    });
 });
 
 // ── Saved searches ────────────────────────────────────────────────────
@@ -511,6 +624,18 @@ describe('saved searches', () => {
         const byName = Object.fromEntries(all.map(s => [s.id, s.name]));
         expect(byName[id1]).toBe('Untitled');
         expect(byName[id2]).toHaveLength(200);
+    });
+
+    it('renameSavedSearch ignores empty name', () => {
+        const id = db.saveSearch({ name: 'Original', query: 'q', createdAt: 1000 });
+        db.renameSavedSearch(id, '');
+        expect(db.getAllSavedSearches()[0].name).toBe('Original');
+    });
+
+    it('renameSavedSearch ignores whitespace-only name', () => {
+        const id = db.saveSearch({ name: 'Original', query: 'q', createdAt: 1000 });
+        db.renameSavedSearch(id, '   ');
+        expect(db.getAllSavedSearches()[0].name).toBe('Original');
     });
 });
 
@@ -615,6 +740,47 @@ describe('runMigration', () => {
         expect(db.getAllRatings()).toEqual({ '/a.jpg': 5, '/b.jpg': 3 });
         expect(db.getAllPinned()).toEqual({ '/a.jpg': true });
         expect(db.getFavorites().groups).toHaveLength(1);
+        expect(db.checkMigrationStatus().migrationComplete).toBe(true);
+    });
+
+    it('migrates recent files', () => {
+        db.runMigration({
+            recentFiles: [
+                { path: '/a.jpg', addedAt: 1000 },
+                { path: '/b.jpg', addedAt: 2000 },
+            ],
+        });
+        const recent = db.getRecentFiles();
+        expect(recent).toHaveLength(2);
+        expect(recent[0].path).toBe('/b.jpg'); // most recent first
+    });
+
+    it('migrates collections with files', () => {
+        db.runMigration({
+            collections: [
+                {
+                    id: 'c1',
+                    name: 'My Collection',
+                    type: 'manual',
+                    sortOrder: 0,
+                    createdAt: 1000,
+                    updatedAt: 2000,
+                    files: [
+                        { id: 'cf1', filePath: '/a.jpg', addedAt: 1000, sortOrder: 0 },
+                        { id: 'cf2', file_path: '/b.jpg', added_at: 2000, sort_order: 1 },
+                    ],
+                },
+            ],
+        });
+        const collections = db.getAllCollections();
+        expect(collections).toHaveLength(1);
+        expect(collections[0].name).toBe('My Collection');
+        const files = db.getCollectionFiles('c1');
+        expect(files).toHaveLength(2);
+    });
+
+    it('handles empty migration data', () => {
+        db.runMigration({});
         expect(db.checkMigrationStatus().migrationComplete).toBe(true);
     });
 });

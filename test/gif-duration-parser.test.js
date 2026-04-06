@@ -143,6 +143,119 @@ describe('parseGifDuration', () => {
         );
         expect(result).toEqual({ totalDuration: 100, frameCount: 1 });
     });
+
+    it('skips non-GCE extension blocks (e.g. application extensions)', () => {
+        // Build a GIF with a comment extension (0xFF label) before a frame
+        const parts = [];
+        parts.push(Buffer.from('GIF89a'));
+        parts.push(Buffer.alloc(7)); // LSD, no GCT
+
+        // Application extension block (label 0xFF)
+        parts.push(Buffer.from([0x21, 0xff])); // extension introducer + label
+        const appData = Buffer.from('NETSCAPE2.0');
+        parts.push(Buffer.from([appData.length])); // sub-block size
+        parts.push(appData);
+        parts.push(Buffer.from([0x03, 0x01, 0x00, 0x00])); // sub-block: loop count
+        parts.push(Buffer.from([0x00])); // block terminator
+
+        // Now a normal frame (GCE + image descriptor)
+        const gce = Buffer.alloc(8);
+        gce[0] = 0x21; gce[1] = 0xf9; gce[2] = 0x04;
+        gce.writeUInt16LE(10, 4); // 10cs = 100ms
+        gce[7] = 0x00;
+        parts.push(gce);
+
+        const imgDesc = Buffer.alloc(10);
+        imgDesc[0] = 0x2c;
+        imgDesc.writeUInt16LE(1, 5);
+        imgDesc.writeUInt16LE(1, 7);
+        parts.push(imgDesc);
+        parts.push(Buffer.from([0x02, 0x00])); // LZW + empty sub-block
+
+        parts.push(Buffer.from([0x3b])); // trailer
+
+        const buf = Buffer.concat(parts);
+        const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+        const result = parseGifDuration(ab);
+        expect(result).toEqual({ totalDuration: 100, frameCount: 1 });
+    });
+
+    it('handles GIF with Local Color Table on a frame', () => {
+        const parts = [];
+        parts.push(Buffer.from('GIF89a'));
+        parts.push(Buffer.alloc(7)); // LSD, no GCT
+
+        // GCE for the frame
+        const gce = Buffer.alloc(8);
+        gce[0] = 0x21; gce[1] = 0xf9; gce[2] = 0x04;
+        gce.writeUInt16LE(20, 4); // 20cs = 200ms
+        gce[7] = 0x00;
+        parts.push(gce);
+
+        // Image descriptor with Local Color Table flag
+        const imgDesc = Buffer.alloc(10);
+        imgDesc[0] = 0x2c;
+        imgDesc.writeUInt16LE(1, 5); // width
+        imgDesc.writeUInt16LE(1, 7); // height
+        imgDesc[9] = 0x81; // packed: hasLCT=1, lctSize=1 (4 entries = 12 bytes)
+        parts.push(imgDesc);
+
+        // Local Color Table (4 entries * 3 bytes = 12 bytes)
+        parts.push(Buffer.alloc(12));
+
+        // LZW min code size + empty sub-block
+        parts.push(Buffer.from([0x02, 0x00]));
+
+        parts.push(Buffer.from([0x3b])); // trailer
+
+        const buf = Buffer.concat(parts);
+        const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+        const result = parseGifDuration(ab);
+        expect(result).toEqual({ totalDuration: 200, frameCount: 1 });
+    });
+
+    it('handles truncated GIF gracefully (truncated at extension block)', () => {
+        // GIF header + LSD + extension introducer but no label
+        const parts = [];
+        parts.push(Buffer.from('GIF89a'));
+        parts.push(Buffer.alloc(7)); // LSD
+
+        // Extension introducer with no following data
+        parts.push(Buffer.from([0x21]));
+
+        const buf = Buffer.concat(parts);
+        const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+        const result = parseGifDuration(ab);
+        expect(result).toBeNull(); // 0 frames → null
+    });
+
+    it('handles truncated GIF at GCE block', () => {
+        // GIF header + LSD + GCE introducer + label, but no block size
+        const parts = [];
+        parts.push(Buffer.from('GIF89a'));
+        parts.push(Buffer.alloc(7)); // LSD
+        parts.push(Buffer.from([0x21, 0xf9])); // GCE without data
+
+        const buf = Buffer.concat(parts);
+        const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+        const result = parseGifDuration(ab);
+        expect(result).toBeNull();
+    });
+
+    it('handles truncated image descriptor', () => {
+        const parts = [];
+        parts.push(Buffer.from('GIF89a'));
+        parts.push(Buffer.alloc(7));
+        // Image separator but not enough data for full descriptor
+        parts.push(Buffer.from([0x2c, 0x00, 0x00]));
+
+        const buf = Buffer.concat(parts);
+        const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+        const result = parseGifDuration(ab);
+        // Frame counted but parsing breaks, still returns since frameCount > 0
+        expect(result).not.toBeNull();
+        expect(result.frameCount).toBe(1);
+    });
 });
 
 // ── WebP tests ────────────────────────────────────────────────────────

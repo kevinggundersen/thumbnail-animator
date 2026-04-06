@@ -22,6 +22,13 @@
 (() => {
 'use strict';
 
+const CG_DEBUG = false;
+function cgDebugLog(...args) {
+    if (CG_DEBUG) {
+        console.log(...args);
+    }
+}
+
 // ── State ─────────────────────────────────────────────────────────────
 
 let cgEnabled = false;
@@ -415,7 +422,7 @@ function cgRender() {
     if (!items || !positions || !visibleRangeFn) {
         cgCtx.clearRect(0, 0, cgViewportW, cgViewportH);
         if (!window._cgLoggedNoData) {
-            console.log('[cg-render] no data:', { items: !!items, positions: !!positions, visibleRangeFn: !!visibleRangeFn });
+            cgDebugLog('[cg-render] no data:', { items: !!items, positions: !!positions, visibleRangeFn: !!visibleRangeFn });
             window._cgLoggedNoData = true;
         }
         return;
@@ -432,11 +439,11 @@ function cgRender() {
         const rect = cgCanvas.getBoundingClientRect();
         const gcRect = gridContainer.getBoundingClientRect();
         const computed = getComputedStyle(cgCanvas);
-        console.log(`[cg-render] first render | items=${items.length} range=${startIndex}..${endIndex} viewport=${cgViewportW}x${cgViewportH} scroll=${scrollTop} display=${cgCanvas.style.display} transform=${cgCanvas.style.transform}`);
-        console.log(`[cg-render] canvas rect: top=${rect.top} left=${rect.left} w=${rect.width} h=${rect.height} visibility=${computed.visibility} opacity=${computed.opacity} zIndex=${computed.zIndex}`);
-        console.log(`[cg-render] gridContainer rect: top=${gcRect.top} left=${gcRect.left} w=${gcRect.width} h=${gcRect.height}`);
+        cgDebugLog(`[cg-render] first render | items=${items.length} range=${startIndex}..${endIndex} viewport=${cgViewportW}x${cgViewportH} scroll=${scrollTop} display=${cgCanvas.style.display} transform=${cgCanvas.style.transform}`);
+        cgDebugLog(`[cg-render] canvas rect: top=${rect.top} left=${rect.left} w=${rect.width} h=${rect.height} visibility=${computed.visibility} opacity=${computed.opacity} zIndex=${computed.zIndex}`);
+        cgDebugLog(`[cg-render] gridContainer rect: top=${gcRect.top} left=${gcRect.left} w=${gcRect.width} h=${gcRect.height}`);
         if (items.length > 0 && positions) {
-            console.log(`[cg-render] first item pos: left=${positions[0]} top=${positions[1]} w=${positions[2]} h=${positions[3]}`);
+            cgDebugLog(`[cg-render] first item pos: left=${positions[0]} top=${positions[1]} w=${positions[2]} h=${positions[3]}`);
         }
         window._cgLoggedFirst = true;
     }
@@ -1399,7 +1406,7 @@ function cgInstallKeyboardToggle() {
         if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'G' || e.key === 'g')) {
             e.preventDefault();
             cgSetEnabled(!cgEnabled);
-            console.log('[canvas-grid] toggled:', cgEnabled ? 'ON' : 'OFF');
+            cgDebugLog('[canvas-grid] toggled:', cgEnabled ? 'ON' : 'OFF');
         }
     });
 }

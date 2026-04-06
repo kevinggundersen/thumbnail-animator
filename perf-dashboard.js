@@ -118,6 +118,7 @@ const perfTest = (() => {
             const fmt = (bytes) => bytes < 1024 * 1024 ? (bytes / 1024).toFixed(0) + 'KB' : (bytes / 1024 / 1024).toFixed(1) + 'MB';
             html += '<div class="perf-section-label">Disk Cache</div>';
             for (const [label, info] of [['Video thumbs', cacheData.video], ['Image thumbs', cacheData.image], ['Folder previews', cacheData.folder]]) {
+                if (!info) continue;
                 const pct = info.maxSize ? Math.min(100, (info.size / info.maxSize) * 100) : 0;
                 const cls = pct < 60 ? 'fast' : pct < 90 ? 'medium' : 'slow';
                 html += `<div class="perf-metric">
@@ -186,13 +187,16 @@ const perfTest = (() => {
         // Fetch startup timeline (once), memory and cache info (every open)
         try {
             if (!startupData && window.electronAPI?.getStartupTimeline) {
-                startupData = await window.electronAPI.getStartupTimeline();
+                const startResult = await window.electronAPI.getStartupTimeline();
+                startupData = startResult?.ok ? startResult.value : startResult;
             }
             if (window.electronAPI?.getMemoryInfo) {
-                memoryData = await window.electronAPI.getMemoryInfo();
+                const memResult = await window.electronAPI.getMemoryInfo();
+                memoryData = memResult?.ok ? memResult.value : memResult;
             }
             if (window.electronAPI?.getCacheInfo) {
-                cacheData = await window.electronAPI.getCacheInfo();
+                const cacheResult = await window.electronAPI.getCacheInfo();
+                cacheData = cacheResult?.ok ? cacheResult.value : cacheResult;
             }
         } catch { /* IPC not available */ }
 

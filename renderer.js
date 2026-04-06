@@ -2105,6 +2105,40 @@ let activeDimensionHydrationToken = 0;
 
 // Store current items for re-sorting without re-fetching
 let currentItems = [];
+let currentItemStatsCacheRef = null;
+let currentItemStatsCacheLen = -1;
+let currentItemStatsCache = { folders: 0, videos: 0, images: 0, total: 0 };
+let filteredVisibleCountCacheRef = null;
+let filteredVisibleCountCacheValue = null;
+
+function getCurrentItemStats() {
+    if (currentItemStatsCacheRef === currentItems && currentItemStatsCacheLen === currentItems.length) {
+        return currentItemStatsCache;
+    }
+
+    const stats = { folders: 0, videos: 0, images: 0, total: currentItems.length };
+    for (const item of currentItems) {
+        if (!item) continue;
+        if (item.type === 'folder') stats.folders++;
+        else if (item.type === 'video') stats.videos++;
+        else if (item.type === 'image') stats.images++;
+    }
+
+    currentItemStatsCacheRef = currentItems;
+    currentItemStatsCacheLen = currentItems.length;
+    currentItemStatsCache = stats;
+    return stats;
+}
+
+function setFilteredVisibleCountCache(itemsRef, value) {
+    filteredVisibleCountCacheRef = itemsRef || null;
+    filteredVisibleCountCacheValue = typeof value === 'number' ? value : null;
+}
+
+function clearFilteredVisibleCountCache() {
+    filteredVisibleCountCacheRef = null;
+    filteredVisibleCountCacheValue = null;
+}
 
 // --- AI Visual Search state ---
 let aiVisualSearchEnabled = localStorage.getItem('aiVisualSearchEnabled') === 'true';
@@ -4219,11 +4253,12 @@ async function hydrateMissingDimensionsInBackground(folderPath, items) {
         );
         if (scanToken !== activeDimensionHydrationToken || currentFolderPath !== folderPath) return;
         const results = r && r.ok ? r.value : [];
+        const chunkByPath = new Map(chunk.map(item => [item.path, item]));
 
         const updatedPaths = new Set();
         for (const result of results || []) {
             if (!result || !result.path || !result.width || !result.height) continue;
-            const item = chunk.find(entry => entry.path === result.path);
+            const item = chunkByPath.get(result.path);
             if (!item) continue;
 
             item.width = result.width;
@@ -4243,10 +4278,9 @@ async function hydrateMissingDimensionsInBackground(folderPath, items) {
             updateInMemoryFolderCaches(folderPath, items);
 
             if (shouldReapplyFilters) {
-                applyFilters();
+                scheduleDimensionHydrationRefresh('filters');
             } else {
-                vsState.layoutCache.itemCount = 0; // Invalidate cache so new dimensions are used
-                vsRecalculate();
+                scheduleDimensionHydrationRefresh('layout');
             }
         }
 
@@ -4689,6 +4723,32 @@ function initSidebarResize() {
         document.body.style.userSelect = '';
         deferLocalStorageWrite('sidebarWidth', sidebarWidth.toString());
         scheduleSidebarLayoutSync();
+    });
+}
+
+let pendingDimensionHydrationRefreshMode = null;
+let pendingDimensionHydrationRefreshRaf = null;
+
+function scheduleDimensionHydrationRefresh(mode) {
+    if (mode !== 'filters' && mode !== 'layout') return;
+    if (mode === 'filters' || !pendingDimensionHydrationRefreshMode) {
+        pendingDimensionHydrationRefreshMode = mode;
+    }
+    if (pendingDimensionHydrationRefreshRaf !== null) return;
+
+    pendingDimensionHydrationRefreshRaf = requestAnimationFrame(() => {
+        pendingDimensionHydrationRefreshRaf = null;
+        const refreshMode = pendingDimensionHydrationRefreshMode;
+        pendingDimensionHydrationRefreshMode = null;
+
+        if (refreshMode === 'filters') {
+            applyFilters();
+            return;
+        }
+
+        if (!vsState.enabled) return;
+        vsState.layoutCache.itemCount = 0;
+        vsRecalculate();
     });
 }
 
@@ -8405,6 +8465,7 @@ let filterDebounceTimer = null;
 let pendingFilterRaf = null;
 function scheduleApplyFilters() {
     if (pendingFilterRaf !== null) return; // Already scheduled
+    clearFilteredVisibleCountCache();
     pendingFilterRaf = requestAnimationFrame(() => {
         pendingFilterRaf = null;
         applyFilters();
@@ -8423,11 +8484,12 @@ function updateItemCount() {
     if (total === 0) {
         itemCountEl.textContent = '';
     } else if (hasFilter) {
-        // With virtual scrolling, vsState.sortedItems contains the filtered set
-        const visible = vsState.enabled ? vsState.sortedItems.length : (() => {
+        const visible = (vsState.enabled && filteredVisibleCountCacheRef === vsState.sortedItems && filteredVisibleCountCacheValue !== null)
+            ? filteredVisibleCountCacheValue
+            : (vsState.enabled ? vsState.sortedItems.length : (() => {
             const cards = gridContainer.querySelectorAll('.video-card, .folder-card');
             return Array.from(cards).filter(c => c.style.display !== 'none').length;
-        })();
+        })());
         itemCountEl.textContent = `${visible} of ${total} items`;
     } else {
         itemCountEl.textContent = `${total} items`;
@@ -8459,11 +8521,7 @@ function updateItemCount() {
 }
 
 function updateStatusBar() {
-    // Item counts by type
-    const folders = currentItems.filter(i => i.type === 'folder').length;
-    const videos = currentItems.filter(i => i.type === 'video').length;
-    const images = currentItems.filter(i => i.type === 'image').length;
-    const total = currentItems.length;
+    const { folders, videos, images, total } = getCurrentItemStats();
 
     if (total === 0) {
         statusItemCounts.textContent = 'No items';
@@ -8580,9 +8638,27 @@ let _filterWorkerToken = 0;
 let _filterWorkerLastToken = 0;
 let _filterWorkerItemsRef = null;       // reference check: have we sent this exact array?
 let _filterWorkerLastLen = -1;
+let _filterWorkerRatingsVersion = 0;
+let _filterWorkerRatingsSyncedVersion = -1;
+let _filterWorkerPinsVersion = 0;
+let _filterWorkerPinsSyncedVersion = -1;
+let _filterWorkerTagFilterVersion = 0;
+let _filterWorkerTagFilterSyncedVersion = -1;
 let _filterWorkerEmbSyncedSize = -1;
 let _filterWorkerEmbVersion = 0;        // bump when embeddings cleared/repopulated
 let _filterWorkerEmbSyncedVersion = -1;
+
+function bumpFilterWorkerRatingsVersion() {
+    _filterWorkerRatingsVersion++;
+}
+
+function bumpFilterWorkerPinsVersion() {
+    _filterWorkerPinsVersion++;
+}
+
+function bumpFilterWorkerTagFilterVersion() {
+    _filterWorkerTagFilterVersion++;
+}
 
 function getFilterWorker() {
     if (_filterWorker) return _filterWorker;
@@ -8645,21 +8721,27 @@ function syncFilterWorkerItems() {
 function syncFilterWorkerRatings() {
     const w = getFilterWorker();
     if (!w) return;
+    if (_filterWorkerRatingsSyncedVersion === _filterWorkerRatingsVersion) return;
     w.postMessage({ type: 'setRatings', ratings: fileRatings });
+    _filterWorkerRatingsSyncedVersion = _filterWorkerRatingsVersion;
 }
 
 function syncFilterWorkerPins() {
     const w = getFilterWorker();
     if (!w) return;
+    if (_filterWorkerPinsSyncedVersion === _filterWorkerPinsVersion) return;
     const paths = (typeof pinnedFiles === 'object' && pinnedFiles) ? Object.keys(pinnedFiles) : [];
     w.postMessage({ type: 'setPins', paths });
+    _filterWorkerPinsSyncedVersion = _filterWorkerPinsVersion;
 }
 
 function syncFilterWorkerTagFilter() {
     const w = getFilterWorker();
     if (!w) return;
+    if (_filterWorkerTagFilterSyncedVersion === _filterWorkerTagFilterVersion) return;
     const paths = (tagFilterActive && tagFilteredPaths) ? Array.from(tagFilteredPaths) : null;
     w.postMessage({ type: 'setTagFilter', paths });
+    _filterWorkerTagFilterSyncedVersion = _filterWorkerTagFilterVersion;
 }
 
 function bumpEmbeddingsVersion() {
@@ -8733,14 +8815,18 @@ function applyFilterWorkerResult(msg) {
     // - tag:/-tag: name-based path include/exclude
     // - type:gif and type:folder synthetic types
     finalItems = _applyOperatorPostFilter(finalItems);
+    let visibleCount = 0;
+    for (const item of finalItems) {
+        if (item && item.type !== 'group-header') visibleCount++;
+    }
 
     if (vsState.enabled) {
         vsUpdateItems(finalItems, { preserveScroll: true });
     }
+    setFilteredVisibleCountCache(finalItems, visibleCount);
     updateItemCount();
 
     // Count visible (non-header) matches for the search result badge
-    const visibleCount = finalItems.reduce((acc, it) => acc + (it && it.type !== 'group-header' ? 1 : 0), 0);
     updateSearchResultCount(visibleCount);
     clearSearchDebounceIndicator();
     // Refresh filename highlights for the new query across visible cards
@@ -9014,10 +9100,11 @@ function applyFilters() {
     if (vsState.enabled) {
         vsUpdateItems(sortedFiltered, { preserveScroll: true });
     }
+    const visibleCount = sortedFiltered.length;
+    setFilteredVisibleCountCache(sortedFiltered, visibleCount);
     updateItemCount();
 
     // Count visible (non-header) matches for the search result badge
-    const visibleCount = sortedFiltered.reduce((acc, it) => acc + (it && it.type !== 'group-header' ? 1 : 0), 0);
     updateSearchResultCount(visibleCount);
     clearSearchDebounceIndicator();
     if (typeof refreshVisibleFilenameHighlights === 'function') refreshVisibleFilenameHighlights();
@@ -9028,6 +9115,7 @@ function applyFilters() {
 function performSearch(searchQuery) {
     // Debounce search to avoid excessive filtering while typing
     clearTimeout(filterDebounceTimer);
+    clearFilteredVisibleCountCache();
     const delay = (aiVisualSearchEnabled && aiSearchActive) ? 300 : 150;
     // Show pulsing debounce indicator while waiting
     if (searchDebounceDotEl) {
@@ -10633,6 +10721,11 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
     setStatusActivity(`Navigating to ${folderName}...`);
     const previousFolderPath = currentFolderPath;
     const previousScrollTop = gridContainer.scrollTop;
+    const previousSearchValue = searchBox.value;
+    const previousParsedSearchQuery = _parsedSearchQuery;
+    const previousFilter = currentFilter;
+    const previousSortType = sortType;
+    const previousSortOrder = sortOrder;
     // Save scroll position for the folder we're leaving (only within the same tab —
     // tab switches are handled by snapshotCurrentTabDom before activeTabId changes)
     if (previousFolderPath && activeTabId != null) {
@@ -10687,23 +10780,8 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
             }
         }
         
-        // Only validate path if we don't have cached content (faster)
         if (!hasCachedContent) {
-            // No in-memory cache — force a fresh scan in loadVideos so we don't
-            // serve stale IndexedDB data that may be missing newly added files.
             forceReload = true;
-            // Show loading indicator
-            showLoadingIndicator(`Loading ${folderName}...`);
-            try {
-                // Validate path exists by trying to scan it
-                // Skip stats only when neither sorting nor card metadata needs them.
-                const skipStats = sortType === 'name' && !cardInfoSettings.fileSize && !cardInfoSettings.date;
-                const _validateRes = await window.electronAPI.scanFolder(folderPath, { skipStats });
-                if (!_validateRes || !_validateRes.ok) throw new Error(_validateRes && _validateRes.error || 'scan failed');
-            } finally {
-                // Hide loading indicator after a short delay to prevent flicker
-                setTimeout(() => hideLoadingIndicator(), 100);
-            }
         }
         
         // Yield control to allow UI to update
@@ -10711,18 +10789,6 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
         
         // If scan succeeds (even with empty results), path is valid
         currentFolderPath = folderPath;
-        // Save the folder path to localStorage whenever we navigate to a folder (if remembering is enabled)
-        if (rememberLastFolder) {
-            deferLocalStorageWrite('lastFolderPath', folderPath);
-        }
-        if (addToHistory) {
-            navigationHistory.add(folderPath);
-        }
-        
-        // Update current tab
-        updateCurrentTab(folderPath, folderPath.split(/[/\\]/).filter(Boolean).pop());
-        
-        updateBreadcrumb(folderPath);
         searchBox.value = ''; // Clear search when navigating
         _parsedSearchQuery = { freeText: '', operators: parseSearchQuery('').operators };
         renderSearchOperatorChips();
@@ -10761,6 +10827,17 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
         await loadVideos(folderPath, !forceReload, preservedScrollTop); // Use cache unless forcing reload
         clearPendingSessionScrollRestore();
 
+        // Save the folder path to localStorage whenever we navigate to a folder (if remembering is enabled)
+        if (rememberLastFolder) {
+            deferLocalStorageWrite('lastFolderPath', folderPath);
+        }
+        if (addToHistory) {
+            navigationHistory.add(folderPath);
+        }
+
+        updateCurrentTab(folderPath, folderName);
+        updateBreadcrumb(folderPath);
+
         // Sync sidebar tree with current folder — expand tree then highlight
         sidebarExpandToPath(folderPath);
 
@@ -10768,12 +10845,26 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
         focusedCardIndex = -1;
         perfTest.end('navigateToFolder', perfStart);
     } catch (error) {
+        currentFolderPath = previousFolderPath;
+        searchBox.value = previousSearchValue;
+        searchClearBtn.style.display = previousSearchValue ? '' : 'none';
+        _parsedSearchQuery = previousParsedSearchQuery;
+        renderSearchOperatorChips();
+        currentFilter = previousFilter;
+        sortType = previousSortType;
+        sortOrder = previousSortOrder;
+        if (sortTypeSelect) sortTypeSelect.value = sortType;
+        if (sortOrderSelect) sortOrderSelect.value = sortOrder;
+        filterAllBtn.classList.toggle('active', currentFilter === 'all');
+        filterVideosBtn.classList.toggle('active', currentFilter === 'video');
+        filterImagesBtn.classList.toggle('active', currentFilter === 'image');
+        updateItemCount();
         perfTest.end('navigateToFolder', perfStart);
         // Path doesn't exist or is invalid - show error and revert breadcrumb
         console.error('Invalid path:', folderPath, error);
         // Revert breadcrumb to current path
-        if (currentFolderPath) {
-            updateBreadcrumb(currentFolderPath);
+        if (previousFolderPath) {
+            updateBreadcrumb(previousFolderPath);
         }
         showToast(`Path not found: ${folderPath}`, 'error');
     }
@@ -13088,8 +13179,15 @@ function openLightbox(mediaUrl, filePath, fileName) {
     perfTest.end('openLightbox', perfStart);
 }
 
+const LIGHTBOX_DEBUG = false;
+function lightboxDebugLog(...args) {
+    if (LIGHTBOX_DEBUG) {
+        console.log(...args);
+    }
+}
+
 function applyLightboxZoom(zoomLevel, mouseX = null, mouseY = null) {
-    console.log('applyLightboxZoom called with:', zoomLevel);
+    lightboxDebugLog('applyLightboxZoom called with:', zoomLevel);
     const previousZoomLevel = currentZoomLevel;
     // Calculate previous zoom value accurately
     let previousZoomValue;
@@ -13481,15 +13579,15 @@ lightbox.addEventListener('contextmenu', (e) => {
 function attachZoomSliderListeners() {
     const slider = document.getElementById('lightbox-zoom-slider');
     if (slider && !slider.dataset.listenersAttached) {
-        console.log('Attaching zoom slider listeners');
+        lightboxDebugLog('Attaching zoom slider listeners');
         slider.addEventListener('input', (e) => {
             const zoomLevel = parseInt(e.target.value);
-            console.log('Slider input:', zoomLevel);
+            lightboxDebugLog('Slider input:', zoomLevel);
             applyLightboxZoom(zoomLevel);
         });
         slider.addEventListener('change', (e) => {
             const zoomLevel = parseInt(e.target.value);
-            console.log('Slider change:', zoomLevel);
+            lightboxDebugLog('Slider change:', zoomLevel);
             applyLightboxZoom(zoomLevel);
         });
         slider.dataset.listenersAttached = 'true';
@@ -13506,10 +13604,10 @@ if (lightboxZoomSlider) {
 // Scrollwheel zoom functionality
 let zoomTimeout;
 function handleLightboxWheel(e) {
-    console.log('Wheel event triggered');
+    lightboxDebugLog('Wheel event triggered');
     // Only zoom if lightbox is visible and not clicking on controls
     if (lightbox.classList.contains('hidden')) {
-        console.log('Lightbox is hidden, ignoring wheel');
+        lightboxDebugLog('Lightbox is hidden, ignoring wheel');
         return;
     }
     if (
@@ -13521,7 +13619,7 @@ function handleLightboxWheel(e) {
         e.target.closest('.lightbox-crop-toolbar') ||
         e.target.closest('.lightbox-action-btn')
     ) {
-        console.log('Wheel on controls, ignoring');
+        lightboxDebugLog('Wheel on controls, ignoring');
         return;
     }
     
@@ -13536,7 +13634,7 @@ function handleLightboxWheel(e) {
     const mouseX = e.clientX;
     const mouseY = e.clientY;
     
-    console.log('Wheel zoom:', currentZoomLevel, '->', newZoomLevel);
+    lightboxDebugLog('Wheel zoom:', currentZoomLevel, '->', newZoomLevel);
     applyLightboxZoom(newZoomLevel, mouseX, mouseY);
     
     // Clear existing timeout
@@ -13554,18 +13652,18 @@ function handleLightboxWheel(e) {
 }
 
 // Attach wheel event to lightbox and media elements
-console.log('Attaching wheel listeners');
+lightboxDebugLog('Attaching wheel listeners');
 if (lightbox) {
     lightbox.addEventListener('wheel', handleLightboxWheel, { passive: false });
-    console.log('Wheel listener attached to lightbox');
+    lightboxDebugLog('Wheel listener attached to lightbox');
 }
 if (lightboxImage) {
     lightboxImage.addEventListener('wheel', handleLightboxWheel, { passive: false });
-    console.log('Wheel listener attached to lightboxImage');
+    lightboxDebugLog('Wheel listener attached to lightboxImage');
 }
 if (lightboxVideo) {
     lightboxVideo.addEventListener('wheel', handleLightboxWheel, { passive: false });
-    console.log('Wheel listener attached to lightboxVideo');
+    lightboxDebugLog('Wheel listener attached to lightboxVideo');
 }
 if (lightboxGifCanvas) {
     lightboxGifCanvas.addEventListener('wheel', handleLightboxWheel, { passive: false });
@@ -15944,11 +16042,12 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
 
             // Use streaming scan if available (falls back to invoke if the API is missing).
             if (window.electronAPI.scanFolderStream && window.electronAPI.onScanFolderChunk) {
-                items = await new Promise((resolve) => {
+                items = await new Promise((resolve, reject) => {
                     let initialItems = null;
                     let itemByPath = null;
                     let resolved = false;
                     const safeResolve = (val) => { if (!resolved) { resolved = true; resolve(val); } };
+                    const safeReject = (error) => { if (!resolved) { resolved = true; reject(new Error(error || 'scan failed')); } };
                     scanFolderStreaming(folderPath, {
                         skipStats,
                         scanImageDimensions,
@@ -15987,7 +16086,10 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
                                 storeFolderInIndexedDB(folderPath, initialItems).catch(() => {});
                                 updateInMemoryFolderCaches(folderPath, initialItems);
                             }
-                            // Safety net: if stream errored before first chunk, unblock the outer promise
+                            if (!ok && !initialItems) {
+                                safeReject(error || `Could not scan folder: ${folderPath}`);
+                                return;
+                            }
                             safeResolve(initialItems || []);
                         }
                     });
@@ -15998,7 +16100,10 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
                     skipStats, scanImageDimensions, scanVideoDimensions,
                     recursive: recursiveSearchEnabled
                 });
-                items = _scanRes && _scanRes.ok ? (_scanRes.value || []) : [];
+                if (!_scanRes || !_scanRes.ok) {
+                    throw new Error((_scanRes && _scanRes.error) || `Could not scan folder: ${folderPath}`);
+                }
+                items = _scanRes.value || [];
             }
             perfTest.end('scanFolder (IPC stream)', scanPerfStart, { itemCount: items ? items.length : 0 });
 
@@ -17280,6 +17385,7 @@ function showTagFilterDropdown() {
                 activeTagFilters = [];
                 tagFilterActive = false;
                 tagFilteredPaths = null;
+                bumpFilterWorkerTagFilterVersion();
                 renderActiveTagFilters();
                 document.getElementById('filter-tags-toggle').classList.remove('active');
                 applyFilters();
@@ -17350,6 +17456,7 @@ async function toggleTagFilter(tag) {
             tagFilteredPaths = new Set();
         }
     }
+    bumpFilterWorkerTagFilterVersion();
     renderActiveTagFilters();
     applyFilters();
 }
@@ -17373,6 +17480,7 @@ function renderActiveTagFilters() {
                         const result = await window.electronAPI.dbQueryFilesByTags(expression);
                         if (result.ok) tagFilteredPaths = new Set(result.value || []);
                     } catch { tagFilteredPaths = new Set(); }
+                    bumpFilterWorkerTagFilterVersion();
                     applyFilters();
                 }
                 renderActiveTagFilters();

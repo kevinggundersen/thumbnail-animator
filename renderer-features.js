@@ -2387,6 +2387,7 @@ function setFileRating(filePath, rating) {
     if (normalizedPath !== filePath) {
         fileRatings[normalizedPath] = rating;
     }
+    if (typeof bumpFilterWorkerRatingsVersion === 'function') bumpFilterWorkerRatingsVersion();
     // Persist to SQLite (fire-and-forget, in-memory is already updated)
     window.electronAPI.dbSetRating(normalizedPath, rating);
 
@@ -2446,10 +2447,12 @@ async function loadRatings() {
         const result = await window.electronAPI.dbGetAllRatings();
         if (result.ok && result.value) {
             fileRatings = result.value;
+            if (typeof bumpFilterWorkerRatingsVersion === 'function') bumpFilterWorkerRatingsVersion();
         }
     } catch (error) {
         console.error('Error loading ratings:', error);
         fileRatings = {};
+        if (typeof bumpFilterWorkerRatingsVersion === 'function') bumpFilterWorkerRatingsVersion();
     }
 }
 
@@ -2473,6 +2476,7 @@ function setFilePinned(filePath, pinned) {
         delete pinnedFiles[filePath];
         if (normalizedPath !== filePath) delete pinnedFiles[normalizedPath];
     }
+    if (typeof bumpFilterWorkerPinsVersion === 'function') bumpFilterWorkerPinsVersion();
     // Persist to SQLite (fire-and-forget)
     window.electronAPI.dbSetPinned(normalizedPath, pinned);
     // Canvas grid: pin bar state changed, redraw affected card(s)
@@ -2497,10 +2501,12 @@ async function loadPins() {
         const result = await window.electronAPI.dbGetAllPinned();
         if (result.ok && result.value) {
             pinnedFiles = result.value;
+            if (typeof bumpFilterWorkerPinsVersion === 'function') bumpFilterWorkerPinsVersion();
         }
     } catch (error) {
         console.error('Error loading pins:', error);
         pinnedFiles = {};
+        if (typeof bumpFilterWorkerPinsVersion === 'function') bumpFilterWorkerPinsVersion();
     }
 }
 

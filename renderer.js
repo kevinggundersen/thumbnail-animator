@@ -19450,6 +19450,7 @@ const DEFAULT_SHORTCUTS = {
     lb_markIn:          { key: 'i', label: 'Mark loop in',       category: 'Lightbox' },
     lb_markOut:         { key: 'o', label: 'Mark loop out',      category: 'Lightbox' },
     lb_clearMarks:      { key: 'x', label: 'Clear loop marks',   category: 'Lightbox' },
+    lb_cropImage:       { key: 'r', label: 'Crop image',         category: 'Lightbox' },
     lb_saveFrame:       { key: 'e', label: 'Save current frame', category: 'Lightbox' },
     lb_exportTrim:      { key: 'e', ctrl: true, label: 'Export trimmed range', category: 'Lightbox' },
     lb_toggleInspector: { key: 'p', label: 'Toggle inspector',   category: 'Lightbox' },

@@ -3378,6 +3378,9 @@ function initNewFeatures() {
             } else if (matchesShortcut(e, 'lb_clearMarks')) {
                 e.preventDefault();
                 clearLoopMarks();
+            } else if (matchesShortcut(e, 'lb_cropImage')) {
+                e.preventDefault();
+                if (typeof enterLightboxCropMode === 'function') enterLightboxCropMode();
             } else if (matchesShortcut(e, 'lb_saveFrame')) {
                 e.preventDefault();
                 saveCurrentFrame(e.shiftKey);

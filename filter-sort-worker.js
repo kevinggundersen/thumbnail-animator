@@ -22,6 +22,9 @@
 
 'use strict';
 
+// Shared collator for name comparisons — 10-50x faster than per-call localeCompare
+const _nameCollator = new Intl.Collator(undefined, { numeric: true });
+
 // ── Worker state ──────────────────────────────────────────────────────
 
 let items = [];
@@ -322,7 +325,7 @@ function runFilterPipeline(state) {
     const clusteringActive = aiVisualSearchEnabled && aiClusteringMode === 'similarity' && embeddings.size > 0 && q === '';
     const skipPrimarySort = clusteringActive || (useAiSearch && q !== '') || useFindSimilar || (starFilterActive && starSortOrder !== 'none');
     if (!skipPrimarySort) {
-        const nameCmp = (a, b) => items[a].name.localeCompare(items[b].name, undefined, { numeric: true });
+        const nameCmp = (a, b) => _nameCollator.compare(items[a].name, items[b].name);
         const cmp = (a, b) => {
             const ia = items[a], ib = items[b];
             let c = 0;

@@ -258,6 +258,13 @@ class AppDatabase {
         `);
         this._stmts.getFilesForTag = this.db.prepare('SELECT file_path FROM file_tags WHERE tag_id = ?');
         this._stmts.removeAllTagsForFile = this.db.prepare('DELETE FROM file_tags WHERE file_path = ?');
+
+        // Bulk path migration (used by updateFilePaths for batch rename)
+        this._stmts.updateRatingPath = this.db.prepare('UPDATE file_ratings SET file_path = ? WHERE file_path = ?');
+        this._stmts.updatePinPath = this.db.prepare('UPDATE pinned_files SET file_path = ? WHERE file_path = ?');
+        this._stmts.updateFileTagsPath = this.db.prepare('UPDATE file_tags SET file_path = ? WHERE file_path = ?');
+        this._stmts.updateCollectionFilesPath = this.db.prepare('UPDATE collection_files SET file_path = ? WHERE file_path = ?');
+        this._stmts.updateFileHashesPath = this.db.prepare('UPDATE file_hashes SET file_path = ? WHERE file_path = ?');
         this._stmts.getFileCountForTag = this.db.prepare('SELECT COUNT(*) AS count FROM file_tags WHERE tag_id = ?');
 
         // Auto-suggest: sibling co-occurrence
@@ -727,33 +734,20 @@ class AppDatabase {
     // ── File path migration (for batch rename) ────────────────────────
 
     updateFilePaths(pathPairs) {
+        // Bulk path migration using direct UPDATE statements per table.
+        // Uses pre-prepared statements (5 UPDATEs per pair) instead of the old
+        // read-delete-insert pattern (4-7+ queries per pair including dynamic prepares).
         const tx = this.db.transaction((pairs) => {
             for (let { oldPath, newPath } of pairs) {
                 // Normalize to forward slashes to match how the renderer stores paths
                 oldPath = oldPath.replace(/\\/g, '/');
                 newPath = newPath.replace(/\\/g, '/');
-                // Ratings
-                const rating = this._stmts.getRating.get(oldPath);
-                if (rating) {
-                    this._stmts.setRating.run(newPath, rating.rating);
-                    this._stmts.deleteRating.run(oldPath);
-                }
-                // Pins
-                const pinned = this._stmts.isPinned.get(oldPath);
-                if (pinned) {
-                    this._stmts.removePin.run(oldPath);
-                    this._stmts.addPin.run(newPath);
-                }
-                // File tags — re-insert with new path, then delete old
-                const tags = this._stmts.getTagsForFile.all(oldPath);
-                for (const t of tags) {
-                    this._stmts.addTagToFile.run(newPath, t.id, Date.now());
-                    this._stmts.removeTagFromFile.run(oldPath, t.id);
-                }
-                // Collection files
-                this.db.prepare('UPDATE collection_files SET file_path = ? WHERE file_path = ?').run(newPath, oldPath);
-                // File hashes
-                this.db.prepare('UPDATE file_hashes SET file_path = ? WHERE file_path = ?').run(newPath, oldPath);
+                // Update path in-place across all tables (no-op if row doesn't exist)
+                this._stmts.updateRatingPath.run(newPath, oldPath);
+                this._stmts.updatePinPath.run(newPath, oldPath);
+                this._stmts.updateFileTagsPath.run(newPath, oldPath);
+                this._stmts.updateCollectionFilesPath.run(newPath, oldPath);
+                this._stmts.updateFileHashesPath.run(newPath, oldPath);
             }
         });
         tx(pathPairs);

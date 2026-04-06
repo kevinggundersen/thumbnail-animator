@@ -5240,6 +5240,10 @@ function filterItems(items) {
     return filtered;
 }
 
+// Shared collator for name comparisons — 10-50x faster than per-call localeCompare
+// because Intl.Collator reuses the internal ICU engine across all .compare() calls.
+const _nameCollator = new Intl.Collator(undefined, { numeric: true });
+
 // Function to sort items based on current sorting preferences.
 // Uses a single composite sort to avoid intermediate array allocations —
 // pinned state and folder/file type are encoded into the primary sort key
@@ -5280,10 +5284,10 @@ function sortItems(inputItems) {
         if (aIsFolder) {
             // Folder sort
             if (sortType === 'name') {
-                comparison = a.name.localeCompare(b.name, undefined, { numeric: true });
+                comparison = _nameCollator.compare(a.name, b.name);
             } else if (sortType === 'date') {
                 comparison = (a.mtime || 0) - (b.mtime || 0);
-                if (comparison === 0) comparison = a.name.localeCompare(b.name, undefined, { numeric: true });
+                if (comparison === 0) comparison = _nameCollator.compare(a.name, b.name);
             }
             return ascending ? comparison : -comparison;
         }
@@ -5291,25 +5295,25 @@ function sortItems(inputItems) {
         // File sort
         if (aiCollectionSort) {
             comparison = (b._aiScore || 0) - (a._aiScore || 0);
-            if (comparison === 0) comparison = a.name.localeCompare(b.name, undefined, { numeric: true });
+            if (comparison === 0) comparison = _nameCollator.compare(a.name, b.name);
             return comparison;
         } else if (ratingSort) {
             const aRating = a._cachedRating ?? getFileRating(a.path);
             const bRating = b._cachedRating ?? getFileRating(b.path);
             comparison = ratingOrder === 'asc' ? aRating - bRating : bRating - aRating;
-            if (comparison === 0) comparison = a.name.localeCompare(b.name, undefined, { numeric: true });
+            if (comparison === 0) comparison = _nameCollator.compare(a.name, b.name);
             return comparison;
         } else if (sortType === 'name') {
-            comparison = a.name.localeCompare(b.name, undefined, { numeric: true });
+            comparison = _nameCollator.compare(a.name, b.name);
         } else if (sortType === 'date') {
             comparison = (a.mtime || 0) - (b.mtime || 0);
-            if (comparison === 0) comparison = a.name.localeCompare(b.name, undefined, { numeric: true });
+            if (comparison === 0) comparison = _nameCollator.compare(a.name, b.name);
         } else if (sortType === 'size') {
             comparison = (a.size || 0) - (b.size || 0);
-            if (comparison === 0) comparison = a.name.localeCompare(b.name, undefined, { numeric: true });
+            if (comparison === 0) comparison = _nameCollator.compare(a.name, b.name);
         } else if (sortType === 'dimensions') {
             comparison = ((a.width || 0) * (a.height || 0)) - ((b.width || 0) * (b.height || 0));
-            if (comparison === 0) comparison = a.name.localeCompare(b.name, undefined, { numeric: true });
+            if (comparison === 0) comparison = _nameCollator.compare(a.name, b.name);
         }
         return ascending ? comparison : -comparison;
     });
@@ -5329,21 +5333,21 @@ function sortItems(inputItems) {
     return items;
 }
 
-// Function to apply sorting and reload current folder
+// Function to apply sorting and reload current folder.
+// Delegates to applyFilters() which routes through the filter-sort worker,
+// keeping the main thread free. Falls back to synchronous path automatically
+// if the worker is unavailable.
 function applySorting() {
     if (currentFolderPath && currentItems.length > 0) {
-        const previousScrollTop = gridContainer.scrollTop;
         // If sorting by date but items lack mtime (were loaded with skipStats),
         // reload from backend to get file stats
         const needsStats = (sortType === 'date' || groupByDate) && currentItems.some(item => item.type !== 'folder' && !item.mtime);
         if (needsStats) {
-            loadVideos(currentFolderPath, false, previousScrollTop);
+            loadVideos(currentFolderPath, false, gridContainer.scrollTop);
             return;
         }
-        // Filter items based on current filter, then sort and render
-        const filteredItems = filterItems(currentItems);
-        const sortedItems = sortItems(filteredItems);
-        renderItems(sortedItems, previousScrollTop);
+        // Delegate to the worker-backed filter/sort pipeline (handles sort + filter + group headers)
+        applyFilters();
     } else if (currentFolderPath) {
         // If no items cached, reload from backend
         loadVideos(currentFolderPath, true, gridContainer.scrollTop);

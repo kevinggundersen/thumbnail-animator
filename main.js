@@ -4877,8 +4877,15 @@ ipcMain.handle('clip-embed-images', async (event, files) => {
     let completed = 0;
     const sender = event.sender;
 
-    // Helper: resolve the best source path for a static image
+    // Pre-resolved source paths for static files (populated after thumbnail pre-gen).
+    // Avoids per-file blocking fs.existsSync() calls during batch embedding.
+    const _sourceCache = new Map();
+
+    // Helper: resolve the best source path for an image.
+    // Uses pre-resolved cache for static files; falls back to sync check for
+    // video/animated files (processed sequentially, negligible overhead).
     function resolveImageSource(file) {
+        if (_sourceCache.has(file.path)) return _sourceCache.get(file.path);
         if (file.thumbPath && fs.existsSync(file.thumbPath)) return file.thumbPath;
         if (imageThumbDir && file.mtime != null) {
             const imgThumb = getImageThumbCachePath(file.path, file.mtime, 512);
@@ -4996,12 +5003,20 @@ ipcMain.handle('clip-embed-images', async (event, files) => {
             }
         }));
 
-        const missing = [];
+        // Build candidate thumb paths and check existence in parallel (async)
+        const thumbCandidates = [];
         for (const f of staticFiles) {
-            if (f.mtime == null) continue; // resolveImageSource will use original anyway
-            const thumbPath = getImageThumbCachePath(f.path, f.mtime, 512);
-            if (!fs.existsSync(thumbPath)) {
-                missing.push({ filePath: f.path, thumbPath, maxSize: 512 });
+            if (f.mtime == null) continue;
+            thumbCandidates.push({ file: f, thumbPath: getImageThumbCachePath(f.path, f.mtime, 512) });
+        }
+        const thumbExistsResults = await Promise.allSettled(
+            thumbCandidates.map(c => fs.promises.access(c.thumbPath).then(() => true, () => false))
+        );
+        const missing = [];
+        for (let i = 0; i < thumbCandidates.length; i++) {
+            if (!(thumbExistsResults[i].status === 'fulfilled' && thumbExistsResults[i].value)) {
+                const c = thumbCandidates[i];
+                missing.push({ filePath: c.file.path, thumbPath: c.thumbPath, maxSize: 512 });
             }
         }
         if (missing.length > 0) {
@@ -5012,6 +5027,43 @@ ipcMain.handle('clip-embed-images', async (event, files) => {
             } catch (e) {
                 console.warn('[clip-scan] thumbnail pre-gen failed:', e.message);
             }
+        }
+    }
+
+    // Pre-resolve source paths for all static files in a single parallel batch.
+    // This replaces per-file blocking fs.existsSync() calls in resolveImageSource()
+    // during batch embedding (up to 3 stat calls × N files → 0 blocking calls).
+    if (staticFiles.length > 0) {
+        const allCheckPaths = new Set();
+        const perFile = new Map(); // filePath -> [candidatePath, ...]
+        for (const file of staticFiles) {
+            const paths = [];
+            if (file.thumbPath) { paths.push(file.thumbPath); allCheckPaths.add(file.thumbPath); }
+            if (imageThumbDir && file.mtime != null) {
+                const imgThumb = getImageThumbCachePath(file.path, file.mtime, 512);
+                paths.push(imgThumb); allCheckPaths.add(imgThumb);
+                if (videoThumbDir) {
+                    const vidThumb = getThumbCachePath(file.path, file.mtime);
+                    paths.push(vidThumb); allCheckPaths.add(vidThumb);
+                }
+            }
+            perFile.set(file.path, paths);
+        }
+        const pathArr = [...allCheckPaths];
+        const accessResults = await Promise.allSettled(
+            pathArr.map(p => fs.promises.access(p).then(() => true, () => false))
+        );
+        const existsSet = new Set();
+        for (let i = 0; i < pathArr.length; i++) {
+            if (accessResults[i].status === 'fulfilled' && accessResults[i].value) existsSet.add(pathArr[i]);
+        }
+        for (const file of staticFiles) {
+            const candidates = perFile.get(file.path) || [];
+            let resolved = file.path;
+            for (const p of candidates) {
+                if (existsSet.has(p)) { resolved = p; break; }
+            }
+            _sourceCache.set(file.path, resolved);
         }
     }
 

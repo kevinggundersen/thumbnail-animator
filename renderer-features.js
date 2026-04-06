@@ -3378,6 +3378,12 @@ function initNewFeatures() {
             } else if (matchesShortcut(e, 'lb_clearMarks')) {
                 e.preventDefault();
                 clearLoopMarks();
+            } else if (matchesShortcut(e, 'lb_rotateLeft')) {
+                e.preventDefault();
+                if (typeof applyLightboxRotation === 'function') applyLightboxRotation(-90);
+            } else if (matchesShortcut(e, 'lb_rotateRight')) {
+                e.preventDefault();
+                if (typeof applyLightboxRotation === 'function') applyLightboxRotation(90);
             } else if (matchesShortcut(e, 'lb_cropImage')) {
                 e.preventDefault();
                 if (typeof enterLightboxCropMode === 'function') enterLightboxCropMode();

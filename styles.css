@@ -3555,6 +3555,14 @@ video.blow-up-media {
     right: 60px;
 }
 
+#lightbox-rotate-right-btn {
+    right: 104px;
+}
+
+#lightbox-rotate-left-btn {
+    right: 148px;
+}
+
 #lightbox.crop-mode .lightbox-nav-btn,
 #lightbox.crop-mode .media-controls,
 #lightbox.crop-mode #lightbox-filmstrip {

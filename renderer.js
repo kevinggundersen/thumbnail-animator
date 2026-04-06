@@ -4877,6 +4877,8 @@ const lightboxZoomDockSection = document.getElementById('lb-insp-view-sec');
 const lightboxInspector = document.getElementById('lb-inspector');
 const lightboxZoomSlider = document.getElementById('lightbox-zoom-slider');
 const lightboxZoomValue = document.getElementById('lightbox-zoom-value');
+const lightboxRotateLeftBtn = document.getElementById('lightbox-rotate-left-btn');
+const lightboxRotateRightBtn = document.getElementById('lightbox-rotate-right-btn');
 const lightboxCropBtn = document.getElementById('lightbox-crop-btn');
 const lightboxCropOverlay = document.getElementById('lightbox-crop-overlay');
 const lightboxCropBox = document.getElementById('lightbox-crop-box');
@@ -4893,6 +4895,7 @@ let dragStartX = 0;
 let dragStartY = 0;
 let currentTranslateX = 0;
 let currentTranslateY = 0;
+let currentLightboxRotation = 0;
 
 let lightboxCropMeta = { enabled: false, outputExt: '.png' };
 const LIGHTBOX_CROP_MIN_DISPLAY_SIZE = 12;
@@ -11393,15 +11396,16 @@ function applyZoomToFitNow() {
     if (zoomToFit) {
         let fitLevel = 100;
         if (isCanvasVisible && activePlaybackController && activePlaybackController.gifWidth > 0) {
-            fitLevel = calculateFitZoomLevel(activePlaybackController.gifWidth, activePlaybackController.gifHeight);
+            const dims = getRotatedMediaDimensions(activePlaybackController.gifWidth, activePlaybackController.gifHeight);
+            fitLevel = calculateFitZoomLevel(dims.width, dims.height);
         } else if (isImageVisible && lightboxImage.naturalWidth > 0) {
-            fitLevel = calculateFitZoomLevel(lightboxImage.naturalWidth, lightboxImage.naturalHeight);
+            const dims = getRotatedMediaDimensions(lightboxImage.naturalWidth, lightboxImage.naturalHeight);
+            fitLevel = calculateFitZoomLevel(dims.width, dims.height);
         } else if (isVideoVisible && lightboxVideo.videoWidth > 0) {
-            fitLevel = calculateFitZoomLevel(lightboxVideo.videoWidth, lightboxVideo.videoHeight);
+            const dims = getRotatedMediaDimensions(lightboxVideo.videoWidth, lightboxVideo.videoHeight);
+            fitLevel = calculateFitZoomLevel(dims.width, dims.height);
         }
-        if (fitLevel > 100) {
-            applyLightboxZoom(fitLevel);
-        }
+        applyLightboxZoom(Math.max(100, fitLevel));
     } else {
         resetZoom();
     }
@@ -12232,13 +12236,88 @@ function calculateFitZoomLevel(naturalWidth, naturalHeight) {
     return Math.min(Math.round(zoomLevel / 5) * 5, lightboxMaxZoomSetting);
 }
 
+function normalizeLightboxRotation(degrees) {
+    const normalized = degrees % 360;
+    return normalized < 0 ? normalized + 360 : normalized;
+}
+
+function getRotatedMediaDimensions(width, height, rotation = currentLightboxRotation) {
+    const normalized = normalizeLightboxRotation(rotation);
+    if (normalized === 90 || normalized === 270) {
+        return { width: height, height: width };
+    }
+    return { width, height };
+}
+
+function getLightboxRotationString() {
+    return `rotate(${normalizeLightboxRotation(currentLightboxRotation)}deg)`;
+}
+
+function getVisibleLightboxMediaElement() {
+    const imageDisplay = lightboxImage.style.display;
+    const videoDisplay = lightboxVideo.style.display;
+    const canvasDisplay = lightboxGifCanvas.style.display;
+    const isImageVisible = imageDisplay === 'block' ||
+                          (imageDisplay === '' && window.getComputedStyle(lightboxImage).display !== 'none');
+    const isVideoVisible = videoDisplay === 'block' ||
+                          (videoDisplay === '' && window.getComputedStyle(lightboxVideo).display !== 'none');
+    const isCanvasVisible = canvasDisplay === 'block' ||
+                          (canvasDisplay === '' && window.getComputedStyle(lightboxGifCanvas).display !== 'none');
+    if (isCanvasVisible) return lightboxGifCanvas;
+    if (isImageVisible) return lightboxImage;
+    if (isVideoVisible) return lightboxVideo;
+    return null;
+}
+
+function getVisibleLightboxMediaInfo() {
+    const el = getVisibleLightboxMediaElement();
+    if (!el) return null;
+    if (el === lightboxImage) {
+        return { element: el, width: lightboxImage.naturalWidth || 0, height: lightboxImage.naturalHeight || 0 };
+    }
+    if (el === lightboxGifCanvas) {
+        return { element: el, width: lightboxGifCanvas.width || activePlaybackController?.gifWidth || 0, height: lightboxGifCanvas.height || activePlaybackController?.gifHeight || 0 };
+    }
+    return { element: el, width: lightboxVideo.videoWidth || 0, height: lightboxVideo.videoHeight || 0 };
+}
+
+function getDisplayedUnrotatedMediaRect(element) {
+    if (!element) return null;
+    const rect = element.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    const rotated = getRotatedMediaDimensions(rect.width, rect.height);
+    return { width: rotated.width, height: rotated.height };
+}
+
+function refreshLightboxRotationControls() {
+    const shouldShow = !lightbox.classList.contains('hidden') && !lightboxCropState.active;
+    if (lightboxRotateLeftBtn) {
+        lightboxRotateLeftBtn.classList.toggle('hidden', !shouldShow);
+        lightboxRotateLeftBtn.disabled = !shouldShow;
+    }
+    if (lightboxRotateRightBtn) {
+        lightboxRotateRightBtn.classList.toggle('hidden', !shouldShow);
+        lightboxRotateRightBtn.disabled = !shouldShow;
+    }
+}
+
+function applyLightboxRotation(step) {
+    currentLightboxRotation = normalizeLightboxRotation(currentLightboxRotation + step);
+    if (zoomToFit) {
+        applyZoomToFitNow();
+    } else {
+        applyCurrentLightboxTransform();
+    }
+    refreshLightboxRotationControls();
+}
+
 /** Helper: display a static (non-animated) image in the lightbox */
 function _showStaticImage(mediaUrl, lightboxImage, lightboxGifCanvas, lightbox, mediaControlBarInstance) {
     lightboxGifCanvas.style.display = 'none';
     lightboxImage.style.display = 'block';
 
     lightbox.classList.remove('hidden');
-    lightboxImage.style.transform = 'scale(1)';
+    lightboxImage.style.transform = getLightboxRotationString();
     lightboxImage.style.maxWidth = '90vw';
     lightboxImage.style.maxHeight = '90vh';
     lightboxImage.style.width = 'auto';
@@ -12246,12 +12325,17 @@ function _showStaticImage(mediaUrl, lightboxImage, lightboxGifCanvas, lightbox, 
 
     const handleImageLoad = () => {
         requestAnimationFrame(() => {
-            const rect = lightboxImage.getBoundingClientRect();
-            lightboxImage.dataset.baseWidth = rect.width.toString();
-            lightboxImage.dataset.baseHeight = rect.height.toString();
-            const fitLevel = calculateFitZoomLevel(lightboxImage.naturalWidth, lightboxImage.naturalHeight);
+            const baseRect = getDisplayedUnrotatedMediaRect(lightboxImage);
+            if (baseRect) {
+                lightboxImage.dataset.baseWidth = baseRect.width.toString();
+                lightboxImage.dataset.baseHeight = baseRect.height.toString();
+            }
+            const dims = getRotatedMediaDimensions(lightboxImage.naturalWidth, lightboxImage.naturalHeight);
+            const fitLevel = calculateFitZoomLevel(dims.width, dims.height);
             if (zoomToFit && fitLevel > 100) {
                 applyLightboxZoom(fitLevel);
+            } else {
+                applyCurrentLightboxTransform();
             }
         });
         lightboxImage.removeEventListener('load', handleImageLoad);
@@ -12445,6 +12529,10 @@ function enterLightboxCropMode() {
         showToast('Open a still image in the lightbox first', 'info');
         return;
     }
+    if (currentLightboxRotation !== 0) {
+        currentLightboxRotation = 0;
+        showToast('Crop mode resets rotation to 0 for now', 'info', { duration: 2200 });
+    }
 
     hideContextMenu();
     resetZoom();
@@ -12464,6 +12552,7 @@ function enterLightboxCropMode() {
     if (lightboxCropOverlay) lightboxCropOverlay.classList.remove('hidden');
     clearLightboxCropSelection();
     refreshLightboxCropButton();
+    refreshLightboxRotationControls();
 }
 
 function exitLightboxCropMode({ silent = false } = {}) {
@@ -12487,6 +12576,7 @@ function exitLightboxCropMode({ silent = false } = {}) {
     clearLightboxCropSelection();
     if (lightboxCropCancelBtn) lightboxCropCancelBtn.disabled = false;
     refreshLightboxCropButton();
+    refreshLightboxRotationControls();
     if (!silent) setLightboxCropStatus('Drag on the image to start a crop.');
 }
 
@@ -12673,6 +12763,7 @@ function openLightbox(mediaUrl, filePath, fileName) {
     const mediaType = getFileType(mediaUrl);
     setLightboxCropAvailability(filePath, false);
     exitLightboxCropMode({ silent: true });
+    currentLightboxRotation = 0;
 
     // Track current index for navigation
     if (lightboxItemsOverride && lightboxItemsOverride.length > 0) {
@@ -12771,7 +12862,7 @@ function openLightbox(mediaUrl, filePath, fileName) {
             // Show <img> immediately as a preview while we fetch + decode frames
             lightboxGifCanvas.style.display = 'none';
             lightboxImage.style.display = 'block';
-            lightboxImage.style.transform = 'scale(1)';
+            lightboxImage.style.transform = getLightboxRotationString();
             lightboxImage.style.maxWidth = '90vw';
             lightboxImage.style.maxHeight = '90vh';
             lightboxImage.style.width = 'auto';
@@ -12807,7 +12898,7 @@ function openLightbox(mediaUrl, filePath, fileName) {
                 // Swap from <img> preview to canvas
                 lightboxImage.style.display = 'none';
                 lightboxGifCanvas.style.display = 'block';
-                lightboxGifCanvas.style.transform = 'scale(1)';
+                lightboxGifCanvas.style.transform = getLightboxRotationString();
                 lightboxGifCanvas.style.maxWidth = '90vw';
                 lightboxGifCanvas.style.maxHeight = '90vh';
                 activePlaybackController = controller;
@@ -12820,12 +12911,17 @@ function openLightbox(mediaUrl, filePath, fileName) {
 
                 // Zoom to fit using decoded dimensions
                 requestAnimationFrame(() => {
-                    const rect = lightboxGifCanvas.getBoundingClientRect();
-                    lightboxGifCanvas.dataset.baseWidth = rect.width.toString();
-                    lightboxGifCanvas.dataset.baseHeight = rect.height.toString();
-                    const fitLevel = calculateFitZoomLevel(controller.gifWidth, controller.gifHeight);
+                    const baseRect = getDisplayedUnrotatedMediaRect(lightboxGifCanvas);
+                    if (baseRect) {
+                        lightboxGifCanvas.dataset.baseWidth = baseRect.width.toString();
+                        lightboxGifCanvas.dataset.baseHeight = baseRect.height.toString();
+                    }
+                    const dims = getRotatedMediaDimensions(controller.gifWidth, controller.gifHeight);
+                    const fitLevel = calculateFitZoomLevel(dims.width, dims.height);
                     if (zoomToFit && fitLevel > 100) {
                         applyLightboxZoom(fitLevel);
+                    } else {
+                        applyCurrentLightboxTransform();
                     }
                 });
 
@@ -12859,7 +12955,7 @@ function openLightbox(mediaUrl, filePath, fileName) {
         lightboxVideo.src = mediaUrl;
         lightboxVideo.dataset.src = mediaUrl;
         lightbox.classList.remove('hidden');
-        lightboxVideo.style.transform = 'scale(1)';
+        lightboxVideo.style.transform = getLightboxRotationString();
         lightboxVideo.style.maxWidth = '90vw';
         lightboxVideo.style.maxHeight = '90vh';
 
@@ -12880,12 +12976,17 @@ function openLightbox(mediaUrl, filePath, fileName) {
         // Zoom to fit
         const handleVideoMeta = () => {
             requestAnimationFrame(() => {
-                const fitLevel = calculateFitZoomLevel(lightboxVideo.videoWidth, lightboxVideo.videoHeight);
+                const dims = getRotatedMediaDimensions(lightboxVideo.videoWidth, lightboxVideo.videoHeight);
+                const fitLevel = calculateFitZoomLevel(dims.width, dims.height);
                 if (zoomToFit && fitLevel > 100) {
-                    const rect = lightboxVideo.getBoundingClientRect();
-                    lightboxVideo.dataset.baseWidth = rect.width.toString();
-                    lightboxVideo.dataset.baseHeight = rect.height.toString();
+                    const baseRect = getDisplayedUnrotatedMediaRect(lightboxVideo);
+                    if (baseRect) {
+                        lightboxVideo.dataset.baseWidth = baseRect.width.toString();
+                        lightboxVideo.dataset.baseHeight = baseRect.height.toString();
+                    }
                     applyLightboxZoom(fitLevel);
+                } else {
+                    applyCurrentLightboxTransform();
                 }
             });
             lightboxVideo.removeEventListener('loadedmetadata', handleVideoMeta);
@@ -12910,6 +13011,7 @@ function openLightbox(mediaUrl, filePath, fileName) {
     // Reset keyboard focus
     focusedCardIndex = -1;
     refreshLightboxCropButton();
+    refreshLightboxRotationControls();
     perfTest.end('openLightbox', perfStart);
 }
 
@@ -12992,17 +13094,19 @@ function applyLightboxZoom(zoomLevel, mouseX = null, mouseY = null) {
     // Capture the current displayed size before removing constraints
     const zoomableImageEl = isCanvasVisible ? lightboxGifCanvas : lightboxImage;
     if ((isImageVisible || isCanvasVisible) && previousZoomLevel === 100 && zoomLevel > 100) {
-        const rect = zoomableImageEl.getBoundingClientRect();
-        zoomableImageEl.dataset.baseWidth = rect.width.toString();
-        zoomableImageEl.dataset.baseHeight = rect.height.toString();
+        const baseRect = getDisplayedUnrotatedMediaRect(zoomableImageEl);
+        if (baseRect) {
+            zoomableImageEl.dataset.baseWidth = baseRect.width.toString();
+            zoomableImageEl.dataset.baseHeight = baseRect.height.toString();
+        }
     }
 
     // Build transform string
     let transformString;
     if (zoomLevel <= 100) {
-        transformString = `scale(${zoomValue})`;
+        transformString = `${getLightboxRotationString()} scale(${zoomValue})`;
     } else {
-        transformString = `translate(${currentTranslateX}px, ${currentTranslateY}px) scale(${zoomValue})`;
+        transformString = `translate(${currentTranslateX}px, ${currentTranslateY}px) ${getLightboxRotationString()} scale(${zoomValue})`;
     }
 
     // Apply to all media elements
@@ -13067,8 +13171,8 @@ function applyLightboxZoom(zoomLevel, mouseX = null, mouseY = null) {
 function applyCurrentLightboxTransform() {
     const zoomValue = cachedZoomValue;
     const transformString = currentZoomLevel <= 100
-        ? `scale(${zoomValue})`
-        : `translate(${currentTranslateX}px, ${currentTranslateY}px) scale(${zoomValue})`;
+        ? `${getLightboxRotationString()} scale(${zoomValue})`
+        : `translate(${currentTranslateX}px, ${currentTranslateY}px) ${getLightboxRotationString()} scale(${zoomValue})`;
 
     const imageDisplay = lightboxImage.style.display;
     const videoDisplay = lightboxVideo.style.display;
@@ -13099,11 +13203,13 @@ function applyPan(deltaX, deltaY) {
 
 function resetZoom() {
     currentZoomLevel = 100;
+    cachedZoomValue = 1;
     currentTranslateX = 0;
     currentTranslateY = 0;
-    lightboxImage.style.transform = 'scale(1)';
-    lightboxVideo.style.transform = 'scale(1)';
-    lightboxGifCanvas.style.transform = 'scale(1)';
+    const baseTransform = `${getLightboxRotationString()} scale(1)`;
+    lightboxImage.style.transform = baseTransform;
+    lightboxVideo.style.transform = baseTransform;
+    lightboxGifCanvas.style.transform = baseTransform;
     lightboxImage.classList.remove('zoomed');
     lightboxVideo.classList.remove('zoomed');
     lightboxGifCanvas.classList.remove('zoomed');
@@ -13138,6 +13244,7 @@ function closeLightbox() {
     hideContextMenu();
     exitLightboxCropMode({ silent: true });
     setLightboxCropAvailability(window.currentLightboxFilePath, false);
+    currentLightboxRotation = 0;
 
     // Persist playback settings from controller before destroying
     if (activePlaybackController) {
@@ -13186,9 +13293,20 @@ function closeLightbox() {
     // Trigger GC after closing lightbox too
     scheduleGC();
     refreshLightboxCropButton();
+    refreshLightboxRotationControls();
 }
 
 closeLightboxBtn.addEventListener('click', closeLightbox);
+lightboxRotateLeftBtn?.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    applyLightboxRotation(-90);
+});
+lightboxRotateRightBtn?.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    applyLightboxRotation(90);
+});
 lightboxCropBtn?.addEventListener('click', (e) => {
     e.preventDefault();
     e.stopPropagation();
@@ -13403,7 +13521,7 @@ function applyPanTransform() {
     
     // Apply transform with translate first (applied last, so in screen space)
     const zoomValue = cachedZoomValue;
-    const transformString = `translate(${currentTranslateX}px, ${currentTranslateY}px) scale(${zoomValue})`;
+    const transformString = `translate(${currentTranslateX}px, ${currentTranslateY}px) ${getLightboxRotationString()} scale(${zoomValue})`;
     
     const imageDisplay = lightboxImage.style.display;
     const videoDisplay = lightboxVideo.style.display;
@@ -13920,6 +14038,10 @@ function showLightboxContextMenu(event) {
     // Convert — show for all media files when ffmpeg is available
     const convertItem = contextMenu.querySelector('[data-action="convert"]');
     if (convertItem) convertItem.style.display = _ffmpegAvailable === false ? 'none' : '';
+    const rotateLeftItem = contextMenu.querySelector('[data-action="rotate-left"]');
+    if (rotateLeftItem) rotateLeftItem.style.display = lightboxCropState.active ? 'none' : '';
+    const rotateRightItem = contextMenu.querySelector('[data-action="rotate-right"]');
+    if (rotateRightItem) rotateRightItem.style.display = lightboxCropState.active ? 'none' : '';
     const cropItem = contextMenu.querySelector('[data-action="crop-image"]');
     if (cropItem) cropItem.style.display = lightboxCropMeta.enabled && !lightboxCropState.active ? '' : 'none';
 
@@ -14043,6 +14165,10 @@ function showContextMenu(event, card) {
         if (trimItem) trimItem.style.display = 'none'; // grid context: hide (lightbox handles separately)
         const convertItem = menu.querySelector('[data-action="convert"]');
         if (convertItem) convertItem.style.display = _ffmpegAvailable === false ? 'none' : '';
+        const rotateLeftItem = menu.querySelector('[data-action="rotate-left"]');
+        if (rotateLeftItem) rotateLeftItem.style.display = 'none';
+        const rotateRightItem = menu.querySelector('[data-action="rotate-right"]');
+        if (rotateRightItem) rotateRightItem.style.display = 'none';
         const cropItem = menu.querySelector('[data-action="crop-image"]');
         if (cropItem) cropItem.style.display = 'none';
     }
@@ -14383,6 +14509,14 @@ contextMenu.addEventListener('click', async (e) => {
             enterLightboxCropMode();
             break;
         }
+
+        case 'rotate-left':
+            if (contextMenuSource === 'lightbox') applyLightboxRotation(-90);
+            break;
+
+        case 'rotate-right':
+            if (contextMenuSource === 'lightbox') applyLightboxRotation(90);
+            break;
 
         default:
             if (action.startsWith('plugin:')) {
@@ -19530,6 +19664,8 @@ const DEFAULT_SHORTCUTS = {
     lb_markIn:          { key: 'i', label: 'Mark loop in',       category: 'Lightbox' },
     lb_markOut:         { key: 'o', label: 'Mark loop out',      category: 'Lightbox' },
     lb_clearMarks:      { key: 'x', label: 'Clear loop marks',   category: 'Lightbox' },
+    lb_rotateLeft:      { key: 'q', label: 'Rotate left',        category: 'Lightbox' },
+    lb_rotateRight:     { key: 'w', label: 'Rotate right',       category: 'Lightbox' },
     lb_cropImage:       { key: 'r', label: 'Crop image',         category: 'Lightbox' },
     lb_saveFrame:       { key: 'e', label: 'Save current frame', category: 'Lightbox' },
     lb_exportTrim:      { key: 'e', ctrl: true, label: 'Export trimmed range', category: 'Lightbox' },

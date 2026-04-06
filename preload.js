@@ -114,6 +114,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     openPluginsFolder: () => ipcRenderer.invoke('open-plugins-folder'),
     getPluginOrder: () => ipcRenderer.invoke('get-plugin-order'),
     setPluginOrder: (order) => ipcRenderer.invoke('set-plugin-order', order),
+    updatePluginFromFolder: (opts) => ipcRenderer.invoke('update-plugin-from-folder', opts),
     // Settings export/import
     exportSettingsDialog: (jsonString) => ipcRenderer.invoke('export-settings-dialog', jsonString),
     importSettingsDialog: () => ipcRenderer.invoke('import-settings-dialog'),

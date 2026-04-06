@@ -482,6 +482,28 @@ function _wireInstallButton(container) {
                 return;
             }
             if (res.value && res.value.canceled) return;
+
+            // Handle duplicate — offer to update
+            if (res.value && res.value.duplicate) {
+                const { pluginId, existingVersion, newVersion, existingName, sourceDir } = res.value;
+                const confirmed = await showConfirm(
+                    'Update Plugin',
+                    `"${existingName}" is already installed (v${existingVersion}). Replace with v${newVersion}?`,
+                    { confirmLabel: 'Update', danger: false }
+                );
+                if (!confirmed) return;
+                installBtn.textContent = 'Updating\u2026';
+                const updateRes = await window.electronAPI.updatePluginFromFolder({ pluginId, sourceDir });
+                if (!updateRes || !updateRes.ok) {
+                    showToast(`Update failed: ${updateRes ? updateRes.error : 'Unknown error'}`, 'error');
+                    return;
+                }
+                showToast(`Plugin "${updateRes.value.name}" updated to v${newVersion}`, 'success');
+                _invalidatePluginCaches();
+                await initPluginsTab();
+                return;
+            }
+
             showToast(`Plugin "${res.value.name}" installed successfully`, 'success');
             _invalidatePluginCaches();
             await initPluginsTab();

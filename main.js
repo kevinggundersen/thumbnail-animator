@@ -5371,7 +5371,15 @@ ipcMain.handle('install-plugin-from-folder', async () => {
         const { manifest } = validation;
 
         if (pluginRegistry._manifests.has(manifest.id)) {
-            return { ok: false, error: `Plugin "${manifest.id}" is already installed` };
+            const existing = pluginRegistry.getManifests().find(m => m.id === manifest.id);
+            return { ok: true, value: {
+                duplicate: true,
+                pluginId: manifest.id,
+                existingVersion: existing?.version || '?',
+                newVersion: manifest.version || '?',
+                existingName: existing?.name || manifest.id,
+                sourceDir,
+            }};
         }
 
         const userPluginsDir = path.join(app.getPath('userData'), 'plugins');
@@ -5392,6 +5400,53 @@ ipcMain.handle('install-plugin-from-folder', async () => {
         return { ok: true, value: { pluginId: manifest.id, name: manifest.name || manifest.id } };
     } catch (err) {
         console.warn('[Plugin install] failed:', err.message);
+        return { ok: false, error: err.message };
+    }
+});
+
+ipcMain.handle('update-plugin-from-folder', async (event, { pluginId, sourceDir }) => {
+    try {
+        // Re-validate source
+        const validation = PluginRegistry.validateManifest(sourceDir);
+        if (!validation.valid) {
+            return { ok: false, error: validation.error };
+        }
+        if (validation.manifest.id !== pluginId) {
+            return { ok: false, error: `Manifest ID "${validation.manifest.id}" does not match expected "${pluginId}"` };
+        }
+        if (pluginRegistry.isBuiltin(pluginId)) {
+            return { ok: false, error: 'Cannot update a built-in plugin' };
+        }
+
+        // Snapshot current state
+        const wasEnabled = !pluginRegistry._disabledPlugins.has(pluginId);
+        const savedOrder = pluginRegistry.getPluginOrder();
+
+        // Unregister old
+        await pluginRegistry.unregisterPlugin(pluginId);
+
+        // Replace files
+        const userPluginsDir = path.join(app.getPath('userData'), 'plugins');
+        const destDir = path.join(userPluginsDir, pluginId);
+        await fs.promises.rm(destDir, { recursive: true, force: true });
+        await fs.promises.cp(sourceDir, destDir, { recursive: true });
+
+        // Register new
+        pluginRegistry.registerFromDirectory(destDir);
+
+        // Restore state and order
+        pluginRegistry.setPluginEnabled(pluginId, wasEnabled);
+        pluginRegistry.setPluginOrder(savedOrder);
+
+        // Clear plugin cache
+        const pluginCachePath = path.join(pluginCacheDir, pluginId);
+        if (fs.existsSync(pluginCachePath)) {
+            await fs.promises.rm(pluginCachePath, { recursive: true, force: true }).catch(() => {});
+        }
+
+        return { ok: true, value: { pluginId, name: validation.manifest.name || pluginId } };
+    } catch (err) {
+        console.warn(`[Plugin update] ${pluginId} failed:`, err.message);
         return { ok: false, error: err.message };
     }
 });

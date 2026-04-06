@@ -186,7 +186,30 @@
                 </div>
                 <div id="lightbox-gif-time" class="lightbox-gif-time"></div>
             </div>
+            <div id="lightbox-crop-overlay" class="lightbox-crop-overlay hidden">
+                <div id="lightbox-crop-box" class="lightbox-crop-box hidden">
+                    <div id="lightbox-crop-size" class="lightbox-crop-size"></div>
+                    <div class="lightbox-crop-handle" data-handle="n"></div>
+                    <div class="lightbox-crop-handle" data-handle="ne"></div>
+                    <div class="lightbox-crop-handle" data-handle="e"></div>
+                    <div class="lightbox-crop-handle" data-handle="se"></div>
+                    <div class="lightbox-crop-handle" data-handle="s"></div>
+                    <div class="lightbox-crop-handle" data-handle="sw"></div>
+                    <div class="lightbox-crop-handle" data-handle="w"></div>
+                    <div class="lightbox-crop-handle" data-handle="nw"></div>
+                </div>
+                <div class="lightbox-crop-toolbar">
+                    <span id="lightbox-crop-status" class="lightbox-crop-status">Drag on the image to start a crop.</span>
+                    <div class="lightbox-crop-actions">
+                        <button id="lightbox-crop-cancel" class="settings-action-btn" type="button">Cancel</button>
+                        <button id="lightbox-crop-apply" class="settings-action-btn theme-save-btn" type="button" disabled>Apply Crop</button>
+                    </div>
+                </div>
+            </div>
             <button id="close-lightbox"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+            <button id="lightbox-crop-btn" class="lightbox-action-btn hidden" title="Crop Image">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/><path d="M6 18H4a2 2 0 0 1-2-2v-2"/><path d="M18 6h2a2 2 0 0 1 2 2v2"/></svg>
+            </button>
             <button id="lightbox-prev" class="lightbox-nav-btn" title="Previous (←)"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg></button>
             <button id="lightbox-next" class="lightbox-nav-btn" title="Next (→)"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg></button>
             <div id="lightbox-zoom-floating-mount">
@@ -514,6 +537,7 @@
             <div class="context-menu-divider"></div>
             <div class="context-menu-item" data-action="trim" id="ctx-trim-item"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/></svg> Export Trim\u2026</div>
             <div class="context-menu-item" data-action="convert" id="ctx-convert-item"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg> Convert\u2026</div>
+            <div class="context-menu-item" data-action="crop-image" id="ctx-crop-image-item"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/></svg> Crop Image\u2026</div>
             <div class="context-menu-divider"></div>
             <div class="context-menu-item context-menu-item-danger" data-action="delete"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg> Delete</div>
         </div>

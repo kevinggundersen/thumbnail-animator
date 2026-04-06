@@ -1153,6 +1153,57 @@ ipcMain.handle('save-frame-as', async (event, opts) => {
     }
 });
 
+ipcMain.handle('crop-image', async (_event, opts) => {
+    try {
+        const { inputPath, outputPath, crop } = opts || {};
+        if (!inputPath || !outputPath) return { ok: false, error:'Missing input or output path' };
+        if (!crop || !Number.isFinite(crop.left) || !Number.isFinite(crop.top) ||
+            !Number.isFinite(crop.width) || !Number.isFinite(crop.height)) {
+            return { ok: false, error:'Invalid crop area' };
+        }
+
+        const normalizedInput = path.resolve(inputPath);
+        const normalizedOutput = path.resolve(outputPath);
+        if (normalizedInput === normalizedOutput) {
+            return { ok: false, error:'Crop output must be a new file' };
+        }
+        if (!fs.existsSync(normalizedInput)) {
+            return { ok: false, error:'Source image not found' };
+        }
+
+        const left = Math.max(0, Math.floor(crop.left));
+        const top = Math.max(0, Math.floor(crop.top));
+        const width = Math.max(1, Math.floor(crop.width));
+        const height = Math.max(1, Math.floor(crop.height));
+
+        await fs.promises.mkdir(path.dirname(normalizedOutput), { recursive: true });
+
+        const sharp = require('sharp');
+        let pipeline = sharp(normalizedInput, { animated: false })
+            .rotate()
+            .extract({ left, top, width, height });
+
+        const outExt = path.extname(normalizedOutput).toLowerCase();
+        if (outExt === '.jpg' || outExt === '.jpeg') {
+            pipeline = pipeline.jpeg({ quality: 92 });
+        } else if (outExt === '.png') {
+            pipeline = pipeline.png();
+        } else if (outExt === '.webp') {
+            pipeline = pipeline.webp({ quality: 90 });
+        } else if (outExt === '.gif') {
+            pipeline = pipeline.gif();
+        } else if (outExt === '.tif' || outExt === '.tiff') {
+            pipeline = pipeline.tiff();
+        }
+
+        await pipeline.toFile(normalizedOutput);
+        return { ok: true, value: { filePath: normalizedOutput } };
+    } catch (err) {
+        console.error('Error cropping image:', err);
+        return { ok: false, error:err.message };
+    }
+});
+
 ipcMain.handle('export-settings-dialog', async (event, jsonString) => {
     try {
         const result = await dialog.showSaveDialog({

@@ -4877,6 +4877,13 @@ const lightboxZoomDockSection = document.getElementById('lb-insp-view-sec');
 const lightboxInspector = document.getElementById('lb-inspector');
 const lightboxZoomSlider = document.getElementById('lightbox-zoom-slider');
 const lightboxZoomValue = document.getElementById('lightbox-zoom-value');
+const lightboxCropBtn = document.getElementById('lightbox-crop-btn');
+const lightboxCropOverlay = document.getElementById('lightbox-crop-overlay');
+const lightboxCropBox = document.getElementById('lightbox-crop-box');
+const lightboxCropSize = document.getElementById('lightbox-crop-size');
+const lightboxCropStatus = document.getElementById('lightbox-crop-status');
+const lightboxCropApplyBtn = document.getElementById('lightbox-crop-apply');
+const lightboxCropCancelBtn = document.getElementById('lightbox-crop-cancel');
 
 // Lightbox zoom state
 let currentZoomLevel = 100;
@@ -4886,6 +4893,21 @@ let dragStartX = 0;
 let dragStartY = 0;
 let currentTranslateX = 0;
 let currentTranslateY = 0;
+
+let lightboxCropMeta = { enabled: false, outputExt: '.png' };
+const LIGHTBOX_CROP_MIN_DISPLAY_SIZE = 12;
+const lightboxCropState = {
+    active: false,
+    pointerId: null,
+    mode: null,
+    handle: null,
+    imageRect: null,
+    rect: null,
+    sourceRect: null,
+    startPoint: null,
+    startRect: null,
+    saving: false,
+};
 
 function syncLightboxZoomControlsPlacement() {
     if (!lightboxZoomControls || !lightboxZoomFloatingMount || !lightboxZoomDockMount) return;
@@ -12240,9 +12262,369 @@ function _showStaticImage(mediaUrl, lightboxImage, lightboxGifCanvas, lightbox, 
     if (mediaControlBarInstance) mediaControlBarInstance.hide();
 }
 
+function getLightboxCropOutputMeta(filePath) {
+    const ext = (filePath.match(/\.[^.]+$/)?.[0] || '').toLowerCase();
+    switch (ext) {
+        case '.jpg':
+            return { enabled: true, outputExt: '.jpg', filters: [{ name: 'JPEG Image', extensions: ['jpg', 'jpeg'] }] };
+        case '.jpeg':
+            return { enabled: true, outputExt: '.jpeg', filters: [{ name: 'JPEG Image', extensions: ['jpg', 'jpeg'] }] };
+        case '.png':
+            return { enabled: true, outputExt: '.png', filters: [{ name: 'PNG Image', extensions: ['png'] }] };
+        case '.webp':
+            return { enabled: true, outputExt: '.webp', filters: [{ name: 'WebP Image', extensions: ['webp'] }] };
+        case '.bmp':
+            return { enabled: true, outputExt: '.png', filters: [{ name: 'PNG Image', extensions: ['png'] }] };
+        default:
+            return { enabled: false, outputExt: '.png', filters: [{ name: 'PNG Image', extensions: ['png'] }] };
+    }
+}
+
+function setLightboxCropAvailability(filePath, enabled) {
+    const meta = filePath ? getLightboxCropOutputMeta(filePath) : { enabled: false, outputExt: '.png', filters: [{ name: 'PNG Image', extensions: ['png'] }] };
+    lightboxCropMeta = (enabled && meta.enabled) ? meta : { enabled: false, outputExt: meta.outputExt || '.png', filters: meta.filters || [{ name: 'PNG Image', extensions: ['png'] }] };
+    if (!lightboxCropMeta.enabled && lightboxCropState.active) {
+        exitLightboxCropMode({ silent: true });
+    }
+    refreshLightboxCropButton();
+}
+
+function refreshLightboxCropButton() {
+    if (!lightboxCropBtn) return;
+    const shouldShow = lightboxCropMeta.enabled && !lightboxCropState.active && !lightbox.classList.contains('hidden');
+    lightboxCropBtn.classList.toggle('hidden', !shouldShow);
+    lightboxCropBtn.disabled = !shouldShow;
+}
+
+function setLightboxCropStatus(text) {
+    if (lightboxCropStatus) lightboxCropStatus.textContent = text;
+}
+
+function clearLightboxCropSelection(statusText = 'Drag on the image to start a crop.') {
+    lightboxCropState.rect = null;
+    lightboxCropState.sourceRect = null;
+    if (lightboxCropBox) lightboxCropBox.classList.add('hidden');
+    if (lightboxCropApplyBtn) lightboxCropApplyBtn.disabled = true;
+    setLightboxCropStatus(statusText);
+}
+
+function pointInRect(point, rect) {
+    return !!(point && rect &&
+        point.x >= rect.left && point.x <= rect.left + rect.width &&
+        point.y >= rect.top && point.y <= rect.top + rect.height);
+}
+
+function clampPointToRect(point, rect) {
+    return {
+        x: Math.min(rect.left + rect.width, Math.max(rect.left, point.x)),
+        y: Math.min(rect.top + rect.height, Math.max(rect.top, point.y)),
+    };
+}
+
+function getDisplayedLightboxImageRect() {
+    if (!lightboxImage || lightboxImage.style.display === 'none' || !lightboxImage.naturalWidth || !lightboxImage.naturalHeight) {
+        return null;
+    }
+    const rect = lightboxImage.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+}
+
+function normalizeCropRectFromPoints(startPoint, endPoint, imageRect) {
+    const start = clampPointToRect(startPoint, imageRect);
+    const end = clampPointToRect(endPoint, imageRect);
+    const left = Math.max(imageRect.left, Math.min(start.x, end.x));
+    const top = Math.max(imageRect.top, Math.min(start.y, end.y));
+    const right = Math.min(imageRect.left + imageRect.width, Math.max(start.x, end.x));
+    const bottom = Math.min(imageRect.top + imageRect.height, Math.max(start.y, end.y));
+    return { left, top, width: Math.max(0, right - left), height: Math.max(0, bottom - top) };
+}
+
+function clampCropRectToImage(rect, imageRect) {
+    const width = Math.min(rect.width, imageRect.width);
+    const height = Math.min(rect.height, imageRect.height);
+    const left = Math.min(imageRect.left + imageRect.width - width, Math.max(imageRect.left, rect.left));
+    const top = Math.min(imageRect.top + imageRect.height - height, Math.max(imageRect.top, rect.top));
+    return { left, top, width, height };
+}
+
+function resizeCropRect(startRect, handle, point, imageRect) {
+    const minSize = LIGHTBOX_CROP_MIN_DISPLAY_SIZE;
+    const clamped = clampPointToRect(point, imageRect);
+    let left = startRect.left;
+    let top = startRect.top;
+    let right = startRect.left + startRect.width;
+    let bottom = startRect.top + startRect.height;
+
+    if (handle.includes('n')) top = Math.max(imageRect.top, Math.min(clamped.y, bottom - minSize));
+    if (handle.includes('s')) bottom = Math.min(imageRect.top + imageRect.height, Math.max(clamped.y, top + minSize));
+    if (handle.includes('w')) left = Math.max(imageRect.left, Math.min(clamped.x, right - minSize));
+    if (handle.includes('e')) right = Math.min(imageRect.left + imageRect.width, Math.max(clamped.x, left + minSize));
+
+    return { left, top, width: right - left, height: bottom - top };
+}
+
+function screenRectToSourceRect(rect, imageRect) {
+    if (!rect || !imageRect || !lightboxImage?.naturalWidth || !lightboxImage?.naturalHeight) return null;
+    const naturalWidth = lightboxImage.naturalWidth;
+    const naturalHeight = lightboxImage.naturalHeight;
+    const scaleX = naturalWidth / imageRect.width;
+    const scaleY = naturalHeight / imageRect.height;
+
+    const left = Math.max(0, Math.min(naturalWidth - 1, Math.round((rect.left - imageRect.left) * scaleX)));
+    const top = Math.max(0, Math.min(naturalHeight - 1, Math.round((rect.top - imageRect.top) * scaleY)));
+    const right = Math.max(left + 1, Math.min(naturalWidth, Math.round((rect.left + rect.width - imageRect.left) * scaleX)));
+    const bottom = Math.max(top + 1, Math.min(naturalHeight, Math.round((rect.top + rect.height - imageRect.top) * scaleY)));
+    return { left, top, width: right - left, height: bottom - top };
+}
+
+function sourceRectToScreenRect(sourceRect, imageRect) {
+    if (!sourceRect || !imageRect || !lightboxImage?.naturalWidth || !lightboxImage?.naturalHeight) return null;
+    const scaleX = imageRect.width / lightboxImage.naturalWidth;
+    const scaleY = imageRect.height / lightboxImage.naturalHeight;
+    const left = imageRect.left + sourceRect.left * scaleX;
+    const top = imageRect.top + sourceRect.top * scaleY;
+    const width = sourceRect.width * scaleX;
+    const height = sourceRect.height * scaleY;
+    return clampCropRectToImage({ left, top, width, height }, imageRect);
+}
+
+function renderLightboxCropSelection() {
+    if (!lightboxCropState.active || !lightboxCropBox) return;
+
+    const rect = lightboxCropState.rect;
+    if (!rect || rect.width < LIGHTBOX_CROP_MIN_DISPLAY_SIZE || rect.height < LIGHTBOX_CROP_MIN_DISPLAY_SIZE) {
+        clearLightboxCropSelection('Drag on the image to start a crop.');
+        return;
+    }
+
+    lightboxCropState.sourceRect = screenRectToSourceRect(rect, lightboxCropState.imageRect);
+    const sourceRect = lightboxCropState.sourceRect;
+    const validSource = !!(sourceRect && sourceRect.width >= 8 && sourceRect.height >= 8);
+
+    lightboxCropBox.classList.remove('hidden');
+    lightboxCropBox.style.left = `${rect.left}px`;
+    lightboxCropBox.style.top = `${rect.top}px`;
+    lightboxCropBox.style.width = `${rect.width}px`;
+    lightboxCropBox.style.height = `${rect.height}px`;
+    if (lightboxCropSize && sourceRect) {
+        lightboxCropSize.textContent = `${sourceRect.width} x ${sourceRect.height}px`;
+    }
+    if (lightboxCropApplyBtn) lightboxCropApplyBtn.disabled = !validSource || lightboxCropState.saving;
+    setLightboxCropStatus(validSource ? 'Adjust the crop box, then apply.' : 'Crop area is too small.');
+}
+
+function syncLightboxCropToViewport() {
+    if (!lightboxCropState.active) return;
+    const imageRect = getDisplayedLightboxImageRect();
+    if (!imageRect) {
+        exitLightboxCropMode({ silent: true });
+        return;
+    }
+    lightboxCropState.imageRect = imageRect;
+    if (lightboxCropState.sourceRect) {
+        lightboxCropState.rect = sourceRectToScreenRect(lightboxCropState.sourceRect, imageRect);
+    }
+    if (lightboxCropState.rect) {
+        renderLightboxCropSelection();
+    } else {
+        clearLightboxCropSelection();
+    }
+}
+
+function enterLightboxCropMode() {
+    if (lightboxCropState.active || !lightboxCropMeta.enabled) return;
+    if (!window.currentLightboxFilePath || !lightboxImage || lightboxImage.style.display === 'none' || !lightboxImage.naturalWidth) {
+        showToast('Open a still image in the lightbox first', 'info');
+        return;
+    }
+
+    hideContextMenu();
+    resetZoom();
+    const imageRect = getDisplayedLightboxImageRect();
+    if (!imageRect) {
+        showToast('Image is not ready to crop yet', 'info');
+        return;
+    }
+
+    lightboxCropState.active = true;
+    lightboxCropState.pointerId = null;
+    lightboxCropState.mode = null;
+    lightboxCropState.handle = null;
+    lightboxCropState.imageRect = imageRect;
+    lightboxCropState.saving = false;
+    lightbox.classList.add('crop-mode');
+    if (lightboxCropOverlay) lightboxCropOverlay.classList.remove('hidden');
+    clearLightboxCropSelection();
+    refreshLightboxCropButton();
+}
+
+function exitLightboxCropMode({ silent = false } = {}) {
+    if (!lightboxCropState.active && !lightboxCropState.saving) return;
+    if (lightboxCropOverlay && lightboxCropState.pointerId != null && lightboxCropOverlay.hasPointerCapture(lightboxCropState.pointerId)) {
+        try { lightboxCropOverlay.releasePointerCapture(lightboxCropState.pointerId); } catch {}
+    }
+    lightboxCropState.active = false;
+    lightboxCropState.pointerId = null;
+    lightboxCropState.mode = null;
+    lightboxCropState.handle = null;
+    lightboxCropState.startPoint = null;
+    lightboxCropState.startRect = null;
+    lightboxCropState.imageRect = null;
+    lightboxCropState.saving = false;
+    lightbox.classList.remove('crop-mode');
+    if (lightboxCropOverlay) lightboxCropOverlay.classList.add('hidden');
+    clearLightboxCropSelection();
+    if (lightboxCropCancelBtn) lightboxCropCancelBtn.disabled = false;
+    refreshLightboxCropButton();
+    if (!silent) setLightboxCropStatus('Drag on the image to start a crop.');
+}
+
+async function applyLightboxCrop() {
+    if (!lightboxCropState.active || lightboxCropState.saving) return;
+    const sourceRect = lightboxCropState.sourceRect;
+    const srcPath = window.currentLightboxFilePath;
+    if (!sourceRect || !srcPath) return;
+
+    const { dir, stem, sep } = _ffGetPathParts(srcPath);
+    const outputExt = lightboxCropMeta.outputExt || '.png';
+    const defaultPath = _ffJoin(dir, `${stem}_crop${outputExt}`, sep);
+
+    lightboxCropState.saving = true;
+    if (lightboxCropApplyBtn) lightboxCropApplyBtn.disabled = true;
+    if (lightboxCropCancelBtn) lightboxCropCancelBtn.disabled = true;
+    setLightboxCropStatus('Choose where to save the cropped image...');
+
+    try {
+        const saveRes = await window.electronAPI.showSaveDialog({
+            defaultPath,
+            filters: lightboxCropMeta.filters,
+        });
+        if (!saveRes || !saveRes.ok || !saveRes.value || saveRes.value.canceled) {
+            exitLightboxCropMode({ silent: true });
+            return;
+        }
+
+        const cropRes = await window.electronAPI.cropImage({
+            inputPath: srcPath,
+            outputPath: saveRes.value.filePath,
+            crop: sourceRect,
+        });
+
+        if (!cropRes || !cropRes.ok || !cropRes.value?.filePath) {
+            lightboxCropState.saving = false;
+            if (lightboxCropCancelBtn) lightboxCropCancelBtn.disabled = false;
+            renderLightboxCropSelection();
+            showToast(`Crop failed: ${friendlyError(cropRes?.error || 'unknown error')}`, 'error');
+            return;
+        }
+
+        const savedPath = cropRes.value.filePath;
+        exitLightboxCropMode({ silent: true });
+        const outName = savedPath.split(/[\\/]/).pop();
+        showToast(`Saved ${outName}`, 'success', {
+            actionLabel: 'Reveal',
+            actionCallback: () => window.electronAPI.revealInExplorer(savedPath),
+        });
+
+        const outputDir = savedPath.slice(0, Math.max(savedPath.lastIndexOf('\\'), savedPath.lastIndexOf('/')));
+        const normalizePath = (p) => String(p || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+        if (currentFolderPath && normalizePath(currentFolderPath) === normalizePath(outputDir)) {
+            const previousScrollTop = gridContainer.scrollTop;
+            invalidateFolderCache(currentFolderPath);
+            await loadVideos(currentFolderPath, false, previousScrollTop);
+        }
+    } catch (error) {
+        lightboxCropState.saving = false;
+        if (lightboxCropCancelBtn) lightboxCropCancelBtn.disabled = false;
+        renderLightboxCropSelection();
+        showToast(`Crop failed: ${friendlyError(error)}`, 'error');
+    }
+}
+
+function handleLightboxCropPointerDown(e) {
+    if (!lightboxCropState.active || lightboxCropState.saving || e.button !== 0) return;
+
+    const imageRect = getDisplayedLightboxImageRect();
+    if (!imageRect) return;
+    lightboxCropState.imageRect = imageRect;
+
+    const point = { x: e.clientX, y: e.clientY };
+    const handle = e.target.closest('.lightbox-crop-handle')?.dataset.handle || null;
+    if (handle && lightboxCropState.rect) {
+        lightboxCropState.mode = 'resize';
+        lightboxCropState.handle = handle;
+        lightboxCropState.startRect = { ...lightboxCropState.rect };
+        lightboxCropState.startPoint = point;
+    } else if (lightboxCropState.rect && pointInRect(point, lightboxCropState.rect)) {
+        lightboxCropState.mode = 'move';
+        lightboxCropState.handle = null;
+        lightboxCropState.startRect = { ...lightboxCropState.rect };
+        lightboxCropState.startPoint = point;
+    } else if (pointInRect(point, imageRect)) {
+        const clamped = clampPointToRect(point, imageRect);
+        lightboxCropState.mode = 'create';
+        lightboxCropState.handle = null;
+        lightboxCropState.startPoint = clamped;
+        lightboxCropState.startRect = null;
+        lightboxCropState.rect = { left: clamped.x, top: clamped.y, width: 0, height: 0 };
+        renderLightboxCropSelection();
+    } else {
+        return;
+    }
+
+    lightboxCropState.pointerId = e.pointerId;
+    if (lightboxCropOverlay) lightboxCropOverlay.setPointerCapture(e.pointerId);
+    e.preventDefault();
+    e.stopPropagation();
+}
+
+function handleLightboxCropPointerMove(e) {
+    if (!lightboxCropState.active || lightboxCropState.pointerId !== e.pointerId || !lightboxCropState.mode) return;
+    const imageRect = lightboxCropState.imageRect || getDisplayedLightboxImageRect();
+    if (!imageRect) return;
+    const point = { x: e.clientX, y: e.clientY };
+
+    if (lightboxCropState.mode === 'create') {
+        lightboxCropState.rect = normalizeCropRectFromPoints(lightboxCropState.startPoint, point, imageRect);
+    } else if (lightboxCropState.mode === 'move' && lightboxCropState.startRect && lightboxCropState.startPoint) {
+        const deltaX = point.x - lightboxCropState.startPoint.x;
+        const deltaY = point.y - lightboxCropState.startPoint.y;
+        lightboxCropState.rect = clampCropRectToImage({
+            left: lightboxCropState.startRect.left + deltaX,
+            top: lightboxCropState.startRect.top + deltaY,
+            width: lightboxCropState.startRect.width,
+            height: lightboxCropState.startRect.height,
+        }, imageRect);
+    } else if (lightboxCropState.mode === 'resize' && lightboxCropState.startRect && lightboxCropState.handle) {
+        lightboxCropState.rect = resizeCropRect(lightboxCropState.startRect, lightboxCropState.handle, point, imageRect);
+    }
+
+    renderLightboxCropSelection();
+    e.preventDefault();
+    e.stopPropagation();
+}
+
+function handleLightboxCropPointerEnd(e) {
+    if (lightboxCropState.pointerId !== e.pointerId) return;
+    if (lightboxCropOverlay && lightboxCropOverlay.hasPointerCapture(e.pointerId)) {
+        try { lightboxCropOverlay.releasePointerCapture(e.pointerId); } catch {}
+    }
+    lightboxCropState.pointerId = null;
+    lightboxCropState.mode = null;
+    lightboxCropState.handle = null;
+    lightboxCropState.startPoint = null;
+    lightboxCropState.startRect = null;
+    renderLightboxCropSelection();
+    e.preventDefault();
+    e.stopPropagation();
+}
+
 function openLightbox(mediaUrl, filePath, fileName) {
     const perfStart = perfTest.start();
     const mediaType = getFileType(mediaUrl);
+    setLightboxCropAvailability(filePath, false);
+    exitLightboxCropMode({ silent: true });
 
     // Track current index for navigation
     if (lightboxItemsOverride && lightboxItemsOverride.length > 0) {
@@ -12364,6 +12746,7 @@ function openLightbox(mediaUrl, filePath, fileName) {
                     if (!parsed || parsed.frameCount <= 1) {
                         // Static WebP — already showing as <img>, just hide controls
                         if (mediaControlBarInstance) mediaControlBarInstance.hide();
+                        setLightboxCropAvailability(filePath, true);
                         try { _enhancedLightboxOnOpen(filePath, null, mediaUrl); } catch (e) { console.warn('enhanced lightbox open failed:', e); }
                         return;
                     }
@@ -12417,6 +12800,7 @@ function openLightbox(mediaUrl, filePath, fileName) {
         } else {
             // Static image (non-GIF, non-WebP)
             _showStaticImage(mediaUrl, lightboxImage, lightboxGifCanvas, lightbox, mediaControlBarInstance);
+            setLightboxCropAvailability(filePath, true);
         }
     } else {
         stopLightboxGifProgress();
@@ -12477,6 +12861,7 @@ function openLightbox(mediaUrl, filePath, fileName) {
 
     // Reset keyboard focus
     focusedCardIndex = -1;
+    refreshLightboxCropButton();
     perfTest.end('openLightbox', perfStart);
 }
 
@@ -12692,6 +13077,8 @@ function resetZoom() {
 
 function closeLightbox() {
     hideContextMenu();
+    exitLightboxCropMode({ silent: true });
+    setLightboxCropAvailability(window.currentLightboxFilePath, false);
 
     // Persist playback settings from controller before destroying
     if (activePlaybackController) {
@@ -12739,22 +13126,77 @@ function closeLightbox() {
 
     // Trigger GC after closing lightbox too
     scheduleGC();
+    refreshLightboxCropButton();
 }
 
 closeLightboxBtn.addEventListener('click', closeLightbox);
+lightboxCropBtn?.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    enterLightboxCropMode();
+});
+lightboxCropCancelBtn?.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    exitLightboxCropMode({ silent: true });
+});
+lightboxCropApplyBtn?.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    applyLightboxCrop();
+});
+lightboxCropOverlay?.addEventListener('pointerdown', handleLightboxCropPointerDown);
+lightboxCropOverlay?.addEventListener('pointermove', handleLightboxCropPointerMove);
+lightboxCropOverlay?.addEventListener('pointerup', handleLightboxCropPointerEnd);
+lightboxCropOverlay?.addEventListener('pointercancel', handleLightboxCropPointerEnd);
+lightboxCropOverlay?.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+});
+window.addEventListener('resize', () => {
+    if (lightboxCropState.active) syncLightboxCropToViewport();
+});
+document.addEventListener('keydown', (e) => {
+    if (!lightboxCropState.active) return;
+    const target = e.target;
+    if ((target === lightboxCropCancelBtn || target === lightboxCropApplyBtn) && (e.key === 'Enter' || e.key === ' ')) {
+        return;
+    }
+    if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        exitLightboxCropMode({ silent: true });
+    } else if (e.key === 'Enter') {
+        e.preventDefault();
+        e.stopPropagation();
+        applyLightboxCrop();
+    } else if (e.key !== 'Tab') {
+        e.preventDefault();
+        e.stopPropagation();
+    }
+}, true);
 
 lightbox.addEventListener('click', (e) => {
+    if (lightboxCropState.active) return;
     if (e.target === lightbox && contextMenu.classList.contains('hidden')) {
         closeLightbox();
     }
 });
 
 lightbox.addEventListener('contextmenu', (e) => {
+    if (lightboxCropState.active) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+    }
     // Don't intercept right-clicks on controls
     if (e.target.closest('.lightbox-zoom-controls') ||
         e.target.closest('.media-controls') ||
+        e.target.closest('.lightbox-action-btn') ||
         e.target.closest('.lightbox-file-info') ||
         e.target.closest('.lightbox-filmstrip') ||
+        e.target.closest('.lightbox-crop-toolbar') ||
         e.target.closest('.lb-inspector') ||
         e.target.closest('#close-lightbox') ||
         e.target.closest('.lightbox-nav-btn')) {
@@ -12798,6 +13240,11 @@ function handleLightboxWheel(e) {
     // Only zoom if lightbox is visible and not clicking on controls
     if (lightbox.classList.contains('hidden')) {
         console.log('Lightbox is hidden, ignoring wheel');
+        return;
+    }
+    if (lightboxCropState.active) {
+        e.preventDefault();
+        e.stopPropagation();
         return;
     }
     if (
@@ -12901,6 +13348,7 @@ function applyPanTransform() {
 }
 
 lightboxImage.addEventListener('mousedown', (e) => {
+    if (lightboxCropState.active) return;
     if (currentZoomLevel > 100 && e.button === 0) {
         isDragging = true;
         panState.hasDragged = false; // Reset drag flag
@@ -12917,6 +13365,7 @@ lightboxImage.addEventListener('mousedown', (e) => {
 });
 
 lightboxVideo.addEventListener('mousedown', (e) => {
+    if (lightboxCropState.active) return;
     if (currentZoomLevel > 100 && e.button === 0) {
         isDragging = true;
         panState.hasDragged = false;
@@ -12932,6 +13381,7 @@ lightboxVideo.addEventListener('mousedown', (e) => {
 });
 
 lightboxGifCanvas.addEventListener('mousedown', (e) => {
+    if (lightboxCropState.active) return;
     if (currentZoomLevel > 100 && e.button === 0) {
         isDragging = true;
         panState.hasDragged = false;
@@ -12947,6 +13397,7 @@ lightboxGifCanvas.addEventListener('mousedown', (e) => {
 });
 
 document.addEventListener('mousemove', (e) => {
+    if (lightboxCropState.active) return;
     if (isDragging && currentZoomLevel > 100) {
         // Calculate total mouse movement from initial click
         const totalDeltaX = e.clientX - panState.initMouseX;
@@ -12975,6 +13426,7 @@ document.addEventListener('mousemove', (e) => {
 });
 
 document.addEventListener('mouseup', (e) => {
+    if (lightboxCropState.active) return;
     if (isDragging) {
         isDragging = false;
         // Ensure final position is applied
@@ -13002,6 +13454,11 @@ document.addEventListener('mouseup', (e) => {
 
 // Click on video or canvas to toggle play/pause (but not after dragging)
 lightboxVideo.addEventListener('click', (e) => {
+    if (lightboxCropState.active) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+    }
     if (panState.hasDragged && currentZoomLevel > 100) {
         e.preventDefault();
         e.stopPropagation();
@@ -13014,6 +13471,11 @@ lightboxVideo.addEventListener('click', (e) => {
 }, true);
 
 lightboxGifCanvas.addEventListener('click', (e) => {
+    if (lightboxCropState.active) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+    }
     if (panState.hasDragged && currentZoomLevel > 100) {
         e.preventDefault();
         e.stopPropagation();
@@ -13378,6 +13840,8 @@ function showLightboxContextMenu(event) {
     // Convert — show for all media files when ffmpeg is available
     const convertItem = contextMenu.querySelector('[data-action="convert"]');
     if (convertItem) convertItem.style.display = _ffmpegAvailable === false ? 'none' : '';
+    const cropItem = contextMenu.querySelector('[data-action="crop-image"]');
+    if (cropItem) cropItem.style.display = lightboxCropMeta.enabled && !lightboxCropState.active ? '' : 'none';
 
     // Inject plugin items
     contextMenu.querySelectorAll('.context-menu-item[data-plugin], .context-menu-plugin-separator').forEach(el => el.remove());
@@ -13499,6 +13963,8 @@ function showContextMenu(event, card) {
         if (trimItem) trimItem.style.display = 'none'; // grid context: hide (lightbox handles separately)
         const convertItem = menu.querySelector('[data-action="convert"]');
         if (convertItem) convertItem.style.display = _ffmpegAvailable === false ? 'none' : '';
+        const cropItem = menu.querySelector('[data-action="crop-image"]');
+        if (cropItem) cropItem.style.display = 'none';
     }
 
     // Inject / refresh plugin menu items (file menus only)
@@ -13829,6 +14295,15 @@ contextMenu.addEventListener('click', async (e) => {
             break;
         }
 
+        case 'crop-image': {
+            if (contextMenuSource !== 'lightbox' || !lightboxCropMeta.enabled) {
+                showToast('Open a still image in the lightbox first', 'info');
+                break;
+            }
+            enterLightboxCropMode();
+            break;
+        }
+
         default:
             if (action.startsWith('plugin:')) {
                 const [, pluginId, actionId] = action.split(':');
@@ -13985,6 +14460,7 @@ async function handleRenameConfirm() {
                 const newUrl = 'file:///' + newPath.replace(/\\/g, '/');
                 window.currentLightboxFilePath = newPath;
                 window.currentLightboxFileUrl = newUrl;
+                setLightboxCropAvailability(newPath, lightboxImage.style.display !== 'none' && !activePlaybackController);
                 const copyPathBtn = document.getElementById('copy-path-btn');
                 const copyNameBtn = document.getElementById('copy-name-btn');
                 if (copyPathBtn) copyPathBtn.dataset.filePath = newPath;

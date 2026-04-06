@@ -48,6 +48,12 @@ async function processFile(file) {
         // File unreadable — skip
     }
 
+    // Skip perceptual hash if pre-supplied (e.g. from thumbnail generation)
+    if (file.perceptualHash) {
+        result.perceptualHash = file.perceptualHash;
+        return result;
+    }
+
     // Perceptual hash: use thumbPath for videos, skip for SVG
     const ext = file.path.split('.').pop().toLowerCase();
     if (ext === 'svg') return result;

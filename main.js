@@ -3523,7 +3523,46 @@ ipcMain.handle('scan-duplicates', async (event, folderPath, options = {}) => {
                 }
             }
         } else if (staleFiles.length > 0) {
-            freshHashMap = await hashPool.scanHashes(staleFiles, (completed, total) => {
+            // JS fallback: generate missing image thumbnails with fused dHash
+            // to avoid a second decode in the hash worker.
+            const precomputedDHash = new Map(); // filePath → dHash hex
+            if (thumbnailPool && imageThumbDir) {
+                const thumbItems = [];
+                const thumbFileMap = new Map(); // index in thumbItems → file
+                for (const f of staleFiles) {
+                    if (!f.isImage || !f.mtime) continue;
+                    if (f.path.toLowerCase().endsWith('.svg')) continue;
+                    const tp = getImageThumbCachePath(f.path, f.mtime, 512);
+                    thumbItems.push({
+                        type: 'image', filePath: f.path, thumbPath: tp,
+                        maxSize: 512, computeDHash: true
+                    });
+                    thumbFileMap.set(thumbItems.length - 1, f);
+                }
+                if (thumbItems.length > 0) {
+                    const thumbResults = await thumbnailPool.generateBatch(thumbItems);
+                    for (let i = 0; i < thumbResults.length; i++) {
+                        const r = thumbResults[i];
+                        const f = thumbFileMap.get(i);
+                        if (r && r.dHash && f) {
+                            precomputedDHash.set(f.path, r.dHash);
+                            // Also set thumbPath on file so hash-worker uses it for any fallback
+                            if (r.thumbPath) f.thumbPath = r.thumbPath;
+                        }
+                    }
+                    if (precomputedDHash.size > 0) {
+                        console.log(`[scan-duplicates] fused dHash from thumbnails: ${precomputedDHash.size} files`);
+                    }
+                }
+            }
+
+            // Pass pre-computed dHashes so hash-worker skips perceptual for those files
+            const hashFiles = staleFiles.map(f => {
+                const dHash = precomputedDHash.get(f.path);
+                return dHash ? { ...f, perceptualHash: dHash } : f;
+            });
+
+            freshHashMap = await hashPool.scanHashes(hashFiles, (completed, total) => {
                 if (!exactHashMap) {
                     event.sender.send('duplicate-scan-progress', {
                         current: cachedHashMap.size + completed, total: files.length, phase: 'hashing'

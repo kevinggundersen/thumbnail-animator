@@ -99,11 +99,11 @@ async function generateVideoThumbnail(filePath, thumbPath) {
 }
 
 async function generateImageThumbnail(filePath, thumbPath, maxSize = 512) {
-    if (!sharp) return false;
+    if (!sharp) return { success: false, dHash: null };
     try {
         await fs.promises.mkdir(path.dirname(thumbPath), { recursive: true });
         const metadata = await sharp(filePath).metadata();
-        if (!metadata.width || !metadata.height) return false;
+        if (!metadata.width || !metadata.height) return { success: false, dHash: null };
 
         const longestEdge = Math.max(metadata.width, metadata.height);
         if (longestEdge <= maxSize) {
@@ -120,31 +120,76 @@ async function generateImageThumbnail(filePath, thumbPath, maxSize = 512) {
                 .png()
                 .toFile(thumbPath);
         }
-        return true;
+        return { success: true, dHash: null };
     } catch {
         fs.promises.unlink(thumbPath).catch(() => {});
-        return false;
+        return { success: false, dHash: null };
+    }
+}
+
+function computeDHashFromPixels(pixels) {
+    const bytes = new Uint8Array(8);
+    let byteIdx = 0, bitIdx = 7;
+    for (let row = 0; row < 8; row++) {
+        for (let col = 0; col < 8; col++) {
+            if (pixels[row * 9 + col] > pixels[row * 9 + col + 1]) {
+                bytes[byteIdx] |= (1 << bitIdx);
+            }
+            if (--bitIdx < 0) { bitIdx = 7; byteIdx++; }
+        }
+    }
+    return Buffer.from(bytes).toString('hex');
+}
+
+async function computeDHashForFile(filePath) {
+    if (!sharp) return null;
+    try {
+        const pixels = await sharp(filePath)
+            .greyscale()
+            .resize(9, 8, { fit: 'fill' })
+            .raw()
+            .toBuffer();
+        return computeDHashFromPixels(pixels);
+    } catch {
+        return null;
     }
 }
 
 async function processItem(item) {
     try {
         // Check if already cached
+        let alreadyCached = false;
         try {
             await fs.promises.access(item.thumbPath);
-            return { id: item.id, type: 'result', success: true, thumbPath: item.thumbPath };
+            alreadyCached = true;
         } catch { /* not cached */ }
 
         let success = false;
-        if (item.type === 'video') {
+        let dHash = null;
+
+        if (alreadyCached) {
+            success = true;
+            // Compute dHash from the existing thumbnail if requested
+            if (item.computeDHash) {
+                dHash = await computeDHashForFile(item.thumbPath);
+            }
+        } else if (item.type === 'video') {
             success = await generateVideoThumbnail(item.filePath, item.thumbPath);
+            if (success && item.computeDHash) {
+                dHash = await computeDHashForFile(item.thumbPath);
+            }
         } else if (item.type === 'image') {
-            success = await generateImageThumbnail(item.filePath, item.thumbPath, item.maxSize || 512);
+            const result = await generateImageThumbnail(item.filePath, item.thumbPath, item.maxSize || 512);
+            success = result.success;
+            if (success && item.computeDHash) {
+                // Compute dHash from the just-written small thumbnail (fast: ~2ms)
+                dHash = await computeDHashForFile(item.thumbPath);
+            }
         }
 
-        return { id: item.id, type: 'result', success, thumbPath: success ? item.thumbPath : null };
+        return { id: item.id, type: 'result', success, thumbPath: success ? item.thumbPath : null, dHash };
     } catch {
-        return { id: item.id, type: 'result', success: false, thumbPath: null };
+        return { id: item.id, type: 'result', success: false, thumbPath: null, dHash: null };
     }
 }
 

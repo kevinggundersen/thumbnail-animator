@@ -73,9 +73,10 @@ class ThumbnailWorkerPool {
 
     /**
      * Generate a thumbnail (image or video).
-     * Returns { success, thumbPath } with in-flight deduplication.
+     * Returns { success, thumbPath, dHash? } with in-flight deduplication.
+     * Pass computeDHash: true to compute perceptual hash from the thumbnail.
      */
-    async generate({ type, filePath, thumbPath, maxSize }) {
+    async generate({ type, filePath, thumbPath, maxSize, computeDHash }) {
         // In-flight deduplication by thumbPath
         if (this._pendingJobs.has(thumbPath)) {
             return this._pendingJobs.get(thumbPath);
@@ -94,7 +95,7 @@ class ThumbnailWorkerPool {
                 }
             }, 30000);
             this._pendingRequests.set(id, { resolve, workerIndex, timeoutId });
-            worker.postMessage({ id, type, filePath, thumbPath, maxSize });
+            worker.postMessage({ id, type, filePath, thumbPath, maxSize, computeDHash });
         });
 
         this._pendingJobs.set(thumbPath, promise);
@@ -107,8 +108,8 @@ class ThumbnailWorkerPool {
 
     /**
      * Generate thumbnails in batch. Distributes across workers.
-     * items: Array<{ type, filePath, thumbPath, maxSize? }>
-     * Returns: Array<{ success, thumbPath }>
+     * items: Array<{ type, filePath, thumbPath, maxSize?, computeDHash? }>
+     * Returns: Array<{ success, thumbPath, dHash? }>
      */
     async generateBatch(items) {
         if (!items.length) return [];
@@ -166,7 +167,8 @@ class ThumbnailWorkerPool {
                     type: item.type,
                     filePath: item.filePath,
                     thumbPath: item.thumbPath,
-                    maxSize: item.maxSize
+                    maxSize: item.maxSize,
+                    computeDHash: item.computeDHash
                 });
                 allPromises.push(
                     this._pendingJobs.get(item.thumbPath).then(result => {

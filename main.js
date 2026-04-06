@@ -2329,12 +2329,16 @@ ipcMain.handle('batch-rename', async (event, filePaths, patternType, patternOpti
             newPaths.add(p.newPath.toLowerCase());
         }
 
-        // Check for conflicts with existing files (excluding files being renamed)
+        // Check for conflicts with existing files (excluding files being renamed) — async parallel
         const oldPathSet = new Set(filePaths.map(fp => fp.toLowerCase()));
-        for (const p of planned) {
-            if (p.oldPath === p.newPath) continue; // Same name, skip
-            if (!oldPathSet.has(p.newPath.toLowerCase()) && fs.existsSync(p.newPath)) {
-                return { ok: false, error:`"${p.newName}" already exists on disk` };
+        const toCheck = planned.filter(p => p.oldPath !== p.newPath && !oldPathSet.has(p.newPath.toLowerCase()));
+        if (toCheck.length > 0) {
+            const checks = await Promise.allSettled(
+                toCheck.map(p => fs.promises.access(p.newPath).then(() => p.newName))
+            );
+            const conflict = checks.find(c => c.status === 'fulfilled');
+            if (conflict) {
+                return { ok: false, error: `"${conflict.value}" already exists on disk` };
             }
         }
 
@@ -2958,11 +2962,11 @@ ipcMain.handle('copy-file', async (event, sourcePath, destFolderOrPath, fileName
             ? path.join(destFolderOrPath, fileName)
             : destFolderOrPath;
         const destDir = path.dirname(destPath);
-        if (!fs.existsSync(destDir)) {
-            await fs.promises.mkdir(destDir, { recursive: true });
-        }
+        try { await fs.promises.access(destDir); } catch { await fs.promises.mkdir(destDir, { recursive: true }); }
         let finalPath = destPath;
-        if (fs.existsSync(finalPath)) {
+        let destExists = false;
+        try { await fs.promises.access(finalPath); destExists = true; } catch {}
+        if (destExists) {
             if (!conflictResolution) {
                 return { ok: true, value: { status: 'conflict', fileName: path.basename(destPath), destPath } };
             }
@@ -2972,11 +2976,15 @@ ipcMain.handle('copy-file', async (event, sourcePath, destFolderOrPath, fileName
                 const ext = path.extname(destPath);
                 const base = path.basename(destPath, ext);
                 const dir = path.dirname(destPath);
-                let counter = 2;
-                while (fs.existsSync(finalPath)) {
-                    finalPath = path.join(dir, `${base} (${counter})${ext}`);
-                    counter++;
+                // Generate candidates in bulk and check async instead of sync while-loop
+                const MAX_CANDIDATES = 100;
+                const candidates = [];
+                for (let c = 2; c <= MAX_CANDIDATES + 1; c++) {
+                    candidates.push(path.join(dir, `${base} (${c})${ext}`));
                 }
+                const checks = await Promise.allSettled(candidates.map(p => fs.promises.access(p)));
+                const firstFree = checks.findIndex(c => c.status === 'rejected');
+                finalPath = firstFree >= 0 ? candidates[firstFree] : path.join(dir, `${base} (${MAX_CANDIDATES + 2})${ext}`);
             }
             // 'replace' — use original finalPath (overwrite)
         }
@@ -2997,12 +3005,12 @@ ipcMain.handle('move-file', async (event, sourcePath, destFolderOrPath, fileName
             ? path.join(destFolderOrPath, fileName)
             : destFolderOrPath;
         const destDir = path.dirname(destPath);
-        if (!fs.existsSync(destDir)) {
-            await fs.promises.mkdir(destDir, { recursive: true });
-        }
+        try { await fs.promises.access(destDir); } catch { await fs.promises.mkdir(destDir, { recursive: true }); }
 
         let finalPath = destPath;
-        if (fs.existsSync(destPath) && path.normalize(sourcePath) !== path.normalize(destPath)) {
+        let destExists = false;
+        try { await fs.promises.access(destPath); destExists = true; } catch {}
+        if (destExists && path.normalize(sourcePath) !== path.normalize(destPath)) {
             if (!conflictResolution) {
                 return { ok: true, value: { status: 'conflict', fileName: path.basename(destPath), destPath } };
             }
@@ -3012,11 +3020,15 @@ ipcMain.handle('move-file', async (event, sourcePath, destFolderOrPath, fileName
                 const ext = path.extname(destPath);
                 const base = path.basename(destPath, ext);
                 const dir = path.dirname(destPath);
-                let counter = 2;
-                while (fs.existsSync(finalPath)) {
-                    finalPath = path.join(dir, `${base} (${counter})${ext}`);
-                    counter++;
+                // Generate candidates in bulk and check async instead of sync while-loop
+                const MAX_CANDIDATES = 100;
+                const candidates = [];
+                for (let c = 2; c <= MAX_CANDIDATES + 1; c++) {
+                    candidates.push(path.join(dir, `${base} (${c})${ext}`));
                 }
+                const checks = await Promise.allSettled(candidates.map(p => fs.promises.access(p)));
+                const firstFree = checks.findIndex(c => c.status === 'rejected');
+                finalPath = firstFree >= 0 ? candidates[firstFree] : path.join(dir, `${base} (${MAX_CANDIDATES + 2})${ext}`);
             } else if (conflictResolution === 'replace') {
                 await fs.promises.unlink(destPath);
             }

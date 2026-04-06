@@ -208,6 +208,15 @@ class AppDatabase {
         this._stmts.insertFavoriteItem = this.db.prepare('INSERT INTO favorite_items (group_id, path, added_at, sort_order) VALUES (?, ?, ?, ?)');
         this._stmts.deleteFavoriteItems = this.db.prepare('DELETE FROM favorite_items');
 
+        // Favorites: single JOIN query (replaces N+1 pattern)
+        this._stmts.getAllFavoritesJoined = this.db.prepare(
+            `SELECT g.id AS group_id, g.name, g.collapsed, g.sort_order,
+                    fi.path, fi.added_at, fi.sort_order AS item_order
+             FROM favorite_groups g
+             LEFT JOIN favorite_items fi ON fi.group_id = g.id
+             ORDER BY g.sort_order, fi.sort_order`
+        );
+
         // Recent files
         this._stmts.getRecentFiles = this.db.prepare('SELECT path, timestamp FROM recent_files ORDER BY timestamp DESC LIMIT ?');
         this._stmts.upsertRecentFile = this.db.prepare('INSERT OR REPLACE INTO recent_files (path, timestamp) VALUES (?, ?)');
@@ -360,19 +369,27 @@ class AppDatabase {
     // ── Favorites ────────────────────────────────────────────────────────
 
     getFavorites() {
-        const groups = this._stmts.getAllFavoriteGroups.all();
-        return {
-            version: 2,
-            groups: groups.map(g => ({
-                id: g.id,
-                name: g.name,
-                collapsed: !!g.collapsed,
-                items: this._stmts.getFavoriteItems.all(g.id).map(i => ({
-                    path: i.path,
-                    addedAt: i.added_at
-                }))
-            }))
-        };
+        // Single JOIN query instead of N+1 (one query per group)
+        const rows = this._stmts.getAllFavoritesJoined.all();
+        const groupMap = new Map(); // preserve insertion order
+        const groupList = [];
+        for (const row of rows) {
+            let group = groupMap.get(row.group_id);
+            if (!group) {
+                group = {
+                    id: row.group_id,
+                    name: row.name,
+                    collapsed: !!row.collapsed,
+                    items: []
+                };
+                groupMap.set(row.group_id, group);
+                groupList.push(group);
+            }
+            if (row.path) { // LEFT JOIN may produce null path for empty groups
+                group.items.push({ path: row.path, addedAt: row.added_at });
+            }
+        }
+        return { version: 2, groups: groupList };
     }
 
     saveFavorites(favObj) {
@@ -646,8 +663,7 @@ class AppDatabase {
 
     suggestTagsForFile(filePath) {
         const suggestions = [];
-        const allTags = this.getAllTags();
-        if (allTags.length === 0) return suggestions;
+        const seenTagIds = new Set();
 
         const dirPath = filePath.replace(/\\/g, '/');
         const parts = dirPath.split('/');
@@ -655,31 +671,39 @@ class AppDatabase {
         const folderName = parts.pop() || '';
         const dirPrefix = parts.join('/') + '/' + folderName + '/';
 
-        // 1. Folder name token matching
+        // 1. Folder name token matching — use SQL LIKE instead of loading all tags + nested loops
         const folderTokens = folderName.toLowerCase().split(/[\s_\-\.]+/).filter(t => t.length > 1);
-        for (const tag of allTags) {
-            const tagLower = tag.name.toLowerCase();
-            for (const token of folderTokens) {
-                if (tagLower === token || tagLower.includes(token) || token.includes(tagLower)) {
-                    suggestions.push({ tag, source: 'folder', confidence: tagLower === token ? 0.9 : 0.6 });
-                    break;
+        if (folderTokens.length > 0) {
+            // Build a single query: SELECT ... WHERE lower(name) LIKE '%token1%' OR lower(name) LIKE '%token2%' ...
+            // Also check if any token IS the tag name (exact match → higher confidence)
+            const likeClauses = folderTokens.map(() => 'lower(name) LIKE ?');
+            const likeParams = folderTokens.map(t => `%${t}%`);
+            const sql = `SELECT id, name, color FROM tags WHERE ${likeClauses.join(' OR ')}`;
+            try {
+                const matches = this.db.prepare(sql).all(...likeParams);
+                for (const tag of matches) {
+                    if (seenTagIds.has(tag.id)) continue;
+                    seenTagIds.add(tag.id);
+                    const tagLower = tag.name.toLowerCase();
+                    const isExact = folderTokens.some(t => t === tagLower);
+                    suggestions.push({ tag, source: 'folder', confidence: isExact ? 0.9 : 0.6 });
                 }
-            }
+            } catch {}
         }
 
-        // 2. Sibling co-occurrence
+        // 2. Sibling co-occurrence (already SQL-based — no change needed)
         const siblingResults = this._stmts.siblingTags.all(dirPrefix + '%', filePath);
         for (const row of siblingResults) {
-            if (!suggestions.some(s => s.tag.id === row.id)) {
-                suggestions.push({
-                    tag: { id: row.id, name: row.name, color: row.color },
-                    source: 'sibling',
-                    confidence: Math.min(0.8, row.occurrences / 10)
-                });
-            }
+            if (seenTagIds.has(row.id)) continue;
+            seenTagIds.add(row.id);
+            suggestions.push({
+                tag: { id: row.id, name: row.name, color: row.color },
+                source: 'sibling',
+                confidence: Math.min(0.8, row.occurrences / 10)
+            });
         }
 
-        // 3. File extension/type matching
+        // 3. File extension/type matching — use SQL instead of loading all tags
         const ext = (fileName || '').split('.').pop().toLowerCase();
         const typeMap = {
             mp4: 'video', avi: 'video', mkv: 'video', mov: 'video', webm: 'video', wmv: 'video',
@@ -687,10 +711,15 @@ class AppDatabase {
         };
         const typeTag = typeMap[ext];
         if (typeTag) {
-            const match = allTags.find(t => t.name.toLowerCase() === typeTag || t.name.toLowerCase() === ext);
-            if (match && !suggestions.some(s => s.tag.id === match.id)) {
-                suggestions.push({ tag: match, source: 'extension', confidence: 0.5 });
-            }
+            try {
+                const match = this.db.prepare(
+                    'SELECT id, name, color FROM tags WHERE lower(name) = ? OR lower(name) = ? LIMIT 1'
+                ).get(typeTag, ext);
+                if (match && !seenTagIds.has(match.id)) {
+                    seenTagIds.add(match.id);
+                    suggestions.push({ tag: match, source: 'extension', confidence: 0.5 });
+                }
+            } catch {}
         }
 
         // Sort by confidence descending

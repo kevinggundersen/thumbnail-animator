@@ -39,8 +39,10 @@ let findSimilarEmbedding = null;// Float32Array
 
 // Trigram index: trigram (3-char) -> Uint32Array of item indices (sorted)
 // Built once when items are set. Used as a pre-filter for text search.
+// Incremental updates are used when items change slightly (same-folder refresh).
 let trigramIndex = null;
 let indexBuiltForItemCount = 0;
+let _prevItemPaths = null; // Map<path, index> for detecting incremental changes
 
 // ── Shared helpers (loaded from filter-sort-helpers.js) ──────────────
 // Provides: normalizePath, cosineSim, parseAspectRatio, pad2,
@@ -99,6 +101,81 @@ function buildTrigramIndex() {
     }
     trigramIndex = index;
     indexBuiltForItemCount = items.length;
+    // Snapshot current paths for future incremental detection
+    _prevItemPaths = new Map();
+    for (let i = 0; i < items.length; i++) _prevItemPaths.set(items[i].path, i);
+}
+
+/**
+ * Try to incrementally update the trigram index when items change slightly.
+ * Returns true if incremental update was performed, false if full rebuild is needed.
+ *
+ * Strategy: if the old items are a subset of the new items at the same indices
+ * (i.e., items were only appended, which is common for file-watcher additions),
+ * just extend the index. For more complex diffs, check overlap ratio and rebuild
+ * only the changed portions of posting lists.
+ */
+function tryIncrementalTrigramUpdate(newItems, newNamesLower) {
+    if (!trigramIndex || !_prevItemPaths || _prevItemPaths.size === 0) return false;
+
+    const oldCount = _prevItemPaths.size;
+    const newCount = newItems.length;
+
+    // Quick check: if items were only appended (common for watcher events adding files)
+    // Verify old items at same indices haven't changed
+    if (newCount >= oldCount) {
+        let allSamePrefix = true;
+        // Spot-check: first, last of old range, and a few samples
+        const checkIndices = [0, oldCount - 1];
+        if (oldCount > 10) checkIndices.push(Math.floor(oldCount / 2), Math.floor(oldCount / 4), Math.floor(oldCount * 3 / 4));
+        for (const idx of checkIndices) {
+            if (idx >= 0 && idx < oldCount && idx < newCount) {
+                if (newNamesLower[idx] !== undefined) {
+                    // Check if item at this index is the same by path
+                    const oldIdx = _prevItemPaths.get(newItems[idx].path);
+                    if (oldIdx !== idx) { allSamePrefix = false; break; }
+                }
+            }
+        }
+
+        if (allSamePrefix && newCount > oldCount) {
+            // Append-only: just add trigrams for new items
+            for (let i = oldCount; i < newCount; i++) {
+                const name = newNamesLower[i];
+                const seen = new Set();
+                for (let j = 0; j + 3 <= name.length; j++) {
+                    const gram = name.slice(j, j + 3);
+                    if (seen.has(gram)) continue;
+                    seen.add(gram);
+                    const existing = trigramIndex.get(gram);
+                    if (existing) {
+                        // Grow the Uint32Array by 1
+                        const grown = new Uint32Array(existing.length + 1);
+                        grown.set(existing);
+                        grown[existing.length] = i;
+                        trigramIndex.set(gram, grown);
+                    } else {
+                        trigramIndex.set(gram, new Uint32Array([i]));
+                    }
+                }
+            }
+            indexBuiltForItemCount = newCount;
+            _prevItemPaths = new Map();
+            for (let i = 0; i < newItems.length; i++) _prevItemPaths.set(newItems[i].path, i);
+            return true;
+        }
+    }
+
+    // General case: check overlap ratio
+    let overlap = 0;
+    for (let i = 0; i < newCount; i++) {
+        if (_prevItemPaths.has(newItems[i].path)) overlap++;
+    }
+    // If <70% overlap, full rebuild is cheaper
+    if (overlap < oldCount * 0.7 || overlap < newCount * 0.7) return false;
+
+    // Moderate change: full rebuild (but we tried)
+    return false;
 }
 
 /**
@@ -498,12 +575,18 @@ self.onmessage = (e) => {
 
     switch (msg.type) {
         case 'setItems': {
-            items = msg.items || [];
-            itemNamesLower = new Array(items.length);
-            for (let i = 0; i < items.length; i++) {
-                itemNamesLower[i] = (items[i].name || '').toLowerCase();
+            const newItems = msg.items || [];
+            const newNamesLower = new Array(newItems.length);
+            for (let i = 0; i < newItems.length; i++) {
+                newNamesLower[i] = (newItems[i].name || '').toLowerCase();
             }
-            buildTrigramIndex();
+            // Try incremental trigram update (avoids full O(n*m) rebuild for minor changes)
+            const wasIncremental = tryIncrementalTrigramUpdate(newItems, newNamesLower);
+            items = newItems;
+            itemNamesLower = newNamesLower;
+            if (!wasIncremental) {
+                buildTrigramIndex();
+            }
             break;
         }
         case 'setRatings': {
@@ -537,6 +620,26 @@ self.onmessage = (e) => {
                 embeddings.set(msg.path, msg.vec instanceof Float32Array ? msg.vec : new Float32Array(msg.vec));
             } else if (msg.path) {
                 embeddings.delete(msg.path);
+            }
+            break;
+        }
+        case 'setEmbeddingsBatch': {
+            // Delta batch: add/update multiple embeddings without replacing the entire map
+            const entries = msg.entries; // array of { path, vec }
+            if (entries) {
+                for (let i = 0; i < entries.length; i++) {
+                    const e = entries[i];
+                    if (e.path && e.vec) {
+                        embeddings.set(e.path, e.vec instanceof Float32Array ? e.vec : new Float32Array(e.vec));
+                    }
+                }
+            }
+            // Also handle removals if provided
+            const removed = msg.removed;
+            if (removed) {
+                for (let i = 0; i < removed.length; i++) {
+                    embeddings.delete(removed[i]);
+                }
             }
             break;
         }

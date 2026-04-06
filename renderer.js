@@ -325,80 +325,91 @@ function vsCalculatePositions(items, containerWidth, mode, zoom) {
     }
 
     // --- Fast path: scale existing positions when column count and items haven't changed ---
-    // Disable fast path when group headers are present (their height is fixed, not scalable)
+    // Works even with group headers: items scale proportionally, headers get a fixup pass.
     const cache = vsState.layoutCache;
     if (
         cache.positions &&
         cache.itemCount === items.length &&
         cache.mode === mode &&
         cache.columns === newColumns &&
-        items.length > 0 &&
-        !vsState.groupHeadersPresent
+        items.length > 0
     ) {
-        // Column count unchanged -- scale all positions proportionally
-        const scaleX = newColumnWidth / cache.columnWidth;
         const scaleY = newColumnWidth / cache.columnWidth; // heights scale with width (aspect ratio preserved)
-        const scaleGap = gap / cache.gap;
         const positions = new Float64Array(items.length * 4);
+        const oldColStep = cache.columnWidth + cache.gap;
+        const newColStep = newColumnWidth + gap;
+        const stepScale = oldColStep > 0 ? newColStep / oldColStep : 1;
+        const headerIndices = cache.headerIndices; // may be null if no headers
 
-        if (mode === 'masonry') {
-            // For masonry, we need to rescale left, top, width, height
-            // left = col * (columnWidth + gap), so it scales with (columnWidth + gap) / (oldColumnWidth + oldGap)
-            const oldColStep = cache.columnWidth + cache.gap;
-            const newColStep = newColumnWidth + gap;
-            const stepScale = oldColStep > 0 ? newColStep / oldColStep : 1;
-
-            for (let i = 0; i < items.length; i++) {
-                const idx = i * 4;
-                // Scale left by column step ratio
-                positions[idx] = cache.positions[idx] * stepScale;
-                // Scale top and height proportionally
-                positions[idx + 1] = cache.positions[idx + 1] * scaleY;
-                positions[idx + 2] = newColumnWidth;
-                positions[idx + 3] = cache.positions[idx + 3] * scaleY;
-            }
-
-            const newTotalHeight = cache.totalHeight * scaleY;
-
-            // Update cache
-            cache.containerWidth = containerWidth;
-            cache.zoom = zoom;
-            cache.columnWidth = newColumnWidth;
-            cache.gap = gap;
-            cache.positions = positions;
-            cache.totalHeight = newTotalHeight;
-
-            perfTest.end('vsCalculatePositions', perfStart, { itemCount: items.length, detail: `${mode} @ ${zoom}% (scaled)` });
-            return { positions, totalHeight: newTotalHeight };
-        } else {
-            // Grid: same logic
-            const oldColStep = cache.columnWidth + cache.gap;
-            const newColStep = newColumnWidth + gap;
-            const stepScale = oldColStep > 0 ? newColStep / oldColStep : 1;
-
-            for (let i = 0; i < items.length; i++) {
-                const idx = i * 4;
-                positions[idx] = cache.positions[idx] * stepScale;
-                positions[idx + 1] = cache.positions[idx + 1] * scaleY;
-                positions[idx + 2] = newColumnWidth;
-                positions[idx + 3] = cache.positions[idx + 3] * scaleY;
-            }
-
-            const newTotalHeight = cache.totalHeight * scaleY;
-            cache.containerWidth = containerWidth;
-            cache.zoom = zoom;
-            cache.columnWidth = newColumnWidth;
-            cache.gap = gap;
-            cache.positions = positions;
-            cache.totalHeight = newTotalHeight;
-
-            perfTest.end('vsCalculatePositions', perfStart, { itemCount: items.length, detail: `${mode} @ ${zoom}% (scaled)` });
-            return { positions, totalHeight: newTotalHeight };
+        // First pass: scale all positions proportionally (O(n), same as before)
+        for (let i = 0; i < items.length; i++) {
+            const idx = i * 4;
+            positions[idx] = cache.positions[idx] * stepScale;
+            positions[idx + 1] = cache.positions[idx + 1] * scaleY;
+            positions[idx + 2] = newColumnWidth;
+            positions[idx + 3] = cache.positions[idx + 3] * scaleY;
         }
+
+        let newTotalHeight = cache.totalHeight * scaleY;
+
+        // Second pass (headers only): fix header height back to 42px and correct
+        // cumulative top offsets. Headers are sparse (<50 typically), so this is cheap.
+        if (headerIndices && headerIndices.length > 0) {
+            const HEADER_HEIGHT = 42;
+            // Walk headers and compute the cumulative drift caused by un-scaling them
+            let drift = 0; // accumulated difference from proportional scaling
+            let prevHeaderEnd = -1; // track end of previous header region
+
+            for (let h = 0; h < headerIndices.length; h++) {
+                const hi = headerIndices[h];
+                const idx = hi * 4;
+                const scaledHeight = positions[idx + 3]; // what proportional scaling gave us
+                const heightDiff = HEADER_HEIGHT - scaledHeight; // fixup amount
+
+                // Apply accumulated drift to items between previous header and this one
+                if (drift !== 0) {
+                    const start = prevHeaderEnd >= 0 ? prevHeaderEnd + 1 : 0;
+                    for (let j = start; j < hi; j++) {
+                        positions[j * 4 + 1] += drift;
+                    }
+                }
+
+                // Fix this header: apply drift to its top, then set correct height/width
+                positions[idx + 1] += drift;
+                positions[idx + 2] = containerWidth; // headers span full width
+                positions[idx + 3] = HEADER_HEIGHT;
+
+                drift += heightDiff;
+                prevHeaderEnd = hi;
+            }
+
+            // Apply remaining drift to items after the last header
+            if (drift !== 0) {
+                const start = prevHeaderEnd + 1;
+                for (let j = start; j < items.length; j++) {
+                    positions[j * 4 + 1] += drift;
+                }
+                newTotalHeight += drift;
+            }
+        }
+
+        // Update cache
+        cache.containerWidth = containerWidth;
+        cache.zoom = zoom;
+        cache.columnWidth = newColumnWidth;
+        cache.gap = gap;
+        cache.positions = positions;
+        cache.totalHeight = newTotalHeight;
+
+        perfTest.end('vsCalculatePositions', perfStart, { itemCount: items.length, detail: `${mode} @ ${zoom}% (scaled${headerIndices ? '+hdr-fixup' : ''})` });
+        return { positions, totalHeight: newTotalHeight };
     }
 
     // --- Full recalculation path ---
     const positions = new Float64Array(items.length * 4);
+
+    // Collect header indices during full recalc for fast-path fixup
+    const _headerIndices = [];
 
     if (mode === 'masonry') {
         const columns = newColumns;
@@ -411,6 +422,7 @@ function vsCalculatePositions(items, containerWidth, mode, zoom) {
             let cardHeight;
 
             if (item.type === 'group-header') {
+                _headerIndices.push(i);
                 // Span full width; place at the max column height
                 let maxColH = 0;
                 for (let c = 0; c < columns; c++) {
@@ -484,7 +496,8 @@ function vsCalculatePositions(items, containerWidth, mode, zoom) {
             positions,
             totalHeight,
             colHeights,
-            columnAssignments
+            columnAssignments,
+            headerIndices: _headerIndices.length > 0 ? _headerIndices : null
         };
 
         perfTest.end('vsCalculatePositions', perfStart, { itemCount: items.length, detail: `${mode} @ ${zoom}% (full)` });
@@ -503,6 +516,7 @@ function vsCalculatePositions(items, containerWidth, mode, zoom) {
             let cardHeight;
 
             if (item.type === 'group-header') {
+                _headerIndices.push(i);
                 // Finish current row if mid-row, then place header at full width
                 if (currentCol > 0) {
                     rowTop += rowMaxHeight + gap;
@@ -567,7 +581,8 @@ function vsCalculatePositions(items, containerWidth, mode, zoom) {
             positions,
             totalHeight,
             colHeights: null,
-            columnAssignments: null
+            columnAssignments: null,
+            headerIndices: _headerIndices.length > 0 ? _headerIndices : null
         };
 
         perfTest.end('vsCalculatePositions', perfStart, { itemCount: items.length, detail: `${mode} @ ${zoom}% (full)` });
@@ -3527,8 +3542,27 @@ function performCleanupCheck() {
         return;
     }
 
-    // Batch all getBoundingClientRect calls together to minimize layout thrashing
-    const rects = cardsWithMedia.map(card => getCachedCardRect(card));
+    // Use pre-computed vsState.positions when available (avoids getBoundingClientRect reflows)
+    const useVsPositions = vsState.enabled && vsState.positions && vsState.positions.length > 0;
+    let containerOffsetTop = 0, containerOffsetLeft = 0;
+    if (useVsPositions && gridContainer) {
+        // One getBoundingClientRect call per cleanup cycle (not per card)
+        const cr = gridContainer.getBoundingClientRect();
+        containerOffsetTop = cr.top - gridContainer.scrollTop;
+        containerOffsetLeft = cr.left - (gridContainer.scrollLeft || 0);
+    }
+
+    const rects = cardsWithMedia.map(card => {
+        if (useVsPositions && card._vsItemIndex != null) {
+            const idx = card._vsItemIndex * 4;
+            const left = vsState.positions[idx] + containerOffsetLeft;
+            const top = vsState.positions[idx + 1] + containerOffsetTop;
+            const width = vsState.positions[idx + 2];
+            const height = vsState.positions[idx + 3];
+            return { top, left, right: left + width, bottom: top + height, width, height };
+        }
+        return getCachedCardRect(card); // fallback for non-VS cards
+    });
 
     // Build card → rect lookup for reuse in passes 2 & 3 (avoids re-querying rects)
     const cardToRect = new Map();
@@ -4025,8 +4059,40 @@ function _enqueueThumbnailRequest(type, filePath, maxSize) {
 // Decoded bitmaps are cached; scrolling back to previously-seen cards is instant.
 
 const BITMAP_CACHE_MAX = 300; // ~150MB at typical card sizes
-const _bitmapCache = new Map(); // url -> { bitmap, w, h, lru }
-let _bitmapCacheLru = 0;
+
+// ── O(1) LRU bitmap cache using doubly-linked list + Map ────────────
+// Each node: { url, bitmap, w, h, prev, next }
+// _lruHead = most recent, _lruTail = least recent (eviction candidate)
+const _bitmapCacheMap = new Map(); // url -> node
+let _lruHead = null;
+let _lruTail = null;
+let _bitmapCacheSize = 0;
+
+function _lruRemoveNode(node) {
+    if (node.prev) node.prev.next = node.next;
+    else _lruHead = node.next; // was head
+    if (node.next) node.next.prev = node.prev;
+    else _lruTail = node.prev; // was tail
+    node.prev = null;
+    node.next = null;
+    _bitmapCacheSize--;
+}
+
+function _lruPrependNode(node) {
+    node.prev = null;
+    node.next = _lruHead;
+    if (_lruHead) _lruHead.prev = node;
+    _lruHead = node;
+    if (!_lruTail) _lruTail = node;
+    _bitmapCacheSize++;
+}
+
+function _lruPromoteNode(node) {
+    if (node === _lruHead) return; // already most recent
+    _lruRemoveNode(node);
+    _lruPrependNode(node);
+}
+
 let _decodeWorker = null;
 let _decodeNextId = 0;
 const _decodePending = new Map(); // id -> {resolve, reject}
@@ -4080,61 +4146,63 @@ function _bitmapDiag() {
     _bitmapStats.lastPrint = total;
     const avgMs = _bitmapStats.decodes ? (_bitmapStats.decodeMs / _bitmapStats.decodes).toFixed(1) : 'n/a';
     console.log(
-        `[bitmap-cache] cached=${_bitmapCache.size}/${BITMAP_CACHE_MAX} ` +
+        `[bitmap-cache] cached=${_bitmapCacheSize}/${BITMAP_CACHE_MAX} ` +
         `hits=${_bitmapStats.hits} misses=${_bitmapStats.misses} ` +
         `decodes=${_bitmapStats.decodes} (avg ${avgMs}ms) evictions=${_bitmapStats.evictions}`
     );
 }
 
 function evictBitmapEntry(url) {
-    const entry = _bitmapCache.get(url);
-    if (!entry) return;
-    try { entry.bitmap.close(); } catch {}
-    _bitmapCache.delete(url);
+    const node = _bitmapCacheMap.get(url);
+    if (!node) return;
+    try { node.bitmap.close(); } catch {}
+    _lruRemoveNode(node);
+    _bitmapCacheMap.delete(url);
 }
 
 function getCachedBitmap(url) {
-    const entry = _bitmapCache.get(url);
-    if (!entry) { _bitmapStats.misses++; _bitmapDiag(); return null; }
+    const node = _bitmapCacheMap.get(url);
+    if (!node) { _bitmapStats.misses++; _bitmapDiag(); return null; }
     _bitmapStats.hits++;
     _bitmapDiag();
-    entry.lru = ++_bitmapCacheLru;
-    return entry;
+    _lruPromoteNode(node); // O(1) move to head
+    return node;
 }
 
 /** Clear all cached bitmaps (called on folder navigation to free GPU memory). */
 function clearBitmapCache() {
-    for (const entry of _bitmapCache.values()) {
-        try { entry.bitmap.close(); } catch {}
+    for (const node of _bitmapCacheMap.values()) {
+        try { node.bitmap.close(); } catch {}
     }
-    _bitmapCache.clear();
+    _bitmapCacheMap.clear();
+    _lruHead = null;
+    _lruTail = null;
+    _bitmapCacheSize = 0;
 }
 
 function putCachedBitmap(url, bitmap) {
     if (!bitmap) return;
-    const existing = _bitmapCache.get(url);
+    const existing = _bitmapCacheMap.get(url);
     if (existing) {
-        // Close the old one to free GPU memory
+        // Close the old bitmap to free GPU memory, update node in-place
         try { existing.bitmap.close(); } catch {}
+        existing.bitmap = bitmap;
+        existing.w = bitmap.width;
+        existing.h = bitmap.height;
+        _lruPromoteNode(existing); // move to head (most recent)
+        return;
     }
-    _bitmapCache.set(url, {
-        bitmap,
-        w: bitmap.width,
-        h: bitmap.height,
-        lru: ++_bitmapCacheLru
-    });
-    // Evict oldest if over limit
-    if (_bitmapCache.size > BITMAP_CACHE_MAX) {
-        let oldestUrl = null, oldestLru = Infinity;
-        for (const [k, v] of _bitmapCache) {
-            if (v.lru < oldestLru) { oldestLru = v.lru; oldestUrl = k; }
-        }
-        if (oldestUrl) {
-            const victim = _bitmapCache.get(oldestUrl);
-            try { victim.bitmap.close(); } catch {}
-            _bitmapCache.delete(oldestUrl);
-            _bitmapStats.evictions++;
-        }
+    // Create new node and prepend to head
+    const node = { url, bitmap, w: bitmap.width, h: bitmap.height, prev: null, next: null };
+    _bitmapCacheMap.set(url, node);
+    _lruPrependNode(node);
+    // Evict LRU tail if over limit — O(1)
+    if (_bitmapCacheSize > BITMAP_CACHE_MAX && _lruTail) {
+        const victim = _lruTail;
+        try { victim.bitmap.close(); } catch {}
+        _bitmapCacheMap.delete(victim.url);
+        _lruRemoveNode(victim);
+        _bitmapStats.evictions++;
     }
 }
 
@@ -4145,7 +4213,7 @@ function putCachedBitmap(url, bitmap) {
 function prefetchImageBitmap(url, maxWidth = 0, maxHeight = 0) {
     if (!url) return Promise.resolve(null);
     // Don't touch stats here — this is prefetching, not a cache hit/miss query
-    if (_bitmapCache.has(url)) return Promise.resolve(_bitmapCache.get(url).bitmap);
+    if (_bitmapCacheMap.has(url)) return Promise.resolve(_bitmapCacheMap.get(url).bitmap);
     const t0 = performance.now();
     return decodeImageOffThread(url, maxWidth, maxHeight).then(bitmap => {
         _bitmapStats.decodes++;
@@ -7133,18 +7201,57 @@ function bumpEmbeddingsVersion() {
     _filterWorkerEmbVersion++;
 }
 
+// Track which embedding paths have been synced to the worker (for delta updates)
+const _filterWorkerSyncedEmbPaths = new Set();
+
 function syncFilterWorkerEmbeddingsIfNeeded() {
     const w = getFilterWorker();
     if (!w) return;
-    // Re-sync only when version bumped (clear/bulk replace) OR size grew significantly
-    if (_filterWorkerEmbSyncedVersion === _filterWorkerEmbVersion &&
-        Math.abs(currentEmbeddings.size - _filterWorkerEmbSyncedSize) < 16) {
+
+    const versionChanged = _filterWorkerEmbSyncedVersion !== _filterWorkerEmbVersion;
+    const sizeChanged = Math.abs(currentEmbeddings.size - _filterWorkerEmbSyncedSize) >= 16;
+    if (!versionChanged && !sizeChanged) return;
+
+    // If version bumped (clear/repopulate), do a full sync and reset tracking
+    if (versionChanged) {
+        const obj = {};
+        for (const [k, v] of currentEmbeddings) obj[k] = v;
+        w.postMessage({ type: 'setEmbeddings', embeddings: obj });
+        _filterWorkerSyncedEmbPaths.clear();
+        for (const k of currentEmbeddings.keys()) _filterWorkerSyncedEmbPaths.add(k);
+        _filterWorkerEmbSyncedVersion = _filterWorkerEmbVersion;
+        _filterWorkerEmbSyncedSize = currentEmbeddings.size;
         return;
     }
-    const obj = {};
-    for (const [k, v] of currentEmbeddings) obj[k] = v;
-    w.postMessage({ type: 'setEmbeddings', embeddings: obj });
-    _filterWorkerEmbSyncedVersion = _filterWorkerEmbVersion;
+
+    // Delta sync: only send new/changed embeddings
+    const entries = [];
+    const removed = [];
+
+    // Find new paths not yet synced
+    for (const [k, v] of currentEmbeddings) {
+        if (!_filterWorkerSyncedEmbPaths.has(k)) {
+            entries.push({ path: k, vec: v });
+        }
+    }
+    // Find removed paths
+    for (const k of _filterWorkerSyncedEmbPaths) {
+        if (!currentEmbeddings.has(k)) {
+            removed.push(k);
+        }
+    }
+
+    if (entries.length === 0 && removed.length === 0) {
+        _filterWorkerEmbSyncedSize = currentEmbeddings.size;
+        return;
+    }
+
+    // Send as batch delta
+    w.postMessage({ type: 'setEmbeddingsBatch', entries, removed });
+
+    // Update tracking
+    for (const e of entries) _filterWorkerSyncedEmbPaths.add(e.path);
+    for (const r of removed) _filterWorkerSyncedEmbPaths.delete(r);
     _filterWorkerEmbSyncedSize = currentEmbeddings.size;
 }
 

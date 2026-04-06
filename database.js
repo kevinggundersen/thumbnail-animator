@@ -3,7 +3,7 @@
 const Database = require('better-sqlite3');
 const path = require('path');
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 class AppDatabase {
     constructor(dbPath) {
@@ -147,6 +147,22 @@ class AppDatabase {
             `);
             this._setSchemaVersion(2);
         }
+
+        if (currentVersion < 3) {
+            this.db.exec(`
+                -- Cached file hashes for duplicate detection
+                CREATE TABLE IF NOT EXISTS file_hashes (
+                    file_path       TEXT PRIMARY KEY,
+                    file_size       INTEGER NOT NULL,
+                    file_mtime      REAL    NOT NULL,
+                    exact_hash      TEXT,
+                    perceptual_hash TEXT,
+                    computed_at     INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_file_hashes_mtime ON file_hashes(file_mtime);
+            `);
+            this._setSchemaVersion(3);
+        }
     }
 
     _getSchemaVersion() {
@@ -254,6 +270,15 @@ class AppDatabase {
             ORDER BY occurrences DESC
             LIMIT 10
         `);
+
+        // File hashes
+        this._stmts.getHashesByPaths = this.db.prepare(
+            'SELECT file_path, file_size, file_mtime, exact_hash, perceptual_hash FROM file_hashes WHERE file_path IN (SELECT value FROM json_each(?))'
+        );
+        this._stmts.upsertHash = this.db.prepare(
+            'INSERT OR REPLACE INTO file_hashes (file_path, file_size, file_mtime, exact_hash, perceptual_hash, computed_at) VALUES (?, ?, ?, ?, ?, ?)'
+        );
+        this._stmts.deleteHashByPath = this.db.prepare('DELETE FROM file_hashes WHERE file_path = ?');
     }
 
     // ── Meta ─────────────────────────────────────────────────────────────
@@ -666,6 +691,39 @@ class AppDatabase {
         return suggestions.slice(0, 15);
     }
 
+    // ── File hashes (duplicate detection cache) ───────────────────────
+
+    getHashesForPaths(filePaths) {
+        const rows = this._stmts.getHashesByPaths.all(JSON.stringify(filePaths));
+        const map = {};
+        for (const r of rows) {
+            map[r.file_path] = {
+                exact_hash: r.exact_hash,
+                perceptual_hash: r.perceptual_hash,
+                file_mtime: r.file_mtime,
+                file_size: r.file_size
+            };
+        }
+        return map;
+    }
+
+    saveHashes(entries) {
+        const tx = this.db.transaction((items) => {
+            const now = Date.now();
+            for (const e of items) {
+                this._stmts.upsertHash.run(
+                    e.file_path, e.file_size, e.file_mtime,
+                    e.exact_hash || null, e.perceptual_hash || null, now
+                );
+            }
+        });
+        tx(entries);
+    }
+
+    deleteHash(filePath) {
+        this._stmts.deleteHashByPath.run(filePath);
+    }
+
     // ── File path migration (for batch rename) ────────────────────────
 
     updateFilePaths(pathPairs) {
@@ -694,6 +752,8 @@ class AppDatabase {
                 }
                 // Collection files
                 this.db.prepare('UPDATE collection_files SET file_path = ? WHERE file_path = ?').run(newPath, oldPath);
+                // File hashes
+                this.db.prepare('UPDATE file_hashes SET file_path = ? WHERE file_path = ?').run(newPath, oldPath);
             }
         });
         tx(pathPairs);

@@ -3416,29 +3416,56 @@ ipcMain.handle('scan-duplicates', async (event, folderPath, options = {}) => {
 
         event.sender.send('duplicate-scan-progress', { current: 0, total: files.length, phase: 'hashing' });
 
+        // ── DB hash cache: skip files whose mtime hasn't changed ─────
+        const normPath = (p) => p.replace(/\\/g, '/');
+        let dbCache = {};
+        try {
+            dbCache = await appDb.getHashesForPaths(files.map(f => normPath(f.path)));
+        } catch (e) {
+            console.warn('[scan-duplicates] hash cache lookup failed:', e.message);
+        }
+
+        const staleFiles = [];
+        const cachedHashMap = new Map(); // path → {exactHash, perceptualHash}
+        for (const f of files) {
+            const key = normPath(f.path);
+            const cached = dbCache[key];
+            if (cached && cached.file_mtime === f.mtime) {
+                cachedHashMap.set(f.path, {
+                    exactHash: cached.exact_hash,
+                    perceptualHash: cached.perceptual_hash
+                });
+            } else {
+                staleFiles.push(f);
+            }
+        }
+        if (cachedHashMap.size > 0) {
+            console.log(`[scan-duplicates] hash cache: ${cachedHashMap.size} cached, ${staleFiles.length} to hash`);
+        }
+
         // Exact hashes: use native BLAKE3 if available (parallel, ~3x faster)
         let exactHashMap;
-        if (nativeScanner && nativeScanner.hashFiles) {
+        if (staleFiles.length > 0 && nativeScanner && nativeScanner.hashFiles) {
             const hashStart = performance.now();
-            const results = nativeScanner.hashFiles(files.map(f => f.path));
+            const results = nativeScanner.hashFiles(staleFiles.map(f => f.path));
             exactHashMap = new Map();
             for (const r of results) {
                 exactHashMap.set(r.path, r.hash || null);
             }
-            logPerf('scan-duplicates.exact-hash-native', hashStart, { files: files.length });
-            event.sender.send('duplicate-scan-progress', { current: files.length, total: files.length, phase: 'hashing' });
+            logPerf('scan-duplicates.exact-hash-native', hashStart, { files: staleFiles.length });
         }
+        event.sender.send('duplicate-scan-progress', { current: cachedHashMap.size, total: files.length, phase: 'hashing' });
 
         // Perceptual hashes: prefer native Rust (rayon-parallel, faster decode
         // than sharp). Falls back to the JS worker pool if native isn't available.
-        let hashMap;
-        if (nativeScanner && nativeScanner.computePerceptualHashes) {
+        let freshHashMap = new Map();
+        if (staleFiles.length > 0 && nativeScanner && nativeScanner.computePerceptualHashes) {
             // Prefer cached 512px thumbnails over original files — decoding a
             // 5MB JPEG is ~30-80ms vs. ~2-5ms for a 512px PNG thumbnail.
             // Pre-generate missing image thumbnails first (same pattern as CLIP).
             if (nativeScanner.generateImageThumbnails && imageThumbDir) {
                 const missing = [];
-                for (const f of files) {
+                for (const f of staleFiles) {
                     if (!f.isImage) continue;
                     if (f.path.toLowerCase().endsWith('.svg')) continue;
                     if (!f.mtime) continue;
@@ -3471,46 +3498,80 @@ ipcMain.handle('scan-duplicates', async (event, folderPath, options = {}) => {
 
             const inputs = [];
             const inputIndices = [];
-            for (let i = 0; i < files.length; i++) {
-                const src = resolveHashSource(files[i]);
+            for (let i = 0; i < staleFiles.length; i++) {
+                const src = resolveHashSource(staleFiles[i]);
                 if (src) { inputs.push(src); inputIndices.push(i); }
             }
             const phStart = performance.now();
             const results = nativeScanner.computePerceptualHashes(inputs);
             console.log(`[scan-duplicates] native perceptual hashes: ${inputs.length} files in ${(performance.now() - phStart).toFixed(0)}ms`);
 
-            hashMap = new Map();
             for (let k = 0; k < results.length; k++) {
-                const file = files[inputIndices[k]];
-                hashMap.set(file.path, {
+                const file = staleFiles[inputIndices[k]];
+                freshHashMap.set(file.path, {
                     exactHash: exactHashMap ? exactHashMap.get(file.path) : null,
                     perceptualHash: results[k].hash || null
                 });
             }
-            // Any files without a perceptual source still need an entry
-            for (const file of files) {
-                if (!hashMap.has(file.path)) {
-                    hashMap.set(file.path, {
+            // Any stale files without a perceptual source still need an entry
+            for (const file of staleFiles) {
+                if (!freshHashMap.has(file.path)) {
+                    freshHashMap.set(file.path, {
                         exactHash: exactHashMap ? exactHashMap.get(file.path) : null,
                         perceptualHash: null
                     });
                 }
             }
-            event.sender.send('duplicate-scan-progress', { current: files.length, total: files.length, phase: 'hashing' });
-        } else {
-            hashMap = await hashPool.scanHashes(files, (completed, total) => {
+        } else if (staleFiles.length > 0) {
+            freshHashMap = await hashPool.scanHashes(staleFiles, (completed, total) => {
                 if (!exactHashMap) {
-                    event.sender.send('duplicate-scan-progress', { current: completed, total, phase: 'hashing' });
+                    event.sender.send('duplicate-scan-progress', {
+                        current: cachedHashMap.size + completed, total: files.length, phase: 'hashing'
+                    });
                 }
             });
         }
 
-        // Merge: use native BLAKE3 for exact hashes if available, else use SHA-256 from worker pool
+        // Merge native BLAKE3 exact hashes into fresh results
         if (exactHashMap) {
-            for (const [filePath, hashes] of hashMap) {
+            for (const [filePath, hashes] of freshHashMap) {
                 hashes.exactHash = exactHashMap.get(filePath) || hashes.exactHash;
             }
         }
+
+        // Combine cached + fresh into unified hashMap
+        const hashMap = new Map(cachedHashMap);
+        for (const [fp, h] of freshHashMap) {
+            hashMap.set(fp, h);
+        }
+
+        // Persist newly computed hashes to DB
+        if (freshHashMap.size > 0) {
+            try {
+                const staleByPath = new Map(staleFiles.map(f => [f.path, f]));
+                const entries = [];
+                for (const [fp, h] of freshHashMap) {
+                    const f = staleByPath.get(fp);
+                    if (f) {
+                        entries.push({
+                            file_path: normPath(fp),
+                            file_size: f.size,
+                            file_mtime: f.mtime,
+                            exact_hash: h.exactHash,
+                            perceptual_hash: h.perceptualHash
+                        });
+                    }
+                }
+                if (entries.length > 0) {
+                    await appDb.saveHashes(entries);
+                    console.log(`[scan-duplicates] persisted ${entries.length} hashes to DB`);
+                }
+            } catch (e) {
+                console.warn('[scan-duplicates] hash persist failed:', e.message);
+            }
+        }
+
+        event.sender.send('duplicate-scan-progress', { current: files.length, total: files.length, phase: 'hashing' });
 
         event.sender.send('duplicate-scan-progress', { current: 0, total: 0, phase: 'comparing' });
 

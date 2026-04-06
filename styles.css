@@ -3556,7 +3556,6 @@ video.blow-up-media {
 }
 
 #lightbox.crop-mode .lightbox-nav-btn,
-#lightbox.crop-mode #lightbox-zoom-floating-mount,
 #lightbox.crop-mode .media-controls,
 #lightbox.crop-mode #lightbox-filmstrip {
     opacity: 0.3;
@@ -3566,9 +3565,13 @@ video.blow-up-media {
 .lightbox-crop-overlay {
     position: fixed;
     inset: 0;
-    z-index: 1003;
+    z-index: 1001;
     cursor: crosshair;
     touch-action: none;
+}
+
+.lightbox-crop-overlay.panning {
+    cursor: grabbing;
 }
 
 .lightbox-crop-overlay.hidden {

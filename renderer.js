@@ -4908,6 +4908,14 @@ const lightboxCropState = {
     startRect: null,
     saving: false,
 };
+const lightboxCropPanState = {
+    active: false,
+    pointerId: null,
+    initMouseX: 0,
+    initMouseY: 0,
+    initTranslateX: 0,
+    initTranslateY: 0,
+};
 
 function syncLightboxZoomControlsPlacement() {
     if (!lightboxZoomControls || !lightboxZoomFloatingMount || !lightboxZoomDockMount) return;
@@ -12378,15 +12386,14 @@ function screenRectToSourceRect(rect, imageRect) {
     return { left, top, width: right - left, height: bottom - top };
 }
 
-function sourceRectToScreenRect(sourceRect, imageRect) {
-    if (!sourceRect || !imageRect || !lightboxImage?.naturalWidth || !lightboxImage?.naturalHeight) return null;
-    const scaleX = imageRect.width / lightboxImage.naturalWidth;
-    const scaleY = imageRect.height / lightboxImage.naturalHeight;
-    const left = imageRect.left + sourceRect.left * scaleX;
-    const top = imageRect.top + sourceRect.top * scaleY;
-    const width = sourceRect.width * scaleX;
-    const height = sourceRect.height * scaleY;
-    return clampCropRectToImage({ left, top, width, height }, imageRect);
+function preserveCropRectOnViewportChange(rect, imageRect) {
+    if (!rect || !imageRect) return null;
+    return clampCropRectToImage({
+        left: rect.left,
+        top: rect.top,
+        width: rect.width,
+        height: rect.height,
+    }, imageRect);
 }
 
 function renderLightboxCropSelection() {
@@ -12422,8 +12429,8 @@ function syncLightboxCropToViewport() {
         return;
     }
     lightboxCropState.imageRect = imageRect;
-    if (lightboxCropState.sourceRect) {
-        lightboxCropState.rect = sourceRectToScreenRect(lightboxCropState.sourceRect, imageRect);
+    if (lightboxCropState.rect) {
+        lightboxCropState.rect = preserveCropRectOnViewportChange(lightboxCropState.rect, imageRect);
     }
     if (lightboxCropState.rect) {
         renderLightboxCropSelection();
@@ -12461,6 +12468,9 @@ function enterLightboxCropMode() {
 
 function exitLightboxCropMode({ silent = false } = {}) {
     if (!lightboxCropState.active && !lightboxCropState.saving) return;
+    lightboxCropPanState.active = false;
+    lightboxCropPanState.pointerId = null;
+    if (lightboxCropOverlay) lightboxCropOverlay.classList.remove('panning');
     if (lightboxCropOverlay && lightboxCropState.pointerId != null && lightboxCropOverlay.hasPointerCapture(lightboxCropState.pointerId)) {
         try { lightboxCropOverlay.releasePointerCapture(lightboxCropState.pointerId); } catch {}
     }
@@ -12543,7 +12553,26 @@ async function applyLightboxCrop() {
 }
 
 function handleLightboxCropPointerDown(e) {
-    if (!lightboxCropState.active || lightboxCropState.saving || e.button !== 0) return;
+    if (!lightboxCropState.active || lightboxCropState.saving) return;
+
+    if (e.button === 1) {
+        if (currentZoomLevel <= 100) return;
+        lightboxCropPanState.active = true;
+        lightboxCropPanState.pointerId = e.pointerId;
+        lightboxCropPanState.initMouseX = e.clientX;
+        lightboxCropPanState.initMouseY = e.clientY;
+        lightboxCropPanState.initTranslateX = currentTranslateX;
+        lightboxCropPanState.initTranslateY = currentTranslateY;
+        if (lightboxCropOverlay) {
+            lightboxCropOverlay.classList.add('panning');
+            lightboxCropOverlay.setPointerCapture(e.pointerId);
+        }
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+    }
+
+    if (e.button !== 0) return;
 
     const imageRect = getDisplayedLightboxImageRect();
     if (!imageRect) return;
@@ -12580,6 +12609,14 @@ function handleLightboxCropPointerDown(e) {
 }
 
 function handleLightboxCropPointerMove(e) {
+    if (lightboxCropPanState.active && lightboxCropPanState.pointerId === e.pointerId) {
+        currentTranslateX = lightboxCropPanState.initTranslateX + (e.clientX - lightboxCropPanState.initMouseX);
+        currentTranslateY = lightboxCropPanState.initTranslateY + (e.clientY - lightboxCropPanState.initMouseY);
+        applyCurrentLightboxTransform();
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+    }
     if (!lightboxCropState.active || lightboxCropState.pointerId !== e.pointerId || !lightboxCropState.mode) return;
     const imageRect = lightboxCropState.imageRect || getDisplayedLightboxImageRect();
     if (!imageRect) return;
@@ -12606,6 +12643,17 @@ function handleLightboxCropPointerMove(e) {
 }
 
 function handleLightboxCropPointerEnd(e) {
+    if (lightboxCropPanState.pointerId === e.pointerId) {
+        if (lightboxCropOverlay && lightboxCropOverlay.hasPointerCapture(e.pointerId)) {
+            try { lightboxCropOverlay.releasePointerCapture(e.pointerId); } catch {}
+        }
+        lightboxCropPanState.active = false;
+        lightboxCropPanState.pointerId = null;
+        if (lightboxCropOverlay) lightboxCropOverlay.classList.remove('panning');
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+    }
     if (lightboxCropState.pointerId !== e.pointerId) return;
     if (lightboxCropOverlay && lightboxCropOverlay.hasPointerCapture(e.pointerId)) {
         try { lightboxCropOverlay.releasePointerCapture(e.pointerId); } catch {}
@@ -13011,21 +13059,17 @@ function applyLightboxZoom(zoomLevel, mouseX = null, mouseY = null) {
     if (zoomValueDisplay) {
         zoomValueDisplay.textContent = `${zoomLevel}%`;
     }
+    if (lightboxCropState.active) {
+        syncLightboxCropToViewport();
+    }
 }
 
-function applyPan(deltaX, deltaY) {
-    if (currentZoomLevel <= 100) return;
-    
-    currentTranslateX += deltaX;
-    currentTranslateY += deltaY;
-    
-    // Use cached zoom value for performance
+function applyCurrentLightboxTransform() {
     const zoomValue = cachedZoomValue;
-    
-    // Build transform string once
-    const transformString = `translate(${currentTranslateX}px, ${currentTranslateY}px) scale(${zoomValue})`;
-    
-    // Apply to visible element only
+    const transformString = currentZoomLevel <= 100
+        ? `scale(${zoomValue})`
+        : `translate(${currentTranslateX}px, ${currentTranslateY}px) scale(${zoomValue})`;
+
     const imageDisplay = lightboxImage.style.display;
     const videoDisplay = lightboxVideo.style.display;
     const canvasDisplay = lightboxGifCanvas.style.display;
@@ -13039,6 +13083,18 @@ function applyPan(deltaX, deltaY) {
     if (isImageVisible) lightboxImage.style.transform = transformString;
     if (isVideoVisible) lightboxVideo.style.transform = transformString;
     if (isCanvasVisible) lightboxGifCanvas.style.transform = transformString;
+
+    if (lightboxCropState.active) {
+        syncLightboxCropToViewport();
+    }
+}
+
+function applyPan(deltaX, deltaY) {
+    if (currentZoomLevel <= 100) return;
+    
+    currentTranslateX += deltaX;
+    currentTranslateY += deltaY;
+    applyCurrentLightboxTransform();
 }
 
 function resetZoom() {
@@ -13072,6 +13128,9 @@ function resetZoom() {
     }
     if (lightboxZoomValue) {
         lightboxZoomValue.textContent = '100%';
+    }
+    if (lightboxCropState.active) {
+        syncLightboxCropToViewport();
     }
 }
 
@@ -13153,6 +13212,12 @@ lightboxCropOverlay?.addEventListener('click', (e) => {
     e.preventDefault();
     e.stopPropagation();
 });
+lightboxCropOverlay?.addEventListener('auxclick', (e) => {
+    if (e.button === 1) {
+        e.preventDefault();
+        e.stopPropagation();
+    }
+});
 window.addEventListener('resize', () => {
     if (lightboxCropState.active) syncLightboxCropToViewport();
 });
@@ -13171,6 +13236,20 @@ document.addEventListener('keydown', (e) => {
         e.preventDefault();
         e.stopPropagation();
         applyLightboxCrop();
+    } else if (matchesShortcut(e, 'zoomIn')) {
+        e.preventDefault();
+        e.stopPropagation();
+        const newZoom = Math.max(30, Math.min(lightboxMaxZoomSetting, currentZoomLevel + 10));
+        applyLightboxZoom(newZoom);
+    } else if (matchesShortcut(e, 'zoomOut')) {
+        e.preventDefault();
+        e.stopPropagation();
+        const newZoom = Math.max(30, Math.min(lightboxMaxZoomSetting, currentZoomLevel - 10));
+        applyLightboxZoom(newZoom);
+    } else if (matchesShortcut(e, 'zoomReset')) {
+        e.preventDefault();
+        e.stopPropagation();
+        resetZoom();
     } else if (e.key !== 'Tab') {
         e.preventDefault();
         e.stopPropagation();
@@ -13242,17 +13321,14 @@ function handleLightboxWheel(e) {
         console.log('Lightbox is hidden, ignoring wheel');
         return;
     }
-    if (lightboxCropState.active) {
-        e.preventDefault();
-        e.stopPropagation();
-        return;
-    }
     if (
         e.target === lightboxZoomSlider ||
         e.target.closest('.lightbox-zoom-controls') ||
         e.target.closest('.lb-inspector') ||
         e.target.closest('.lightbox-filmstrip') ||
-        e.target.closest('.media-controls')
+        e.target.closest('.media-controls') ||
+        e.target.closest('.lightbox-crop-toolbar') ||
+        e.target.closest('.lightbox-action-btn')
     ) {
         console.log('Wheel on controls, ignoring');
         return;
@@ -13343,6 +13419,10 @@ function applyPanTransform() {
     if (isVideoVisible) lightboxVideo.style.transform = transformString;
     if (isCanvasVisible) lightboxGifCanvas.style.transform = transformString;
     
+    if (lightboxCropState.active) {
+        syncLightboxCropToViewport();
+    }
+
     panState.rafId = null;
     panState.pendingUpdate = false;
 }

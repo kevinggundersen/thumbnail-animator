@@ -654,3 +654,7 @@ const ThemeManager = {
         return '#000000';
     }
 };
+
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = { hexToRgb, rgbToHex, lighten, darken, hexAlpha, BUILTIN_THEMES, THEME_VARIABLES };
+}

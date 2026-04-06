@@ -496,6 +496,26 @@ async function generateImageThumbnail(filePath, maxSize = 512) {
             const perfStart = performance.now();
             await fs.promises.mkdir(imageThumbDir, { recursive: true });
 
+            if (nativeScanner && nativeScanner.generateImageThumbnails) {
+                try {
+                    const results = nativeScanner.generateImageThumbnails([{ filePath, thumbPath, maxSize }]);
+                    if (results && results[0] && results[0].success) {
+                        logPerf('generate-image-thumbnail', perfStart, { cached: 0, success: 1, native: 1 });
+                        return thumbPath;
+                    }
+                } catch {}
+            }
+
+            if (thumbnailPool) {
+                try {
+                    const result = await thumbnailPool.generate({ type: 'image', filePath, thumbPath, maxSize });
+                    if (result && result.success && result.thumbPath) {
+                        logPerf('generate-image-thumbnail', perfStart, { cached: 0, success: 1, worker: 1 });
+                        return result.thumbPath;
+                    }
+                } catch {}
+            }
+
             const image = nativeImage.createFromPath(filePath);
             if (image.isEmpty()) {
                 logPerf('generate-image-thumbnail', perfStart, { cached: 0, success: 0, reason: 'empty' });
@@ -4349,7 +4369,42 @@ const CLIP_MEAN = [0.48145466, 0.4578275, 0.40821073];
 const CLIP_STD  = [0.26862954, 0.26130258, 0.27577711];
 const CLIP_SIZE = 224;
 const CLIP_VIDEO_EXTS = new Set(['.mp4', '.webm', '.ogg', '.mov']);
-const CLIP_ANIM_EXTS  = new Set(['.gif', '.webp']);
+const CLIP_ANIM_EXTS  = new Set(['.gif']);
+
+async function isAnimatedWebp(filePath) {
+    try {
+        const header = await readImageHeader(filePath, 64 * 1024);
+        if (!header || header.length < 20) return false;
+        if (header.toString('ascii', 0, 4) !== 'RIFF') return false;
+        if (header.toString('ascii', 8, 12) !== 'WEBP') return false;
+
+        let offset = 12;
+        while (offset + 8 <= header.length) {
+            const fourcc = header.toString('ascii', offset, offset + 4);
+            const chunkSize = header.readUInt32LE(offset + 4);
+            const chunkDataStart = offset + 8;
+
+            if (fourcc === 'VP8X') {
+                if (chunkDataStart >= header.length) return false;
+                return !!(header[chunkDataStart] & 0x02);
+            }
+            if (fourcc === 'ANMF') return true;
+
+            offset = chunkDataStart + chunkSize + (chunkSize & 1);
+        }
+    } catch {}
+    return false;
+}
+
+async function classifyClipMediaKind(filePath) {
+    const ext = path.extname(filePath).toLowerCase();
+    if (CLIP_VIDEO_EXTS.has(ext)) return 'video';
+    if (CLIP_ANIM_EXTS.has(ext)) return 'animated';
+    if (ext === '.webp') {
+        return (await isAnimatedWebp(filePath)) ? 'animated' : 'image';
+    }
+    return 'image';
+}
 
 // Preprocess an image file into a normalised float32 CHW tensor ready for CLIP.
 // Returns Float32Array(3 * 224 * 224) or null on failure.
@@ -4523,6 +4578,10 @@ async function clipEmbedMultiFrame(framePaths) {
 ipcMain.handle('clip-embed-images', async (event, files) => {
     if (!clipModel) return { ok: true, value: [] };
 
+    const clipKinds = new Map(await Promise.all(files.map(async (file) => {
+        return [file.path, await classifyClipMediaKind(file.path)];
+    })));
+
     // Phase 1: Pre-extract frames for all video/animated files in parallel.
     // FFmpeg is I/O-bound so we can safely run multiple files concurrently.
     // We process files in chunks to avoid spawning too many FFmpeg processes at once.
@@ -4530,15 +4589,15 @@ ipcMain.handle('clip-embed-images', async (event, files) => {
     const frameMap = new Map(); // filePath -> framePaths[]
 
     const mediaFiles = files.filter(f => {
-        const ext = path.extname(f.path).toLowerCase();
-        return CLIP_VIDEO_EXTS.has(ext) || CLIP_ANIM_EXTS.has(ext);
+        const kind = clipKinds.get(f.path);
+        return kind === 'video' || kind === 'animated';
     });
 
     for (let i = 0; i < mediaFiles.length; i += FRAME_EXTRACT_CONCURRENCY) {
         const chunk = mediaFiles.slice(i, i + FRAME_EXTRACT_CONCURRENCY);
         await Promise.all(chunk.map(async (file) => {
-            const ext = path.extname(file.path).toLowerCase();
-            const n = CLIP_VIDEO_EXTS.has(ext) ? 4 : 3;
+            const kind = clipKinds.get(file.path);
+            const n = kind === 'video' ? 4 : 3;
             const frames = await extractMediaKeyframes(file.path, n);
             if (frames) frameMap.set(file.path, frames);
         }));
@@ -4572,8 +4631,8 @@ ipcMain.handle('clip-embed-images', async (event, files) => {
     const videoFiles = [];
     const staticFiles = [];
     for (const file of files) {
-        const ext = path.extname(file.path).toLowerCase();
-        if (CLIP_VIDEO_EXTS.has(ext) || CLIP_ANIM_EXTS.has(ext)) {
+        const kind = clipKinds.get(file.path);
+        if (kind === 'video' || kind === 'animated') {
             videoFiles.push(file);
         } else {
             staticFiles.push(file);
@@ -4593,8 +4652,8 @@ ipcMain.handle('clip-embed-images', async (event, files) => {
     // Process video/animated files (multi-frame batching already handled internally)
     for (const file of videoFiles) {
         try {
-            const ext = path.extname(file.path).toLowerCase();
-            const isVideo = CLIP_VIDEO_EXTS.has(ext);
+            const kind = clipKinds.get(file.path);
+            const isVideo = kind === 'video';
             let embedding = null;
 
             const framePaths = frameMap.get(file.path);
@@ -4604,18 +4663,16 @@ ipcMain.handle('clip-embed-images', async (event, files) => {
 
             // Fallback to single-frame
             if (!embedding) {
-                let source = file.path;
-                if (file.thumbPath && fs.existsSync(file.thumbPath)) {
-                    source = file.thumbPath;
-                } else if (videoThumbDir && file.mtime != null) {
-                    const vidThumb = getThumbCachePath(file.path, file.mtime);
-                    if (fs.existsSync(vidThumb)) source = vidThumb;
+                let source = resolveImageSource(file);
+                if (kind === 'animated' && source === file.path) {
+                    const imgThumb = await generateImageThumbnail(file.path, 512);
+                    if (imgThumb) source = imgThumb;
                 }
                 if (isVideo && source === file.path) {
                     const vidThumb = await generateVideoThumbnail(file.path);
                     if (vidThumb) source = vidThumb;
                 }
-                if (source !== file.path || CLIP_ANIM_EXTS.has(ext)) {
+                if (source !== file.path || kind === 'animated') {
                     embedding = await clipEmbedOneImage(source);
                 }
             }

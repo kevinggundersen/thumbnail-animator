@@ -18170,6 +18170,12 @@ class InspectorPanel {
                     if (embResults[0] && embResults[0].embedding) {
                         currentEmbeddings.set(path, l2Normalize(new Float32Array(embResults[0].embedding)));
                         this._renderSimilar();
+                    } else {
+                        this._similar.innerHTML = '';
+                        const fail = document.createElement('div');
+                        fail.className = 'lb-insp-similar-empty';
+                        fail.textContent = 'Failed to compute embedding.';
+                        this._similar.appendChild(fail);
                     }
                 } catch (err) {
                     if (this._currentPath === path) {
@@ -18197,6 +18203,8 @@ class InspectorPanel {
                         const emb = l2Normalize(new Float32Array(embResults[0].embedding));
                         currentEmbeddings.set(path, emb);
                         this._renderSimilar();
+                    } else {
+                        showToast('Could not generate embedding for this image', 'error');
                     }
                 } catch (err) { showToast('Failed to compute embedding', 'error'); }
             });

@@ -134,10 +134,10 @@ function initKeyboardShortcuts() {
                 closeDuplicatesModal();
             } else if (!toolsMenuDropdown.classList.contains('hidden')) {
                 toolsMenuDropdown.classList.add('hidden');
-            } else if (marqueeState.active || marqueeState.pending) {
-                cancelMarquee();
+            } else if (selection.marqueeActive || selection.marqueePending) {
+                selection.cancelMarquee();
             } else if (selectedCardPaths.size > 0) {
-                clearCardSelection();
+                selection.clear();
             }
             return;
         }

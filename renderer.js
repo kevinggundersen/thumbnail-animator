@@ -102,14 +102,12 @@ let sidebarMaxWidthSetting = 500;
 let folderPreviewCountSetting = 4;
 let folderPreviewSizeSetting = 192;
 
-// ── Hydrate configurable constants from localStorage ──
-(function hydrateSettings() {
-    const _int = (key, fallback) => { const v = localStorage.getItem(key); return v !== null ? parseInt(v, 10) : fallback; };
-    const _str = (key, fallback) => localStorage.getItem(key) || fallback;
-    const _bool = (key, fallback) => { const v = localStorage.getItem(key); return v !== null ? v === 'true' : fallback; };
-
-    // Performance profile
-    const profile = _str('perfProfile', 'medium');
+// ── Hydrate configurable constants from appSettings (settings.js) ──
+// Performance profile cascade — appSettings stores individual values,
+// but the profile presets override them at startup.
+(function hydrateFromAppSettings() {
+    const s = window.appSettings;
+    const profile = s.get('perfProfile');
     if (profile === 'low') {
         MAX_VIDEOS = 60; MAX_IMAGES = 60; PARALLEL_LOAD_LIMIT = 5;
         VS_BUFFER_PX = 600; VS_MAX_POOL_SIZE = 75;
@@ -117,56 +115,57 @@ let folderPreviewSizeSetting = 192;
         MAX_VIDEOS = 200; MAX_IMAGES = 200; PARALLEL_LOAD_LIMIT = 20;
         VS_BUFFER_PX = 2000; VS_MAX_POOL_SIZE = 250;
     } else if (profile === 'custom') {
-        const maxMedia = _int('maxMedia', 120);
+        const maxMedia = s.get('maxMedia');
         MAX_VIDEOS = maxMedia; MAX_IMAGES = maxMedia;
-        PARALLEL_LOAD_LIMIT = _int('parallelLoad', 10);
-        VS_BUFFER_PX = _int('vsBuffer', 1200);
-        VS_MAX_POOL_SIZE = _int('vsPoolSize', 150);
-        SCROLL_DEBOUNCE_MS = _int('scrollDebounce', 150);
-        PROGRESSIVE_RENDER_THRESHOLD = _int('progressiveThreshold', 1000);
+        PARALLEL_LOAD_LIMIT = s.get('parallelLoad');
+        VS_BUFFER_PX = s.get('vsBuffer');
+        VS_MAX_POOL_SIZE = s.get('vsPoolSize');
+        SCROLL_DEBOUNCE_MS = s.get('scrollDebounce');
+        PROGRESSIVE_RENDER_THRESHOLD = s.get('progressiveThreshold');
     }
-    // Individual overrides (always apply even for presets if explicitly set)
-    IMAGE_THUMBNAIL_MAX_EDGE = _int('imageThumbMaxEdge', IMAGE_THUMBNAIL_MAX_EDGE);
+    IMAGE_THUMBNAIL_MAX_EDGE = s.get('imageThumbMaxEdge');
+    FOLDER_CACHE_TTL = s.get('folderCacheTTL');
+    INDEXEDDB_CACHE_TTL = s.get('idbCacheTTL');
+    MAX_RETRY_ATTEMPTS = s.get('retryAttempts');
+    RETRY_INITIAL_DELAY_MS = s.get('retryInitialDelay');
+    RETRY_MAX_DELAY_MS = s.get('retryMaxDelay');
 
-    // Cache TTLs
-    FOLDER_CACHE_TTL = _int('folderCacheTTL', FOLDER_CACHE_TTL);
-    INDEXEDDB_CACHE_TTL = _int('idbCacheTTL', INDEXEDDB_CACHE_TTL);
+    gridGapSetting = s.get('gridGap');
+    minCardWidthSetting = s.get('minCardWidth');
+    cardAspectRatioSetting = s.get('cardAspectRatio');
+    animationSpeedSetting = s.get('animationSpeed');
+    reduceMotionSetting = s.get('reduceMotion');
+    lightboxMaxZoomSetting = s.get('lightboxMaxZoom');
+    lightboxViewportSetting = s.get('lightboxViewport');
+    blowUpDelaySetting = s.get('blowUpDelay');
+    defaultSlideshowSpeed = s.get('defaultSlideshowSpeed');
+    recentFilesLimitSetting = s.get('recentFilesLimit');
+    maxUndoHistorySetting = s.get('maxUndoHistory');
+    tagSuggestionsLimitSetting = s.get('tagSuggestionsLimit');
+    searchHistoryLimitSetting = s.get('searchHistoryLimit');
+    sidebarMinWidthSetting = s.get('sidebarMinWidth');
+    sidebarMaxWidthSetting = s.get('sidebarMaxWidth');
+    folderPreviewCountSetting = s.get('folderPreviewCount');
+    folderPreviewSizeSetting = s.get('folderPreviewSize');
 
-    // Retry
-    MAX_RETRY_ATTEMPTS = _int('retryAttempts', MAX_RETRY_ATTEMPTS);
-    RETRY_INITIAL_DELAY_MS = _int('retryInitialDelay', RETRY_INITIAL_DELAY_MS);
-    RETRY_MAX_DELAY_MS = _int('retryMaxDelay', RETRY_MAX_DELAY_MS);
-
-    // Layout
-    gridGapSetting = _int('gridGap', 12);
-    minCardWidthSetting = _int('minCardWidth', 220);
-    cardAspectRatioSetting = _str('cardAspectRatio', '16:9');
-
-    // Animation
-    animationSpeedSetting = _str('animationSpeed', 'normal');
-    reduceMotionSetting = _bool('reduceMotion', false);
-
-    // Lightbox
-    lightboxMaxZoomSetting = _int('lightboxMaxZoom', 500);
-    lightboxViewportSetting = _int('lightboxViewport', 90);
-    blowUpDelaySetting = _int('blowUpDelay', 250);
-
-    // Slideshow
-    defaultSlideshowSpeed = _int('defaultSlideshowSpeed', 3000);
-
-    // Database / history
-    recentFilesLimitSetting = _int('recentFilesLimit', 50);
-    maxUndoHistorySetting = _int('maxUndoHistory', 30);
-    tagSuggestionsLimitSetting = _int('tagSuggestionsLimit', 10);
-    searchHistoryLimitSetting = _int('searchHistoryLimit', 10);
-
-    // Sidebar
-    sidebarMinWidthSetting = _int('sidebarMinWidth', 180);
-    sidebarMaxWidthSetting = _int('sidebarMaxWidth', 500);
-
-    // Folder preview
-    folderPreviewCountSetting = _int('folderPreviewCount', 4);
-    folderPreviewSizeSetting = _int('folderPreviewSize', 192);
+    // Register sync callbacks — keep `let` variables in lockstep with appSettings
+    s.on('gridGap',           v => { gridGapSetting = v; });
+    s.on('minCardWidth',      v => { minCardWidthSetting = v; });
+    s.on('cardAspectRatio',   v => { cardAspectRatioSetting = v; });
+    s.on('animationSpeed',    v => { animationSpeedSetting = v; });
+    s.on('reduceMotion',      v => { reduceMotionSetting = v; });
+    s.on('lightboxMaxZoom',   v => { lightboxMaxZoomSetting = v; });
+    s.on('lightboxViewport',  v => { lightboxViewportSetting = v; });
+    s.on('blowUpDelay',       v => { blowUpDelaySetting = v; });
+    s.on('defaultSlideshowSpeed', v => { defaultSlideshowSpeed = v; });
+    s.on('recentFilesLimit',  v => { recentFilesLimitSetting = v; });
+    s.on('maxUndoHistory',    v => { maxUndoHistorySetting = v; });
+    s.on('tagSuggestionsLimit', v => { tagSuggestionsLimitSetting = v; });
+    s.on('searchHistoryLimit', v => { searchHistoryLimitSetting = v; });
+    s.on('sidebarMinWidth',   v => { sidebarMinWidthSetting = v; });
+    s.on('sidebarMaxWidth',   v => { sidebarMaxWidthSetting = v; });
+    s.on('folderPreviewCount', v => { folderPreviewCountSetting = v; });
+    s.on('folderPreviewSize', v => { folderPreviewSizeSetting = v; });
 })();
 
 // Derived after hydration
@@ -1376,26 +1375,13 @@ function vsGetCardForIndex(index) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 // ── Batched localStorage writes ──
-// Collects pending writes and flushes them together in the next idle frame
-const _pendingStorageWrites = new Map();
-let _storageFlushScheduled = false;
+// Delegates to appSettings (settings.js) which owns the batching logic.
+// This wrapper preserves the global API for all existing call sites.
 function deferLocalStorageWrite(key, value) {
-    _pendingStorageWrites.set(key, value);
-    if (!_storageFlushScheduled) {
-        _storageFlushScheduled = true;
-        if ('requestIdleCallback' in window) {
-            requestIdleCallback(_flushStorageWrites, { timeout: 200 });
-        } else {
-            setTimeout(_flushStorageWrites, 50);
-        }
-    }
+    window.appSettings._deferWrite(key, value);
 }
 function _flushStorageWrites() {
-    _storageFlushScheduled = false;
-    for (const [key, value] of _pendingStorageWrites) {
-        localStorage.setItem(key, value);
-    }
-    _pendingStorageWrites.clear();
+    window.appSettings.flush();
 }
 
 // ── DOM Elements (navigation, search, status bar) ──
@@ -7148,274 +7134,15 @@ function applyVisualClustering(items) {
 }
 
 // ── Filter/Sort Worker Bridge ─────────────────────────────────────────
-// Offloads the filter/sort pipeline to a Web Worker with a trigram index.
-// Main thread stays responsive during interactive search/filter changes.
-
-let _filterWorker = null;
-let _filterWorkerToken = 0;
-let _filterWorkerLastToken = 0;
-let _filterWorkerItemsRef = null;       // reference check: have we sent this exact array?
-let _filterWorkerLastLen = -1;
-let _filterWorkerRatingsVersion = 0;
-let _filterWorkerRatingsSyncedVersion = -1;
-let _filterWorkerPinsVersion = 0;
-let _filterWorkerPinsSyncedVersion = -1;
-let _filterWorkerTagFilterVersion = 0;
-let _filterWorkerTagFilterSyncedVersion = -1;
-let _filterWorkerEmbSyncedSize = -1;
-let _filterWorkerEmbVersion = 0;        // bump when embeddings cleared/repopulated
-let _filterWorkerEmbSyncedVersion = -1;
-
-function bumpFilterWorkerRatingsVersion() {
-    _filterWorkerRatingsVersion++;
-}
-
-function bumpFilterWorkerPinsVersion() {
-    _filterWorkerPinsVersion++;
-}
-
-function bumpFilterWorkerTagFilterVersion() {
-    _filterWorkerTagFilterVersion++;
-}
-
-function getFilterWorker() {
-    if (_filterWorker) return _filterWorker;
-    try {
-        _filterWorker = new Worker('filter-sort-worker.js');
-        _filterWorker.onmessage = (e) => {
-            const msg = e.data;
-            if (!msg) return;
-            if (msg.type === 'error') {
-                console.error('[filter-worker] pipeline error:', msg.error);
-                // Hide any active clustering indicator so it doesn't get stuck
-                _hideClusteringStatus();
-                return;
-            }
-            if (msg.type !== 'result') return;
-            // Stale — a newer apply has been queued, drop this result
-            if (msg.token !== _filterWorkerLastToken) return;
-            applyFilterWorkerResult(msg);
-        };
-        _filterWorker.onerror = (err) => {
-            console.error('filter-sort-worker error:', err);
-            _hideClusteringStatus();
-        };
-    } catch (e) {
-        console.warn('Failed to spawn filter worker; falling back to main-thread filtering:', e);
-        showToastOnce('filter-worker-fail',
-            'Filtering is running on the main thread',
-            'warning',
-            { details: 'A worker failed to spawn; sorting large folders may feel slower.' }
-        );
-        _filterWorker = null;
-    }
-    return _filterWorker;
-}
-
-function markFilterWorkerItemsStale() {
-    _filterWorkerItemsRef = null;
-}
-
-function syncFilterWorkerItems() {
-    const w = getFilterWorker();
-    if (!w) return false;
-    if (_filterWorkerItemsRef !== currentItems || _filterWorkerLastLen !== currentItems.length) {
-        // Send shallow-cloned items (only needed fields) to avoid sending non-cloneable refs
-        const slim = new Array(currentItems.length);
-        for (let i = 0; i < currentItems.length; i++) {
-            const it = currentItems[i];
-            slim[i] = {
-                type: it.type,
-                path: it.path,
-                folderPath: it.folderPath,
-                name: it.name,
-                mtime: it.mtime,
-                size: it.size,
-                width: it.width,
-                height: it.height,
-                missing: it.missing,
-                aspectRatio: it.aspectRatio
-            };
-        }
-        w.postMessage({ type: 'setItems', items: slim });
-        _filterWorkerItemsRef = currentItems;
-        _filterWorkerLastLen = currentItems.length;
-    }
-    return true;
-}
-
-function syncFilterWorkerRatings() {
-    const w = getFilterWorker();
-    if (!w) return;
-    if (_filterWorkerRatingsSyncedVersion === _filterWorkerRatingsVersion) return;
-    w.postMessage({ type: 'setRatings', ratings: fileRatings });
-    _filterWorkerRatingsSyncedVersion = _filterWorkerRatingsVersion;
-}
-
-function syncFilterWorkerPins() {
-    const w = getFilterWorker();
-    if (!w) return;
-    if (_filterWorkerPinsSyncedVersion === _filterWorkerPinsVersion) return;
-    const paths = (typeof pinnedFiles === 'object' && pinnedFiles) ? Object.keys(pinnedFiles) : [];
-    w.postMessage({ type: 'setPins', paths });
-    _filterWorkerPinsSyncedVersion = _filterWorkerPinsVersion;
-}
-
-function syncFilterWorkerTagFilter() {
-    const w = getFilterWorker();
-    if (!w) return;
-    if (_filterWorkerTagFilterSyncedVersion === _filterWorkerTagFilterVersion) return;
-    const paths = (tagFilterActive && tagFilteredPaths) ? Array.from(tagFilteredPaths) : null;
-    w.postMessage({ type: 'setTagFilter', paths });
-    _filterWorkerTagFilterSyncedVersion = _filterWorkerTagFilterVersion;
-}
-
-function bumpEmbeddingsVersion() {
-    _filterWorkerEmbVersion++;
-}
-
-// Track which embedding paths have been synced to the worker (for delta updates)
-const _filterWorkerSyncedEmbPaths = new Set();
-
-function syncFilterWorkerEmbeddingsIfNeeded() {
-    const w = getFilterWorker();
-    if (!w) return;
-
-    const versionChanged = _filterWorkerEmbSyncedVersion !== _filterWorkerEmbVersion;
-    const sizeChanged = Math.abs(currentEmbeddings.size - _filterWorkerEmbSyncedSize) >= 16;
-    if (!versionChanged && !sizeChanged) return;
-
-    // If version bumped (clear/repopulate), do a full sync and reset tracking
-    if (versionChanged) {
-        const obj = {};
-        for (const [k, v] of currentEmbeddings) obj[k] = v;
-        w.postMessage({ type: 'setEmbeddings', embeddings: obj });
-        _filterWorkerSyncedEmbPaths.clear();
-        for (const k of currentEmbeddings.keys()) _filterWorkerSyncedEmbPaths.add(k);
-        _filterWorkerEmbSyncedVersion = _filterWorkerEmbVersion;
-        _filterWorkerEmbSyncedSize = currentEmbeddings.size;
-        return;
-    }
-
-    // Delta sync: only send new/changed embeddings
-    const entries = [];
-    const removed = [];
-
-    // Find new paths not yet synced
-    for (const [k, v] of currentEmbeddings) {
-        if (!_filterWorkerSyncedEmbPaths.has(k)) {
-            entries.push({ path: k, vec: v });
-        }
-    }
-    // Find removed paths
-    for (const k of _filterWorkerSyncedEmbPaths) {
-        if (!currentEmbeddings.has(k)) {
-            removed.push(k);
-        }
-    }
-
-    if (entries.length === 0 && removed.length === 0) {
-        _filterWorkerEmbSyncedSize = currentEmbeddings.size;
-        return;
-    }
-
-    // Send as batch delta
-    w.postMessage({ type: 'setEmbeddingsBatch', entries, removed });
-
-    // Update tracking
-    for (const e of entries) _filterWorkerSyncedEmbPaths.add(e.path);
-    for (const r of removed) _filterWorkerSyncedEmbPaths.delete(r);
-    _filterWorkerEmbSyncedSize = currentEmbeddings.size;
-}
-
-function syncFilterWorkerTextEmbedding() {
-    const w = getFilterWorker();
-    if (!w) return;
-    w.postMessage({ type: 'setTextEmbedding', vec: currentTextEmbedding || null });
-}
-
-function syncFilterWorkerFindSimilarEmbedding() {
-    const w = getFilterWorker();
-    if (!w) return;
-    w.postMessage({ type: 'setFindSimilarEmbedding', vec: findSimilarState.embedding || null });
-}
-
-function applyFilterWorkerResult(msg) {
-    console.log(`[renderer] received worker result: ${msg.indices?.length} items, groupHeaders=${msg.groupHeadersPresent}`);
-    // Safety: if currentItems was swapped out after the worker request was sent,
-    // the indices no longer map to the current array. Drop this stale result —
-    // a fresh applyFilters will run for the new items.
-    if (_filterWorkerItemsRef !== currentItems) {
-        console.warn('[renderer] dropping stale worker result (currentItems changed)');
-        _hideClusteringStatus(); // never leave indicator stuck
-        return;
-    }
-    try { _applyFilterWorkerResultInner(msg); } finally { _hideClusteringStatus(); }
-}
-function _applyFilterWorkerResultInner(msg) {
-
-    vsState.groupHeadersPresent = !!msg.groupHeadersPresent;
-
-    // Reconstruct the items array from currentItems using the indices the worker sent.
-    // Negative indices reference synthetic objects (group headers).
-    const indices = msg.indices;
-    const synthetics = msg.synthetics || [];
-    const scores = msg.scores || {};
-    const aiScores = scores.ai || null;
-    const simScores = scores.sim || null;
-    const ratings = scores.ratings || null;
-
-    const items = new Array(indices.length);
-    let nulled = 0;
-    for (let k = 0; k < indices.length; k++) {
-        const idx = indices[k];
-        if (idx < 0) {
-            items[k] = synthetics[-idx - 1];
-        } else {
-            const orig = currentItems[idx];
-            if (!orig) { items[k] = null; nulled++; continue; }
-            // Stamp injected scores directly onto the original item so any legacy code
-            // reading item._aiScore / item._similarityScore / item._cachedRating still works.
-            if (aiScores)  orig._aiScore = aiScores[idx];
-            if (simScores) orig._similarityScore = simScores[idx];
-            if (ratings)   orig._cachedRating = ratings[idx];
-            items[k] = orig;
-        }
-    }
-    // Compact out any null holes (shouldn't happen unless currentItems mutated)
-    let finalItems = nulled > 0 ? items.filter(x => x != null) : items;
-    // Main-thread post-filter for operator filters that the worker doesn't know about:
-    // - tag:/-tag: name-based path include/exclude
-    // - type:gif and type:folder synthetic types
-    finalItems = _applyOperatorPostFilter(finalItems);
-    let visibleCount = 0;
-    for (const item of finalItems) {
-        if (item && item.type !== 'group-header') visibleCount++;
-    }
-
-    if (vsState.enabled) {
-        vsUpdateItems(finalItems, { preserveScroll: true });
-    }
-    setFilteredVisibleCountCache(finalItems, visibleCount);
-    updateItemCount();
-
-    // Count visible (non-header) matches for the search result badge
-    updateSearchResultCount(visibleCount);
-    clearSearchDebounceIndicator();
-    hideLoadingIndicator();
-    // Refresh filename highlights for the new query across visible cards
-    if (typeof refreshVisibleFilenameHighlights === 'function') refreshVisibleFilenameHighlights();
-}
+// Extracted to filter-worker-bridge.js.  Host object + forwarding functions
+// preserve the global API so all existing call sites work unchanged.
 
 let _clusteringStatusTimer = null;
-
 function _hideClusteringStatus() {
     const el = document.getElementById('ai-clustering-status');
     if (!el || el.classList.contains('hidden')) return;
-    // Clear safety timeout from settings-ui
     const sel = document.getElementById('ai-clustering-select');
     if (sel && sel._safetyTimer) { clearTimeout(sel._safetyTimer); sel._safetyTimer = null; }
-    // Show brief "Done" feedback, then hide
     const dot = el.querySelector('.ai-status-dot');
     const text = document.getElementById('ai-clustering-status-text');
     if (dot) { dot.classList.remove('loading'); dot.classList.add('loaded'); }
@@ -7428,293 +7155,64 @@ function _hideClusteringStatus() {
     }, 1500);
 }
 
-// Applies search-operator filters that run on the main thread (size/date,
-// tag include/exclude by name, plus synthetic type:gif / type:folder). These
-// are handled here because the worker pipeline doesn't support them directly.
-function _applyOperatorPostFilter(items) {
-    const ops = _parsedSearchQuery.operators;
-    const needsSize = ops.sizeValue != null && ops.sizeOperator;
-    const needsDate = ops.dateFrom != null || ops.dateTo != null;
-    const needsTagFilter = (ops._includedPaths && ops.tagNames.length > 0)
-        || (ops._excludedPaths && ops.tagExcludeNames.length > 0);
-    const needsGifFilter = ops.typeFilter === 'gif';
-    const needsFolderFilter = ops.typeFilter === 'folder';
-    if (!needsSize && !needsDate && !needsTagFilter && !needsGifFilter && !needsFolderFilter) return items;
+window.__filterBridgeHost = {
+    // State getters
+    get currentItems()          { return currentItems; },
+    get fileRatings()           { return fileRatings; },
+    get pinnedFiles()           { return pinnedFiles; },
+    get tagFilteredPaths()      { return tagFilteredPaths; },
+    get currentEmbeddings()     { return currentEmbeddings; },
+    get currentTextEmbedding()  { return currentTextEmbedding; },
+    get findSimilarState()      { return findSimilarState; },
+    get parsedSearchQuery()     { return _parsedSearchQuery; },
+    get currentFilter()         { return currentFilter; },
+    get includeMovingImages()   { return includeMovingImages; },
+    get starFilterActive()      { return starFilterActive; },
+    get starSortOrder()         { return starSortOrder; },
+    get tagFilterActive()       { return tagFilterActive; },
+    get aiVisualSearchEnabled() { return aiVisualSearchEnabled; },
+    get aiSearchActive()        { return aiSearchActive; },
+    get aiSimilarityThreshold() { return aiSimilarityThreshold; },
+    get aiClusteringMode()      { return aiClusteringMode; },
+    get advancedSearchFilters() { return advancedSearchFilters; },
+    get sortType()              { return sortType; },
+    get sortOrder()             { return sortOrder; },
+    get groupByDate()           { return groupByDate; },
+    get dateGroupGranularity()  { return dateGroupGranularity; },
+    get collapsedDateGroups()   { return collapsedDateGroups; },
+    get vsStateEnabled()        { return vsState.enabled; },
 
-    return items.filter(item => {
-        if (!item || item.type === 'group-header') return true;
-        if (needsFolderFilter && item.type !== 'folder') return false;
-        if (needsGifFilter) {
-            if (item.type === 'folder') return false;
-            const lower = (item.name || '').toLowerCase();
-            if (!lower.endsWith('.gif') && !lower.endsWith('.webp')) return false;
-        }
-        if (item.type !== 'folder' && needsSize) {
-            const s = item.size;
-            if (s == null) return false;
-            const v = ops.sizeValue;
-            switch (ops.sizeOperator) {
-                case '>':  if (!(s > v)) return false; break;
-                case '>=': if (!(s >= v)) return false; break;
-                case '<':  if (!(s < v)) return false; break;
-                case '<=': if (!(s <= v)) return false; break;
-                case '=':  if (s !== v) return false; break;
-            }
-        }
-        if (item.type !== 'folder' && needsDate) {
-            const m = item.mtime || 0;
-            if (ops.dateFrom != null && m < ops.dateFrom) return false;
-            if (ops.dateTo != null && m > ops.dateTo) return false;
-        }
-        if (needsTagFilter && item.type !== 'folder' && item.path) {
-            const np = normalizePath(item.path);
-            if (ops.tagNames.length > 0 && ops._includedPaths && !ops._includedPaths.has(np)) return false;
-            if (ops.tagExcludeNames.length > 0 && ops._excludedPaths && ops._excludedPaths.has(np)) return false;
-        }
-        return true;
-    });
-}
+    // Callbacks
+    vsUpdateItems:              (items, opts) => vsUpdateItems(items, opts),
+    setFilteredVisibleCountCache: (items, count) => setFilteredVisibleCountCache(items, count),
+    updateItemCount:            () => updateItemCount(),
+    updateSearchResultCount:    (count) => updateSearchResultCount(count),
+    clearSearchDebounceIndicator: () => clearSearchDebounceIndicator(),
+    hideLoadingIndicator:       () => hideLoadingIndicator(),
+    refreshVisibleFilenameHighlights: () => { if (typeof refreshVisibleFilenameHighlights === 'function') refreshVisibleFilenameHighlights(); },
+    hideClusteringStatus:       () => _hideClusteringStatus(),
+    showToastOnce:              (key, msg, type, opts) => showToastOnce(key, msg, type, opts),
+    normalizePath:              (p) => normalizePath(p),
+    isFilePinned:               (p) => isFilePinned(p),
+    getFileRating:              (p) => getFileRating(p),
+    cosineSimilarity:           (a, b) => cosineSimilarity(a, b),
+    applyVisualClustering:      (items) => applyVisualClustering(items),
+    parseAspectRatio:           (str) => (typeof parseAspectRatio === 'function' ? parseAspectRatio(str) : 16/9),
+    operatorsHaveFilters:       (ops) => _operatorsHaveFilters(ops),
+    mergeOperatorFilters:       (base, ops) => _mergeOperatorFilters(base, ops),
+    setGroupHeadersPresent:     (val) => { vsState.groupHeadersPresent = val; },
+};
 
-/**
- * Offloaded filter/sort pipeline. Sends state to worker; result comes back via onmessage.
- * Falls back to synchronous applyFilters() if worker unavailable.
- */
-function applyFiltersViaWorker() {
-    if (currentItems.length === 0) return false;
-    const w = getFilterWorker();
-    if (!w) return false;
+const filterBridge = new FilterWorkerBridge(window.__filterBridgeHost);
+window.filterBridge = filterBridge;
 
-    syncFilterWorkerItems();
-    // Sync small state bags every call (cheap). Embeddings are big, sync only when needed.
-    syncFilterWorkerRatings();
-    syncFilterWorkerPins();
-    syncFilterWorkerTagFilter();
-    syncFilterWorkerTextEmbedding();
-    syncFilterWorkerFindSimilarEmbedding();
-    // Embeddings only matter when AI search / clustering / find-similar is active
-    if (aiSearchActive || aiClusteringMode === 'similarity' || findSimilarState.active) {
-        // Force a full sync when clustering is first enabled — individual embeddings
-        // are never sent to the worker (setOneEmbedding exists but is unused), so
-        // the worker may have zero embeddings even though the main thread has them.
-        if (aiClusteringMode === 'similarity' && _filterWorkerEmbSyncedSize !== currentEmbeddings.size) {
-            _filterWorkerEmbSyncedVersion = -1; // force version mismatch → full sync
-        }
-        syncFilterWorkerEmbeddingsIfNeeded();
-    }
-
-    const token = ++_filterWorkerToken;
-    _filterWorkerLastToken = token;
-
-    // Operator-aware state: freeText goes to worker as query; operator values
-    // overlay on advancedSearchFilters and currentFilter.
-    const ops = _parsedSearchQuery.operators;
-    const effectiveAdvanced = _operatorsHaveFilters(ops)
-        ? _mergeOperatorFilters(advancedSearchFilters, ops)
-        : advancedSearchFilters;
-    let effectiveFilter = currentFilter;
-    if (ops.typeFilter === 'video' || ops.typeFilter === 'image') effectiveFilter = ops.typeFilter;
-    // Note: 'gif' and 'folder' operator types aren't first-class in the worker
-    // filter pipeline yet, so they fall through (may be filtered on main thread).
-
-    const state = {
-        query: _parsedSearchQuery.freeText,
-        currentFilter: effectiveFilter,
-        includeMovingImages,
-        starFilterActive,
-        starSortOrder,
-        tagFilterActive,
-        findSimilarActive: findSimilarState.active,
-        findSimilarAllFolders: findSimilarState.allFolders,
-        findSimilarThreshold: findSimilarState.threshold,
-        aiVisualSearchEnabled,
-        aiSearchActive,
-        aiSimilarityThreshold,
-        aiClusteringMode,
-        advancedSearchFilters: effectiveAdvanced,
-        sortType,
-        sortOrder,
-        groupByDate,
-        dateGroupGranularity,
-        collapsedGroups: Array.from(collapsedDateGroups || [])
-    };
-    w.postMessage({ type: 'applyFilters', token, state });
-    return true;
-}
-
-function applyFilters() {
-    const perfStart = perfTest.start();
-    if (currentItems.length === 0) return;
-
-    // Prefer worker-based pipeline when available
-    if (applyFiltersViaWorker()) {
-        perfTest.end('applyFilters', perfStart, { cardCount: currentItems.length, detail: 'worker' });
-        return;
-    }
-
-    // Main-thread fallback: use the parsed free text for filename match.
-    const query = (_parsedSearchQuery.freeText || '').toLowerCase().trim();
-
-    // Filter items array (works with virtual scrolling - no DOM iteration needed)
-    const filteredItems = currentItems.filter(item => {
-        const fileName = item.name.toLowerCase();
-
-        // Search query — use AI cosine similarity when active, else filename match
-        let matchesSearch;
-        if (query === '') {
-            matchesSearch = true;
-        } else if (aiVisualSearchEnabled && aiSearchActive && currentTextEmbedding && item.type !== 'folder') {
-            const embedding = currentEmbeddings.get(item.path);
-            if (embedding) {
-                const sim = cosineSimilarity(currentTextEmbedding, embedding);
-                item._aiScore = sim;
-                matchesSearch = sim >= aiSimilarityThreshold;
-            } else {
-                item._aiScore = 0;
-                matchesSearch = fileName.includes(query); // Fallback for unembedded items
-            }
-        } else {
-            matchesSearch = fileName.includes(query);
-        }
-        if (!matchesSearch) return false;
-
-        // Exclude pinned items from AI search results (they're irrelevant to the query)
-        if (aiVisualSearchEnabled && aiSearchActive && currentTextEmbedding && query !== '' && item.type !== 'folder' && isFilePinned(item.path)) {
-            return false;
-        }
-
-        // Type filter
-        let matchesFilter = true;
-        if (currentFilter === 'video') {
-            const isGifOrWebp = fileName.endsWith('.gif') || fileName.endsWith('.webp');
-            matchesFilter = item.type === 'video' ||
-                (includeMovingImages && item.type === 'image' && isGifOrWebp);
-        } else if (currentFilter === 'image') {
-            const isImage = item.type === 'image';
-            const isGifOrWebp = fileName.endsWith('.gif') || fileName.endsWith('.webp');
-            matchesFilter = isImage && !(includeMovingImages && isGifOrWebp);
-        }
-        if (!matchesFilter) return false;
-
-        // Cache rating once for reuse in star filter, advanced search, and sort
-        const needsRating = starFilterActive || advancedSearchFilters.starRating !== null;
-        if (needsRating && item.type !== 'folder' && item.path) {
-            item._cachedRating = getFileRating(item.path);
-        }
-
-        // Star filter (independent toggle)
-        if (starFilterActive) {
-            if (item.type === 'folder') return false;
-            if ((item._cachedRating || 0) <= 0) return false;
-        }
-
-        // Tag filter
-        if (tagFilterActive && tagFilteredPaths) {
-            if (item.type === 'folder') return false;
-            if (!tagFilteredPaths.has(normalizePath(item.path))) return false;
-        }
-
-        // Find Similar filter (current folder mode only — cross-folder replaces currentItems)
-        if (findSimilarState.active && findSimilarState.embedding && !findSimilarState.allFolders) {
-            if (item.type === 'folder') return false;
-            const emb = currentEmbeddings.get(item.path);
-            if (!emb) return false;
-            const sim = cosineSimilarity(findSimilarState.embedding, emb);
-            item._similarityScore = sim;
-            if (sim < findSimilarState.threshold) return false;
-        }
-
-        // Advanced search filters
-        if (advancedSearchFilters.width || advancedSearchFilters.height) {
-            if (advancedSearchFilters.width && item.width !== advancedSearchFilters.width) return false;
-            if (advancedSearchFilters.height && item.height !== advancedSearchFilters.height) return false;
-        }
-
-        if (advancedSearchFilters.aspectRatio) {
-            if (item.width && item.height) {
-                const ratio = item.width / item.height;
-                const targetRatio = parseAspectRatio(advancedSearchFilters.aspectRatio);
-                if (Math.abs(ratio - targetRatio) > 0.1) return false;
-            } else {
-                return false;
-            }
-        }
-
-        if (advancedSearchFilters.starRating !== null && item.path) {
-            if ((item._cachedRating || 0) < advancedSearchFilters.starRating) return false;
-        }
-
-        return true;
-    });
-
-    // Sort by star rating if stars filter is active and sort direction is set
-    let sortedFiltered = filteredItems;
-    if (starFilterActive && starSortOrder !== 'none') {
-        sortedFiltered = [...filteredItems].sort((a, b) => {
-            if (a.type === 'folder' && b.type === 'folder') return 0;
-            if (a.type === 'folder') return 1;
-            if (b.type === 'folder') return -1;
-            const aRating = a._cachedRating || 0;
-            const bRating = b._cachedRating || 0;
-            return starSortOrder === 'asc' ? aRating - bRating : bRating - aRating;
-        });
-    }
-
-    // When AI search is active, sort results by relevance score (highest similarity first)
-    if (aiVisualSearchEnabled && aiSearchActive && currentTextEmbedding && query !== '') {
-        sortedFiltered = [...sortedFiltered].sort((a, b) => {
-            if (a.type === 'folder') return 1;
-            if (b.type === 'folder') return -1;
-            return (b._aiScore || 0) - (a._aiScore || 0);
-        });
-    }
-
-    // Sort by similarity when find-similar is active (current folder mode)
-    if (findSimilarState.active && findSimilarState.embedding && !findSimilarState.allFolders) {
-        sortedFiltered = [...sortedFiltered].sort((a, b) => {
-            if (a.type === 'folder') return 1;
-            if (b.type === 'folder') return -1;
-            return (b._similarityScore || 0) - (a._similarityScore || 0);
-        });
-    }
-
-    // Apply visual similarity clustering (group by nearest neighbors)
-    if (aiVisualSearchEnabled && aiClusteringMode === 'similarity' && currentEmbeddings.size > 0 && query === '') {
-        sortedFiltered = applyVisualClustering(sortedFiltered);
-    }
-
-    // Partition pinned items to top (single pass instead of 4x filter)
-    {
-        const pinnedFolders = [], unpinnedFolders = [], pinnedFiles = [], unpinnedFiles = [];
-        for (const item of sortedFiltered) {
-            const isFolder = item.type === 'folder';
-            const pinned = isFilePinned(item.path);
-            if (isFolder) (pinned ? pinnedFolders : unpinnedFolders).push(item);
-            else (pinned ? pinnedFiles : unpinnedFiles).push(item);
-        }
-        sortedFiltered = pinnedFolders.concat(unpinnedFolders, pinnedFiles, unpinnedFiles);
-    }
-
-    // Operator post-filter (tag:/-tag:/type:gif/type:folder)
-    sortedFiltered = _applyOperatorPostFilter(sortedFiltered);
-
-    // Update virtual scrolling with filtered items
-    if (vsState.enabled) {
-        vsUpdateItems(sortedFiltered, { preserveScroll: true });
-    }
-    const visibleCount = sortedFiltered.length;
-    setFilteredVisibleCountCache(sortedFiltered, visibleCount);
-    updateItemCount();
-
-    // Count visible (non-header) matches for the search result badge
-    updateSearchResultCount(visibleCount);
-    clearSearchDebounceIndicator();
-    // Update clustering progress indicator (inside settings panel)
-    _hideClusteringStatus();
-    hideLoadingIndicator();
-    if (typeof refreshVisibleFilenameHighlights === 'function') refreshVisibleFilenameHighlights();
-
-    perfTest.end('applyFilters', perfStart, { cardCount: currentItems.length });
-}
+// Forwarding functions — preserve global API for all existing call sites
+function applyFilters() { filterBridge.applyFilters(); }
+function bumpFilterWorkerRatingsVersion() { filterBridge.bumpRatingsVersion(); }
+function bumpFilterWorkerPinsVersion() { filterBridge.bumpPinsVersion(); }
+function bumpFilterWorkerTagFilterVersion() { filterBridge.bumpTagFilterVersion(); }
+function bumpEmbeddingsVersion() { filterBridge.bumpEmbeddingsVersion(); }
+function markFilterWorkerItemsStale() { filterBridge.markItemsStale(); }
 
 function performSearch(searchQuery) {
     // Debounce search to avoid excessive filtering while typing
@@ -7868,294 +7366,36 @@ function refreshVisibleFilenameHighlights() {
 
 let currentHoveredCard = null;
 
-// ── Multi-select state ───────────────────────────────────────────────
-const selectedCardPaths = new Set();
-let lastSelectedCardIndex = -1; // index into vsState.sortedItems for shift-click range
+// ── Multi-select & Marquee ───────────────────────────────────────────
+// Extracted to selection-manager.js.  Instance + backward-compat aliases
+// preserve the global API so all existing call sites work unchanged.
 
-// ── Marquee (drag-to-select) state ──────────────────────────────────
-const marqueeState = {
-    active: false,
-    pending: false,       // mousedown recorded, waiting for dead-zone
-    startClientX: 0,      // client coords at mousedown
-    startClientY: 0,
-    startContentX: 0,     // content coords (scroll-adjusted)
-    startContentY: 0,
-    element: null,        // the rectangle div
-    ctrlHeld: false,
-    preSelection: null,   // Set snapshot for Ctrl+drag
-    rafId: null,
-    justFinished: false,
-    autoScrollId: null,
-};
-
-function clearCardSelection() {
-    if (selectedCardPaths.size === 0) return;
-    selectedCardPaths.clear();
-    lastSelectedCardIndex = -1;
-    document.querySelectorAll('.video-card.selected').forEach(c => c.classList.remove('selected'));
-    updateSelectionStatusBar();
-}
-
-function selectAllCards() {
-    selectedCardPaths.clear();
-    let lastIndex = -1;
-    for (let i = 0; i < vsState.sortedItems.length; i++) {
-        const item = vsState.sortedItems[i];
-        if (!item || item.type === 'folder' || item.type === 'group-header') continue;
-        if (!item.path) continue;
-        selectedCardPaths.add(item.path);
-        lastIndex = i;
+const selection = new SelectionManager({
+    gridContainer,
+    getVsState: () => vsState,
+    onSelectionChange: () => {
+        if (window.CG) window.CG.invalidateSelection();
     }
-    lastSelectedCardIndex = lastIndex;
-    vsState.activeCards.forEach((card) => {
-        if (card.dataset.path && selectedCardPaths.has(card.dataset.path)) {
-            card.classList.add('selected');
-        }
-    });
-    updateSelectionStatusBar();
-}
+});
+window.selection = selection;
 
-function toggleCardSelection(card, itemIndex) {
-    const p = card.dataset.path;
-    if (!p) return;
-    if (selectedCardPaths.has(p)) {
-        selectedCardPaths.delete(p);
-        card.classList.remove('selected');
-    } else {
-        selectedCardPaths.add(p);
-        card.classList.add('selected');
-    }
-    lastSelectedCardIndex = itemIndex;
-    updateSelectionStatusBar();
-}
+// Backward-compat alias — the live Set reference, never reassigned
+const selectedCardPaths = selection.paths;
+const marqueeState = selection._marquee;
 
-function rangeSelectCards(fromIndex, toIndex) {
-    const lo = Math.min(fromIndex, toIndex);
-    const hi = Math.max(fromIndex, toIndex);
-    for (let i = lo; i <= hi; i++) {
-        const item = vsState.sortedItems[i];
-        if (!item || item.type === 'folder') continue;
-        selectedCardPaths.add(item.path);
-    }
-    // Update visible card DOM
-    vsState.activeCards.forEach((card) => {
-        if (card.dataset.path && selectedCardPaths.has(card.dataset.path)) {
-            card.classList.add('selected');
-        }
-    });
-    lastSelectedCardIndex = toIndex;
-    updateSelectionStatusBar();
-}
-
-function updateSelectionStatusBar() {
-    const count = selectedCardPaths.size;
-    const el = document.getElementById('status-selection-count');
-    if (el) {
-        el.textContent = count > 0 ? `${count} selected` : '';
-        el.classList.toggle('hidden', count === 0);
-    }
-}
-
-function getItemIndexForCard(card) {
-    const path = card.dataset.path;
-    if (!path) return -1;
-    return vsState.sortedItems.findIndex(item => item.path === path);
-}
-
-// ── Marquee (drag-to-select) ────────────────────────────────────────
-
-function marqueeClientToContent(clientX, clientY) {
-    const rect = gridContainer.getBoundingClientRect();
-    return {
-        x: clientX - rect.left,
-        y: clientY - rect.top + gridContainer.scrollTop
-    };
-}
-
-function marqueeGetRect(cx, cy) {
-    const cur = marqueeClientToContent(cx, cy);
-    const x1 = Math.min(marqueeState.startContentX, cur.x);
-    const y1 = Math.min(marqueeState.startContentY, cur.y);
-    const x2 = Math.max(marqueeState.startContentX, cur.x);
-    const y2 = Math.max(marqueeState.startContentY, cur.y);
-    return { left: x1, top: y1, right: x2, bottom: y2 };
-}
-
-function marqueeUpdateRect(clientX, clientY) {
-    if (!marqueeState.element) return;
-    const containerRect = gridContainer.getBoundingClientRect();
-    const cur = marqueeClientToContent(clientX, clientY);
-    // Position the div in content space (absolute inside grid-container)
-    const x1 = Math.min(marqueeState.startContentX, cur.x);
-    const y1 = Math.min(marqueeState.startContentY, cur.y);
-    const x2 = Math.max(marqueeState.startContentX, cur.x);
-    const y2 = Math.max(marqueeState.startContentY, cur.y);
-    marqueeState.element.style.left = x1 + 'px';
-    marqueeState.element.style.top = y1 + 'px';
-    marqueeState.element.style.width = (x2 - x1) + 'px';
-    marqueeState.element.style.height = (y2 - y1) + 'px';
-}
-
-function marqueeComputeSelection(clientX, clientY) {
-    if (!vsState.positions || !vsState.sortedItems.length) return;
-    const sel = marqueeGetRect(clientX, clientY);
-    const itemCount = vsState.sortedItems.length;
-
-    // Rebuild selection
-    selectedCardPaths.clear();
-    if (marqueeState.ctrlHeld && marqueeState.preSelection) {
-        for (const p of marqueeState.preSelection) selectedCardPaths.add(p);
-    }
-
-    // Binary search for first item whose bottom edge (top + height) >= sel.top
-    let lo = 0, hi = itemCount - 1;
-    while (lo < hi) {
-        const mid = (lo + hi) >>> 1;
-        const midIdx = mid * 4;
-        if (vsState.positions[midIdx + 1] + vsState.positions[midIdx + 3] < sel.top) {
-            lo = mid + 1;
-        } else {
-            hi = mid;
-        }
-    }
-
-    // Iterate only items in the Y range of the marquee rectangle
-    for (let i = lo; i < itemCount; i++) {
-        const idx = i * 4;
-        const cT = vsState.positions[idx + 1];
-        if (cT > sel.bottom) break; // Past the marquee — done
-
-        const item = vsState.sortedItems[i];
-        if (!item.path || item.type === 'folder' || item.type === 'group-header') continue;
-        const cL = vsState.positions[idx];
-        const cR = cL + vsState.positions[idx + 2];
-        const cB = cT + vsState.positions[idx + 3];
-        if (!(sel.right < cL || sel.left > cR || sel.bottom < cT || sel.top > cB)) {
-            selectedCardPaths.add(item.path);
-        }
-    }
-    // Update visible card DOM
-    vsState.activeCards.forEach((card) => {
-        if (card.dataset.path) {
-            card.classList.toggle('selected', selectedCardPaths.has(card.dataset.path));
-        }
-    });
-    updateSelectionStatusBar();
-}
-
-function marqueeStartAutoScroll(clientY) {
-    if (marqueeState.autoScrollId) return;
-    const EDGE = 50, MAX_SPEED = 15;
-    function step() {
-        if (!marqueeState.active) { marqueeState.autoScrollId = null; return; }
-        const rect = gridContainer.getBoundingClientRect();
-        let speed = 0;
-        if (clientY < rect.top + EDGE) {
-            speed = -MAX_SPEED * (1 - Math.max(0, clientY - rect.top) / EDGE);
-        } else if (clientY > rect.bottom - EDGE) {
-            speed = MAX_SPEED * (1 - Math.max(0, rect.bottom - clientY) / EDGE);
-        }
-        if (Math.abs(speed) > 0.5) {
-            gridContainer.scrollTop += speed;
-        }
-        marqueeState.autoScrollId = requestAnimationFrame(step);
-    }
-    marqueeState.autoScrollId = requestAnimationFrame(step);
-}
-
-function marqueeStopAutoScroll() {
-    if (marqueeState.autoScrollId) {
-        cancelAnimationFrame(marqueeState.autoScrollId);
-        marqueeState.autoScrollId = null;
-    }
-}
-
-function marqueeOnMouseMove(e) {
-    if (!marqueeState.pending && !marqueeState.active) return;
-    const dx = e.clientX - marqueeState.startClientX;
-    const dy = e.clientY - marqueeState.startClientY;
-
-    if (marqueeState.pending) {
-        if (Math.abs(dx) < 5 && Math.abs(dy) < 5) return; // dead zone
-        // Activate marquee
-        marqueeState.pending = false;
-        marqueeState.active = true;
-        gridContainer.classList.add('marquee-dragging');
-        marqueeState.element = document.createElement('div');
-        marqueeState.element.className = 'marquee-selection-rect';
-        gridContainer.appendChild(marqueeState.element);
-    }
-
-    marqueeUpdateRect(e.clientX, e.clientY);
-
-    // Auto-scroll near edges
-    marqueeStopAutoScroll();
-    const containerRect = gridContainer.getBoundingClientRect();
-    if (e.clientY < containerRect.top + 50 || e.clientY > containerRect.bottom - 50) {
-        marqueeStartAutoScroll(e.clientY);
-    }
-
-    // Throttle intersection via rAF
-    if (!marqueeState.rafId) {
-        const cx = e.clientX, cy = e.clientY;
-        marqueeState.rafId = requestAnimationFrame(() => {
-            marqueeState.rafId = null;
-            if (marqueeState.active) marqueeComputeSelection(cx, cy);
-        });
-    }
-}
-
-function marqueeOnMouseUp(e) {
-    document.removeEventListener('mousemove', marqueeOnMouseMove);
-    document.removeEventListener('mouseup', marqueeOnMouseUp);
-    marqueeStopAutoScroll();
-
-    if (marqueeState.active) {
-        marqueeComputeSelection(e.clientX, e.clientY);
-        if (marqueeState.element && marqueeState.element.parentNode) {
-            marqueeState.element.remove();
-        }
-        marqueeState.element = null;
-        gridContainer.classList.remove('marquee-dragging');
-        marqueeState.active = false;
-        if (marqueeState.rafId) { cancelAnimationFrame(marqueeState.rafId); marqueeState.rafId = null; }
-        // Suppress the click event that follows mouseup
-        marqueeState.justFinished = true;
-        requestAnimationFrame(() => { marqueeState.justFinished = false; });
-    }
-    marqueeState.pending = false;
-    marqueeState.preSelection = null;
-}
-
-function cancelMarquee() {
-    if (!marqueeState.active && !marqueeState.pending) return;
-    document.removeEventListener('mousemove', marqueeOnMouseMove);
-    document.removeEventListener('mouseup', marqueeOnMouseUp);
-    marqueeStopAutoScroll();
-    if (marqueeState.rafId) { cancelAnimationFrame(marqueeState.rafId); marqueeState.rafId = null; }
-    if (marqueeState.element && marqueeState.element.parentNode) marqueeState.element.remove();
-    marqueeState.element = null;
-    gridContainer.classList.remove('marquee-dragging');
-    // Restore pre-selection if Ctrl was held
-    if (marqueeState.ctrlHeld && marqueeState.preSelection) {
-        selectedCardPaths.clear();
-        for (const p of marqueeState.preSelection) selectedCardPaths.add(p);
-        vsState.activeCards.forEach((card) => {
-            if (card.dataset.path) {
-                card.classList.toggle('selected', selectedCardPaths.has(card.dataset.path));
-            }
-        });
-        updateSelectionStatusBar();
-    }
-    marqueeState.active = false;
-    marqueeState.pending = false;
-    marqueeState.preSelection = null;
-}
+// Forwarding functions — preserve global API
+function clearCardSelection() { selection.clear(); }
+function selectAllCards() { selection.selectAll(); }
+function toggleCardSelection(card, idx) { selection.toggle(card, idx); }
+function rangeSelectCards(from, to) { selection.range(from, to); }
+function updateSelectionStatusBar() { selection._updateStatusBar(); }
+function getItemIndexForCard(card) { return selection._getItemIndex(card); }
+function cancelMarquee() { selection.cancelMarquee(); }
 
 gridContainer.addEventListener('click', (e) => {
     // Suppress click after marquee drag
-    if (marqueeState.justFinished) {
-        marqueeState.justFinished = false;
+    if (selection.marqueeJustFinished) {
+        selection.marqueeJustFinished = false;
         return;
     }
 
@@ -8177,7 +7417,6 @@ gridContainer.addEventListener('click', (e) => {
             const starIndex = stars.indexOf(star) + 1;
             if (starIndex > 0) {
                 const currentRating = getFileRating(card.dataset.path);
-                // Toggle off if clicking the same star
                 setFileRating(card.dataset.path, currentRating === starIndex ? 0 : starIndex);
             }
         }
@@ -8191,23 +7430,21 @@ gridContainer.addEventListener('click', (e) => {
         const isShift = e.shiftKey;
 
         if (isCtrl) {
-            // Toggle this card's selection
             const idx = getItemIndexForCard(mediaCard);
-            toggleCardSelection(mediaCard, idx);
+            selection.toggle(mediaCard, idx);
             return;
         }
 
-        if (isShift && lastSelectedCardIndex >= 0) {
-            // Range select from last selected to this card
+        if (isShift && selection.lastIndex >= 0) {
             const idx = getItemIndexForCard(mediaCard);
             if (idx >= 0) {
-                rangeSelectCards(lastSelectedCardIndex, idx);
+                selection.range(selection.lastIndex, idx);
             }
             return;
         }
 
         // Normal click — clear selection, open lightbox
-        clearCardSelection();
+        selection.clear();
         openLightbox(mediaCard.dataset.src, mediaCard.dataset.path, mediaCard.dataset.name);
         return;
     }
@@ -8232,21 +7469,7 @@ gridContainer.addEventListener('mousedown', (e) => {
     }
     // Marquee: left-click on empty grid space
     if (e.button === 0 && !e.target.closest('.video-card, .folder-card, .date-group-header, .star')) {
-        marqueeState.ctrlHeld = e.ctrlKey || e.metaKey;
-        if (marqueeState.ctrlHeld) {
-            marqueeState.preSelection = new Set(selectedCardPaths);
-        } else {
-            clearCardSelection();
-        }
-        marqueeState.startClientX = e.clientX;
-        marqueeState.startClientY = e.clientY;
-        const content = marqueeClientToContent(e.clientX, e.clientY);
-        marqueeState.startContentX = content.x;
-        marqueeState.startContentY = content.y;
-        marqueeState.pending = true;
-        document.addEventListener('mousemove', marqueeOnMouseMove);
-        document.addEventListener('mouseup', marqueeOnMouseUp);
-        e.preventDefault();
+        selection.startMarquee(e);
     }
 });
 
@@ -14212,25 +13435,13 @@ window.__cgHost = {
         const item = vsState.sortedItems[idx];
         if (!item) return;
         if (modifier === 'ctrl') {
-            if (selectedCardPaths.has(item.path)) selectedCardPaths.delete(item.path);
-            else selectedCardPaths.add(item.path);
-            lastSelectedCardIndex = idx;
-        } else if (modifier === 'shift' && lastSelectedCardIndex >= 0) {
-            const lo = Math.min(lastSelectedCardIndex, idx);
-            const hi = Math.max(lastSelectedCardIndex, idx);
-            for (let i = lo; i <= hi; i++) {
-                const it = vsState.sortedItems[i];
-                if (it && it.path && it.type !== 'folder' && it.type !== 'group-header') {
-                    selectedCardPaths.add(it.path);
-                }
-            }
+            selection.toggle(item.path, idx);
+        } else if (modifier === 'shift' && selection.lastIndex >= 0) {
+            selection.range(selection.lastIndex, idx);
         } else {
-            selectedCardPaths.clear();
-            selectedCardPaths.add(item.path);
-            lastSelectedCardIndex = idx;
+            selection.set(item.path, idx);
         }
-        if (typeof updateSelectionStatusBar === 'function') updateSelectionStatusBar();
-        if (window.CG) window.CG.invalidateSelection();
+        // onSelectionChange callback handles CG.invalidateSelection()
     },
     showContextMenu: (event, virtualCard) => {
         if (typeof showContextMenu === 'function') showContextMenu(event, virtualCard);

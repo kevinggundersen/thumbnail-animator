@@ -144,11 +144,9 @@ function showContextMenu(event, card) {
     // If right-clicking a selected card, keep the entire selection.
     if (!isFolder && card.dataset.path) {
         if (!selectedCardPaths.has(card.dataset.path)) {
-            clearCardSelection();
-            selectedCardPaths.add(card.dataset.path);
+            selection.clear();
+            selection.addPath(card.dataset.path, selection._getItemIndex(card));
             card.classList.add('selected');
-            lastSelectedCardIndex = getItemIndexForCard(card);
-            updateSelectionStatusBar();
         }
     }
 

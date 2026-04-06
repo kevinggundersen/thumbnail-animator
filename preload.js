@@ -112,6 +112,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     removePlugin: (pluginId) => ipcRenderer.invoke('remove-plugin', pluginId),
     reloadPlugins: () => ipcRenderer.invoke('reload-plugins'),
     openPluginsFolder: () => ipcRenderer.invoke('open-plugins-folder'),
+    getPluginOrder: () => ipcRenderer.invoke('get-plugin-order'),
+    setPluginOrder: (order) => ipcRenderer.invoke('set-plugin-order', order),
     // Settings export/import
     exportSettingsDialog: (jsonString) => ipcRenderer.invoke('export-settings-dialog', jsonString),
     importSettingsDialog: () => ipcRenderer.invoke('import-settings-dialog'),

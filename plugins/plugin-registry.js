@@ -45,13 +45,24 @@ class PluginRegistry {
         this._settingsPanelsByPlugin = new Map();
         // Set of plugin IDs that came from builtin directories
         this._builtinPluginIds = new Set();
+        // Global plugin ordering — controls execution priority
+        this._pluginOrder = [];
         // Set of disabled plugin IDs — loaded from statesFilePath on startup
         this._disabledPlugins = new Set();
         if (statesFilePath && fs.existsSync(statesFilePath)) {
             try {
-                const states = JSON.parse(fs.readFileSync(statesFilePath, 'utf8'));
-                for (const [id, enabled] of Object.entries(states)) {
-                    if (enabled === false) this._disabledPlugins.add(id);
+                const raw = JSON.parse(fs.readFileSync(statesFilePath, 'utf8'));
+                if (raw && typeof raw.states === 'object' && !Array.isArray(raw.states)) {
+                    // New format: { states: { id: bool }, order: [...] }
+                    for (const [id, enabled] of Object.entries(raw.states)) {
+                        if (enabled === false) this._disabledPlugins.add(id);
+                    }
+                    this._pluginOrder = Array.isArray(raw.order) ? raw.order : [];
+                } else if (raw && typeof raw === 'object') {
+                    // Old format: { id: bool } — migrate
+                    for (const [id, enabled] of Object.entries(raw)) {
+                        if (enabled === false) this._disabledPlugins.add(id);
+                    }
                 }
             } catch (err) {
                 console.warn('[PluginRegistry] Could not load plugin states:', err.message);
@@ -87,12 +98,12 @@ class PluginRegistry {
     _saveStates() {
         if (!this._statesFilePath) return;
         try {
-            const states = {};
+            const data = { states: {}, order: [...this._pluginOrder] };
             for (const [id] of this._manifests) {
-                states[id] = !this._disabledPlugins.has(id);
+                data.states[id] = !this._disabledPlugins.has(id);
             }
             fs.mkdirSync(path.dirname(this._statesFilePath), { recursive: true });
-            fs.writeFileSync(this._statesFilePath, JSON.stringify(states, null, 2));
+            fs.writeFileSync(this._statesFilePath, JSON.stringify(data, null, 2));
         } catch (err) {
             console.warn('[PluginRegistry] Could not save plugin states:', err.message);
         }
@@ -143,6 +154,9 @@ class PluginRegistry {
         }
 
         this._manifests.set(id, { ...manifest, _dir: pluginDir, _mainPath: resolvedMain });
+
+        // Add to global order if not already present
+        if (!this._pluginOrder.includes(id)) this._pluginOrder.push(id);
 
         // Index metadata extractors
         if (Array.isArray(capabilities.metadataExtractors)) {
@@ -195,7 +209,24 @@ class PluginRegistry {
             this._settingsPanelsByPlugin.set(id, capabilities.settingsPanel);
         }
 
+        // Sort handler arrays by global plugin order
+        this._sortHandlersByOrder();
+
         console.log(`[PluginRegistry] Registered plugin: ${id}`);
+    }
+
+    /** Sort extractor and generator arrays by global plugin order. */
+    _sortHandlersByOrder() {
+        const orderIndex = (pluginId) => {
+            const idx = this._pluginOrder.indexOf(pluginId);
+            return idx >= 0 ? idx : Infinity;
+        };
+        for (const [, arr] of this._extractorsByExt) {
+            arr.sort((a, b) => orderIndex(a.pluginId) - orderIndex(b.pluginId));
+        }
+        for (const [, arr] of this._thumbGeneratorsByExt) {
+            arr.sort((a, b) => orderIndex(a.pluginId) - orderIndex(b.pluginId));
+        }
     }
 
     /** Lazily load a plugin's module and call activate(). */
@@ -291,12 +322,18 @@ class PluginRegistry {
      * Get all manifests (renderer uses these to know about plugin contributions).
      */
     getManifests() {
-        return Array.from(this._manifests.values()).map(({ _dir, _mainPath, id, ...rest }) => ({
-            ...rest,
-            id,
-            enabled: !this._disabledPlugins.has(id),
-            builtin: this._builtinPluginIds.has(id),
-        }));
+        const orderIndex = (pluginId) => {
+            const idx = this._pluginOrder.indexOf(pluginId);
+            return idx >= 0 ? idx : Infinity;
+        };
+        return Array.from(this._manifests.values())
+            .map(({ _dir, _mainPath, id, ...rest }) => ({
+                ...rest,
+                id,
+                enabled: !this._disabledPlugins.has(id),
+                builtin: this._builtinPluginIds.has(id),
+            }))
+            .sort((a, b) => orderIndex(a.id) - orderIndex(b.id));
     }
 
     // --- Info Sections ---
@@ -520,6 +557,7 @@ class PluginRegistry {
         // Remove from all index maps
         this._manifests.delete(pluginId);
         this._disabledPlugins.delete(pluginId);
+        this._pluginOrder = this._pluginOrder.filter(id => id !== pluginId);
         this._contextMenuItemsByPlugin.delete(pluginId);
         this._infoSectionsByPlugin.delete(pluginId);
         this._batchOpsByPlugin.delete(pluginId);
@@ -567,6 +605,21 @@ class PluginRegistry {
         return this._builtinPluginIds.has(pluginId);
     }
 
+    // --- Plugin Ordering ---
+
+    /** Returns a copy of the global plugin order array. */
+    getPluginOrder() {
+        return [...this._pluginOrder];
+    }
+
+    /** Set the global plugin order. Re-sorts handler arrays and persists. */
+    setPluginOrder(newOrder) {
+        if (!Array.isArray(newOrder)) throw new Error('Plugin order must be an array');
+        this._pluginOrder = newOrder.filter(id => typeof id === 'string');
+        this._sortHandlersByOrder();
+        this._saveStates();
+    }
+
     // --- Teardown ---
 
     async teardown() {
@@ -598,6 +651,9 @@ class PluginRegistry {
             try { delete require.cache[require.resolve(manifest._mainPath)]; } catch { /* ignore */ }
         }
 
+        // Save order before clearing (preserve user prefs across reload)
+        const savedOrder = [...this._pluginOrder];
+
         // Clear all indexes (preserve _disabledPlugins for user prefs)
         this._manifests.clear();
         this._extractorsByExt.clear();
@@ -609,11 +665,16 @@ class PluginRegistry {
         this._batchOpsByPlugin.clear();
         this._settingsPanelsByPlugin.clear();
         this._builtinPluginIds.clear();
+        this._pluginOrder = savedOrder;
 
-        // Re-discover
+        // Re-discover (will append new plugins to _pluginOrder)
         for (const entry of pluginDirs) {
             this.discover(entry.dir, { builtin: !!entry.builtin });
         }
+
+        // Prune order entries for plugins that no longer exist
+        this._pluginOrder = this._pluginOrder.filter(id => this._manifests.has(id));
+        this._sortHandlersByOrder();
 
         return this._manifests.size;
     }

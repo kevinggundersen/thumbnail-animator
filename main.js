@@ -5448,6 +5448,18 @@ ipcMain.handle('open-plugins-folder', async () => {
     }
 });
 
+wrapIpc('get-plugin-order', () => pluginRegistry.getPluginOrder());
+
+ipcMain.handle('set-plugin-order', (event, newOrder) => {
+    try {
+        pluginRegistry.setPluginOrder(newOrder);
+        return { ok: true, value: null };
+    } catch (err) {
+        console.warn('[Plugin order] failed:', err.message);
+        return { ok: false, error: err.message };
+    }
+});
+
 // Cleanup watchers on app quit
 // Undo file operation
 ipcMain.handle('undo-file-operation', async () => {

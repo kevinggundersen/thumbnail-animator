@@ -569,7 +569,7 @@ async function initPluginsTab() {
     // Sync localStorage with authoritative state from main process
     manifests.forEach(m => _setLocalPluginState(m.id, states[m.id] !== false));
 
-    container.innerHTML = _pluginsHeadingHtml() + manifests.map(m => {
+    container.innerHTML = _pluginsHeadingHtml() + manifests.map((m, idx) => {
         const enabled = states[m.id] !== false;
         const caps = m.capabilities || {};
         const capLabels = [
@@ -580,6 +580,8 @@ async function initPluginsTab() {
             caps.thumbnailGenerators?.length ? `${caps.thumbnailGenerators.length} thumbnail generator${caps.thumbnailGenerators.length > 1 ? 's' : ''}` : null,
         ].filter(Boolean);
         const hasSettingsPanel = !!caps.settingsPanel;
+        const isFirst = idx === 0;
+        const isLast = idx === manifests.length - 1;
 
         return `
         <div class="settings-item plugin-settings-row" data-plugin-id="${m.id}">
@@ -592,6 +594,12 @@ async function initPluginsTab() {
                 </div>
             </div>
             <div class="plugin-settings-actions">
+                ${manifests.length > 1 ? `<button class="plugin-order-btn plugin-order-up" data-plugin-id="${m.id}" title="Higher priority" ${isFirst ? 'disabled' : ''}>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="18 15 12 9 6 15"/></svg>
+                </button>
+                <button class="plugin-order-btn plugin-order-down" data-plugin-id="${m.id}" title="Lower priority" ${isLast ? 'disabled' : ''}>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+                </button>` : ''}
                 ${hasSettingsPanel ? `<button class="plugin-configure-btn" data-plugin-id="${m.id}" title="Configure ${m.name || m.id}">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
@@ -688,6 +696,30 @@ async function initPluginsTab() {
                 openSettingsToTab(tabId);
             } else {
                 showToast(`Settings panel for "${pluginId}" not available yet — try reopening Settings`, 'info');
+            }
+        });
+    });
+
+    // Wire order buttons (up/down priority)
+    container.querySelectorAll('.plugin-order-up, .plugin-order-down').forEach(btn => {
+        btn.addEventListener('click', async function() {
+            const pluginId = this.dataset.pluginId;
+            const isUp = this.classList.contains('plugin-order-up');
+            // Read current order from DOM
+            const rows = Array.from(container.querySelectorAll('.plugin-settings-row[data-plugin-id]'));
+            const order = rows.map(r => r.dataset.pluginId);
+            const idx = order.indexOf(pluginId);
+            if (idx < 0) return;
+            const swapIdx = isUp ? idx - 1 : idx + 1;
+            if (swapIdx < 0 || swapIdx >= order.length) return;
+            // Swap
+            [order[idx], order[swapIdx]] = [order[swapIdx], order[idx]];
+            try {
+                await window.electronAPI.setPluginOrder(order);
+                _invalidatePluginCaches();
+                await initPluginsTab();
+            } catch (err) {
+                showToast(`Failed to reorder plugins: ${err.message}`, 'error');
             }
         });
     });

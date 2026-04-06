@@ -5,6 +5,7 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "start": "electron .",
     "build": "electron-builder",
     "build:win": "electron-builder --win",
@@ -38,6 +39,7 @@
   },
   "devDependencies": {
     "@electron/rebuild": "^4.0.3",
+    "@vitest/coverage-v8": "^4.1.2",
     "better-sqlite3-test": "npm:better-sqlite3@^12.8.0",
     "electron": "^39.2.3",
     "electron-builder": "^25.1.8",

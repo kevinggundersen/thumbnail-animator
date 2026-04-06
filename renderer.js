@@ -7272,10 +7272,22 @@ function performSearch(searchQuery) {
         // advancedSearchFilters at filter-apply time; freeText goes to the
         // worker as the filename-match query.
         _parsedSearchQuery = parseSearchQuery(searchQuery || '');
+        renderSearchOperatorChips();
+
+        // Determine whether async work (tag DB queries, CLIP embedding) is needed
+        const ops = _parsedSearchQuery.operators;
+        const hasTagOperators = ops.tagNames.length > 0 || ops.tagExcludeNames.length > 0;
+        const aiQuery = _parsedSearchQuery.freeText.trim();
+        const hasAiSearch = aiVisualSearchEnabled && aiSearchActive && aiQuery;
+
+        // IMMEDIATE PASS: apply filename-only filter right away so the grid
+        // responds instantly. The enhanced pass below will refine with tag/AI results.
+        if (hasTagOperators || hasAiSearch) {
+            applyFilters();
+        }
 
         // Resolve tag-name operators → file paths (async DB query)
-        const ops = _parsedSearchQuery.operators;
-        if (ops.tagNames.length || ops.tagExcludeNames.length) {
+        if (hasTagOperators) {
             try {
                 if (!Array.isArray(allTagsCache) || allTagsCache.length === 0) {
                     await refreshTagsCache();
@@ -7305,8 +7317,7 @@ function performSearch(searchQuery) {
         }
 
         // AI text embedding uses the free text only, not operator tokens
-        const aiQuery = _parsedSearchQuery.freeText.trim();
-        if (aiVisualSearchEnabled && aiSearchActive && aiQuery) {
+        if (hasAiSearch) {
             try {
                 const embedding = await window.electronAPI.clipEmbedText(aiQuery);
                 currentTextEmbedding = embedding && embedding.ok && embedding.value ? l2Normalize(new Float32Array(embedding.value)) : null;
@@ -7316,6 +7327,8 @@ function performSearch(searchQuery) {
         } else {
             currentTextEmbedding = null;
         }
+
+        // ENHANCED PASS: re-apply with full tag/AI results
         renderSearchOperatorChips();
         applyFilters();
     }, delay);
@@ -7502,6 +7515,23 @@ gridContainer.addEventListener('click', (e) => {
                 hideLoadingIndicator();
             });
         }, 0);
+    }
+});
+
+// Hover prefetch for folder cards in the grid
+let _gridPrefetchTimer = null;
+gridContainer.addEventListener('mouseover', (e) => {
+    const fc = e.target.closest('.folder-card');
+    if (fc && fc.dataset.folderPath) {
+        clearTimeout(_gridPrefetchTimer);
+        _gridPrefetchTimer = setTimeout(() => {
+            prefetchFolderIfNeeded(fc.dataset.folderPath);
+        }, 200);
+    }
+});
+gridContainer.addEventListener('mouseout', (e) => {
+    if (e.target.closest('.folder-card')) {
+        clearTimeout(_gridPrefetchTimer);
     }
 });
 
@@ -8582,7 +8612,7 @@ function restoreGridScrollPosition(targetScrollTop) {
 }
 
 // Function to navigate to a folder
-async function navigateToFolder(folderPath, addToHistory = true, forceReload = false) {
+async function navigateToFolder(folderPath, addToHistory = true, forceReload = false, trustCache = false) {
     // Exit collection mode when navigating to a folder
     if (currentCollectionId) {
         // Hand off any in-flight foreground AI scan to the background scanner
@@ -8650,9 +8680,10 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
                 }
             }
             
-            // If cache exists but is stale (older than threshold), force reload to show new files
-            // This ensures that when navigating back to a folder, new files are visible
-            if (hasCachedContent && cacheAge > CACHE_STALE_THRESHOLD) {
+            // If cache exists but is stale (older than threshold), force reload to show new files.
+            // Skip this check when trustCache is true (back/forward navigation) — the folder
+            // watcher will pick up any changes shortly after navigation completes.
+            if (hasCachedContent && cacheAge > CACHE_STALE_THRESHOLD && !trustCache) {
                 forceReload = true;
                 invalidateFolderCache(folderPath);
                 hasCachedContent = false;
@@ -8703,6 +8734,13 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
                 preservedScrollTop = pendingRestore.scrollTop;
             }
         }
+
+        // Update UI chrome BEFORE the async load so navigation feels instant
+        updateCurrentTab(folderPath, folderName);
+        updateBreadcrumb(folderPath);
+        // Expand sidebar tree in parallel with folder load (fire-and-forget)
+        sidebarExpandToPath(folderPath);
+
         await loadVideos(folderPath, !forceReload, preservedScrollTop); // Use cache unless forcing reload
         clearPendingSessionScrollRestore();
 
@@ -8713,12 +8751,6 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
         if (addToHistory) {
             navigationHistory.add(folderPath);
         }
-
-        updateCurrentTab(folderPath, folderName);
-        updateBreadcrumb(folderPath);
-
-        // Sync sidebar tree with current folder — expand tree then highlight
-        sidebarExpandToPath(folderPath);
 
         // Reset keyboard focus
         focusedCardIndex = -1;
@@ -8739,11 +8771,14 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
         filterImagesBtn.classList.toggle('active', currentFilter === 'image');
         updateItemCount();
         perfTest.end('navigateToFolder', perfStart);
-        // Path doesn't exist or is invalid - show error and revert breadcrumb
+        // Path doesn't exist or is invalid - show error and revert UI chrome
         console.error('Invalid path:', folderPath, error);
-        // Revert breadcrumb to current path
+        // Revert breadcrumb, tab label, and sidebar to previous path
         if (previousFolderPath) {
+            const previousName = previousFolderPath.split(/[/\\]/).filter(Boolean).pop() || previousFolderPath;
             updateBreadcrumb(previousFolderPath);
+            updateCurrentTab(previousFolderPath, previousName);
+            sidebarExpandToPath(previousFolderPath);
         }
         showToast(`Path not found: ${folderPath}`, 'error');
     }
@@ -8757,7 +8792,7 @@ async function goBack() {
     if (path) {
         _navBusy = true;
         try {
-            await navigateToFolder(path, false);
+            await navigateToFolder(path, false, false, true); // trustCache for instant back
         } catch (err) {
             console.error('Error navigating back:', err);
             hideLoadingIndicator();
@@ -8773,7 +8808,7 @@ async function goForward() {
     if (path) {
         _navBusy = true;
         try {
-            await navigateToFolder(path, false);
+            await navigateToFolder(path, false, false, true); // trustCache for instant forward
         } catch (err) {
             console.error('Error navigating forward:', err);
             hideLoadingIndicator();
@@ -10339,6 +10374,49 @@ function scheduleStreamingLayoutRefresh() {
             vsRecalculate();
         }
     }, 120);
+}
+
+// ── Hover prefetch ──────────────────────────────────────────────────────────
+// Speculatively scan a folder on hover so it's cached when clicked.
+// Only one prefetch in-flight at a time; skips already-cached or current folder.
+let _activePrefetchPath = null;
+
+function prefetchFolderIfNeeded(folderPath) {
+    if (!folderPath) return;
+    const normalizedPath = normalizePath(folderPath);
+
+    // Skip if this is the current folder or already prefetching this path
+    if (normalizedPath === normalizePath(currentFolderPath)) return;
+    if (_activePrefetchPath === normalizedPath) return;
+
+    // Skip if already in global folder cache
+    const globalCache = folderCache.get(normalizedPath) || folderCache.get(folderPath);
+    if (globalCache && (Date.now() - globalCache.timestamp) < GLOBAL_CACHE_TTL) return;
+
+    // Skip if already in active tab cache
+    if (activeTabId != null) {
+        const tabCache = tabContentCache.get(activeTabId);
+        if (tabCache) {
+            const cacheNorm = normalizePath(tabCache.path);
+            if ((cacheNorm === normalizedPath || tabCache.path === folderPath) &&
+                (Date.now() - tabCache.timestamp) < FOLDER_CACHE_TTL) return;
+        }
+    }
+
+    // Lightweight scan — no dimensions, no stats, non-recursive
+    _activePrefetchPath = normalizedPath;
+    window.electronAPI.scanFolder(folderPath, {
+        skipStats: true,
+        scanImageDimensions: false,
+        scanVideoDimensions: false,
+        recursive: false
+    }).then(result => {
+        if (result && result.ok && result.value) {
+            updateInMemoryFolderCaches(folderPath, result.value);
+        }
+    }).catch(() => {}).finally(() => {
+        if (_activePrefetchPath === normalizedPath) _activePrefetchPath = null;
+    });
 }
 
 async function loadVideos(folderPath, useCache = true, preservedScrollTop = null) {

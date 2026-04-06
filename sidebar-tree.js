@@ -73,8 +73,28 @@ function createTreeNode(item, depth, isDrive = false) {
         if (e.target.closest('.tree-toggle') && (item.hasChildren !== false || isDrive)) {
             toggleTreeNode(node, depth, isDrive);
         } else {
+            // Instantly highlight the clicked row before async navigation begins
+            if (sidebarTree) {
+                const prevActive = sidebarTree.querySelector('.tree-node-row.active');
+                if (prevActive) prevActive.classList.remove('active');
+            }
+            row.classList.add('active');
             navigateToFolder(item.path);
         }
+    });
+
+    // Hover prefetch — start a lightweight folder scan after 200ms hover
+    let _sidebarPrefetchTimer = null;
+    row.addEventListener('mouseenter', () => {
+        _sidebarPrefetchTimer = setTimeout(() => {
+            if (typeof prefetchFolderIfNeeded === 'function') {
+                prefetchFolderIfNeeded(item.path);
+            }
+        }, 200);
+    });
+    row.addEventListener('mouseleave', () => {
+        clearTimeout(_sidebarPrefetchTimer);
+        _sidebarPrefetchTimer = null;
     });
 
     // Middle-click opens folder in new tab

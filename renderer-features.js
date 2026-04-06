@@ -3849,114 +3849,54 @@ function clearDuplicateHighlights() {
     });
 }
 
-// Restore last folder and layout mode on app startup
-window.addEventListener('DOMContentLoaded', async () => {
+// ═══════════════════════════════════════════════════════════════════════════
+// INITIALIZATION
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── Restore UI preferences from localStorage ──
+function initPreferences() {
     initCompareSlider();
 
-    // Check ffmpeg availability for video thumbnail generation
-    try {
-        const ffStatus = await window.electronAPI.hasFfmpeg();
-        hasFfmpegAvailable = ffStatus && ffStatus.ok && ffStatus.value && ffStatus.value.ffmpeg;
-    } catch { /* ffmpeg not available */ }
-
-    // Restore remember folder preference
-    const savedRememberFolder = localStorage.getItem('rememberLastFolder');
-    if (savedRememberFolder !== null) {
-        rememberLastFolder = savedRememberFolder === 'true';
-        rememberFolderToggle.checked = rememberLastFolder;
-        rememberFolderLabel.textContent = rememberLastFolder ? 'On' : 'Off';
-    }
-    
-    // Restore include moving images preference
-    const savedIncludeMovingImages = localStorage.getItem('includeMovingImages');
-    if (savedIncludeMovingImages !== null) {
-        includeMovingImages = savedIncludeMovingImages === 'true';
-        includeMovingImagesToggle.checked = includeMovingImages;
-        includeMovingImagesLabel.textContent = includeMovingImages ? 'On' : 'Off';
-    }
-    
-    // Restore pause on lightbox preference
-    const savedPauseOnLightbox = localStorage.getItem('pauseOnLightbox');
-    if (savedPauseOnLightbox !== null) {
-        pauseOnLightbox = savedPauseOnLightbox === 'true';
-        pauseOnLightboxToggle.checked = pauseOnLightbox;
-        pauseOnLightboxLabel.textContent = pauseOnLightbox ? 'On' : 'Off';
+    // Helper: restore a boolean toggle + label from localStorage
+    function restoreToggle(key, globalSetter, toggle, label, extra) {
+        const saved = localStorage.getItem(key);
+        if (saved === null) return;
+        const val = saved === 'true';
+        globalSetter(val);
+        if (toggle) toggle.checked = val;
+        if (label) label.textContent = val ? 'On' : 'Off';
+        if (extra) extra(val);
     }
 
-    // Restore auto-repeat videos preference
-    const savedAutoRepeat = localStorage.getItem('autoRepeatVideos');
-    if (savedAutoRepeat !== null) {
-        autoRepeatVideos = savedAutoRepeat === 'true';
-        autoRepeatToggle.checked = autoRepeatVideos;
-        autoRepeatLabel.textContent = autoRepeatVideos ? 'On' : 'Off';
-        if (autoRepeatVideos) {
-            videoLoop = true;
-        }
-    }
+    restoreToggle('rememberLastFolder', v => { rememberLastFolder = v; }, rememberFolderToggle, rememberFolderLabel);
+    restoreToggle('includeMovingImages', v => { includeMovingImages = v; }, includeMovingImagesToggle, includeMovingImagesLabel);
+    restoreToggle('pauseOnLightbox', v => { pauseOnLightbox = v; }, pauseOnLightboxToggle, pauseOnLightboxLabel);
+    restoreToggle('autoRepeatVideos', v => { autoRepeatVideos = v; }, autoRepeatToggle, autoRepeatLabel, v => { if (v) videoLoop = true; });
+    restoreToggle('pauseOnBlur', v => { pauseOnBlur = v; }, pauseOnBlurToggle, pauseOnBlurLabel);
+    restoreToggle('playbackControls', v => { playbackControlsEnabled = v; }, playbackControlsToggle, playbackControlsLabel);
+    restoreToggle('hoverScrub', v => { hoverScrubEnabled = v; }, hoverScrubToggle, hoverScrubLabel);
+    restoreToggle('zoomToFit', v => { zoomToFit = v; }, zoomToFitToggle, zoomToFitLabel, v => {
+        if (lightboxZoomToFitToggle) lightboxZoomToFitToggle.checked = v;
+    });
 
-    // Restore pause on blur preference
-    const savedPauseOnBlur = localStorage.getItem('pauseOnBlur');
-    if (savedPauseOnBlur !== null) {
-        pauseOnBlur = savedPauseOnBlur === 'true';
-        pauseOnBlurToggle.checked = pauseOnBlur;
-        pauseOnBlurLabel.textContent = pauseOnBlur ? 'On' : 'Off';
-    }
-
-    // Restore playback controls preference
-    const savedPlaybackControls = localStorage.getItem('playbackControls');
-    if (savedPlaybackControls !== null) {
-        playbackControlsEnabled = savedPlaybackControls === 'true';
-        playbackControlsToggle.checked = playbackControlsEnabled;
-        playbackControlsLabel.textContent = playbackControlsEnabled ? 'On' : 'Off';
-    }
-
-    // Restore hover scrub preference
-    const savedHoverScrub = localStorage.getItem('hoverScrub');
-    if (savedHoverScrub !== null) {
-        hoverScrubEnabled = savedHoverScrub === 'true';
-        if (hoverScrubToggle) hoverScrubToggle.checked = hoverScrubEnabled;
-        if (hoverScrubLabel) hoverScrubLabel.textContent = hoverScrubEnabled ? 'On' : 'Off';
-    }
-
-    // Restore zoom to fit preference
-    const savedZoomToFit = localStorage.getItem('zoomToFit');
-    if (savedZoomToFit !== null) {
-        zoomToFit = savedZoomToFit === 'true';
-        if (zoomToFitToggle) zoomToFitToggle.checked = zoomToFit;
-        if (zoomToFitLabel) zoomToFitLabel.textContent = zoomToFit ? 'On' : 'Off';
-        if (lightboxZoomToFitToggle) lightboxZoomToFitToggle.checked = zoomToFit;
-    }
-
-    // Restore layout mode preference
+    // Layout mode
     const savedLayoutMode = localStorage.getItem('layoutMode');
     if (savedLayoutMode === 'grid' || savedLayoutMode === 'masonry') {
         layoutMode = savedLayoutMode;
-        // Update toggle checkbox state
         layoutModeToggle.checked = layoutMode === 'grid';
         layoutModeLabel.textContent = layoutMode === 'grid' ? 'Rigid' : 'Dynamic';
     }
 
-    // Restore card metadata visibility preferences
-    if (typeof hydrateCardInfoSettings === 'function') {
-        hydrateCardInfoSettings();
-    }
-    
-    // Restore sorting preferences (will be overridden by tab's preferences in loadTabs)
+    // Card metadata visibility
+    if (typeof hydrateCardInfoSettings === 'function') hydrateCardInfoSettings();
+
+    // Sorting (will be overridden by tab preferences in loadTabs)
     const savedSortType = localStorage.getItem('sortType');
-    if (savedSortType === 'name' || savedSortType === 'date') {
-        sortType = savedSortType;
-    } else {
-        sortType = 'name'; // Default
-    }
-    
+    sortType = (savedSortType === 'name' || savedSortType === 'date') ? savedSortType : 'name';
     const savedSortOrder = localStorage.getItem('sortOrder');
-    if (savedSortOrder === 'ascending' || savedSortOrder === 'descending') {
-        sortOrder = savedSortOrder;
-    } else {
-        sortOrder = 'ascending'; // Default
-    }
-    
-    // Restore group-by-date preference
+    sortOrder = (savedSortOrder === 'ascending' || savedSortOrder === 'descending') ? savedSortOrder : 'ascending';
+
+    // Group-by-date
     const savedGroupByDate = localStorage.getItem('groupByDate');
     if (savedGroupByDate === 'true') {
         groupByDate = true;
@@ -3975,149 +3915,76 @@ window.addEventListener('DOMContentLoaded', async () => {
             if (gbdGran) gbdGran.value = savedGranularity;
         }
     }
+}
 
-    // Note: UI will be updated by switchToTab when tabs are loaded
-    
-    // Only restore last folder if remembering is enabled
-    if (rememberLastFolder) {
-        const lastFolderPath = localStorage.getItem('lastFolderPath');
-        if (lastFolderPath) {
-            showLoadingIndicator();
-            try {
-                await navigateToFolder(lastFolderPath);
-            } catch (error) {
-                // Silently fail if the folder no longer exists (don't show alert on startup)
-                console.log('Last folder no longer exists:', lastFolderPath);
-                localStorage.removeItem('lastFolderPath');
-            } finally {
-                hideLoadingIndicator();
-            }
-        }
-    }
-    
-    // Listen for window minimize/restore events to reduce resource usage
-    window.electronAPI.onWindowMinimized(() => {
-        pauseWhenMinimized();
-    });
-    
-    window.electronAPI.onWindowRestored(() => {
-        resumeWhenRestored();
-    });
-    
-    // Also use Page Visibility API as a backup (handles tab switching, etc.)
+// ── Window lifecycle event handlers ──
+function initWindowLifecycleHandlers() {
+    window.electronAPI.onWindowMinimized(() => pauseWhenMinimized());
+    window.electronAPI.onWindowRestored(() => resumeWhenRestored());
+
     document.addEventListener('visibilitychange', () => {
-        if (document.hidden) {
-            pauseWhenMinimized();
-        } else {
-            resumeWhenRestored();
-        }
+        if (document.hidden) pauseWhenMinimized();
+        else resumeWhenRestored();
     });
-    
-    // Pause thumbnails and freeze GIFs when window loses focus
+
     window.addEventListener('blur', () => {
         if (isWindowBlurred || isWindowMinimized) return;
         isWindowBlurred = true;
         if (!pauseOnBlur) return;
-        // Pause all grid videos
-        const allVideos = gridContainer.querySelectorAll('video');
-        allVideos.forEach(video => {
-            video.pause();
-        });
-        // Freeze animated GIFs by showing static overlay
-        const allOverlays = gridContainer.querySelectorAll('.gif-static-overlay');
-        allOverlays.forEach(overlay => overlay.classList.add('visible'));
+        gridContainer.querySelectorAll('video').forEach(v => v.pause());
+        gridContainer.querySelectorAll('.gif-static-overlay').forEach(o => o.classList.add('visible'));
     });
 
-    // Resume thumbnails and unfreeze GIFs when window regains focus
     window.addEventListener('focus', () => {
         if (!isWindowBlurred || isWindowMinimized) return;
         isWindowBlurred = false;
         if (!pauseOnBlur) return;
-        // Don't resume grid media if lightbox is open and that pause is active
         if (isLightboxOpen && pauseOnLightbox) return;
-        // Resume all grid videos
-        const allVideos = gridContainer.querySelectorAll('video');
-        allVideos.forEach(video => {
-            const playPromise = video.play();
-            if (playPromise !== undefined) {
-                playPromise.catch(() => {});
-            }
+        gridContainer.querySelectorAll('video').forEach(v => {
+            const p = v.play(); if (p !== undefined) p.catch(() => {});
         });
-        // Restore animated GIFs by hiding static overlay
-        const allOverlays = gridContainer.querySelectorAll('.gif-static-overlay');
-        allOverlays.forEach(overlay => overlay.classList.remove('visible'));
+        gridContainer.querySelectorAll('.gif-static-overlay').forEach(o => o.classList.remove('visible'));
     });
+}
 
-    // Initialize new features
-    initKeyboardShortcuts();
-    initTheme();
-    initThumbnailQuality();
-    initZoom();
-    // SQLite migration: check if we need to migrate from localStorage/IndexedDB
+// ── One-time SQLite migration from localStorage/IndexedDB ──
+async function initSQLiteMigration() {
     try {
         const migrationStatus = await window.electronAPI.dbCheckMigrationStatus();
-        if (migrationStatus.ok && !migrationStatus.value.migrationComplete) {
-            console.log('[SQLite] Running one-time migration from localStorage/IndexedDB...');
-            const migrationData = {};
-            // Gather ratings from localStorage
-            try {
-                const savedRatings = localStorage.getItem('fileRatings');
-                if (savedRatings) migrationData.fileRatings = JSON.parse(savedRatings);
-            } catch {}
-            // Gather pins from localStorage
-            try {
-                const savedPins = localStorage.getItem('pinnedFiles');
-                if (savedPins) migrationData.pinnedFiles = JSON.parse(savedPins);
-            } catch {}
-            // Gather favorites from localStorage
-            try {
-                const savedFavs = localStorage.getItem('favorites');
-                if (savedFavs) {
-                    const parsed = JSON.parse(savedFavs);
-                    if (Array.isArray(parsed)) {
-                        migrationData.favorites = { version: 2, groups: [{ id: 'default', name: 'Favorites', collapsed: false, items: parsed }] };
-                    } else if (parsed && parsed.version === 2) {
-                        migrationData.favorites = parsed;
-                    }
+        if (!migrationStatus.ok || migrationStatus.value.migrationComplete) return;
+
+        console.log('[SQLite] Running one-time migration from localStorage/IndexedDB...');
+        const migrationData = {};
+        try { const s = localStorage.getItem('fileRatings');  if (s) migrationData.fileRatings  = JSON.parse(s); } catch {}
+        try { const s = localStorage.getItem('pinnedFiles');   if (s) migrationData.pinnedFiles  = JSON.parse(s); } catch {}
+        try {
+            const s = localStorage.getItem('favorites');
+            if (s) {
+                const parsed = JSON.parse(s);
+                if (Array.isArray(parsed)) {
+                    migrationData.favorites = { version: 2, groups: [{ id: 'default', name: 'Favorites', collapsed: false, items: parsed }] };
+                } else if (parsed && parsed.version === 2) {
+                    migrationData.favorites = parsed;
                 }
-            } catch {}
-            // Gather recent files from localStorage
-            try {
-                const savedRecent = localStorage.getItem('recentFiles');
-                if (savedRecent) migrationData.recentFiles = JSON.parse(savedRecent);
-            } catch {}
-            // Gather collections from IndexedDB
-            try {
-                if (typeof exportCollectionsData === 'function') {
-                    migrationData.collections = await exportCollectionsData();
-                }
-            } catch {}
-            // Run migration
-            const migResult = await window.electronAPI.dbRunMigration(migrationData);
-            if (migResult.ok) {
-                console.log('[SQLite] Migration complete.');
-            } else {
-                console.error('[SQLite] Migration failed:', migResult.error);
             }
-        }
+        } catch {}
+        try { const s = localStorage.getItem('recentFiles');   if (s) migrationData.recentFiles  = JSON.parse(s); } catch {}
+        try { if (typeof exportCollectionsData === 'function') migrationData.collections = await exportCollectionsData(); } catch {}
+
+        const migResult = await window.electronAPI.dbRunMigration(migrationData);
+        if (migResult.ok) console.log('[SQLite] Migration complete.');
+        else console.error('[SQLite] Migration failed:', migResult.error);
     } catch (e) {
         console.error('[SQLite] Migration check failed:', e);
     }
+}
 
-    await Promise.all([loadFavorites(), loadRecentFiles(), loadRatings(), loadPins()]);
-    await initSidebar(); // Must be before loadTabs so sidebar is ready for highlight/expand
-    loadTabs(); // This will handle tab restoration and navigation
-    initVideoScrubber();
-    initNewFeatures();
-    initDuplicateDetection();
-    
-    // If no tab has a path and we have a last folder, navigate to it
+// ── Tab restoration & fallback folder navigation ──
+async function initTabRestoration() {
     const activeTab = tabs.find(t => t.id === activeTabId);
 
     // Expand sidebar to match whichever folder is now active after tab restore
-    if (currentFolderPath) {
-        sidebarExpandToPath(currentFolderPath);
-    }
+    if (currentFolderPath) sidebarExpandToPath(currentFolderPath);
 
     if ((!activeTab || !activeTab.path) && rememberLastFolder) {
         const lastFolderPath = localStorage.getItem('lastFolderPath');
@@ -4133,7 +4000,6 @@ window.addEventListener('DOMContentLoaded', async () => {
                     renderTabs();
                 }
                 await navigateToFolder(lastFolderPath);
-                // Expand sidebar tree to match restored folder
                 sidebarExpandToPath(lastFolderPath);
             } catch (error) {
                 console.log('Last folder no longer exists:', lastFolderPath);
@@ -4141,7 +4007,62 @@ window.addEventListener('DOMContentLoaded', async () => {
             }
         }
     }
+}
 
-    // Initialize status bar with current state
+// ── Main application init (called on DOMContentLoaded) ──
+async function initApplication() {
+    // 1. Restore UI preferences
+    initPreferences();
+
+    // 2. Check ffmpeg availability
+    try {
+        const ffStatus = await window.electronAPI.hasFfmpeg();
+        hasFfmpegAvailable = ffStatus && ffStatus.ok && ffStatus.value && ffStatus.value.ffmpeg;
+    } catch { /* ffmpeg not available */ }
+
+    // 3. Restore last folder if enabled
+    if (rememberLastFolder) {
+        const lastFolderPath = localStorage.getItem('lastFolderPath');
+        if (lastFolderPath) {
+            showLoadingIndicator();
+            try {
+                await navigateToFolder(lastFolderPath);
+            } catch (error) {
+                console.log('Last folder no longer exists:', lastFolderPath);
+                localStorage.removeItem('lastFolderPath');
+            } finally {
+                hideLoadingIndicator();
+            }
+        }
+    }
+
+    // 4. Window lifecycle handlers
+    initWindowLifecycleHandlers();
+
+    // 5. Core feature init
+    initKeyboardShortcuts();
+    initTheme();
+    initThumbnailQuality();
+    initZoom();
+
+    // 6. SQLite migration
+    await initSQLiteMigration();
+
+    // 7. Load persisted data
+    await Promise.all([loadFavorites(), loadRecentFiles(), loadRatings(), loadPins()]);
+
+    // 8. UI components (order matters: sidebar before tabs)
+    await initSidebar();
+    loadTabs();
+    initVideoScrubber();
+    initNewFeatures();
+    initDuplicateDetection();
+
+    // 9. Tab restoration & fallback navigation
+    await initTabRestoration();
+
+    // 10. Finalize
     updateStatusBar();
-});
+}
+
+window.addEventListener('DOMContentLoaded', () => initApplication());

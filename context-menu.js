@@ -520,9 +520,9 @@ contextMenu.addEventListener('click', async (e) => {
 
         case 'find-similar': {
             const ext = filePath.split('.').pop().toLowerCase();
-            const imgExts = ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif'];
-            if (!imgExts.includes(ext)) {
-                showToast('Find Similar works with image files', 'info');
+            const supportedExts = ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif', 'mp4', 'webm', 'ogg', 'mov'];
+            if (!supportedExts.includes(ext)) {
+                showToast('Find Similar works with image and video files', 'info');
                 break;
             }
             if (!aiVisualSearchEnabled) {

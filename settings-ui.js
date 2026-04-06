@@ -450,6 +450,78 @@ async function injectPluginSettingsPanels() {
 // --- Plugin enable/disable helpers live in renderer.js (needed at init time) ---
 
 // --- Plugins settings tab ---
+
+function _pluginsHeadingHtml() {
+    return `<div class="plugins-heading-row">
+        <div class="settings-content-heading">Plugins</div>
+        <div class="plugins-heading-actions">
+            <button id="reload-plugins-btn" class="settings-action-btn">Reload</button>
+            <button id="install-plugin-btn" class="settings-action-btn">Install Plugin\u2026</button>
+        </div>
+    </div>`;
+}
+
+function _invalidatePluginCaches() {
+    _pluginMenuItems = null;
+    if (typeof _pluginBatchOps !== 'undefined') _pluginBatchOps = null;
+    if (typeof _pluginInfoSections !== 'undefined') _pluginInfoSections = null;
+    if (typeof InspectorPanel !== 'undefined') InspectorPanel._pluginInfoSectionsCache = null;
+}
+
+function _wireInstallButton(container) {
+    const installBtn = container.querySelector('#install-plugin-btn');
+    if (!installBtn) return;
+    installBtn.addEventListener('click', async () => {
+        installBtn.disabled = true;
+        installBtn.textContent = 'Installing\u2026';
+        try {
+            const res = await window.electronAPI.installPluginFromFolder();
+            if (!res || !res.ok) {
+                if (res && res.error) showToast(`Install failed: ${res.error}`, 'error');
+                return;
+            }
+            if (res.value && res.value.canceled) return;
+            showToast(`Plugin "${res.value.name}" installed successfully`, 'success');
+            _invalidatePluginCaches();
+            await initPluginsTab();
+        } catch (err) {
+            showToast(`Install failed: ${err.message}`, 'error');
+        } finally {
+            installBtn.disabled = false;
+            installBtn.textContent = 'Install Plugin\u2026';
+        }
+    });
+}
+
+function _wireReloadButton(container) {
+    const reloadBtn = container.querySelector('#reload-plugins-btn');
+    if (!reloadBtn) return;
+    reloadBtn.addEventListener('click', async () => {
+        reloadBtn.disabled = true;
+        reloadBtn.textContent = 'Reloading\u2026';
+        try {
+            const result = await window.electronAPI.reloadPlugins();
+            if (result && result.ok) {
+                showToast(`Reloaded ${result.value.count} plugin(s)`, 'success');
+                _invalidatePluginCaches();
+                // Remove old injected plugin settings tabs and re-inject
+                document.querySelectorAll('.settings-tab[data-tab^="plugin-"]').forEach(el => el.remove());
+                document.querySelectorAll('.settings-tab-content[data-tab^="plugin-"]').forEach(el => el.remove());
+                await injectPluginSettingsPanels();
+                bindSettingsTabListeners();
+                await initPluginsTab();
+            } else {
+                showToast(`Reload failed: ${result ? result.error : 'Unknown error'}`, 'error');
+            }
+        } catch (err) {
+            showToast(`Reload failed: ${err.message}`, 'error');
+        } finally {
+            reloadBtn.disabled = false;
+            reloadBtn.textContent = 'Reload';
+        }
+    });
+}
+
 async function initPluginsTab() {
     const container = document.getElementById('plugins-tab-content');
     if (!container) return;
@@ -463,19 +535,25 @@ async function initPluginsTab() {
         manifests = _mRes && _mRes.ok ? (_mRes.value || []) : [];
         states = _sRes && _sRes.ok ? (_sRes.value || {}) : {};
     } catch (err) {
-        container.innerHTML = `<div class="settings-item"><span class="settings-label" style="color:var(--color-danger)">Failed to load plugins: ${err.message}</span></div>`;
+        container.innerHTML = _pluginsHeadingHtml() +
+            `<div class="settings-item"><span class="settings-label" style="color:var(--color-danger)">Failed to load plugins: ${err.message}</span></div>`;
+        _wireInstallButton(container);
+        _wireReloadButton(container);
         return;
     }
 
     if (!manifests || manifests.length === 0) {
-        container.innerHTML = `<div class="settings-item"><span class="settings-label" style="opacity:0.6">No plugins installed.</span></div>`;
+        container.innerHTML = _pluginsHeadingHtml() +
+            `<div class="settings-item"><span class="settings-label" style="opacity:0.6">No plugins installed.</span></div>`;
+        _wireInstallButton(container);
+        _wireReloadButton(container);
         return;
     }
 
     // Sync localStorage with authoritative state from main process
     manifests.forEach(m => _setLocalPluginState(m.id, states[m.id] !== false));
 
-    container.innerHTML = manifests.map(m => {
+    container.innerHTML = _pluginsHeadingHtml() + manifests.map(m => {
         const enabled = states[m.id] !== false;
         const caps = m.capabilities || {};
         const capLabels = [
@@ -485,26 +563,40 @@ async function initPluginsTab() {
             caps.batchOperations?.length ? `${caps.batchOperations.length} batch op${caps.batchOperations.length > 1 ? 's' : ''}` : null,
             caps.thumbnailGenerators?.length ? `${caps.thumbnailGenerators.length} thumbnail generator${caps.thumbnailGenerators.length > 1 ? 's' : ''}` : null,
         ].filter(Boolean);
+        const hasSettingsPanel = !!caps.settingsPanel;
 
         return `
         <div class="settings-item plugin-settings-row" data-plugin-id="${m.id}">
             <div class="plugin-settings-info">
-                <div class="plugin-settings-name">${m.name || m.id}</div>
+                <div class="plugin-settings-name">${m.name || m.id}${m.builtin ? ' <span class="plugin-builtin-badge">built-in</span>' : ''}</div>
                 ${m.description ? `<div class="plugin-settings-desc">${m.description}</div>` : ''}
                 <div class="plugin-settings-meta">
                     <span class="plugin-settings-version">v${m.version || '?'}</span>
-                    ${capLabels.length ? `<span class="plugin-settings-caps">${capLabels.join(' · ')}</span>` : ''}
+                    ${capLabels.length ? `<span class="plugin-settings-caps">${capLabels.join(' \u00b7 ')}</span>` : ''}
                 </div>
             </div>
-            <label class="settings-label plugin-settings-toggle-label">
-                <div class="toggle-switch">
-                    <input type="checkbox" class="plugin-enable-toggle" data-plugin-id="${m.id}" ${enabled ? 'checked' : ''}>
-                    <span class="toggle-slider"></span>
-                </div>
-                <span class="toggle-label plugin-toggle-state-label">${enabled ? 'On' : 'Off'}</span>
-            </label>
+            <div class="plugin-settings-actions">
+                ${hasSettingsPanel ? `<button class="plugin-configure-btn" data-plugin-id="${m.id}" title="Configure ${m.name || m.id}">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
+                        <circle cx="12" cy="12" r="3"/>
+                    </svg>
+                </button>` : ''}
+                ${!m.builtin ? `<button class="plugin-remove-btn settings-action-btn" data-plugin-id="${m.id}" data-plugin-name="${m.name || m.id}">Remove</button>` : ''}
+                <label class="settings-label plugin-settings-toggle-label">
+                    <div class="toggle-switch">
+                        <input type="checkbox" class="plugin-enable-toggle" data-plugin-id="${m.id}" ${enabled ? 'checked' : ''}>
+                        <span class="toggle-slider"></span>
+                    </div>
+                    <span class="toggle-label plugin-toggle-state-label">${enabled ? 'On' : 'Off'}</span>
+                </label>
+            </div>
         </div>`;
     }).join('');
+
+    // Wire heading buttons
+    _wireInstallButton(container);
+    _wireReloadButton(container);
 
     // Wire toggle handlers
     container.querySelectorAll('.plugin-enable-toggle').forEach(checkbox => {
@@ -517,14 +609,68 @@ async function initPluginsTab() {
             _setLocalPluginState(pluginId, enabled);
             try {
                 await window.electronAPI.setPluginEnabled(pluginId, enabled);
-                // Invalidate lazy-loaded plugin menu items cache so it refreshes
-                _pluginMenuItems = null;
-                // Invalidate info sections cache
-                if (typeof _pluginInfoSections !== 'undefined') _pluginInfoSections = null;
-                InspectorPanel._pluginInfoSectionsCache = null;
+                _invalidatePluginCaches();
                 showToast(`Plugin "${pluginId}" ${enabled ? 'enabled' : 'disabled'}`, 'info');
             } catch (err) {
                 showToast(`Failed to toggle plugin: ${err.message}`, 'error');
+            }
+        });
+    });
+
+    // Wire remove buttons
+    container.querySelectorAll('.plugin-remove-btn').forEach(btn => {
+        btn.addEventListener('click', async function() {
+            const pluginId = this.dataset.pluginId;
+            const pluginName = this.dataset.pluginName;
+            const confirmed = await showConfirm(
+                'Remove Plugin',
+                `Are you sure you want to remove "${pluginName}"? This will delete the plugin files and its cached data.`,
+                { confirmLabel: 'Remove', danger: true }
+            );
+            if (!confirmed) return;
+
+            this.disabled = true;
+            this.textContent = 'Removing\u2026';
+            try {
+                const res = await window.electronAPI.removePlugin(pluginId);
+                if (!res || !res.ok) {
+                    showToast(`Remove failed: ${res ? res.error : 'Unknown error'}`, 'error');
+                    this.disabled = false;
+                    this.textContent = 'Remove';
+                    return;
+                }
+                showToast(`Plugin "${pluginName}" removed`, 'success');
+                _invalidatePluginCaches();
+                // Clean localStorage state
+                try {
+                    const lsStates = JSON.parse(localStorage.getItem('pluginStates') || '{}');
+                    delete lsStates[pluginId];
+                    localStorage.setItem('pluginStates', JSON.stringify(lsStates));
+                } catch { /* ignore */ }
+                // Remove any injected settings tab for this plugin
+                const tabId = `plugin-${pluginId}`;
+                document.querySelectorAll(`.settings-tab[data-tab="${tabId}"]`).forEach(el => el.remove());
+                document.querySelectorAll(`.settings-tab-content[data-tab="${tabId}"]`).forEach(el => el.remove());
+                await initPluginsTab();
+            } catch (err) {
+                showToast(`Remove failed: ${err.message}`, 'error');
+                this.disabled = false;
+                this.textContent = 'Remove';
+            }
+        });
+    });
+
+    // Wire configure buttons
+    container.querySelectorAll('.plugin-configure-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const pluginId = btn.dataset.pluginId;
+            const tabId = `plugin-${pluginId}`;
+            const tab = document.querySelector(`.settings-tab[data-tab="${tabId}"]`);
+            const content = document.querySelector(`.settings-tab-content[data-tab="${tabId}"]`);
+            if (tab && content) {
+                openSettingsToTab(tabId);
+            } else {
+                showToast(`Settings panel for "${pluginId}" not available yet — try reopening Settings`, 'info');
             }
         });
     });

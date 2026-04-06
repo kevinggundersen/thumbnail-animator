@@ -108,6 +108,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.invoke('plugin-generate-thumbnail', filePath, ext),
     getPluginStates: () => ipcRenderer.invoke('get-plugin-states'),
     setPluginEnabled: (pluginId, enabled) => ipcRenderer.invoke('set-plugin-enabled', pluginId, enabled),
+    installPluginFromFolder: () => ipcRenderer.invoke('install-plugin-from-folder'),
+    removePlugin: (pluginId) => ipcRenderer.invoke('remove-plugin', pluginId),
+    reloadPlugins: () => ipcRenderer.invoke('reload-plugins'),
     // Settings export/import
     exportSettingsDialog: (jsonString) => ipcRenderer.invoke('export-settings-dialog', jsonString),
     importSettingsDialog: () => ipcRenderer.invoke('import-settings-dialog'),

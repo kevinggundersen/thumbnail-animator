@@ -994,7 +994,7 @@ function createWindow() {
 const pluginCacheDir = path.join(app.getPath('userData'), 'plugin-cache');
 const pluginStatesFile = path.join(pluginCacheDir, 'plugin-states.json');
 const pluginRegistry = new PluginRegistry(pluginCacheDir, pluginStatesFile);
-pluginRegistry.discover(path.join(__dirname, 'plugins', 'builtin'));
+pluginRegistry.discover(path.join(__dirname, 'plugins', 'builtin'), { builtin: true });
 pluginRegistry.discover(path.join(app.getPath('userData'), 'plugins'));
 markStartup('plugins-loaded');
 
@@ -5350,6 +5350,89 @@ ipcMain.handle('set-plugin-enabled', (event, pluginId, enabled) => {
     } catch (err) {
         console.warn(`[Plugin toggle] ${pluginId} failed:`, err.message);
         return { ok: false, error:err.message };
+    }
+});
+
+ipcMain.handle('install-plugin-from-folder', async () => {
+    try {
+        const result = await dialog.showOpenDialog({
+            title: 'Select Plugin Folder',
+            properties: ['openDirectory'],
+        });
+        if (result.canceled || !result.filePaths[0]) {
+            return { ok: true, value: { canceled: true } };
+        }
+        const sourceDir = result.filePaths[0];
+
+        const validation = PluginRegistry.validateManifest(sourceDir);
+        if (!validation.valid) {
+            return { ok: false, error: validation.error };
+        }
+        const { manifest } = validation;
+
+        if (pluginRegistry._manifests.has(manifest.id)) {
+            return { ok: false, error: `Plugin "${manifest.id}" is already installed` };
+        }
+
+        const userPluginsDir = path.join(app.getPath('userData'), 'plugins');
+        await fs.promises.mkdir(userPluginsDir, { recursive: true });
+        const destDir = path.join(userPluginsDir, manifest.id);
+        if (fs.existsSync(destDir)) {
+            return { ok: false, error: `Plugin directory already exists for "${manifest.id}"` };
+        }
+        await fs.promises.cp(sourceDir, destDir, { recursive: true });
+
+        try {
+            pluginRegistry.registerFromDirectory(destDir);
+        } catch (regErr) {
+            await fs.promises.rm(destDir, { recursive: true, force: true }).catch(() => {});
+            return { ok: false, error: regErr.message };
+        }
+
+        return { ok: true, value: { pluginId: manifest.id, name: manifest.name || manifest.id } };
+    } catch (err) {
+        console.warn('[Plugin install] failed:', err.message);
+        return { ok: false, error: err.message };
+    }
+});
+
+ipcMain.handle('remove-plugin', async (event, pluginId) => {
+    try {
+        if (pluginRegistry.isBuiltin(pluginId)) {
+            return { ok: false, error: 'Cannot remove a built-in plugin' };
+        }
+        const pluginDir = pluginRegistry.getPluginDir(pluginId);
+        if (!pluginDir) {
+            return { ok: false, error: `Plugin "${pluginId}" not found` };
+        }
+
+        await pluginRegistry.unregisterPlugin(pluginId);
+
+        await fs.promises.rm(pluginDir, { recursive: true, force: true });
+
+        const pluginCachePath = path.join(pluginCacheDir, pluginId);
+        if (fs.existsSync(pluginCachePath)) {
+            await fs.promises.rm(pluginCachePath, { recursive: true, force: true });
+        }
+
+        return { ok: true, value: { pluginId } };
+    } catch (err) {
+        console.warn(`[Plugin remove] ${pluginId} failed:`, err.message);
+        return { ok: false, error: err.message };
+    }
+});
+
+ipcMain.handle('reload-plugins', async () => {
+    try {
+        const pluginDirs = [
+            { dir: path.join(__dirname, 'plugins', 'builtin'), builtin: true },
+            { dir: path.join(app.getPath('userData'), 'plugins') },
+        ];
+        const count = await pluginRegistry.reload(pluginDirs);
+        return { ok: true, value: { count } };
+    } catch (err) {
+        console.warn('[Plugin reload] failed:', err.message);
+        return { ok: false, error: err.message };
     }
 });
 

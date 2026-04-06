@@ -43,6 +43,8 @@ class PluginRegistry {
         this._batchOpsByPlugin = new Map();
         // Map<pluginId, settingsPanel>
         this._settingsPanelsByPlugin = new Map();
+        // Set of plugin IDs that came from builtin directories
+        this._builtinPluginIds = new Set();
         // Set of disabled plugin IDs — loaded from statesFilePath on startup
         this._disabledPlugins = new Set();
         if (statesFilePath && fs.existsSync(statesFilePath)) {
@@ -100,7 +102,7 @@ class PluginRegistry {
      * Discover and register plugins from a directory (non-recursive, one plugin per subdir).
      * Safe to call multiple times with different directories.
      */
-    discover(pluginsDir) {
+    discover(pluginsDir, { builtin = false } = {}) {
         if (!fs.existsSync(pluginsDir)) return;
 
         let entries;
@@ -119,6 +121,7 @@ class PluginRegistry {
             try {
                 const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
                 this._registerManifest(manifest, path.join(pluginsDir, entry.name));
+                if (builtin && manifest.id) this._builtinPluginIds.add(manifest.id);
             } catch (err) {
                 console.warn(`[PluginRegistry] Failed to load manifest at ${manifestPath}:`, err.message);
             }
@@ -292,6 +295,7 @@ class PluginRegistry {
             ...rest,
             id,
             enabled: !this._disabledPlugins.has(id),
+            builtin: this._builtinPluginIds.has(id),
         }));
     }
 
@@ -431,6 +435,138 @@ class PluginRegistry {
         return callWithTimeout(() => instance[method](data));
     }
 
+    // --- Install / Remove ---
+
+    /**
+     * Validate a plugin manifest in the given directory without registering it.
+     * Returns { valid: true, manifest } or { valid: false, error }.
+     */
+    static validateManifest(dirPath) {
+        const manifestPath = path.join(dirPath, 'plugin.json');
+        if (!fs.existsSync(manifestPath)) {
+            return { valid: false, error: 'No plugin.json found in this folder' };
+        }
+        try {
+            const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+            if (!manifest.id || typeof manifest.id !== 'string') {
+                return { valid: false, error: 'plugin.json missing required "id" field' };
+            }
+            if (!manifest.main || typeof manifest.main !== 'string') {
+                return { valid: false, error: 'plugin.json missing required "main" field' };
+            }
+            const mainPath = path.resolve(dirPath, manifest.main);
+            if (!mainPath.startsWith(dirPath)) {
+                return { valid: false, error: 'Plugin "main" path escapes plugin directory' };
+            }
+            if (!fs.existsSync(mainPath)) {
+                return { valid: false, error: `Plugin main file "${manifest.main}" not found` };
+            }
+            return { valid: true, manifest };
+        } catch (err) {
+            return { valid: false, error: `Invalid plugin.json: ${err.message}` };
+        }
+    }
+
+    /**
+     * Register a plugin from an already-copied directory. Throws on failure.
+     */
+    registerFromDirectory(pluginDir) {
+        const manifestPath = path.join(pluginDir, 'plugin.json');
+        if (!fs.existsSync(manifestPath)) {
+            throw new Error('No plugin.json found in directory');
+        }
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+        if (!manifest.id || !manifest.main) {
+            throw new Error('Invalid plugin.json: missing "id" or "main" field');
+        }
+        if (this._manifests.has(manifest.id)) {
+            throw new Error(`Plugin "${manifest.id}" is already installed`);
+        }
+        this._registerManifest(manifest, pluginDir);
+        this._saveStates();
+        return manifest;
+    }
+
+    /**
+     * Fully unregister a plugin: deactivate, clear caches, remove from all indexes.
+     */
+    async unregisterPlugin(pluginId) {
+        const manifest = this._manifests.get(pluginId);
+        if (!manifest) throw new Error(`Unknown plugin: ${pluginId}`);
+        if (this._builtinPluginIds.has(pluginId)) {
+            throw new Error(`Cannot remove builtin plugin "${pluginId}"`);
+        }
+
+        // Deactivate if loaded
+        const instance = this._loaded.get(pluginId);
+        if (instance && typeof instance.deactivate === 'function') {
+            try {
+                await Promise.race([
+                    instance.deactivate(),
+                    new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 3000)),
+                ]);
+            } catch (err) {
+                console.warn(`[PluginRegistry] Plugin "${pluginId}" deactivate error:`, err.message);
+            }
+        }
+        this._loaded.delete(pluginId);
+
+        // Clear require cache
+        const mainPath = manifest._mainPath;
+        if (mainPath) {
+            try { delete require.cache[require.resolve(mainPath)]; } catch { /* not cached */ }
+        }
+
+        // Remove from all index maps
+        this._manifests.delete(pluginId);
+        this._disabledPlugins.delete(pluginId);
+        this._contextMenuItemsByPlugin.delete(pluginId);
+        this._infoSectionsByPlugin.delete(pluginId);
+        this._batchOpsByPlugin.delete(pluginId);
+        this._settingsPanelsByPlugin.delete(pluginId);
+
+        // Clean extractor index
+        for (const [ext, extractors] of this._extractorsByExt) {
+            const filtered = extractors.filter(e => e.pluginId !== pluginId);
+            if (filtered.length === 0) this._extractorsByExt.delete(ext);
+            else this._extractorsByExt.set(ext, filtered);
+        }
+
+        // Clean thumbnail generator index
+        for (const [ext, generators] of this._thumbGeneratorsByExt) {
+            const filtered = generators.filter(g => g.pluginId !== pluginId);
+            if (filtered.length === 0) this._thumbGeneratorsByExt.delete(ext);
+            else this._thumbGeneratorsByExt.set(ext, filtered);
+        }
+
+        // Rebuild extra extension sets from remaining manifests
+        this._extraVideoExtensions.clear();
+        this._extraImageExtensions.clear();
+        for (const [, m] of this._manifests) {
+            const ft = (m.capabilities || {}).fileTypes;
+            if (ft) {
+                for (const ext of (ft.extensions || [])) {
+                    if (ft.category === 'video') this._extraVideoExtensions.add(ext.toLowerCase());
+                    else this._extraImageExtensions.add(ext.toLowerCase());
+                }
+            }
+        }
+
+        this._saveStates();
+        console.log(`[PluginRegistry] Unregistered plugin: ${pluginId}`);
+    }
+
+    /** Returns the filesystem directory for a plugin, or null. */
+    getPluginDir(pluginId) {
+        const manifest = this._manifests.get(pluginId);
+        return manifest ? manifest._dir : null;
+    }
+
+    /** Returns true if the plugin was discovered from a builtin directory. */
+    isBuiltin(pluginId) {
+        return this._builtinPluginIds.has(pluginId);
+    }
+
     // --- Teardown ---
 
     async teardown() {
@@ -445,6 +581,41 @@ class PluginRegistry {
             }
         }
         this._loaded.clear();
+    }
+
+    /**
+     * Reload all plugins: teardown loaded instances, clear indexes, re-discover.
+     * User enable/disable preferences are preserved.
+     * @param {Array<{dir: string, builtin?: boolean}>} pluginDirs
+     * @returns {number} count of discovered plugins
+     */
+    async reload(pluginDirs) {
+        // Teardown loaded plugins
+        await this.teardown();
+
+        // Clear require cache for all previously loaded modules
+        for (const [, manifest] of this._manifests) {
+            try { delete require.cache[require.resolve(manifest._mainPath)]; } catch { /* ignore */ }
+        }
+
+        // Clear all indexes (preserve _disabledPlugins for user prefs)
+        this._manifests.clear();
+        this._extractorsByExt.clear();
+        this._contextMenuItemsByPlugin.clear();
+        this._extraVideoExtensions.clear();
+        this._extraImageExtensions.clear();
+        this._infoSectionsByPlugin.clear();
+        this._thumbGeneratorsByExt.clear();
+        this._batchOpsByPlugin.clear();
+        this._settingsPanelsByPlugin.clear();
+        this._builtinPluginIds.clear();
+
+        // Re-discover
+        for (const entry of pluginDirs) {
+            this.discover(entry.dir, { builtin: !!entry.builtin });
+        }
+
+        return this._manifests.size;
     }
 }
 

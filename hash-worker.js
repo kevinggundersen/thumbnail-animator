@@ -19,6 +19,20 @@ async function computeExactHash(filePath) {
     });
 }
 
+function pixelsToDHashHex(pixels) {
+    const bytes = new Uint8Array(8);
+    let byteIdx = 0, bitIdx = 7;
+    for (let row = 0; row < 8; row++) {
+        for (let col = 0; col < 8; col++) {
+            if (pixels[row * 9 + col] > pixels[row * 9 + col + 1]) {
+                bytes[byteIdx] |= (1 << bitIdx);
+            }
+            if (--bitIdx < 0) { bitIdx = 7; byteIdx++; }
+        }
+    }
+    return Buffer.from(bytes).toString('hex');
+}
+
 async function computeDHash(filePath) {
     // Resize to 9x8 greyscale, compare adjacent pixels horizontally
     const pixels = await sharp(filePath)
@@ -26,17 +40,7 @@ async function computeDHash(filePath) {
         .resize(9, 8, { fit: 'fill' })
         .raw()
         .toBuffer();
-
-    let hash = '';
-    for (let row = 0; row < 8; row++) {
-        for (let col = 0; col < 8; col++) {
-            const left = pixels[row * 9 + col];
-            const right = pixels[row * 9 + col + 1];
-            hash += left > right ? '1' : '0';
-        }
-    }
-    // Convert 64-bit binary string to 16-char hex
-    return BigInt('0b' + hash).toString(16).padStart(16, '0');
+    return pixelsToDHashHex(pixels);
 }
 
 async function processFile(file) {
@@ -71,16 +75,7 @@ async function processFile(file) {
                 .resize(9, 8, { fit: 'fill' })
                 .raw()
                 .toBuffer();
-
-            let hash = '';
-            for (let row = 0; row < 8; row++) {
-                for (let col = 0; col < 8; col++) {
-                    const left = pixels[row * 9 + col];
-                    const right = pixels[row * 9 + col + 1];
-                    hash += left > right ? '1' : '0';
-                }
-            }
-            result.perceptualHash = BigInt('0b' + hash).toString(16).padStart(16, '0');
+            result.perceptualHash = pixelsToDHashHex(pixels);
         } catch {
             // Could not compute perceptual hash
         }
@@ -91,9 +86,13 @@ async function processFile(file) {
 
 parentPort.on('message', async (msg) => {
     if (msg.type === 'hash') {
+        // Process in mini-batches to allow sharp pipeline overlap
+        const BATCH = 4;
         const results = [];
-        for (const file of msg.files) {
-            results.push(await processFile(file));
+        for (let i = 0; i < msg.files.length; i += BATCH) {
+            const batch = msg.files.slice(i, i + BATCH);
+            const batchResults = await Promise.all(batch.map(f => processFile(f)));
+            results.push(...batchResults);
         }
         parentPort.postMessage({ type: 'result', results });
     }

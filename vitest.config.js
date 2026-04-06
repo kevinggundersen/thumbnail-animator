@@ -6,5 +6,6 @@ module.exports = defineConfig({
         include: ['test/**/*.test.js'],
         testTimeout: 10000,
         globals: true,
+        setupFiles: ['./test/setup-db-alias.js'],
     },
 });

@@ -1,0 +1,494 @@
+// ============================================================================
+// sidebar-tree.js — Folder tree sidebar, resize, expand/collapse
+// Extracted from renderer.js. All functions/variables remain in global scope.
+// ============================================================================
+
+// ============================================================================
+// FOLDER TREE SIDEBAR
+// ============================================================================
+
+let sidebarWidth = parseInt(localStorage.getItem('sidebarWidth')) || 260;
+let sidebarCollapsed = localStorage.getItem('sidebarCollapsed') === 'true';
+let sidebarLayoutSyncTimeout = null;
+let sidebarTransitionEndHandler = null;
+let sidebarExpandedNodes;
+try {
+    sidebarExpandedNodes = new Set(JSON.parse(localStorage.getItem('sidebarExpandedNodes') || '[]'));
+} catch (e) {
+    console.warn('Failed to parse sidebarExpandedNodes from localStorage, resetting:', e);
+    localStorage.removeItem('sidebarExpandedNodes');
+    sidebarExpandedNodes = new Set();
+}
+
+function saveSidebarExpandedNodes() {
+    deferLocalStorageWrite('sidebarExpandedNodes', JSON.stringify([...sidebarExpandedNodes]));
+}
+
+function createTreeNode(item, depth, isDrive = false) {
+    const node = document.createElement('div');
+    node.className = 'tree-node';
+    node.dataset.path = item.path;
+    node.dataset.depth = depth;
+    if (isDrive) node.dataset.drive = '1';
+
+    const row = document.createElement('div');
+    row.className = 'tree-node-row';
+    row.style.paddingLeft = `${depth * 16 + 8}px`;
+
+    // Toggle arrow
+    const toggle = document.createElement('span');
+    toggle.className = 'tree-toggle' + (item.hasChildren === false && !isDrive ? ' no-children' : '');
+    toggle.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>';
+
+    // Folder icon
+    const icon = document.createElement('span');
+    icon.className = 'tree-node-icon';
+    if (isDrive) {
+        icon.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>';
+    } else {
+        icon.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg>';
+    }
+
+    // Label
+    const label = document.createElement('span');
+    label.className = 'tree-node-label';
+    label.textContent = item.name;
+    label.title = item.path;
+
+    row.appendChild(toggle);
+    row.appendChild(icon);
+    row.appendChild(label);
+
+    // Children container
+    const children = document.createElement('div');
+    children.className = 'tree-children';
+
+    node.appendChild(row);
+    node.appendChild(children);
+
+    // Click on row navigates to folder
+    row.addEventListener('click', (e) => {
+        e.stopPropagation();
+        hideContextMenu();
+        if (e.target.closest('.tree-toggle') && (item.hasChildren !== false || isDrive)) {
+            toggleTreeNode(node, depth, isDrive);
+        } else {
+            navigateToFolder(item.path);
+        }
+    });
+
+    // Middle-click opens folder in new tab
+    row.addEventListener('mousedown', (e) => {
+        if (e.button === 1) {
+            e.preventDefault();
+        }
+    });
+    row.addEventListener('auxclick', (e) => {
+        if (e.button === 1) {
+            e.preventDefault();
+            e.stopPropagation();
+            const displayName = item.path.split(/[/\\]/).pop();
+            createTab(item.path, displayName);
+        }
+    });
+
+    // Right-click context menu (reuse folder context menu)
+    if (!isDrive) {
+        row.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            // Create a lightweight proxy element so the existing folder context menu handler works
+            const proxy = document.createElement('div');
+            proxy.classList.add('folder-card');
+            proxy.dataset.folderPath = item.path;
+            showContextMenu(e, proxy);
+        });
+    }
+
+    // Double-click toggle to expand
+    toggle.addEventListener('dblclick', (e) => e.stopPropagation());
+
+    return node;
+}
+
+/** Load or reload subdirectory rows under a tree node (used by expand and by FS watch refresh). */
+async function loadTreeNodeChildren(node, depth, isDrive = false, { forceReload = false } = {}) {
+    const children = node.querySelector('.tree-children');
+    const toggle = node.querySelector('.tree-toggle');
+    const nodePath = node.dataset.path;
+
+    if (forceReload) {
+        delete children.dataset.loaded;
+        children.innerHTML = '';
+        toggle.classList.remove('no-children');
+    }
+
+    if (children.dataset.loaded === '1') return;
+
+    const loading = document.createElement('div');
+    loading.className = 'tree-loading';
+    loading.textContent = 'Loading...';
+    children.appendChild(loading);
+
+    try {
+        const _subRes = await window.electronAPI.listSubdirectories(nodePath);
+        const subdirs = _subRes && _subRes.ok ? (_subRes.value || []) : [];
+        children.innerHTML = '';
+        children.dataset.loaded = '1';
+
+        for (const subdir of subdirs) {
+            const childNode = createTreeNode(subdir, depth + 1);
+            children.appendChild(childNode);
+            if (sidebarExpandedNodes.has(subdir.path)) {
+                toggleTreeNode(childNode, depth + 1);
+            }
+        }
+        if (subdirs.length === 0) {
+            toggle.classList.remove('expanded');
+            toggle.classList.add('no-children');
+            children.classList.remove('expanded');
+            sidebarExpandedNodes.delete(nodePath);
+            saveSidebarExpandedNodes();
+        }
+    } catch (err) {
+        children.innerHTML = '';
+        toggle.classList.remove('expanded');
+        toggle.classList.add('no-children');
+        children.classList.remove('expanded');
+        sidebarExpandedNodes.delete(nodePath);
+        saveSidebarExpandedNodes();
+    }
+}
+
+async function toggleTreeNode(node, depth, isDrive = false) {
+    const children = node.querySelector('.tree-children');
+    const toggle = node.querySelector('.tree-toggle');
+    const nodePath = node.dataset.path;
+
+    if (children.classList.contains('expanded')) {
+        // Collapse
+        children.classList.remove('expanded');
+        toggle.classList.remove('expanded');
+        sidebarExpandedNodes.delete(nodePath);
+        saveSidebarExpandedNodes();
+        return;
+    }
+
+    // Expand
+    toggle.classList.add('expanded');
+    children.classList.add('expanded');
+    sidebarExpandedNodes.add(nodePath);
+    saveSidebarExpandedNodes();
+
+    if (children.dataset.loaded === '1') return;
+
+    await loadTreeNodeChildren(node, depth, isDrive);
+}
+
+/** Parent directory of a file system path (handles / and Windows roots). */
+function sidebarParentDirPath(filePath) {
+    if (!filePath) return null;
+    const norm = filePath.replace(/\\/g, '/');
+    const trimmed = norm.replace(/\/+$/, '');
+    if (!trimmed) return null;
+    const lastSlash = trimmed.lastIndexOf('/');
+    if (lastSlash <= 0) {
+        if (trimmed.startsWith('/') && trimmed.length > 1) return '/';
+        if (/^[a-zA-Z]:$/.test(trimmed)) return null;
+        if (/^[a-zA-Z]:\//.test(trimmed)) return trimmed.slice(0, 2) + '/';
+        return null;
+    }
+    const parent = trimmed.slice(0, lastSlash) || '/';
+    if (/^[a-zA-Z]:$/.test(parent)) return parent + '/';
+    return parent;
+}
+
+window.sidebarParentDirPath = sidebarParentDirPath;
+
+/**
+ * When subfolders are added/removed on disk, reload the expanded tree node that lists them.
+ * Called from folder-changed (addDir/unlinkDir) for paths under the watched folder.
+ */
+async function refreshSidebarTreeBranchForParentPath(parentPath) {
+    if (!parentPath || !sidebarTree) return;
+    const target = sidebarNormalize(parentPath);
+
+    for (const node of sidebarTree.querySelectorAll('.tree-node')) {
+        if (sidebarNormalize(node.dataset.path) !== target) continue;
+        const children = node.querySelector('.tree-children');
+        if (!children.classList.contains('expanded')) return;
+
+        const depth = parseInt(node.dataset.depth, 10) || 0;
+        const isDrive = node.dataset.drive === '1';
+        await loadTreeNodeChildren(node, depth, isDrive, { forceReload: true });
+        return;
+    }
+}
+
+window.refreshSidebarTreeBranchForParentPath = refreshSidebarTreeBranchForParentPath;
+
+// Normalize a path for sidebar comparisons — lowercase, forward slashes, no trailing slash
+function sidebarNormalize(p) {
+    if (!p) return '';
+    return p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+function sidebarHighlightActive(folderPath) {
+    if (!folderPath || !sidebarTree) return;
+    const target = sidebarNormalize(folderPath);
+
+    // Clear previous highlight
+    const prev = sidebarTree.querySelector('.tree-node-row.active');
+    if (prev) prev.classList.remove('active');
+
+    // First try to find the node already in the DOM
+    const allNodes = sidebarTree.querySelectorAll('.tree-node');
+    for (const node of allNodes) {
+        if (sidebarNormalize(node.dataset.path) === target) {
+            const row = node.querySelector(':scope > .tree-node-row');
+            if (row) {
+                row.classList.add('active');
+                row.scrollIntoView({ block: 'nearest' });
+            }
+            return;
+        }
+    }
+
+    // Node not in DOM yet — expand the tree to it, then highlight
+    sidebarExpandToPath(folderPath);
+}
+
+async function sidebarExpandToPath(folderPath) {
+    if (!folderPath || !sidebarTree) return;
+
+    // Parse the path into segments  (e.g. "C:\Users\foo" → ["C:", "Users", "foo"])
+    const normalized = folderPath.replace(/\//g, '\\');
+    const parts = normalized.split('\\').filter(Boolean);
+    if (parts.length === 0) return;
+
+    // Build the drive path (e.g. "C:\")
+    const drivePart = parts[0].endsWith(':') ? parts[0] + '\\' : parts[0];
+
+    // Find the drive node
+    let driveNode = null;
+    for (const node of sidebarTree.querySelectorAll(':scope > .tree-node')) {
+        if (sidebarNormalize(node.dataset.path) === sidebarNormalize(drivePart)) {
+            driveNode = node;
+            break;
+        }
+    }
+    if (!driveNode) return;
+
+    // Expand drive if needed
+    const driveChildren = driveNode.querySelector('.tree-children');
+    if (!driveChildren.classList.contains('expanded')) {
+        await toggleTreeNode(driveNode, 0, true);
+    }
+
+    // Walk down the remaining path segments
+    let parentContainer = driveChildren;
+    let currentPath = drivePart;
+
+    for (let i = 1; i < parts.length; i++) {
+        currentPath = currentPath.replace(/\\$/, '') + '\\' + parts[i];
+        const targetNorm = sidebarNormalize(currentPath);
+
+        // Wait a tick so freshly-appended children are queryable
+        await new Promise(r => setTimeout(r, 10));
+
+        let found = null;
+        for (const node of parentContainer.querySelectorAll(':scope > .tree-node')) {
+            if (sidebarNormalize(node.dataset.path) === targetNorm) {
+                found = node;
+                break;
+            }
+        }
+        if (!found) break;
+
+        // Expand intermediate segments, and also the last segment so its children show
+        const childContainer = found.querySelector('.tree-children');
+        if (!childContainer.classList.contains('expanded')) {
+            await toggleTreeNode(found, i);
+        }
+        parentContainer = childContainer;
+
+        // On the final segment, highlight it
+        if (i === parts.length - 1) {
+            const prev = sidebarTree.querySelector('.tree-node-row.active');
+            if (prev) prev.classList.remove('active');
+            const row = found.querySelector(':scope > .tree-node-row');
+            if (row) {
+                row.classList.add('active');
+                row.scrollIntoView({ block: 'nearest' });
+            }
+        }
+    }
+}
+
+function initSidebarResize() {
+    let isResizing = false;
+
+    sidebarResizeHandle.addEventListener('mousedown', (e) => {
+        isResizing = true;
+        sidebarResizeHandle.classList.add('active');
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+        e.preventDefault();
+    });
+
+    let _resizeRafPending = false;
+    document.addEventListener('mousemove', (e) => {
+        if (!isResizing) return;
+        if (_resizeRafPending) return;
+        _resizeRafPending = true;
+        const clientX = e.clientX;
+        requestAnimationFrame(() => {
+            _resizeRafPending = false;
+            const newWidth = Math.min(sidebarMaxWidthSetting, Math.max(sidebarMinWidthSetting, clientX));
+            folderSidebar.style.width = newWidth + 'px';
+            sidebarWidth = newWidth;
+        });
+    });
+
+    document.addEventListener('mouseup', () => {
+        if (!isResizing) return;
+        isResizing = false;
+        sidebarResizeHandle.classList.remove('active');
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        deferLocalStorageWrite('sidebarWidth', sidebarWidth.toString());
+        scheduleSidebarLayoutSync();
+    });
+}
+
+let pendingDimensionHydrationRefreshMode = null;
+let pendingDimensionHydrationRefreshRaf = null;
+
+function scheduleDimensionHydrationRefresh(mode) {
+    if (mode !== 'filters' && mode !== 'layout') return;
+    if (mode === 'filters' || !pendingDimensionHydrationRefreshMode) {
+        pendingDimensionHydrationRefreshMode = mode;
+    }
+    if (pendingDimensionHydrationRefreshRaf !== null) return;
+
+    pendingDimensionHydrationRefreshRaf = requestAnimationFrame(() => {
+        pendingDimensionHydrationRefreshRaf = null;
+        const refreshMode = pendingDimensionHydrationRefreshMode;
+        pendingDimensionHydrationRefreshMode = null;
+
+        if (refreshMode === 'filters') {
+            applyFilters();
+            return;
+        }
+
+        if (!vsState.enabled) return;
+        vsState.layoutCache.itemCount = 0;
+        vsRecalculate();
+    });
+}
+
+function relayoutAfterSidebarWidthChange() {
+    if (vsState.enabled) {
+        vsRecalculate();
+        return;
+    }
+    if (layoutMode === 'masonry') {
+        scheduleMasonryLayout();
+    }
+}
+
+function scheduleSidebarLayoutSync(delay = 0) {
+    clearTimeout(sidebarLayoutSyncTimeout);
+    sidebarLayoutSyncTimeout = setTimeout(() => {
+        sidebarLayoutSyncTimeout = null;
+        relayoutAfterSidebarWidthChange();
+    }, delay);
+}
+
+function setSidebarCollapsed(collapsed) {
+    sidebarCollapsed = collapsed;
+    if (collapsed) {
+        folderSidebar.classList.add('collapsed');
+    } else {
+        folderSidebar.classList.remove('collapsed');
+    }
+    deferLocalStorageWrite('sidebarCollapsed', collapsed.toString());
+
+    if (sidebarTransitionEndHandler) {
+        folderSidebar.removeEventListener('transitionend', sidebarTransitionEndHandler);
+        sidebarTransitionEndHandler = null;
+    }
+
+    // Recalculate layout after the sidebar animation settles. Keep a timeout
+    // fallback as well because width changes can finish without a reliable
+    // transitionend when toggled quickly.
+    sidebarTransitionEndHandler = (e) => {
+        if (e.target !== folderSidebar) return;
+        if (e.propertyName !== 'width' && e.propertyName !== 'min-width') return;
+        if (sidebarTransitionEndHandler) {
+            folderSidebar.removeEventListener('transitionend', sidebarTransitionEndHandler);
+            sidebarTransitionEndHandler = null;
+        }
+        scheduleSidebarLayoutSync();
+    };
+    folderSidebar.addEventListener('transitionend', sidebarTransitionEndHandler);
+    scheduleSidebarLayoutSync(230);
+}
+
+async function initSidebar() {
+    if (!folderSidebar || !sidebarTree) return;
+
+    // Don't restore previous expanded state — start fresh, only the active folder will be expanded
+    sidebarExpandedNodes.clear();
+    saveSidebarExpandedNodes();
+
+    // Restore width and collapsed state
+    folderSidebar.style.width = sidebarWidth + 'px';
+    if (sidebarCollapsed) {
+        folderSidebar.classList.add('collapsed');
+    }
+
+    // Toggle buttons
+    if (sidebarToggleBtn) {
+        sidebarToggleBtn.addEventListener('click', () => setSidebarCollapsed(!sidebarCollapsed));
+    }
+    if (sidebarCollapseBtn) {
+        sidebarCollapseBtn.addEventListener('click', () => setSidebarCollapsed(true));
+    }
+
+    // Resize handle
+    initSidebarResize();
+
+    // Load drive nodes
+    try {
+        const _drvRes = await window.electronAPI.getDrives();
+        const drives = _drvRes && _drvRes.ok ? (_drvRes.value || []) : [];
+        if (drives && drives.length > 0) {
+            for (const drive of drives) {
+                const node = createTreeNode(
+                    { name: drive.name, path: drive.path, hasChildren: true },
+                    0,
+                    true
+                );
+                sidebarTree.appendChild(node);
+                // Restore expanded state
+                if (sidebarExpandedNodes.has(drive.path)) {
+                    toggleTreeNode(node, 0, true);
+                }
+            }
+        } else {
+            // Non-Windows: show root
+            const node = createTreeNode(
+                { name: '/', path: '/', hasChildren: true },
+                0,
+                true
+            );
+            sidebarTree.appendChild(node);
+            if (sidebarExpandedNodes.has('/')) {
+                toggleTreeNode(node, 0, true);
+            }
+        }
+    } catch (err) {
+        console.error('Failed to load drives for sidebar:', err);
+    }
+}

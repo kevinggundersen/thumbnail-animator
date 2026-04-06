@@ -736,7 +736,7 @@ function applyHoverScale() {
 
 function updateHoverScaleUI() {
     if (hoverScaleFixedWrap) hoverScaleFixedWrap.style.display = hoverScaleState.withZoom ? 'none' : '';
-    if (hoverScaleZoomRow) hoverScaleZoomRow.style.display = hoverScaleState.withZoom ? '' : 'none';
+    if (hoverScaleZoomRow) hoverScaleZoomRow.classList.toggle('hidden', !hoverScaleState.withZoom);
     if (hoverScaleZoomLabel) hoverScaleZoomLabel.textContent = hoverScaleState.withZoom ? 'Per-Zoom' : 'Fixed';
 }
 

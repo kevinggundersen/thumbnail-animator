@@ -642,7 +642,7 @@ function navigateCards(direction) {
     // Update focus visual
     cards.forEach((card, index) => {
         if (index === focusedCardIndex) {
-            card.style.outline = '2px solid var(--accent-color)';
+            card.style.outline = '2px solid var(--accent)';
             card.style.outlineOffset = '2px';
             card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         } else {
@@ -732,20 +732,16 @@ function renderFavorites() {
             showFavGroupContextMenu(e, group.id);
         });
 
-        // Drop target on group header
-        header.addEventListener('dragover', (e) => {
+        // Shared drag-drop logic for group header and items container
+        function handleFavDragOver(e) {
             e.preventDefault();
             e.stopPropagation();
             if (e.dataTransfer.types.includes('application/x-fav-drag')) {
                 e.dataTransfer.dropEffect = 'move';
                 header.classList.add('fav-drag-over');
             }
-        });
-        header.addEventListener('dragleave', (e) => {
-            e.stopPropagation();
-            header.classList.remove('fav-drag-over');
-        });
-        header.addEventListener('drop', (e) => {
+        }
+        function handleFavDrop(e) {
             e.preventDefault();
             e.stopPropagation();
             header.classList.remove('fav-drag-over');
@@ -755,7 +751,15 @@ function renderFavorites() {
                     moveFavoriteToGroup(data.groupId, data.index, group.id);
                 }
             } catch (_) {}
+        }
+
+        // Drop target on group header
+        header.addEventListener('dragover', handleFavDragOver);
+        header.addEventListener('dragleave', (e) => {
+            e.stopPropagation();
+            header.classList.remove('fav-drag-over');
         });
+        header.addEventListener('drop', handleFavDrop);
 
         groupEl.appendChild(header);
 
@@ -764,31 +768,14 @@ function renderFavorites() {
         itemsContainer.className = 'fav-group-items' + (group.collapsed ? ' collapsed' : '');
 
         // Drop target on items container (for dropping into empty or expanded groups)
-        itemsContainer.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            if (e.dataTransfer.types.includes('application/x-fav-drag')) {
-                e.dataTransfer.dropEffect = 'move';
-                header.classList.add('fav-drag-over');
-            }
-        });
+        itemsContainer.addEventListener('dragover', handleFavDragOver);
         itemsContainer.addEventListener('dragleave', (e) => {
             e.stopPropagation();
             if (!itemsContainer.contains(e.relatedTarget)) {
                 header.classList.remove('fav-drag-over');
             }
         });
-        itemsContainer.addEventListener('drop', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            header.classList.remove('fav-drag-over');
-            try {
-                const data = JSON.parse(e.dataTransfer.getData('application/x-fav-drag'));
-                if (data.groupId !== group.id) {
-                    moveFavoriteToGroup(data.groupId, data.index, group.id);
-                }
-            } catch (_) {}
-        });
+        itemsContainer.addEventListener('drop', handleFavDrop);
 
         group.items.forEach((fav, index) => {
             const item = document.createElement('div');
@@ -978,7 +965,7 @@ function showFavItemContextMenu(e, groupId, itemIndex) {
     openItem.addEventListener('click', () => {
         hideFavContextMenu();
         toolsMenuDropdown.classList.add('hidden');
-        setTimeout(() => navigateToFolder(fav.path).catch(() => {}), 0);
+        setTimeout(() => navigateToFolder(fav.path).catch(e => console.warn('[favorites] navigate failed:', e.message)), 0);
     });
     favContextMenu.appendChild(openItem);
 

@@ -500,7 +500,8 @@ async function generateVideoThumbnail(filePath) {
         } finally {
             pendingVideoThumbnailJobs.delete(thumbPath);
         }
-    } catch {
+    } catch (err) {
+        console.warn('[generateVideoThumbnail]', err.message);
         return null;
     }
 }
@@ -581,7 +582,8 @@ async function generateImageThumbnail(filePath, maxSize = 512) {
         } finally {
             pendingImageThumbnailJobs.delete(thumbPath);
         }
-    } catch {
+    } catch (err) {
+        console.warn('[generateImageThumbnail]', err.message);
         return null;
     }
 }
@@ -1132,6 +1134,19 @@ app.on('window-all-closed', () => {
         app.quit();
     }
 });
+
+// ── IPC Utility ──────────────────────────────────────────────────────────────
+/** Register an ipcMain handler with automatic { ok, value } / { ok, error } wrapping. */
+function wrapIpc(channel, fn) {
+    ipcMain.handle(channel, async (_event, ...args) => {
+        try {
+            const value = await fn(...args);
+            return { ok: true, value: value !== undefined ? value : null };
+        } catch (err) {
+            return { ok: false, error: err.message };
+        }
+    });
+}
 
 // IPC Handlers
 ipcMain.handle('select-folder', async (event, defaultPath) => {
@@ -2379,14 +2394,7 @@ ipcMain.handle('delete-file', async (event, filePath) => {
     }
 });
 
-ipcMain.handle('open-url', async (event, url) => {
-    try {
-        await shell.openExternal(url);
-        return { ok: true, value: null };
-    } catch (error) {
-        return { ok: false, error:error.message };
-    }
-});
+wrapIpc('open-url', (url) => shell.openExternal(url));
 
 ipcMain.handle('open-with-default', async (event, filePath) => {
     try {
@@ -5211,10 +5219,7 @@ ipcMain.handle('clip-terminate', async () => {
 });
 
 // Plugin system IPC handlers
-ipcMain.handle('get-plugin-manifests', () => {
-    try { return { ok: true, value: pluginRegistry.getManifests() }; }
-    catch (err) { return { ok: false, error: err.message }; }
-});
+wrapIpc('get-plugin-manifests', () => pluginRegistry.getManifests());
 
 ipcMain.handle('execute-plugin-action', async (event, pluginId, actionId, filePath, metadata) => {
     try {
@@ -5226,10 +5231,7 @@ ipcMain.handle('execute-plugin-action', async (event, pluginId, actionId, filePa
     }
 });
 
-ipcMain.handle('get-plugin-info-sections', () => {
-    try { return { ok: true, value: pluginRegistry.getAllInfoSections() }; }
-    catch (err) { return { ok: false, error: err.message }; }
-});
+wrapIpc('get-plugin-info-sections', () => pluginRegistry.getAllInfoSections());
 
 ipcMain.handle('render-plugin-info-section', async (event, pluginId, sectionId, filePath, pluginMetadata) => {
     try {
@@ -5241,10 +5243,7 @@ ipcMain.handle('render-plugin-info-section', async (event, pluginId, sectionId, 
     }
 });
 
-ipcMain.handle('get-plugin-batch-operations', () => {
-    try { return { ok: true, value: pluginRegistry.getAllBatchOperations() }; }
-    catch (err) { return { ok: false, error: err.message }; }
-});
+wrapIpc('get-plugin-batch-operations', () => pluginRegistry.getAllBatchOperations());
 
 ipcMain.handle('execute-plugin-batch-operation', async (event, pluginId, operationId, filePaths, options) => {
     try {
@@ -5256,10 +5255,7 @@ ipcMain.handle('execute-plugin-batch-operation', async (event, pluginId, operati
     }
 });
 
-ipcMain.handle('get-plugin-settings-panels', () => {
-    try { return { ok: true, value: pluginRegistry.getAllSettingsPanels() }; }
-    catch (err) { return { ok: false, error: err.message }; }
-});
+wrapIpc('get-plugin-settings-panels', () => pluginRegistry.getAllSettingsPanels());
 
 ipcMain.handle('execute-plugin-settings-action', async (event, pluginId, action, data) => {
     try {
@@ -5281,10 +5277,7 @@ ipcMain.handle('plugin-generate-thumbnail', async (event, filePath, ext) => {
     }
 });
 
-ipcMain.handle('get-plugin-states', () => {
-    try { return { ok: true, value: pluginRegistry.getPluginStates() }; }
-    catch (err) { return { ok: false, error: err.message }; }
-});
+wrapIpc('get-plugin-states', () => pluginRegistry.getPluginStates());
 
 ipcMain.handle('set-plugin-enabled', (event, pluginId, enabled) => {
     try {
@@ -5440,22 +5433,10 @@ app.on('before-quit', async () => {
 // ── SQLite Database IPC Handlers ─────────────────────────────────────────────
 
 // Migration
-ipcMain.handle('db-check-migration-status', async () => {
-    try { return { ok: true, value:await appDb.checkMigrationStatus() }; }
-    catch (e) { return { ok: false, error:e.message }; }
-});
-ipcMain.handle('db-run-migration', async (event, data) => {
-    try { await appDb.runMigration(data); return { ok: true, value: null }; }
-    catch (e) { return { ok: false, error:e.message }; }
-});
-ipcMain.handle('db-get-meta', async (event, key) => {
-    try { return { ok: true, value:await appDb.getMeta(key) }; }
-    catch (e) { return { ok: false, error:e.message }; }
-});
-ipcMain.handle('db-set-meta', async (event, key, value) => {
-    try { await appDb.setMeta(key, value); return { ok: true, value: null }; }
-    catch (e) { return { ok: false, error:e.message }; }
-});
+wrapIpc('db-check-migration-status', () => appDb.checkMigrationStatus());
+wrapIpc('db-run-migration', (data) => appDb.runMigration(data));
+wrapIpc('db-get-meta', (key) => appDb.getMeta(key));
+wrapIpc('db-set-meta', (key, value) => appDb.setMeta(key, value));
 
 // IPC result caches for frequently-fetched full-table queries
 const _ipcCache = { ratings: null, pinned: null, tags: null, collections: null };
@@ -5468,9 +5449,8 @@ ipcMain.handle('db-get-all-ratings', async () => {
     }
     catch (e) { return { ok: false, error:e.message }; }
 });
-ipcMain.handle('db-set-rating', async (event, filePath, rating) => {
-    try { await appDb.setRating(filePath, rating); _ipcCache.ratings = null; return { ok: true, value: null }; }
-    catch (e) { return { ok: false, error:e.message }; }
+wrapIpc('db-set-rating', async (filePath, rating) => {
+    await appDb.setRating(filePath, rating); _ipcCache.ratings = null;
 });
 
 // Pins
@@ -5481,34 +5461,18 @@ ipcMain.handle('db-get-all-pinned', async () => {
     }
     catch (e) { return { ok: false, error:e.message }; }
 });
-ipcMain.handle('db-set-pinned', async (event, filePath, pinned) => {
-    try { await appDb.setPinned(filePath, pinned); _ipcCache.pinned = null; return { ok: true, value: null }; }
-    catch (e) { return { ok: false, error:e.message }; }
+wrapIpc('db-set-pinned', async (filePath, pinned) => {
+    await appDb.setPinned(filePath, pinned); _ipcCache.pinned = null;
 });
 
 // Favorites
-ipcMain.handle('db-get-favorites', async () => {
-    try { return { ok: true, value:await appDb.getFavorites() }; }
-    catch (e) { return { ok: false, error:e.message }; }
-});
-ipcMain.handle('db-save-favorites', async (event, favObj) => {
-    try { await appDb.saveFavorites(favObj); return { ok: true, value: null }; }
-    catch (e) { return { ok: false, error:e.message }; }
-});
+wrapIpc('db-get-favorites', () => appDb.getFavorites());
+wrapIpc('db-save-favorites', (favObj) => appDb.saveFavorites(favObj));
 
 // Recent files
-ipcMain.handle('db-get-recent-files', async (event, limit) => {
-    try { return { ok: true, value:await appDb.getRecentFiles(limit || 50) }; }
-    catch (e) { return { ok: false, error:e.message }; }
-});
-ipcMain.handle('db-add-recent-file', async (event, entry, limit) => {
-    try { await appDb.addRecentFile(entry, limit || 50); return { ok: true, value: null }; }
-    catch (e) { return { ok: false, error:e.message }; }
-});
-ipcMain.handle('db-clear-recent-files', async () => {
-    try { await appDb.clearRecentFiles(); return { ok: true, value: null }; }
-    catch (e) { return { ok: false, error:e.message }; }
-});
+wrapIpc('db-get-recent-files', (limit) => appDb.getRecentFiles(limit || 50));
+wrapIpc('db-add-recent-file', (entry, limit) => appDb.addRecentFile(entry, limit || 50));
+wrapIpc('db-clear-recent-files', () => appDb.clearRecentFiles());
 
 // Collections
 ipcMain.handle('db-get-all-collections', async () => {
@@ -5518,48 +5482,18 @@ ipcMain.handle('db-get-all-collections', async () => {
     }
     catch (e) { return { ok: false, error:e.message }; }
 });
-ipcMain.handle('db-get-collection', async (event, id) => {
-    try { return { ok: true, value:await appDb.getCollection(id) }; }
-    catch (e) { return { ok: false, error:e.message }; }
-});
-ipcMain.handle('db-save-collection', async (event, col) => {
-    try { _ipcCache.collections = null; return { ok: true, value:await appDb.saveCollection(col) }; }
-    catch (e) { return { ok: false, error:e.message }; }
-});
-ipcMain.handle('db-delete-collection', async (event, id) => {
-    try { await appDb.deleteCollection(id); _ipcCache.collections = null; return { ok: true, value: null }; }
-    catch (e) { return { ok: false, error:e.message }; }
-});
-ipcMain.handle('db-get-collection-files', async (event, collectionId) => {
-    try { return { ok: true, value:await appDb.getCollectionFiles(collectionId) }; }
-    catch (e) { return { ok: false, error:e.message }; }
-});
-ipcMain.handle('db-add-files-to-collection', async (event, collectionId, filePaths) => {
-    try { return { ok: true, value:await appDb.addFilesToCollection(collectionId, filePaths) }; }
-    catch (e) { return { ok: false, error:e.message }; }
-});
-ipcMain.handle('db-remove-file-from-collection', async (event, collectionId, filePath) => {
-    try { await appDb.removeFileFromCollection(collectionId, filePath); return { ok: true, value: null }; }
-    catch (e) { return { ok: false, error:e.message }; }
-});
-ipcMain.handle('db-remove-files-from-collection', async (event, collectionId, filePaths) => {
-    try { await appDb.removeFilesFromCollection(collectionId, filePaths); return { ok: true, value: null }; }
-    catch (e) { return { ok: false, error:e.message }; }
-});
+wrapIpc('db-get-collection', (id) => appDb.getCollection(id));
+wrapIpc('db-save-collection', async (col) => { _ipcCache.collections = null; return appDb.saveCollection(col); });
+wrapIpc('db-delete-collection', async (id) => { await appDb.deleteCollection(id); _ipcCache.collections = null; });
+wrapIpc('db-get-collection-files', (collectionId) => appDb.getCollectionFiles(collectionId));
+wrapIpc('db-add-files-to-collection', (collectionId, filePaths) => appDb.addFilesToCollection(collectionId, filePaths));
+wrapIpc('db-remove-file-from-collection', (collectionId, filePath) => appDb.removeFileFromCollection(collectionId, filePath));
+wrapIpc('db-remove-files-from-collection', (collectionId, filePaths) => appDb.removeFilesFromCollection(collectionId, filePaths));
 
 // Tags
-ipcMain.handle('db-create-tag', async (event, name, description, color) => {
-    try { _ipcCache.tags = null; return { ok: true, value:await appDb.createTag(name, description, color) }; }
-    catch (e) { return { ok: false, error:e.message }; }
-});
-ipcMain.handle('db-update-tag', async (event, id, updates) => {
-    try { _ipcCache.tags = null; return { ok: true, value:await appDb.updateTag(id, updates) }; }
-    catch (e) { return { ok: false, error:e.message }; }
-});
-ipcMain.handle('db-delete-tag', async (event, id) => {
-    try { await appDb.deleteTag(id); _ipcCache.tags = null; return { ok: true, value: null }; }
-    catch (e) { return { ok: false, error:e.message }; }
-});
+wrapIpc('db-create-tag', async (name, description, color) => { _ipcCache.tags = null; return appDb.createTag(name, description, color); });
+wrapIpc('db-update-tag', async (id, updates) => { _ipcCache.tags = null; return appDb.updateTag(id, updates); });
+wrapIpc('db-delete-tag', async (id) => { await appDb.deleteTag(id); _ipcCache.tags = null; });
 ipcMain.handle('db-get-all-tags', async () => {
     try {
         if (!_ipcCache.tags) _ipcCache.tags = { ok: true, value:await appDb.getAllTags() };
@@ -5567,52 +5501,19 @@ ipcMain.handle('db-get-all-tags', async () => {
     }
     catch (e) { return { ok: false, error:e.message }; }
 });
-ipcMain.handle('db-get-tag', async (event, id) => {
-    try { return { ok: true, value:await appDb.getTag(id) }; }
-    catch (e) { return { ok: false, error:e.message }; }
-});
-ipcMain.handle('db-search-tags', async (event, query) => {
-    try { return { ok: true, value:await appDb.searchTags(query) }; }
-    catch (e) { return { ok: false, error:e.message }; }
-});
-ipcMain.handle('db-get-top-tags', async (event, limit) => {
-    try { return { ok: true, value:await appDb.getTopTags(limit) }; }
-    catch (e) { return { ok: false, error:e.message }; }
-});
+wrapIpc('db-get-tag', (id) => appDb.getTag(id));
+wrapIpc('db-search-tags', (query) => appDb.searchTags(query));
+wrapIpc('db-get-top-tags', (limit) => appDb.getTopTags(limit));
 
 // File-tag associations
-ipcMain.handle('db-add-tag-to-file', async (event, filePath, tagId) => {
-    try { await appDb.addTagToFile(filePath, tagId); return { ok: true, value: null }; }
-    catch (e) { return { ok: false, error:e.message }; }
-});
-ipcMain.handle('db-remove-tag-from-file', async (event, filePath, tagId) => {
-    try { await appDb.removeTagFromFile(filePath, tagId); return { ok: true, value: null }; }
-    catch (e) { return { ok: false, error:e.message }; }
-});
-ipcMain.handle('db-get-tags-for-file', async (event, filePath) => {
-    try { return { ok: true, value:await appDb.getTagsForFile(filePath) }; }
-    catch (e) { return { ok: false, error:e.message }; }
-});
-ipcMain.handle('db-get-tags-for-files', async (event, filePaths) => {
-    try { return { ok: true, value:await appDb.getTagsForFiles(filePaths) }; }
-    catch (e) { return { ok: false, error:e.message }; }
-});
-ipcMain.handle('db-get-files-for-tag', async (event, tagId) => {
-    try { return { ok: true, value:await appDb.getFilesForTag(tagId) }; }
-    catch (e) { return { ok: false, error:e.message }; }
-});
-ipcMain.handle('db-bulk-tag-files', async (event, filePaths, tagId) => {
-    try { await appDb.bulkTagFiles(filePaths, tagId); return { ok: true, value: null }; }
-    catch (e) { return { ok: false, error:e.message }; }
-});
-ipcMain.handle('db-bulk-remove-tag-from-files', async (event, filePaths, tagId) => {
-    try { await appDb.bulkRemoveTagFromFiles(filePaths, tagId); return { ok: true, value: null }; }
-    catch (e) { return { ok: false, error:e.message }; }
-});
-ipcMain.handle('db-query-files-by-tags', async (event, expression) => {
-    try { return { ok: true, value:await appDb.queryFilesByTags(expression) }; }
-    catch (e) { return { ok: false, error:e.message }; }
-});
+wrapIpc('db-add-tag-to-file', (filePath, tagId) => appDb.addTagToFile(filePath, tagId));
+wrapIpc('db-remove-tag-from-file', (filePath, tagId) => appDb.removeTagFromFile(filePath, tagId));
+wrapIpc('db-get-tags-for-file', (filePath) => appDb.getTagsForFile(filePath));
+wrapIpc('db-get-tags-for-files', (filePaths) => appDb.getTagsForFiles(filePaths));
+wrapIpc('db-get-files-for-tag', (tagId) => appDb.getFilesForTag(tagId));
+wrapIpc('db-bulk-tag-files', (filePaths, tagId) => appDb.bulkTagFiles(filePaths, tagId));
+wrapIpc('db-bulk-remove-tag-from-files', (filePaths, tagId) => appDb.bulkRemoveTagFromFiles(filePaths, tagId));
+wrapIpc('db-query-files-by-tags', (expression) => appDb.queryFilesByTags(expression));
 ipcMain.handle('db-save-search', async (event, entry) => {
     try { return { ok: true, value:String((await appDb.saveSearch(entry)) || '') }; }
     catch (e) { return { ok: false, error:String(e && e.message || e) }; }
@@ -5636,27 +5537,9 @@ ipcMain.handle('db-get-saved-searches', async () => {
         return { ok: false, error: String(e && e.message || e) };
     }
 });
-ipcMain.handle('db-delete-saved-search', async (event, id) => {
-    try { await appDb.deleteSavedSearch(id); return { ok: true, value: null }; }
-    catch (e) { return { ok: false, error:e.message }; }
-});
-ipcMain.handle('db-rename-saved-search', async (event, id, name) => {
-    try { await appDb.renameSavedSearch(id, name); return { ok: true, value: null }; }
-    catch (e) { return { ok: false, error:e.message }; }
-});
-ipcMain.handle('db-touch-saved-search', async (event, id) => {
-    try { await appDb.touchSavedSearch(id); return { ok: true, value: null }; }
-    catch (e) { return { ok: false, error:e.message }; }
-});
-ipcMain.handle('db-suggest-tags', async (event, filePath) => {
-    try { return { ok: true, value:await appDb.suggestTagsForFile(filePath) }; }
-    catch (e) { return { ok: false, error:e.message }; }
-});
-ipcMain.handle('db-export-tags', async () => {
-    try { return { ok: true, value:await appDb.exportTags() }; }
-    catch (e) { return { ok: false, error:e.message }; }
-});
-ipcMain.handle('db-import-tags', async (event, data) => {
-    try { await appDb.importTags(data); return { ok: true, value: null }; }
-    catch (e) { return { ok: false, error:e.message }; }
-});
+wrapIpc('db-delete-saved-search', (id) => appDb.deleteSavedSearch(id));
+wrapIpc('db-rename-saved-search', (id, name) => appDb.renameSavedSearch(id, name));
+wrapIpc('db-touch-saved-search', (id) => appDb.touchSavedSearch(id));
+wrapIpc('db-suggest-tags', (filePath) => appDb.suggestTagsForFile(filePath));
+wrapIpc('db-export-tags', () => appDb.exportTags());
+wrapIpc('db-import-tags', (data) => appDb.importTags(data));

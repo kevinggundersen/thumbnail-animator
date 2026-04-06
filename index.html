@@ -81,7 +81,7 @@
             <div class="main-content-area">
                 <div id="breadcrumb-container" class="breadcrumb-container">
                     <span id="current-path">No folder selected</span>
-                    <span id="breadcrumb-filter-chip" class="breadcrumb-filter-chip" title="Active filters" style="display:none"></span>
+                    <span id="breadcrumb-filter-chip" class="breadcrumb-filter-chip hidden" title="Active filters"></span>
                     <span id="breadcrumb-sort-chip" class="breadcrumb-sort-chip" title="Sort order"></span>
                     <span id="item-count" class="item-count"></span>
                 </div>
@@ -129,7 +129,7 @@
                 </div>
             </div>
             <div class="status-bar-right">
-                <span id="status-selection-count" class="status-selection-count" style="display:none"></span>
+                <span id="status-selection-count" class="status-selection-count hidden"></span>
                 <span id="status-selection-info"></span>
                 <span class="status-separator">|</span>
                 <span id="status-layout-mode"></span>
@@ -928,7 +928,7 @@
                                     <span class="toggle-label" id="hover-scale-zoom-label">Fixed</span>
                                 </label>
                             </div>
-                            <div class="ci-sub" id="hover-scale-zoom-row" style="display:none;">
+                            <div class="ci-sub hidden" id="hover-scale-zoom-row">
                                 <div class="hover-scale-zoom-sliders">
                                     <div class="hover-scale-zoom-row">
                                         <span class="hover-scale-zoom-label">At 50%</span>
@@ -1090,7 +1090,7 @@
                                     <span class="toggle-label" id="card-info-extension-label">On</span>
                                 </label>
                             </div>
-                            <div class="ci-sub" id="card-info-extension-hover-row" style="display: none;">
+                            <div class="ci-sub hidden" id="card-info-extension-hover-row">
                                 <label class="settings-label">
                                     <div class="settings-item-info">
                                         <div class="settings-item-title">Only on Hover</div>
@@ -1118,7 +1118,7 @@
                                     <span class="toggle-label" id="card-info-resolution-label">On</span>
                                 </label>
                             </div>
-                            <div class="ci-sub" id="card-info-resolution-hover-row" style="display: none;">
+                            <div class="ci-sub hidden" id="card-info-resolution-hover-row">
                                 <label class="settings-label">
                                     <div class="settings-item-info">
                                         <div class="settings-item-title">Only on Hover</div>
@@ -1146,7 +1146,7 @@
                                     <span class="toggle-label" id="card-info-size-label">Off</span>
                                 </label>
                             </div>
-                            <div class="ci-sub" id="card-info-size-hover-row" style="display: none;">
+                            <div class="ci-sub hidden" id="card-info-size-hover-row">
                                 <label class="settings-label">
                                     <div class="settings-item-info">
                                         <div class="settings-item-title">Only on Hover</div>
@@ -1174,7 +1174,7 @@
                                     <span class="toggle-label" id="card-info-date-label">Off</span>
                                 </label>
                             </div>
-                            <div class="ci-sub" id="card-info-date-hover-row" style="display: none;">
+                            <div class="ci-sub hidden" id="card-info-date-hover-row">
                                 <label class="settings-label">
                                     <div class="settings-item-info">
                                         <div class="settings-item-title">Only on Hover</div>
@@ -1217,7 +1217,7 @@
                                     <span class="toggle-label" id="card-info-stars-label">On</span>
                                 </label>
                             </div>
-                            <div class="ci-sub" id="card-info-stars-hover-row" style="display: none;">
+                            <div class="ci-sub hidden" id="card-info-stars-hover-row">
                                 <label class="settings-label">
                                     <div class="settings-item-info">
                                         <div class="settings-item-title">Only on Hover</div>
@@ -1245,7 +1245,7 @@
                                     <span class="toggle-label" id="card-info-audio-label">On</span>
                                 </label>
                             </div>
-                            <div class="ci-sub" id="card-info-audio-hover-row" style="display: none;">
+                            <div class="ci-sub hidden" id="card-info-audio-hover-row">
                                 <label class="settings-label">
                                     <div class="settings-item-info">
                                         <div class="settings-item-title">Only on Hover</div>
@@ -1273,7 +1273,7 @@
                                     <span class="toggle-label" id="card-info-filename-label">On</span>
                                 </label>
                             </div>
-                            <div class="ci-sub" id="card-info-filename-hover-row" style="display: none;">
+                            <div class="ci-sub hidden" id="card-info-filename-hover-row">
                                 <label class="settings-label">
                                     <div class="settings-item-info">
                                         <div class="settings-item-title">Only on Hover</div>
@@ -1301,7 +1301,7 @@
                                     <span class="toggle-label" id="card-info-tags-label">On</span>
                                 </label>
                             </div>
-                            <div class="ci-sub" id="card-info-tags-hover-row" style="display: none;">
+                            <div class="ci-sub hidden" id="card-info-tags-hover-row">
                                 <label class="settings-label">
                                     <div class="settings-item-info">
                                         <div class="settings-item-title">Only on Hover</div>
@@ -2252,6 +2252,7 @@
     <script src="themes.js"></script>
     <script src="fuse.vendor.js"></script>
     <script src="command-palette.js"></script>
+    <script src="filmstrip-scrubber.js"></script>
     <script src="renderer.js"></script>
     <script defer src="settings-ui.js"></script>
     <script defer src="convert-dialog.js"></script>

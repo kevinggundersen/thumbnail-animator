@@ -283,6 +283,18 @@ class AnimatedImagePlaybackController extends MediaPlaybackController {
             this._keyframes = new Array(this._frames.length);
             this._compositedCount = 0;
 
+            // Dynamic keyframe budget: cap total keyframe memory at ~256 MB.
+            // Each keyframe is an ImageData = width * height * 4 bytes (RGBA).
+            if (this._useWindow) {
+                const KEYFRAME_BUDGET_BYTES = 256 * 1024 * 1024; // 256 MB
+                const perKeyframeBytes = this._gifWidth * this._gifHeight * 4;
+                if (perKeyframeBytes > 0) {
+                    const maxKeyframes = Math.max(2, Math.floor(KEYFRAME_BUDGET_BYTES / perKeyframeBytes));
+                    const minInterval = Math.ceil(this._frames.length / maxKeyframes);
+                    this._keyframeInterval = Math.max(this._keyframeInterval, minInterval);
+                }
+            }
+
             // Show first frame immediately via putImageData, then pre-render rest async
             this._preRenderRange(0, 1); // composite frame 0
             this._showFrame(0);
@@ -443,10 +455,18 @@ class AnimatedImagePlaybackController extends MediaPlaybackController {
         if (!this._useWindow) return;
         const lo = centerFrame - this._windowBehind;
         const hi = centerFrame + this._windowAhead;
+        // Evict keyframes that are far outside the current window to bound memory.
+        // Keep keyframes within a wider range (4× the composited window) so seeking
+        // to nearby positions is still fast; only truly distant keyframes are evicted.
+        const kfLo = centerFrame - this._windowBehind * 4;
+        const kfHi = centerFrame + this._windowAhead * 4;
         for (let i = 0; i < this._frames.length; i++) {
             if (this._composited[i] && (i < lo || i > hi)) {
                 this._composited[i] = null;
                 this._compositedCount--;
+            }
+            if (this._keyframes[i] && (i < kfLo || i > kfHi)) {
+                this._keyframes[i] = null;
             }
         }
     }

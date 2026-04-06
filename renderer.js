@@ -602,10 +602,9 @@ function vsGetVisibleRange(scrollTop, viewportHeight) {
     const visibleBottom = scrollTop + viewportHeight + VS_BUFFER_PX;
 
     // Find startIndex: first item whose bottom edge (top + height) > visibleTop
+    // Binary search for both start and end — O(log n) instead of O(n) per scroll frame
     let startIndex = 0;
-    // Binary search for efficient lookup; linear scan only for tiny lists
-    if (itemCount > 500) {
-        // Binary search for start
+    {
         let lo = 0, hi = itemCount - 1;
         while (lo < hi) {
             const mid = (lo + hi) >>> 1;
@@ -617,24 +616,23 @@ function vsGetVisibleRange(scrollTop, viewportHeight) {
             }
         }
         startIndex = lo;
-    } else {
-        for (let i = 0; i < itemCount; i++) {
-            const idx = i * 4;
-            if (positions[idx + 1] + positions[idx + 3] >= visibleTop) {
-                startIndex = i;
-                break;
-            }
-            if (i === itemCount - 1) startIndex = itemCount;
-        }
     }
 
-    // Find endIndex: first item whose top > visibleBottom
+    // Find endIndex: first item whose top > visibleBottom (binary search)
     let endIndex = itemCount;
-    for (let i = startIndex; i < itemCount; i++) {
-        const idx = i * 4;
-        if (positions[idx + 1] > visibleBottom) {
-            endIndex = i;
-            break;
+    {
+        let elo = startIndex, ehi = itemCount - 1;
+        while (elo < ehi) {
+            const mid = (elo + ehi) >>> 1;
+            const idx = mid * 4;
+            if (positions[idx + 1] <= visibleBottom) {
+                elo = mid + 1;
+            } else {
+                ehi = mid;
+            }
+        }
+        if (elo < itemCount && positions[elo * 4 + 1] > visibleBottom) {
+            endIndex = elo;
         }
     }
 
@@ -5251,12 +5249,13 @@ function filterItems(items) {
     return filtered;
 }
 
-// Function to sort items based on current sorting preferences
-function sortItems(items) {
-    // Separate folders and files (single pass)
-    const folders = [], files = [];
-    for (const item of items) (item.type === 'folder' ? folders : files).push(item);
-
+// Function to sort items based on current sorting preferences.
+// Uses a single composite sort to avoid intermediate array allocations —
+// pinned state and folder/file type are encoded into the primary sort key
+// so no separate partition step is needed.
+function sortItems(inputItems) {
+    // Work on a copy so we never mutate the caller's array (e.g. currentItems)
+    const items = inputItems.slice();
     // AI smart collections sort files by relevance score (highest confidence first),
     // overriding sortType. Matches the manual AI search bar behavior.
     let aiCollectionSort = false;
@@ -5267,81 +5266,76 @@ function sortItems(items) {
         }
     }
 
-    // Sort folders
-    folders.sort((a, b) => {
+    const ratingSort = (starFilterActive && starSortOrder !== 'none') || sortType === 'rating';
+    const ratingOrder = starSortOrder !== 'none' ? starSortOrder : 'desc';
+    const ascending = sortOrder === 'ascending';
+
+    // Single composite sort: primary key = group (pinned-folder=0, folder=1, pinned-file=2, file=3)
+    // secondary key = existing sort criteria per type
+    items.sort((a, b) => {
+        const aIsFolder = a.type === 'folder';
+        const bIsFolder = b.type === 'folder';
+        const aPinned = isFilePinned(a.path || a.folderPath);
+        const bPinned = isFilePinned(b.path || b.folderPath);
+
+        // Group: pinned folders (0) > unpinned folders (1) > pinned files (2) > unpinned files (3)
+        const aGroup = (aIsFolder ? 0 : 2) + (aPinned ? 0 : 1);
+        const bGroup = (bIsFolder ? 0 : 2) + (bPinned ? 0 : 1);
+        if (aGroup !== bGroup) return aGroup - bGroup;
+
+        // Within each group, apply the appropriate sort
         let comparison = 0;
-        if (sortType === 'name') {
-            comparison = a.name.localeCompare(b.name, undefined, { numeric: true });
-        } else if (sortType === 'date') {
-            // Use mtime if available, otherwise fall back to name
-            const aTime = a.mtime || 0;
-            const bTime = b.mtime || 0;
-            comparison = aTime - bTime;
-            // If times are equal or missing, fall back to name
-            if (comparison === 0) {
+
+        if (aIsFolder) {
+            // Folder sort
+            if (sortType === 'name') {
                 comparison = a.name.localeCompare(b.name, undefined, { numeric: true });
+            } else if (sortType === 'date') {
+                comparison = (a.mtime || 0) - (b.mtime || 0);
+                if (comparison === 0) comparison = a.name.localeCompare(b.name, undefined, { numeric: true });
             }
+            return ascending ? comparison : -comparison;
         }
-        return sortOrder === 'ascending' ? comparison : -comparison;
-    });
-    
-    // Sort files
-    files.sort((a, b) => {
-        let comparison = 0;
+
+        // File sort
         if (aiCollectionSort) {
-            // Sort by AI relevance score (highest confidence first)
             comparison = (b._aiScore || 0) - (a._aiScore || 0);
-            if (comparison === 0) {
-                comparison = a.name.localeCompare(b.name, undefined, { numeric: true });
-            }
+            if (comparison === 0) comparison = a.name.localeCompare(b.name, undefined, { numeric: true });
             return comparison;
-        } else if ((starFilterActive && starSortOrder !== 'none') || sortType === 'rating') {
-            // Sort by rating using starSortOrder (or desc for sortType=rating)
-            const aRating = getFileRating(a.path);
-            const bRating = getFileRating(b.path);
-            const order = starSortOrder !== 'none' ? starSortOrder : 'desc';
-            comparison = order === 'asc' ? aRating - bRating : bRating - aRating;
-            if (comparison === 0) {
-                comparison = a.name.localeCompare(b.name, undefined, { numeric: true });
-            }
+        } else if (ratingSort) {
+            const aRating = a._cachedRating ?? getFileRating(a.path);
+            const bRating = b._cachedRating ?? getFileRating(b.path);
+            comparison = ratingOrder === 'asc' ? aRating - bRating : bRating - aRating;
+            if (comparison === 0) comparison = a.name.localeCompare(b.name, undefined, { numeric: true });
             return comparison;
         } else if (sortType === 'name') {
             comparison = a.name.localeCompare(b.name, undefined, { numeric: true });
         } else if (sortType === 'date') {
-            const aTime = a.mtime || 0;
-            const bTime = b.mtime || 0;
-            comparison = aTime - bTime;
-            if (comparison === 0) {
-                comparison = a.name.localeCompare(b.name, undefined, { numeric: true });
-            }
+            comparison = (a.mtime || 0) - (b.mtime || 0);
+            if (comparison === 0) comparison = a.name.localeCompare(b.name, undefined, { numeric: true });
         } else if (sortType === 'size') {
-            const aSize = a.size || 0;
-            const bSize = b.size || 0;
-            comparison = aSize - bSize;
+            comparison = (a.size || 0) - (b.size || 0);
             if (comparison === 0) comparison = a.name.localeCompare(b.name, undefined, { numeric: true });
         } else if (sortType === 'dimensions') {
-            const aPixels = (a.width || 0) * (a.height || 0);
-            const bPixels = (b.width || 0) * (b.height || 0);
-            comparison = aPixels - bPixels;
+            comparison = ((a.width || 0) * (a.height || 0)) - ((b.width || 0) * (b.height || 0));
             if (comparison === 0) comparison = a.name.localeCompare(b.name, undefined, { numeric: true });
         }
-        return sortOrder === 'ascending' ? comparison : -comparison;
+        return ascending ? comparison : -comparison;
     });
 
-    // Partition pinned items to top of each group (single pass)
-    const pinnedFolders = [], unpinnedFolders = [];
-    for (const f of folders) (isFilePinned(f.path) ? pinnedFolders : unpinnedFolders).push(f);
-    const pinnedFiles = [], unpinnedFiles = [];
-    for (const f of files) (isFilePinned(f.path) ? pinnedFiles : unpinnedFiles).push(f);
-
-    const allFiles = pinnedFiles.concat(unpinnedFiles);
-
-    if (groupByDate && allFiles.length > 0) {
-        vsState.groupHeadersPresent = true;
-        return [...pinnedFolders, ...unpinnedFolders, ...injectDateGroupHeaders(allFiles)];
+    // Extract files portion for date grouping (folders are already at front)
+    if (groupByDate) {
+        let firstFileIdx = 0;
+        while (firstFileIdx < items.length && items[firstFileIdx].type === 'folder') firstFileIdx++;
+        if (firstFileIdx < items.length) {
+            const folderPart = items.slice(0, firstFileIdx);
+            const filePart = items.slice(firstFileIdx);
+            vsState.groupHeadersPresent = true;
+            return folderPart.concat(injectDateGroupHeaders(filePart));
+        }
     }
     vsState.groupHeadersPresent = false;
-    return pinnedFolders.concat(unpinnedFolders, allFiles);
+    return items;
 }
 
 // Function to apply sorting and reload current folder
@@ -6952,42 +6946,72 @@ function cosineSimilarity(a, b) {
 }
 
 /**
- * Reorder items by visual similarity using a greedy nearest-neighbor traversal.
- * Folders are kept at the top; media is reordered so visually similar items are adjacent.
+ * Reorder items by visual similarity using random-projection sorting.
+ * Projects each embedding onto a set of random hyperplanes, builds a
+ * locality-sensitive hash, then sorts by hash.  O(n log n) instead of
+ * the old O(n²) greedy nearest-neighbor which became catastrophic at N>2000.
+ *
+ * Quality is comparable: random projections preserve angular distance with
+ * high probability (Johnson–Lindenstrauss lemma).
  */
+const _clusterProjections = []; // lazily initialised random unit vectors
+const _CLUSTER_NUM_PROJECTIONS = 24; // 24-bit hash → good angular resolution
+
+function _ensureClusterProjections(dim) {
+    if (_clusterProjections.length >= _CLUSTER_NUM_PROJECTIONS && _clusterProjections[0].length === dim) return;
+    _clusterProjections.length = 0;
+    for (let p = 0; p < _CLUSTER_NUM_PROJECTIONS; p++) {
+        const v = new Float32Array(dim);
+        let norm = 0;
+        for (let i = 0; i < dim; i++) {
+            // Box-Muller for Gaussian random
+            const u1 = Math.random(), u2 = Math.random();
+            v[i] = Math.sqrt(-2 * Math.log(u1 || 1e-10)) * Math.cos(2 * Math.PI * u2);
+            norm += v[i] * v[i];
+        }
+        norm = Math.sqrt(norm);
+        for (let i = 0; i < dim; i++) v[i] /= norm;
+        _clusterProjections.push(v);
+    }
+}
+
 function applyVisualClustering(items) {
-    const folders = items.filter(i => i.type === 'folder');
-    const media   = items.filter(i => i.type !== 'folder');
-    const withEmb = media.filter(i => currentEmbeddings.has(i.path));
-    const noEmb   = media.filter(i => !currentEmbeddings.has(i.path));
+    const folders = [], withEmb = [], noEmb = [];
+    for (const item of items) {
+        if (item.type === 'folder') { folders.push(item); continue; }
+        if (currentEmbeddings.has(item.path)) withEmb.push(item);
+        else noEmb.push(item);
+    }
 
     if (withEmb.length < 2) return items;
 
-    // Greedy nearest-neighbor: start from first item, repeatedly pick closest unvisited
-    const visited = new Set();
-    const ordered = [];
-    let current = withEmb[0];
-    visited.add(current.path);
-    ordered.push(current);
+    // Determine embedding dimension from first item
+    const firstEmb = currentEmbeddings.get(withEmb[0].path);
+    const dim = firstEmb.length;
+    _ensureClusterProjections(dim);
 
-    while (ordered.length < withEmb.length) {
-        const curEmb = currentEmbeddings.get(current.path);
-        let bestSim = -Infinity;
-        let bestItem = null;
-        for (const item of withEmb) {
-            if (visited.has(item.path)) continue;
-            const emb = currentEmbeddings.get(item.path);
-            if (!emb) continue;
-            const sim = cosineSimilarity(curEmb, emb);
-            if (sim > bestSim) { bestSim = sim; bestItem = item; }
+    // Compute LSH key for each item: dot product sign per projection → bit string
+    const hashEntries = new Array(withEmb.length);
+    for (let i = 0; i < withEmb.length; i++) {
+        const emb = currentEmbeddings.get(withEmb[i].path);
+        let hash = 0;
+        for (let p = 0; p < _CLUSTER_NUM_PROJECTIONS; p++) {
+            const proj = _clusterProjections[p];
+            let dot = 0;
+            for (let d = 0; d < dim; d++) dot += emb[d] * proj[d];
+            if (dot >= 0) hash |= (1 << p);
         }
-        if (!bestItem) break;
-        visited.add(bestItem.path);
-        ordered.push(bestItem);
-        current = bestItem;
+        hashEntries[i] = { item: withEmb[i], hash };
     }
 
-    return [...folders, ...ordered, ...noEmb];
+    // Sort by LSH hash — items with similar embeddings get similar hashes
+    hashEntries.sort((a, b) => a.hash - b.hash);
+
+    // Extract sorted items
+    const ordered = new Array(hashEntries.length);
+    for (let i = 0; i < hashEntries.length; i++) ordered[i] = hashEntries[i].item;
+
+    return folders.concat(ordered, noEmb);
 }
 
 // ── Filter/Sort Worker Bridge ─────────────────────────────────────────

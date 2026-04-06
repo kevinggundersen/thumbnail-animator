@@ -385,6 +385,28 @@ function runFilterPipeline(state) {
 }
 
 // ── Visual clustering (by index) ──────────────────────────────────────
+// Uses random-projection LSH for O(n log n) clustering instead of O(n²)
+// greedy nearest-neighbor. See renderer.js applyVisualClustering for details.
+
+const _wClusterProjections = []; // lazily initialised random unit vectors
+const _W_CLUSTER_NUM_PROJECTIONS = 24;
+
+function _wEnsureClusterProjections(dim) {
+    if (_wClusterProjections.length >= _W_CLUSTER_NUM_PROJECTIONS && _wClusterProjections[0].length === dim) return;
+    _wClusterProjections.length = 0;
+    for (let p = 0; p < _W_CLUSTER_NUM_PROJECTIONS; p++) {
+        const v = new Float32Array(dim);
+        let norm = 0;
+        for (let i = 0; i < dim; i++) {
+            const u1 = Math.random(), u2 = Math.random();
+            v[i] = Math.sqrt(-2 * Math.log(u1 || 1e-10)) * Math.cos(2 * Math.PI * u2);
+            norm += v[i] * v[i];
+        }
+        norm = Math.sqrt(norm);
+        for (let i = 0; i < dim; i++) v[i] /= norm;
+        _wClusterProjections.push(v);
+    }
+}
 
 function applyVisualClusteringByIdx(indices) {
     const folderIdxs = [];
@@ -398,27 +420,29 @@ function applyVisualClusteringByIdx(indices) {
     }
     if (withEmbIdxs.length < 2) return indices;
 
-    const visited = new Set();
-    const ordered = [];
-    let currentIdx = withEmbIdxs[0];
-    visited.add(currentIdx);
-    ordered.push(currentIdx);
+    // Determine embedding dimension from first item
+    const firstEmb = embeddings.get(items[withEmbIdxs[0]].path);
+    const dim = firstEmb.length;
+    _wEnsureClusterProjections(dim);
 
-    while (ordered.length < withEmbIdxs.length) {
-        const curEmb = embeddings.get(items[currentIdx].path);
-        let bestSim = -Infinity, bestIdx = -1;
-        for (const idx of withEmbIdxs) {
-            if (visited.has(idx)) continue;
-            const emb = embeddings.get(items[idx].path);
-            if (!emb) continue;
-            const sim = cosineSim(curEmb, emb);
-            if (sim > bestSim) { bestSim = sim; bestIdx = idx; }
+    // Compute LSH hash per item and sort
+    const hashEntries = new Array(withEmbIdxs.length);
+    for (let i = 0; i < withEmbIdxs.length; i++) {
+        const emb = embeddings.get(items[withEmbIdxs[i]].path);
+        let hash = 0;
+        for (let p = 0; p < _W_CLUSTER_NUM_PROJECTIONS; p++) {
+            const proj = _wClusterProjections[p];
+            let dot = 0;
+            for (let d = 0; d < dim; d++) dot += emb[d] * proj[d];
+            if (dot >= 0) hash |= (1 << p);
         }
-        if (bestIdx < 0) break;
-        visited.add(bestIdx);
-        ordered.push(bestIdx);
-        currentIdx = bestIdx;
+        hashEntries[i] = { idx: withEmbIdxs[i], hash };
     }
+    hashEntries.sort((a, b) => a.hash - b.hash);
+
+    const ordered = new Array(hashEntries.length);
+    for (let i = 0; i < hashEntries.length; i++) ordered[i] = hashEntries[i].idx;
+
     return folderIdxs.concat(ordered, noEmbIdxs);
 }
 

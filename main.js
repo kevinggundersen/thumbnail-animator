@@ -91,67 +91,94 @@ async function readImageHeader(filePath, maxBytes = 16 * 1024) {
     }
 }
 
-// Detect ffprobe/ffmpeg availability (cached to disk to avoid execFileSync on every launch)
+// Detect ffprobe/ffmpeg availability — async to avoid blocking startup.
+// Worker pools are created after detection completes; call sites already
+// guard with `if (dimensionPool)` / `if (thumbnailPool)` so null is safe.
 let ffprobePath = null;
 let ffmpegPath = null;
-(function detectFfTools() {
-    const { execFileSync } = require('child_process');
+let ffToolsReady = false;
+
+// Worker pool for parallel dimension scanning (created after fftools detected)
+let dimensionPool = null;
+
+// Worker pool for thumbnail generation (created after fftools detected)
+let thumbnailPool = null;
+
+(async function detectFfTools() {
+    const { execFile } = require('child_process');
+    const { promisify } = require('util');
+    const execFileAsync = promisify(execFile);
     const cacheDir = app.isPackaged ? app.getPath('userData') : path.join(__dirname, 'electron-cache');
     const cachePath = path.join(cacheDir, 'fftools-cache.json');
 
-    // Try loading from cache
+    /** Test a binary path asynchronously, return true if it works */
+    async function testBinary(bin, timeout = 2000) {
+        try {
+            await execFileAsync(bin, ['-version'], { stdio: 'ignore', timeout });
+            return true;
+        } catch { return false; }
+    }
+
+    // Try loading from cache — validate with fs.existsSync for absolute paths,
+    // async exec only for bare names (on PATH)
     try {
-        const cached = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
-        // Validate cached paths still work (quick check, no exec needed - just verify file exists or is on PATH)
-        if (cached.ffprobe) {
-            try { execFileSync(cached.ffprobe, ['-version'], { stdio: 'ignore', timeout: 1000 }); ffprobePath = cached.ffprobe; } catch {}
-        }
-        if (cached.ffmpeg) {
-            try { execFileSync(cached.ffmpeg, ['-version'], { stdio: 'ignore', timeout: 1000 }); ffmpegPath = cached.ffmpeg; } catch {}
-        }
+        const cached = JSON.parse(await fs.promises.readFile(cachePath, 'utf8'));
+        const probeOk = cached.ffprobe && (
+            path.isAbsolute(cached.ffprobe)
+                ? fs.existsSync(cached.ffprobe)
+                : await testBinary(cached.ffprobe, 1000)
+        );
+        const mpegOk = cached.ffmpeg && (
+            path.isAbsolute(cached.ffmpeg)
+                ? fs.existsSync(cached.ffmpeg)
+                : await testBinary(cached.ffmpeg, 1000)
+        );
+        if (probeOk) ffprobePath = cached.ffprobe;
+        if (mpegOk) ffmpegPath = cached.ffmpeg;
         if (ffprobePath && ffmpegPath) {
             console.log('ffprobe found (cached):', ffprobePath);
             console.log('ffmpeg found (cached):', ffmpegPath);
-            return;
         }
     } catch { /* no cache or invalid */ }
 
-    // Full detection
-    const probeCandidates = process.platform === 'win32' ? ['ffprobe', 'ffprobe.exe'] : ['ffprobe'];
-    for (const candidate of probeCandidates) {
-        try {
-            execFileSync(candidate, ['-version'], { stdio: 'ignore', timeout: 3000 });
-            ffprobePath = candidate;
-            console.log('ffprobe found:', candidate);
-            break;
-        } catch { /* not found, try next */ }
+    // Full detection for any tools not found in cache — test candidates in parallel
+    if (!ffprobePath) {
+        const probeCandidates = process.platform === 'win32' ? ['ffprobe', 'ffprobe.exe'] : ['ffprobe'];
+        for (const candidate of probeCandidates) {
+            if (await testBinary(candidate, 3000)) {
+                ffprobePath = candidate;
+                console.log('ffprobe found:', candidate);
+                break;
+            }
+        }
+        if (!ffprobePath) console.log('ffprobe not found — video dimensions will be detected on load');
     }
-    if (!ffprobePath) console.log('ffprobe not found — video dimensions will be detected on load');
 
-    const mpegCandidates = process.platform === 'win32' ? ['ffmpeg', 'ffmpeg.exe'] : ['ffmpeg'];
-    for (const candidate of mpegCandidates) {
-        try {
-            execFileSync(candidate, ['-version'], { stdio: 'ignore', timeout: 3000 });
-            ffmpegPath = candidate;
-            console.log('ffmpeg found:', candidate);
-            break;
-        } catch { /* not found, try next */ }
+    if (!ffmpegPath) {
+        const mpegCandidates = process.platform === 'win32' ? ['ffmpeg', 'ffmpeg.exe'] : ['ffmpeg'];
+        for (const candidate of mpegCandidates) {
+            if (await testBinary(candidate, 3000)) {
+                ffmpegPath = candidate;
+                console.log('ffmpeg found:', candidate);
+                break;
+            }
+        }
+        if (!ffmpegPath) console.log('ffmpeg not found — video thumbnails will not be generated');
     }
-    if (!ffmpegPath) console.log('ffmpeg not found — video thumbnails will not be generated');
 
     // Cache results for next launch
     try {
-        if (!fs.existsSync(cacheDir)) fs.mkdirSync(cacheDir, { recursive: true });
-        fs.writeFileSync(cachePath, JSON.stringify({ ffprobe: ffprobePath, ffmpeg: ffmpegPath }));
+        await fs.promises.mkdir(cacheDir, { recursive: true });
+        await fs.promises.writeFile(cachePath, JSON.stringify({ ffprobe: ffprobePath, ffmpeg: ffmpegPath }));
     } catch { /* cache write failed, not critical */ }
+
+    // Create worker pools now that paths are known
+    dimensionPool = new DimensionWorkerPool(ffprobePath);
+    thumbnailPool = new ThumbnailWorkerPool({ ffmpegPath, ffprobePath });
+    ffToolsReady = true;
+    markStartup('fftools-detected');
+    console.log(`[startup] fftools detection complete (async) — ffprobe: ${!!ffprobePath}, ffmpeg: ${!!ffmpegPath}`);
 })();
-markStartup('fftools-detected');
-
-// Worker pool for parallel dimension scanning
-let dimensionPool = new DimensionWorkerPool(ffprobePath);
-
-// Worker pool for thumbnail generation (off main process)
-let thumbnailPool = new ThumbnailWorkerPool({ ffmpegPath, ffprobePath });
 let hashPool = new HashWorkerPool();
 markStartup('worker-pools-created');
 // CLIP model state — loaded directly in main process (no worker threads)
@@ -3019,10 +3046,11 @@ ipcMain.handle('watch-folder', async (event, folderPath) => {
         if (watchedFolders.has(normalizedPath)) {
             const existingWatcher = watchedFolders.get(normalizedPath);
             if (existingWatcher._debounceMap) {
-                for (const timeoutId of existingWatcher._debounceMap.values()) {
-                    clearTimeout(timeoutId);
-                }
                 existingWatcher._debounceMap.clear();
+            }
+            if (existingWatcher._batchTimer) {
+                clearTimeout(existingWatcher._batchTimer);
+                existingWatcher._batchTimer = null;
             }
             await existingWatcher.close();
         }
@@ -3054,30 +3082,38 @@ ipcMain.handle('watch-folder', async (event, folderPath) => {
             }
         });
 
-        // Debounce/dedup watcher events to coalesce duplicate notifications
-        // Windows ReadDirectoryChangesW can fire multiple events for single file changes
-        const watcherDebounceMap = new Map();
-        watcher._debounceMap = watcherDebounceMap; // Store reference for cleanup on close
+        // Batch debounce: collect all watcher events into a single Map, fire one
+        // timer to flush them all. This replaces the old per-event setTimeout approach
+        // which created N timer objects for N simultaneous file changes (e.g. git checkout).
+        const pendingEvents = new Map(); // dedupeKey → {event, filePath}
+        let batchTimer = null;
         const WATCHER_DEBOUNCE_MS = 500;
+        watcher._debounceMap = pendingEvents; // for cleanup on close
 
         watcher.on('all', (event, filePath) => {
             if (!mainWindow || mainWindow.isDestroyed()) return;
             const normalizedFilePath = path.normalize(filePath);
             const dedupeKey = `${event}:${normalizedFilePath}`;
 
-            // Clear previous pending notification for same event+path
-            if (watcherDebounceMap.has(dedupeKey)) {
-                clearTimeout(watcherDebounceMap.get(dedupeKey));
-            }
+            // Overwrite duplicate event+path entries (latest wins)
+            pendingEvents.set(dedupeKey, { event, filePath: normalizedFilePath });
 
-            watcherDebounceMap.set(dedupeKey, setTimeout(() => {
-                watcherDebounceMap.delete(dedupeKey);
-                if (mainWindow && !mainWindow.isDestroyed()) {
-                    mainWindow.webContents.send('folder-changed', { folderPath: normalizedPath, event, filePath: normalizedFilePath });
-                }
-            }, WATCHER_DEBOUNCE_MS));
+            // Single batch timer — if already running, the new event is just queued
+            if (batchTimer === null) {
+                batchTimer = setTimeout(() => {
+                    batchTimer = null;
+                    watcher._batchTimer = null;
+                    if (!mainWindow || mainWindow.isDestroyed()) { pendingEvents.clear(); return; }
+                    const sender = mainWindow.webContents;
+                    for (const entry of pendingEvents.values()) {
+                        sender.send('folder-changed', { folderPath: normalizedPath, event: entry.event, filePath: entry.filePath });
+                    }
+                    pendingEvents.clear();
+                }, WATCHER_DEBOUNCE_MS);
+                watcher._batchTimer = batchTimer;
+            }
         });
-        
+
         watchedFolders.set(normalizedPath, watcher);
         return { ok: true, value: null };
     } catch (error) {
@@ -3093,12 +3129,13 @@ ipcMain.handle('unwatch-folder', async (event, folderPath) => {
         const normalizedPath = path.normalize(folderPath);
         if (watchedFolders.has(normalizedPath)) {
             const watcher = watchedFolders.get(normalizedPath);
-            // Clear any pending debounce timeouts before closing
+            // Clear pending batch timer and events before closing
             if (watcher._debounceMap) {
-                for (const timeoutId of watcher._debounceMap.values()) {
-                    clearTimeout(timeoutId);
-                }
                 watcher._debounceMap.clear();
+            }
+            if (watcher._batchTimer) {
+                clearTimeout(watcher._batchTimer);
+                watcher._batchTimer = null;
             }
             await watcher.close();
             watchedFolders.delete(normalizedPath);
@@ -3549,14 +3586,40 @@ ipcMain.handle('scan-duplicates', async (event, folderPath, options = {}) => {
             // 5MB JPEG is ~30-80ms vs. ~2-5ms for a 512px PNG thumbnail.
             // Pre-generate missing image thumbnails first (same pattern as CLIP).
             const perceptualStaleFiles = staleFiles.filter(f => !skipPerceptualPaths.has(f.path));
+
+            // Batch-check all candidate thumbnail paths asynchronously instead of
+            // calling fs.existsSync() per file (was 3,000-6,000 blocking stat calls).
+            const allCandidatePaths = new Map(); // path → true (dedup)
+            const thumbPathForFile = new Map(); // f.path → computed thumb path
+            for (const f of perceptualStaleFiles) {
+                if (!f.isImage || f.path.toLowerCase().endsWith('.svg') || !f.mtime) continue;
+                const tp = getImageThumbCachePath(f.path, f.mtime, 512);
+                thumbPathForFile.set(f.path, tp);
+                allCandidatePaths.set(tp, false);
+                if (f.thumbPath) allCandidatePaths.set(f.thumbPath, false);
+            }
+            for (const f of perceptualStaleFiles) {
+                if (f.thumbPath) allCandidatePaths.set(f.thumbPath, false);
+            }
+
+            // Parallel async stat for all candidate paths
+            const pathsToCheck = [...allCandidatePaths.keys()];
+            const existsResults = await Promise.allSettled(
+                pathsToCheck.map(p => fs.promises.access(p).then(() => true, () => false))
+            );
+            const existingPaths = new Set();
+            for (let i = 0; i < pathsToCheck.length; i++) {
+                if (existsResults[i].status === 'fulfilled' && existsResults[i].value) {
+                    existingPaths.add(pathsToCheck[i]);
+                }
+            }
+
             if (nativeScanner.generateImageThumbnails && imageThumbDir) {
                 const missing = [];
                 for (const f of perceptualStaleFiles) {
-                    if (!f.isImage) continue;
-                    if (f.path.toLowerCase().endsWith('.svg')) continue;
-                    if (!f.mtime) continue;
-                    const tp = getImageThumbCachePath(f.path, f.mtime, 512);
-                    if (!fs.existsSync(tp)) {
+                    if (!f.isImage || f.path.toLowerCase().endsWith('.svg') || !f.mtime) continue;
+                    const tp = thumbPathForFile.get(f.path);
+                    if (!existingPaths.has(tp)) {
                         missing.push({ filePath: f.path, thumbPath: tp, maxSize: 512 });
                     }
                 }
@@ -3564,6 +3627,8 @@ ipcMain.handle('scan-duplicates', async (event, folderPath, options = {}) => {
                     const t = performance.now();
                     try {
                         nativeScanner.generateImageThumbnails(missing);
+                        // Mark newly generated thumbnails as existing
+                        for (const m of missing) existingPaths.add(m.thumbPath);
                         console.log(`[scan-duplicates] pre-generated ${missing.length} thumbnails in ${(performance.now() - t).toFixed(0)}ms`);
                     } catch (e) {
                         console.warn('[scan-duplicates] thumbnail pre-gen failed:', e.message);
@@ -3571,13 +3636,13 @@ ipcMain.handle('scan-duplicates', async (event, folderPath, options = {}) => {
                 }
             }
 
-            // Now resolve each file to its best source: cached image thumb > video thumb > original
+            // Resolve each file to its best source using the pre-built existingPaths set
             const resolveHashSource = (f) => {
                 if (f.path.toLowerCase().endsWith('.svg')) return null;
-                if (f.thumbPath && fs.existsSync(f.thumbPath)) return f.thumbPath;
+                if (f.thumbPath && existingPaths.has(f.thumbPath)) return f.thumbPath;
                 if (f.isImage && imageThumbDir && f.mtime) {
-                    const tp = getImageThumbCachePath(f.path, f.mtime, 512);
-                    if (fs.existsSync(tp)) return tp;
+                    const tp = thumbPathForFile.get(f.path);
+                    if (tp && existingPaths.has(tp)) return tp;
                 }
                 return f.isImage ? f.path : null;
             };

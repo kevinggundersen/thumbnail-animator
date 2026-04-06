@@ -1390,7 +1390,7 @@ function _flushStorageWrites() {
     _pendingStorageWrites.clear();
 }
 
-// Get DOM elements - these are safe to get at script load time since script is at end of body
+// ── DOM Elements (navigation, search, status bar) ──
 const selectFolderBtn = document.getElementById('select-folder-btn');
 const backBtn = document.getElementById('back-btn');
 const forwardBtn = document.getElementById('forward-btn');
@@ -1966,10 +1966,7 @@ function scheduleMediaLoadSettle() {
     }, 1500);
 }
 
-// Make keyboard hint in status bar clickable
-document.querySelectorAll('.status-keyboard-hint').forEach(el => {
-    el.addEventListener('click', () => toggleShortcutsOverlay());
-});
+// ── DOM Elements (settings, card info, sidebar, filters) ──
 const filterAllBtn = document.getElementById('filter-all');
 const filterVideosBtn = document.getElementById('filter-videos');
 const filterImagesBtn = document.getElementById('filter-images');
@@ -2068,13 +2065,28 @@ const favContextMenu = document.getElementById('fav-context-menu');
 const recentFilesList = document.getElementById('recent-files-list');
 const clearRecentBtn = document.getElementById('clear-recent-btn');
 const tabsContainer = document.getElementById('tabs-container');
+const videoScrubber = document.getElementById('video-scrubber');
+const scrubberCanvas = document.getElementById('scrubber-canvas');
+const scrubberTime = document.getElementById('scrubber-time');
+const loadingIndicator = document.getElementById('loading-indicator');
+const folderSidebar = document.getElementById('folder-sidebar');
+const sidebarTree = document.getElementById('sidebar-tree');
+const sidebarResizeHandle = document.getElementById('sidebar-resize-handle');
+const sidebarToggleBtn = document.getElementById('sidebar-toggle-btn');
+const sidebarCollapseBtn = document.getElementById('sidebar-collapse-btn');
+
+// ── Inline event wiring (DOM-dependent) ──
+// Make keyboard hint in status bar clickable
+document.querySelectorAll('.status-keyboard-hint').forEach(el => {
+    el.addEventListener('click', () => toggleShortcutsOverlay());
+});
+// Horizontal scroll tabs with mouse wheel
 tabsContainer.addEventListener('wheel', (e) => {
     if (e.deltaY !== 0) {
         e.preventDefault();
         tabsContainer.scrollLeft += e.deltaY;
     }
 }, { passive: false });
-
 // Toggle system menu with Alt key (needed because titleBarStyle: 'hidden' disables native Alt behavior)
 let altKeyOnly = false;
 document.addEventListener('keydown', (e) => {
@@ -2086,15 +2098,6 @@ document.addEventListener('keyup', (e) => {
     }
     altKeyOnly = false;
 });
-const videoScrubber = document.getElementById('video-scrubber');
-const scrubberCanvas = document.getElementById('scrubber-canvas');
-const scrubberTime = document.getElementById('scrubber-time');
-const loadingIndicator = document.getElementById('loading-indicator');
-const folderSidebar = document.getElementById('folder-sidebar');
-const sidebarTree = document.getElementById('sidebar-tree');
-const sidebarResizeHandle = document.getElementById('sidebar-resize-handle');
-const sidebarToggleBtn = document.getElementById('sidebar-toggle-btn');
-const sidebarCollapseBtn = document.getElementById('sidebar-collapse-btn');
 
 // Track current folder path for navigation
 let currentFolderPath = null;

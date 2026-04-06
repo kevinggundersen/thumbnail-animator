@@ -1,0 +1,27 @@
+{
+  "id": "exif-stripper",
+  "name": "Metadata Stripper",
+  "version": "1.0.0",
+  "description": "Strips all metadata (EXIF, IPTC, XMP, GPS, PNG text chunks) from images for privacy. Supports JPEG, PNG, WebP, TIFF, and AVIF.",
+  "main": "index.js",
+  "capabilities": {
+    "metadataExtractors": [],
+    "infoSections": [],
+    "contextMenuItems": [
+      {
+        "id": "strip-metadata-single",
+        "label": "Strip Metadata",
+        "method": "stripSingleFile",
+        "position": "after:reveal"
+      }
+    ],
+    "batchOperations": [
+      {
+        "id": "strip-metadata-batch",
+        "name": "Strip All Metadata",
+        "method": "stripBatch"
+      }
+    ],
+    "fileTypes": []
+  }
+}

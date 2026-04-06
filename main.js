@@ -3355,6 +3355,48 @@ ipcMain.handle('generate-thumbnails-batch', async (event, items) => {
             resultMap.set(item.filePath, { filePath: item.filePath, ok: false, url: null });
         }
 
+        // Plugin thumbnail generator fallback — for file types (e.g. .psd, .pdf, .svg)
+        // that failed both native and worker-pool paths, try plugin generators.
+        const pluginFallbackItems = [];
+        for (const [fp, result] of resultMap) {
+            if (!result.ok) {
+                const ext = path.extname(fp).toLowerCase();
+                if (pluginRegistry.hasCustomThumbnailGenerator(ext)) {
+                    pluginFallbackItems.push({ filePath: fp, ext, thumbPath: result.thumbPath || prepared.find(p => p.filePath === fp)?.thumbPath });
+                }
+            }
+        }
+        if (pluginFallbackItems.length > 0) {
+            await Promise.all(pluginFallbackItems.map(async (item) => {
+                try {
+                    const dataUrl = await pluginRegistry.generateThumbnail(item.filePath, item.ext);
+                    if (dataUrl && typeof dataUrl === 'string' && dataUrl.startsWith('data:')) {
+                        // Write the base64 data to the thumb cache file so it persists
+                        const base64Data = dataUrl.replace(/^data:image\/\w+;base64,/, '');
+                        const thumbPath = item.thumbPath;
+                        if (thumbPath) {
+                            await fs.promises.mkdir(path.dirname(thumbPath), { recursive: true });
+                            await fs.promises.writeFile(thumbPath, Buffer.from(base64Data, 'base64'));
+                            resultMap.set(item.filePath, {
+                                filePath: item.filePath,
+                                ok: true,
+                                url: pathToFileUrl(thumbPath),
+                            });
+                        } else {
+                            // No thumb path — return the data URL directly
+                            resultMap.set(item.filePath, {
+                                filePath: item.filePath,
+                                ok: true,
+                                url: dataUrl,
+                            });
+                        }
+                    }
+                } catch (err) {
+                    console.warn(`[Plugin thumbnail fallback] ${path.basename(item.filePath)} failed:`, err.message);
+                }
+            }));
+        }
+
         const output = items.map(item => resultMap.get(item.filePath) || { filePath: item.filePath, ok: false, url: null });
         const nativeCount = imageBatch.length - nativeFailures.length;
         logPerf('generate-thumbnails-batch', startTime, {

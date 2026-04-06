@@ -1,0 +1,42 @@
+{
+  "id": "svg-inspector",
+  "name": "SVG Inspector",
+  "version": "1.0.0",
+  "description": "Extracts dimensions, element counts, animation status, fonts, and other metadata from SVG files. Generates improved thumbnails with higher DPI rendering.",
+  "main": "index.js",
+  "capabilities": {
+    "metadataExtractors": [
+      {
+        "id": "svg-inspector",
+        "name": "SVG Metadata",
+        "extensions": [".svg"],
+        "method": "extractSVGMetadata"
+      }
+    ],
+    "infoSections": [
+      {
+        "id": "svg-info",
+        "title": "SVG Details",
+        "appliesTo": { "hasMetadata": "svg-inspector" },
+        "method": "renderSVGInfoSection"
+      }
+    ],
+    "contextMenuItems": [
+      {
+        "id": "copy-svg-source",
+        "label": "Copy SVG Source",
+        "appliesTo": { "hasMetadata": "svg-inspector" },
+        "method": "copySVGSource",
+        "position": "after:reveal"
+      }
+    ],
+    "thumbnailGenerators": [
+      {
+        "id": "svg-thumbnail",
+        "extensions": [".svg"],
+        "method": "generateSVGThumbnail"
+      }
+    ],
+    "fileTypes": []
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "id": "sd-metadata",
+  "name": "Stable Diffusion Parameters",
+  "version": "1.0.0",
+  "description": "Extracts Stable Diffusion generation parameters from A1111, Forge, SDXL, and InvokeAI images (PNG tEXt, EXIF UserComment).",
+  "main": "index.js",
+  "capabilities": {
+    "metadataExtractors": [
+      {
+        "id": "sd-metadata",
+        "name": "SD Generation Parameters",
+        "extensions": [".png", ".jpg", ".jpeg", ".webp"],
+        "method": "extractSDParams"
+      }
+    ],
+    "infoSections": [
+      {
+        "id": "sd-info",
+        "title": "SD Generation Parameters",
+        "appliesTo": { "hasMetadata": "sd-metadata" },
+        "method": "renderSDSection"
+      }
+    ],
+    "contextMenuItems": [
+      {
+        "id": "copy-sd-params",
+        "label": "Copy SD Parameters",
+        "appliesTo": { "hasMetadata": "sd-metadata" },
+        "method": "copySDParams",
+        "position": "after:reveal"
+      }
+    ],
+    "fileTypes": []
+  }
+}

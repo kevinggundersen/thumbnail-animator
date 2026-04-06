@@ -1,0 +1,54 @@
+{
+  "id": "pdf-psd-preview",
+  "name": "PDF & PSD Preview",
+  "version": "1.0.0",
+  "description": "Generates thumbnail previews and extracts metadata from PDF and PSD files. PDF thumbnails require pdftoppm, mutool, or ImageMagick; PSD uses pure JS parsing.",
+  "main": "index.js",
+  "capabilities": {
+    "metadataExtractors": [
+      {
+        "id": "psd-metadata",
+        "name": "PSD File Info",
+        "extensions": [".psd"],
+        "method": "extractPSDMetadata"
+      },
+      {
+        "id": "pdf-metadata",
+        "name": "PDF File Info",
+        "extensions": [".pdf"],
+        "method": "extractPDFMetadata"
+      }
+    ],
+    "infoSections": [
+      {
+        "id": "psd-info",
+        "title": "PSD Details",
+        "appliesTo": { "hasMetadata": "psd-metadata" },
+        "method": "renderPSDInfoSection"
+      },
+      {
+        "id": "pdf-info",
+        "title": "PDF Details",
+        "appliesTo": { "hasMetadata": "pdf-metadata" },
+        "method": "renderPDFInfoSection"
+      }
+    ],
+    "contextMenuItems": [],
+    "thumbnailGenerators": [
+      {
+        "id": "psd-thumbnail",
+        "extensions": [".psd"],
+        "method": "generatePSDThumbnail"
+      },
+      {
+        "id": "pdf-thumbnail",
+        "extensions": [".pdf"],
+        "method": "generatePDFThumbnail"
+      }
+    ],
+    "fileTypes": {
+      "extensions": [".psd", ".pdf"],
+      "category": "image"
+    }
+  }
+}

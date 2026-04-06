@@ -969,6 +969,11 @@ function vsPopulateExistingCard(card, item) {
         applyCardInfoVisibility(card);
         applyCardInfoLayoutClasses(card);
 
+        // Skeleton placeholder — removed when media loads
+        const skel = document.createElement('div');
+        skel.className = 'card-skeleton';
+        card.insertBefore(skel, card.firstChild);
+
         // Apply duplicate highlight if active
         if (typeof applyDuplicateHighlight === 'function') applyDuplicateHighlight(card);
 
@@ -1650,6 +1655,25 @@ function showToastOnce(key, message, type = 'info', options = {}) {
         });
     });
 })();
+
+// ── Button Loading State ──
+/**
+ * Set a button to loading state with an inline spinner.
+ * Returns a restore function to call when the operation completes.
+ * @param {HTMLButtonElement} btn
+ * @param {string} [loadingText] - Text while loading (default: btn's current text)
+ * @returns {() => void} restore function
+ */
+function setButtonLoading(btn, loadingText) {
+    const originalHTML = btn.innerHTML;
+    const originalDisabled = btn.disabled;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="btn-spinner"></span>' + escapeHtml(loadingText || btn.textContent);
+    return () => {
+        btn.innerHTML = originalHTML;
+        btn.disabled = originalDisabled;
+    };
+}
 
 // ── Friendly Error Messages ──
 function friendlyError(err) {
@@ -5495,7 +5519,7 @@ function createCardFromItem(item, skipAnimation = false) {
         const card = document.createElement('div');
         card.className = 'folder-card';
         if (!skipAnimation) {
-            card.style.animation = `card-enter 0.3s var(--ease-out-expo) ${Math.min(cardAnimIndex * 20, 600)}ms backwards`;
+            card.style.animation = `card-enter var(--duration-slow) var(--ease-out-expo) ${Math.min(cardAnimIndex * 20, 600)}ms backwards`;
             cardAnimIndex++;
         }
         card.dataset.folderPath = item.path;
@@ -5520,7 +5544,7 @@ function createCardFromItem(item, skipAnimation = false) {
         const card = document.createElement('div');
         card.className = 'video-card';
         if (!skipAnimation) {
-            card.style.animation = `card-enter 0.3s var(--ease-out-expo) ${Math.min(cardAnimIndex * 20, 600)}ms backwards`;
+            card.style.animation = `card-enter var(--duration-slow) var(--ease-out-expo) ${Math.min(cardAnimIndex * 20, 600)}ms backwards`;
             cardAnimIndex++;
         }
         card.dataset.src = item.url;
@@ -5587,6 +5611,11 @@ function createCardFromItem(item, skipAnimation = false) {
 
         applyCardInfoVisibility(card);
         applyCardInfoLayoutClasses(card);
+
+        // Skeleton placeholder — removed when media loads
+        const skel = document.createElement('div');
+        skel.className = 'card-skeleton';
+        card.insertBefore(skel, card.firstChild);
 
         // Mark missing files (dead links in collections)
         if (item.missing) {
@@ -5995,7 +6024,7 @@ function createImageForCard(card, imageUrl) {
     const decodeHeight = isOriginalQuality ? 0 : Math.max(1, Math.floor(rect.height * qualityMultiplier));
     
     const img = document.createElement('img');
-    img.className = 'media-thumbnail';
+    img.className = 'media-thumbnail thumb-loading';
     img.loading = 'eager';
     img.draggable = true;
 
@@ -6041,6 +6070,14 @@ function createImageForCard(card, imageUrl) {
 
     // Track loading state
     img.addEventListener('load', () => {
+        // Fade in thumbnail and remove skeleton placeholder
+        if (img.classList.contains('thumb-loading')) {
+            img.classList.remove('thumb-loading');
+            img.classList.add('thumb-loaded');
+        }
+        const skel = card.querySelector('.card-skeleton');
+        if (skel) skel.remove();
+
         // Detect and apply aspect ratio to card
         // Replace placeholder fallback ratios once real dimensions are known; keep prescanned/hydrated.
         const ratioSource = card.dataset.aspectRatioSource;
@@ -6299,6 +6336,9 @@ function createVideoForCard(card, videoUrl) {
         requestVideoPosterUrl(card.dataset.path).then(url => {
             if (url && video.isConnected) {
                 video.poster = url;
+                // Remove skeleton once poster is ready
+                const skel = card.querySelector('.card-skeleton');
+                if (skel) skel.remove();
             }
         }).catch(() => { /* ignore thumbnail errors */ });
     }
@@ -6328,7 +6368,11 @@ function createVideoForCard(card, videoUrl) {
     let hasLoaded = false;
     video.addEventListener('loadedmetadata', () => {
         hasLoaded = true;
-        
+
+        // Remove skeleton placeholder on video load
+        const skel = card.querySelector('.card-skeleton');
+        if (skel) skel.remove();
+
         // Detect and apply aspect ratio to card
         if (video.videoWidth && video.videoHeight) {
             const aspectRatioName = getClosestAspectRatio(video.videoWidth, video.videoHeight);
@@ -9453,8 +9497,22 @@ batchRenameApply.addEventListener('click', async () => {
     );
     if (!confirmed) return;
 
-    batchRenameApply.disabled = true;
-    batchRenameApply.textContent = 'Renaming...';
+    const restoreBtn = setButtonLoading(batchRenameApply, 'Renaming...');
+
+    // Progress bar for large batches
+    const progressEl = document.getElementById('batch-rename-progress');
+    const progressFill = document.getElementById('batch-rename-progress-fill');
+    const progressText = document.getElementById('batch-rename-progress-text');
+    if (fileCount > 5) {
+        progressEl.classList.remove('hidden');
+        progressFill.style.width = '0%';
+        progressText.textContent = `0 / ${fileCount}`;
+        window.electronAPI.onBatchRenameProgress((_e, data) => {
+            const pct = Math.round((data.current / data.total) * 100);
+            progressFill.style.width = `${pct}%`;
+            progressText.textContent = `${data.current} / ${data.total}`;
+        });
+    }
 
     try {
         setStatusActivity('Batch renaming...');
@@ -9486,8 +9544,9 @@ batchRenameApply.addEventListener('click', async () => {
     } catch (error) {
         showToast(`Batch rename failed: ${friendlyError(error)}`, 'error');
     } finally {
-        batchRenameApply.disabled = false;
-        batchRenameApply.textContent = 'Rename';
+        restoreBtn();
+        window.electronAPI.removeBatchRenameProgressListener();
+        progressEl.classList.add('hidden');
         setStatusActivity('');
     }
 });
@@ -9544,14 +9603,18 @@ async function embedTagLabels() {
     if (allTagsCache.length === 0) return false;
 
     autoTagState.labelEmbeddings = new Map();
+    autoTagShowProgress(true);
     for (let i = 0; i < allTagsCache.length; i++) {
+        if (autoTagState.cancelScan) { autoTagShowProgress(false); return false; }
         const tag = allTagsCache[i];
         autoTagStatus.textContent = `Embedding tags... ${i + 1}/${allTagsCache.length}`;
+        autoTagUpdateProgress(i, allTagsCache.length);
         try {
             const raw = await window.electronAPI.clipEmbedText(`a photo of ${tag.name}`);
             if (raw && raw.ok && raw.value) autoTagState.labelEmbeddings.set(tag.name, new Float32Array(raw.value));
         } catch {}
     }
+    autoTagShowProgress(false);
     return autoTagState.labelEmbeddings.size > 0;
 }
 

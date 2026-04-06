@@ -412,6 +412,8 @@ function setSidebarCollapsed(collapsed) {
     } else {
         folderSidebar.classList.remove('collapsed');
     }
+    // Mirror toggle button icon when sidebar is collapsed
+    if (sidebarToggleBtn) sidebarToggleBtn.classList.toggle('sidebar-is-collapsed', collapsed);
     deferLocalStorageWrite('sidebarCollapsed', collapsed.toString());
 
     if (sidebarTransitionEndHandler) {
@@ -446,6 +448,7 @@ async function initSidebar() {
     folderSidebar.style.width = sidebarWidth + 'px';
     if (sidebarCollapsed) {
         folderSidebar.classList.add('collapsed');
+        if (sidebarToggleBtn) sidebarToggleBtn.classList.add('sidebar-is-collapsed');
     }
 
     // Toggle buttons

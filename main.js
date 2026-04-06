@@ -2343,9 +2343,12 @@ ipcMain.handle('batch-rename', async (event, filePaths, patternType, patternOpti
         }
 
         // Execute renames
-        for (const p of planned) {
+        const shouldReport = planned.length > 5;
+        for (let i = 0; i < planned.length; i++) {
+            const p = planned[i];
             if (p.oldPath === p.newPath) {
                 results.push({ oldPath: p.oldPath, newPath: p.newPath, skipped: true });
+                if (shouldReport) event.sender.send('batch-rename-progress', { current: i + 1, total: planned.length });
                 continue;
             }
             try {
@@ -2355,6 +2358,9 @@ ipcMain.handle('batch-rename', async (event, filePaths, patternType, patternOpti
                 results.push({ oldPath: p.oldPath, newPath: p.newPath, ok: true });
             } catch (err) {
                 results.push({ oldPath: p.oldPath, newPath: p.newPath, ok: false, error: err.message });
+            }
+            if (shouldReport && (i % 3 === 0 || i === planned.length - 1)) {
+                event.sender.send('batch-rename-progress', { current: i + 1, total: planned.length });
             }
         }
 

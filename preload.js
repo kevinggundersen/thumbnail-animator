@@ -16,6 +16,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     revealInExplorer: (filePath) => ipcRenderer.invoke('reveal-in-explorer', filePath),
     renameFile: (filePath, newName) => ipcRenderer.invoke('rename-file', filePath, newName),
     batchRename: (filePaths, patternType, patternOptions) => ipcRenderer.invoke('batch-rename', filePaths, patternType, patternOptions),
+    onBatchRenameProgress: (callback) => ipcRenderer.on('batch-rename-progress', callback),
+    removeBatchRenameProgressListener: () => ipcRenderer.removeAllListeners('batch-rename-progress'),
     deleteFile: (filePath) => ipcRenderer.invoke('delete-file', filePath),
     openUrl: (url) => ipcRenderer.invoke('open-url', url),
     openWithDefault: (filePath) => ipcRenderer.invoke('open-with-default', filePath),

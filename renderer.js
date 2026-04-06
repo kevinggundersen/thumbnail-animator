@@ -3686,7 +3686,7 @@ function performCleanupCheck() {
         ];
 
         // Use mediaToCard inverse lookup instead of .closest() DOM walk
-        const mediaCards = allMedia.map(({ element }) => mediaToCard.get(element)).filter(Boolean);
+        const mediaCards = allMedia.map(({ element }) => mediaToCard.get(element));
 
         const viewportCenterY = bounds.centerY;
         const mediaDistances = allMedia.map(({ element, type }, index) => {
@@ -10251,7 +10251,13 @@ function scanFolderStreaming(folderPath, options, callbacks) {
 
     // Fire the IPC; the returned scanId binds subsequent chunks.
     window.electronAPI.scanFolderStream(folderPath, options).then(result => {
-        if (result && result.ok && result.value && result.value.scanId) _activeScanId = result.value.scanId;
+        if (result && result.ok && result.value && result.value.scanId) {
+            _activeScanId = result.value.scanId;
+        } else if (!result || !result.ok) {
+            console.error('scanFolderStream failed:', result?.error || 'Unknown error');
+            cancelActiveStream();
+            if (callbacks.onComplete) callbacks.onComplete(false, result?.error || 'Stream failed to start');
+        }
     }).catch(err => {
         console.error('scanFolderStream error:', err);
         cancelActiveStream();

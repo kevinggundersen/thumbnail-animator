@@ -2829,14 +2829,14 @@ function clearAdvancedSearch() {
         starRating: null
     };
 
-    document.getElementById('search-size-operator').value = '';
-    document.getElementById('search-size-value').value = '';
-    document.getElementById('search-date-from').value = '';
-    document.getElementById('search-date-to').value = '';
-    document.getElementById('search-width').value = '';
-    document.getElementById('search-height').value = '';
-    document.getElementById('search-aspect-ratio').value = '';
-    document.getElementById('search-star-rating').value = '';
+    for (const id of [
+        'search-size-operator', 'search-size-value', 'search-date-from',
+        'search-date-to', 'search-width', 'search-height',
+        'search-aspect-ratio', 'search-star-rating'
+    ]) {
+        const el = document.getElementById(id);
+        if (el) el.value = '';
+    }
 
     // Reset recursive search
     const recursiveCheckbox = document.getElementById('search-recursive');
@@ -3594,21 +3594,24 @@ function openComparisonLightbox(groupIdx) {
     compareShowAll = false;
 
     const lightbox = document.getElementById('duplicate-compare-lightbox');
+    if (!lightbox) return;
     const title = document.getElementById('compare-lightbox-title');
     const closeBtn = document.getElementById('compare-lightbox-close');
     const showAllBtn = document.getElementById('compare-show-all-btn');
+    if (!title || !closeBtn || !showAllBtn) return;
 
     title.textContent = `Compare \u2014 Group ${groupIdx + 1} (${group.files.length} files)`;
     lightbox.classList.remove('hidden');
     compareShowAll = true;
     showAllBtn.classList.add('active');
-    showAllBtn.querySelector('span').textContent = 'Compare';
+    const showAllSpan = showAllBtn.querySelector('span');
+    if (showAllSpan) showAllSpan.textContent = 'Compare';
 
     // Start in show-all mode
     const body = lightbox.querySelector('.compare-lightbox-body');
     const grid = document.getElementById('compare-show-all-grid');
-    body.classList.add('hidden');
-    grid.classList.remove('hidden');
+    if (body) body.classList.add('hidden');
+    if (grid) grid.classList.remove('hidden');
     renderShowAllGrid();
 
     // Event listeners
@@ -3639,6 +3642,7 @@ function openComparisonLightbox(groupIdx) {
 
 function closeComparisonLightbox() {
     const lightbox = document.getElementById('duplicate-compare-lightbox');
+    if (!lightbox) return;
     lightbox.classList.add('hidden');
     lightbox.removeEventListener('keydown', handleCompareKeydown);
     lightbox.onclick = null;
@@ -3682,6 +3686,7 @@ function closeComparisonLightbox() {
 
 function handleCompareKeydown(e) {
     if (e.key === 'Escape') {
+        e.preventDefault();
         closeComparisonLightbox();
         e.stopPropagation();
     } else if (e.key === 'a' || e.key === 'A') {
@@ -3744,8 +3749,10 @@ function renderComparisonView() {
     renderCompareInfo('left', compareLeftIndex);
     renderCompareInfo('right', compareRightIndex);
 
-    document.getElementById('compare-left-indicator').textContent = `${compareLeftIndex + 1} / ${compareGroup.length}`;
-    document.getElementById('compare-right-indicator').textContent = `${compareRightIndex + 1} / ${compareGroup.length}`;
+    const leftInd = document.getElementById('compare-left-indicator');
+    const rightInd = document.getElementById('compare-right-indicator');
+    if (leftInd) leftInd.textContent = `${compareLeftIndex + 1} / ${compareGroup.length}`;
+    if (rightInd) rightInd.textContent = `${compareRightIndex + 1} / ${compareGroup.length}`;
 
     compareSliderPosition = 50;
     applySliderPosition(50);

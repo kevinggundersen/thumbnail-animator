@@ -5733,9 +5733,11 @@ ipcMain.handle('undo-file-operation', async () => {
                     case 'rename':
                         await fs.promises.rename(op.oldPath, op.newPath);
                         break;
-                    case 'delete':
-                        op.stagingPath = await moveToStaging(op.originalPath);
+                    case 'delete': {
+                        const newStagingPath = await moveToStaging(op.originalPath);
+                        op.stagingPath = newStagingPath;
                         break;
+                    }
                     case 'move':
                         await safeMove(op.sourcePath, op.destPath);
                         break;
@@ -5744,7 +5746,11 @@ ipcMain.handle('undo-file-operation', async () => {
                 console.error('Undo rollback failed for op:', op.type, rollbackErr);
             }
         }
-        undoStack.push(entry);
+        // Push a deep copy so future undo/redo won't share mutated operation refs
+        undoStack.push({
+            ...entry,
+            operations: entry.operations.map(op => ({ ...op }))
+        });
         return { ok: false, error: `${entry.description}: ${error.message}` };
     }
 });

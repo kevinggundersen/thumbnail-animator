@@ -227,8 +227,16 @@ class AppDatabase {
         this._stmts.getAllCollections = this.db.prepare('SELECT * FROM collections ORDER BY sort_order');
         this._stmts.getCollection = this.db.prepare('SELECT * FROM collections WHERE id = ?');
         this._stmts.upsertCollection = this.db.prepare(`
-            INSERT OR REPLACE INTO collections (id, name, type, rules, sort_order, color, icon, created_at, updated_at)
+            INSERT INTO collections (id, name, type, rules, sort_order, color, icon, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                type = excluded.type,
+                rules = excluded.rules,
+                sort_order = excluded.sort_order,
+                color = excluded.color,
+                icon = excluded.icon,
+                updated_at = excluded.updated_at
         `);
         this._stmts.deleteCollection = this.db.prepare('DELETE FROM collections WHERE id = ?');
 

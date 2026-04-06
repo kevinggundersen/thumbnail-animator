@@ -1078,11 +1078,29 @@ hoverScaleZ200.addEventListener('input', () => {
     }
 
     // Clustering select
+    const clusteringStatus = document.getElementById('ai-clustering-status');
+    const clusteringStatusText = document.getElementById('ai-clustering-status-text');
+
     if (clusteringSelect) {
         clusteringSelect.addEventListener('change', () => {
             aiClusteringMode = clusteringSelect.value;
             deferLocalStorageWrite('aiClusteringMode', aiClusteringMode);
-            if (currentItems.length > 0) applyFilters();
+            if (currentItems.length > 0) {
+                // Show inline progress indicator while the worker computes clusters
+                if (aiClusteringMode === 'similarity' && aiVisualSearchEnabled && currentEmbeddings.size > 0) {
+                    if (clusteringStatus) clusteringStatus.classList.remove('hidden');
+                    if (clusteringStatusText) clusteringStatusText.textContent = 'Clustering\u2026';
+                    // Safety timeout: force-hide after 30s in case of silent failure
+                    clearTimeout(clusteringSelect._safetyTimer);
+                    clusteringSelect._safetyTimer = setTimeout(() => {
+                        console.warn('[clustering] safety timeout — hiding stuck indicator');
+                        if (clusteringStatus) clusteringStatus.classList.add('hidden');
+                    }, 30000);
+                }
+                console.time('[clustering] applyFilters');
+                applyFilters();
+                console.timeEnd('[clustering] applyFilters');
+            }
         });
     }
 

@@ -303,10 +303,12 @@ function runFilterPipeline(state) {
         });
     }
 
-    // Visual clustering (nearest-neighbor reordering) on indices
+    // Visual clustering (PCA-projection reordering) on indices
     let orderedIndices = filtered;
     if (aiVisualSearchEnabled && aiClusteringMode === 'similarity' && embeddings.size > 0 && q === '') {
+        const _t0 = performance.now();
         orderedIndices = applyVisualClusteringByIdx(filtered);
+        console.log(`[worker] clustering ${filtered.length} items (${embeddings.size} embeddings) took ${(performance.now() - _t0).toFixed(0)}ms`);
     }
 
     // Separate folders/files by index
@@ -316,8 +318,9 @@ function runFilterPipeline(state) {
         else fileIdxs.push(idx);
     }
 
-    // Primary sort (name/date/size/dimensions/rating) if no scoring sort applied
-    const skipPrimarySort = (useAiSearch && q !== '') || useFindSimilar || (starFilterActive && starSortOrder !== 'none');
+    // Primary sort (name/date/size/dimensions/rating) if no scoring/clustering sort applied
+    const clusteringActive = aiVisualSearchEnabled && aiClusteringMode === 'similarity' && embeddings.size > 0 && q === '';
+    const skipPrimarySort = clusteringActive || (useAiSearch && q !== '') || useFindSimilar || (starFilterActive && starSortOrder !== 'none');
     if (!skipPrimarySort) {
         const nameCmp = (a, b) => items[a].name.localeCompare(items[b].name, undefined, { numeric: true });
         const cmp = (a, b) => {
@@ -385,28 +388,13 @@ function runFilterPipeline(state) {
 }
 
 // ── Visual clustering (by index) ──────────────────────────────────────
-// Uses random-projection LSH for O(n log n) clustering instead of O(n²)
-// greedy nearest-neighbor. See renderer.js applyVisualClustering for details.
-
-const _wClusterProjections = []; // lazily initialised random unit vectors
-const _W_CLUSTER_NUM_PROJECTIONS = 24;
-
-function _wEnsureClusterProjections(dim) {
-    if (_wClusterProjections.length >= _W_CLUSTER_NUM_PROJECTIONS && _wClusterProjections[0].length === dim) return;
-    _wClusterProjections.length = 0;
-    for (let p = 0; p < _W_CLUSTER_NUM_PROJECTIONS; p++) {
-        const v = new Float32Array(dim);
-        let norm = 0;
-        for (let i = 0; i < dim; i++) {
-            const u1 = Math.random(), u2 = Math.random();
-            v[i] = Math.sqrt(-2 * Math.log(u1 || 1e-10)) * Math.cos(2 * Math.PI * u2);
-            norm += v[i] * v[i];
-        }
-        norm = Math.sqrt(norm);
-        for (let i = 0; i < dim; i++) v[i] /= norm;
-        _wClusterProjections.push(v);
-    }
-}
+// PCA-projection sorting: finds the principal axis of variation in embedding
+// space via power iteration, projects every item onto that axis, sorts by
+// the scalar projection. O(n · dim · iters + n log n). See renderer.js.
+//
+// Runs synchronously — the computation takes ~200-500ms for 5,000 items,
+// which is too fast to warrant async progress but long enough to show
+// a brief "Clustering…" indicator on the main thread.
 
 function applyVisualClusteringByIdx(indices) {
     const folderIdxs = [];
@@ -420,28 +408,53 @@ function applyVisualClusteringByIdx(indices) {
     }
     if (withEmbIdxs.length < 2) return indices;
 
-    // Determine embedding dimension from first item
     const firstEmb = embeddings.get(items[withEmbIdxs[0]].path);
     const dim = firstEmb.length;
-    _wEnsureClusterProjections(dim);
+    const n = withEmbIdxs.length;
 
-    // Compute LSH hash per item and sort
-    const hashEntries = new Array(withEmbIdxs.length);
-    for (let i = 0; i < withEmbIdxs.length; i++) {
+    // 1. Compute mean embedding
+    const mean = new Float64Array(dim);
+    for (let i = 0; i < n; i++) {
         const emb = embeddings.get(items[withEmbIdxs[i]].path);
-        let hash = 0;
-        for (let p = 0; p < _W_CLUSTER_NUM_PROJECTIONS; p++) {
-            const proj = _wClusterProjections[p];
-            let dot = 0;
-            for (let d = 0; d < dim; d++) dot += emb[d] * proj[d];
-            if (dot >= 0) hash |= (1 << p);
-        }
-        hashEntries[i] = { idx: withEmbIdxs[i], hash };
+        for (let d = 0; d < dim; d++) mean[d] += emb[d];
     }
-    hashEntries.sort((a, b) => a.hash - b.hash);
+    for (let d = 0; d < dim; d++) mean[d] /= n;
 
-    const ordered = new Array(hashEntries.length);
-    for (let i = 0; i < hashEntries.length; i++) ordered[i] = hashEntries[i].idx;
+    // 2. Power iteration for first principal component (5 iterations)
+    let v = new Float64Array(dim);
+    const initEmb = embeddings.get(items[withEmbIdxs[0]].path);
+    for (let d = 0; d < dim; d++) v[d] = initEmb[d] - mean[d];
+    let vNorm = 0;
+    for (let d = 0; d < dim; d++) vNorm += v[d] * v[d];
+    vNorm = Math.sqrt(vNorm) || 1;
+    for (let d = 0; d < dim; d++) v[d] /= vNorm;
+
+    for (let iter = 0; iter < 5; iter++) {
+        const w = new Float64Array(dim);
+        for (let i = 0; i < n; i++) {
+            const emb = embeddings.get(items[withEmbIdxs[i]].path);
+            let dot = 0;
+            for (let d = 0; d < dim; d++) dot += (emb[d] - mean[d]) * v[d];
+            for (let d = 0; d < dim; d++) w[d] += dot * (emb[d] - mean[d]);
+        }
+        let wNorm = 0;
+        for (let d = 0; d < dim; d++) wNorm += w[d] * w[d];
+        wNorm = Math.sqrt(wNorm) || 1;
+        for (let d = 0; d < dim; d++) v[d] = w[d] / wNorm;
+    }
+
+    // 3. Project each item and sort
+    const projections = new Array(n);
+    for (let i = 0; i < n; i++) {
+        const emb = embeddings.get(items[withEmbIdxs[i]].path);
+        let dot = 0;
+        for (let d = 0; d < dim; d++) dot += (emb[d] - mean[d]) * v[d];
+        projections[i] = { idx: withEmbIdxs[i], val: dot };
+    }
+    projections.sort((a, b) => a.val - b.val);
+
+    const ordered = new Array(n);
+    for (let i = 0; i < n; i++) ordered[i] = projections[i].idx;
 
     return folderIdxs.concat(ordered, noEmbIdxs);
 }
@@ -534,7 +547,9 @@ self.onmessage = (e) => {
         }
         case 'applyFilters': {
             try {
+                const _pipeT0 = performance.now();
                 const result = runFilterPipeline(msg.state || {});
+                console.log(`[worker] full pipeline took ${(performance.now() - _pipeT0).toFixed(0)}ms, ${result.indices.length} results`);
                 // Collect transferable buffers so we don't copy score arrays
                 const transferables = [result.indices.buffer];
                 if (result.scores.ai)      transferables.push(result.scores.ai.buffer);

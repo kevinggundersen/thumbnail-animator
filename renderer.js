@@ -6866,9 +6866,13 @@ function updateItemCount() {
         }
     }
     if (sortChip) {
-        const arrow = sortOrder === 'descending' ? '\u2193' : '\u2191';
-        const label = sortType ? sortType.charAt(0).toUpperCase() + sortType.slice(1) : 'Name';
-        sortChip.textContent = `${label} ${arrow}`;
+        if (aiClusteringMode === 'similarity' && aiVisualSearchEnabled && currentEmbeddings.size > 0) {
+            sortChip.textContent = 'Clustered';
+        } else {
+            const arrow = sortOrder === 'descending' ? '\u2193' : '\u2191';
+            const label = sortType ? sortType.charAt(0).toUpperCase() + sortType.slice(1) : 'Name';
+            sortChip.textContent = `${label} ${arrow}`;
+        }
     }
 
     updateStatusBar();
@@ -6897,6 +6901,7 @@ function updateStatusBar() {
         const sortLabel = { none: 'Starred', desc: 'Starred ▼', asc: 'Starred ▲' };
         filterParts.push(sortLabel[starSortOrder] || 'Starred');
     }
+    if (aiClusteringMode === 'similarity' && aiVisualSearchEnabled) filterParts.push('Clustered');
     if (recursiveSearchEnabled) filterParts.push('Subfolders');
     if (advancedSearchFilters.sizeValue !== null) filterParts.push('Size');
     if (advancedSearchFilters.dateFrom !== null || advancedSearchFilters.dateTo !== null) filterParts.push('Date');
@@ -6946,35 +6951,14 @@ function cosineSimilarity(a, b) {
 }
 
 /**
- * Reorder items by visual similarity using random-projection sorting.
- * Projects each embedding onto a set of random hyperplanes, builds a
- * locality-sensitive hash, then sorts by hash.  O(n log n) instead of
- * the old O(n²) greedy nearest-neighbor which became catastrophic at N>2000.
+ * Reorder items by visual similarity using PCA-projection sorting.
+ * Finds the principal axis of variation in the embedding space via power
+ * iteration, projects every item onto that axis, then sorts by the scalar
+ * projection.  Items that are visually similar cluster together because
+ * they occupy nearby positions along the dominant axis.
  *
- * Quality is comparable: random projections preserve angular distance with
- * high probability (Johnson–Lindenstrauss lemma).
+ * O(n · dim · iterations + n log n) ≈ O(n) for typical CLIP-512 embeddings.
  */
-const _clusterProjections = []; // lazily initialised random unit vectors
-const _CLUSTER_NUM_PROJECTIONS = 24; // 24-bit hash → good angular resolution
-
-function _ensureClusterProjections(dim) {
-    if (_clusterProjections.length >= _CLUSTER_NUM_PROJECTIONS && _clusterProjections[0].length === dim) return;
-    _clusterProjections.length = 0;
-    for (let p = 0; p < _CLUSTER_NUM_PROJECTIONS; p++) {
-        const v = new Float32Array(dim);
-        let norm = 0;
-        for (let i = 0; i < dim; i++) {
-            // Box-Muller for Gaussian random
-            const u1 = Math.random(), u2 = Math.random();
-            v[i] = Math.sqrt(-2 * Math.log(u1 || 1e-10)) * Math.cos(2 * Math.PI * u2);
-            norm += v[i] * v[i];
-        }
-        norm = Math.sqrt(norm);
-        for (let i = 0; i < dim; i++) v[i] /= norm;
-        _clusterProjections.push(v);
-    }
-}
-
 function applyVisualClustering(items) {
     const folders = [], withEmb = [], noEmb = [];
     for (const item of items) {
@@ -6985,31 +6969,57 @@ function applyVisualClustering(items) {
 
     if (withEmb.length < 2) return items;
 
-    // Determine embedding dimension from first item
-    const firstEmb = currentEmbeddings.get(withEmb[0].path);
-    const dim = firstEmb.length;
-    _ensureClusterProjections(dim);
+    const dim = currentEmbeddings.get(withEmb[0].path).length;
+    const n = withEmb.length;
 
-    // Compute LSH key for each item: dot product sign per projection → bit string
-    const hashEntries = new Array(withEmb.length);
-    for (let i = 0; i < withEmb.length; i++) {
+    // 1. Compute mean embedding
+    const mean = new Float64Array(dim);
+    for (let i = 0; i < n; i++) {
         const emb = currentEmbeddings.get(withEmb[i].path);
-        let hash = 0;
-        for (let p = 0; p < _CLUSTER_NUM_PROJECTIONS; p++) {
-            const proj = _clusterProjections[p];
+        for (let d = 0; d < dim; d++) mean[d] += emb[d];
+    }
+    for (let d = 0; d < dim; d++) mean[d] /= n;
+
+    // 2. Power iteration to find first principal component (5 iterations is plenty)
+    let v = new Float64Array(dim);
+    // Initialise with first centered embedding (deterministic, avoids zero vector)
+    const initEmb = currentEmbeddings.get(withEmb[0].path);
+    for (let d = 0; d < dim; d++) v[d] = initEmb[d] - mean[d];
+    // Normalize
+    let vNorm = 0;
+    for (let d = 0; d < dim; d++) vNorm += v[d] * v[d];
+    vNorm = Math.sqrt(vNorm) || 1;
+    for (let d = 0; d < dim; d++) v[d] /= vNorm;
+
+    for (let iter = 0; iter < 5; iter++) {
+        const w = new Float64Array(dim);
+        for (let i = 0; i < n; i++) {
+            const emb = currentEmbeddings.get(withEmb[i].path);
+            // dot = (emb - mean) · v
             let dot = 0;
-            for (let d = 0; d < dim; d++) dot += emb[d] * proj[d];
-            if (dot >= 0) hash |= (1 << p);
+            for (let d = 0; d < dim; d++) dot += (emb[d] - mean[d]) * v[d];
+            // w += dot * (emb - mean)   — this computes (Cov * v) incrementally
+            for (let d = 0; d < dim; d++) w[d] += dot * (emb[d] - mean[d]);
         }
-        hashEntries[i] = { item: withEmb[i], hash };
+        // Normalize w → v
+        let wNorm = 0;
+        for (let d = 0; d < dim; d++) wNorm += w[d] * w[d];
+        wNorm = Math.sqrt(wNorm) || 1;
+        for (let d = 0; d < dim; d++) v[d] = w[d] / wNorm;
     }
 
-    // Sort by LSH hash — items with similar embeddings get similar hashes
-    hashEntries.sort((a, b) => a.hash - b.hash);
+    // 3. Project each item onto the principal component and sort
+    const projections = new Array(n);
+    for (let i = 0; i < n; i++) {
+        const emb = currentEmbeddings.get(withEmb[i].path);
+        let dot = 0;
+        for (let d = 0; d < dim; d++) dot += (emb[d] - mean[d]) * v[d];
+        projections[i] = { item: withEmb[i], val: dot };
+    }
+    projections.sort((a, b) => a.val - b.val);
 
-    // Extract sorted items
-    const ordered = new Array(hashEntries.length);
-    for (let i = 0; i < hashEntries.length; i++) ordered[i] = hashEntries[i].item;
+    const ordered = new Array(n);
+    for (let i = 0; i < n; i++) ordered[i] = projections[i].item;
 
     return folders.concat(ordered, noEmb);
 }
@@ -7051,13 +7061,21 @@ function getFilterWorker() {
         _filterWorker = new Worker('filter-sort-worker.js');
         _filterWorker.onmessage = (e) => {
             const msg = e.data;
-            if (!msg || msg.type !== 'result') return;
+            if (!msg) return;
+            if (msg.type === 'error') {
+                console.error('[filter-worker] pipeline error:', msg.error);
+                // Hide any active clustering indicator so it doesn't get stuck
+                _hideClusteringStatus();
+                return;
+            }
+            if (msg.type !== 'result') return;
             // Stale — a newer apply has been queued, drop this result
             if (msg.token !== _filterWorkerLastToken) return;
             applyFilterWorkerResult(msg);
         };
         _filterWorker.onerror = (err) => {
             console.error('filter-sort-worker error:', err);
+            _hideClusteringStatus();
         };
     } catch (e) {
         console.warn('Failed to spawn filter worker; falling back to main-thread filtering:', e);
@@ -7161,10 +7179,18 @@ function syncFilterWorkerFindSimilarEmbedding() {
 }
 
 function applyFilterWorkerResult(msg) {
+    console.log(`[renderer] received worker result: ${msg.indices?.length} items, groupHeaders=${msg.groupHeadersPresent}`);
     // Safety: if currentItems was swapped out after the worker request was sent,
     // the indices no longer map to the current array. Drop this stale result —
     // a fresh applyFilters will run for the new items.
-    if (_filterWorkerItemsRef !== currentItems) return;
+    if (_filterWorkerItemsRef !== currentItems) {
+        console.warn('[renderer] dropping stale worker result (currentItems changed)');
+        _hideClusteringStatus(); // never leave indicator stuck
+        return;
+    }
+    try { _applyFilterWorkerResultInner(msg); } finally { _hideClusteringStatus(); }
+}
+function _applyFilterWorkerResultInner(msg) {
 
     vsState.groupHeadersPresent = !!msg.groupHeadersPresent;
 
@@ -7214,8 +7240,30 @@ function applyFilterWorkerResult(msg) {
     // Count visible (non-header) matches for the search result badge
     updateSearchResultCount(visibleCount);
     clearSearchDebounceIndicator();
+    hideLoadingIndicator();
     // Refresh filename highlights for the new query across visible cards
     if (typeof refreshVisibleFilenameHighlights === 'function') refreshVisibleFilenameHighlights();
+}
+
+let _clusteringStatusTimer = null;
+
+function _hideClusteringStatus() {
+    const el = document.getElementById('ai-clustering-status');
+    if (!el || el.classList.contains('hidden')) return;
+    // Clear safety timeout from settings-ui
+    const sel = document.getElementById('ai-clustering-select');
+    if (sel && sel._safetyTimer) { clearTimeout(sel._safetyTimer); sel._safetyTimer = null; }
+    // Show brief "Done" feedback, then hide
+    const dot = el.querySelector('.ai-status-dot');
+    const text = document.getElementById('ai-clustering-status-text');
+    if (dot) { dot.classList.remove('loading'); dot.classList.add('loaded'); }
+    if (text) text.textContent = 'Clustered';
+    clearTimeout(_clusteringStatusTimer);
+    _clusteringStatusTimer = setTimeout(() => {
+        el.classList.add('hidden');
+        if (dot) { dot.classList.remove('loaded'); dot.classList.add('loading'); }
+        if (text) text.textContent = 'Clustering\u2026';
+    }, 1500);
 }
 
 // Applies search-operator filters that run on the main thread (size/date,
@@ -7283,6 +7331,12 @@ function applyFiltersViaWorker() {
     syncFilterWorkerFindSimilarEmbedding();
     // Embeddings only matter when AI search / clustering / find-similar is active
     if (aiSearchActive || aiClusteringMode === 'similarity' || findSimilarState.active) {
+        // Force a full sync when clustering is first enabled — individual embeddings
+        // are never sent to the worker (setOneEmbedding exists but is unused), so
+        // the worker may have zero embeddings even though the main thread has them.
+        if (aiClusteringMode === 'similarity' && _filterWorkerEmbSyncedSize !== currentEmbeddings.size) {
+            _filterWorkerEmbSyncedVersion = -1; // force version mismatch → full sync
+        }
         syncFilterWorkerEmbeddingsIfNeeded();
     }
 
@@ -7492,6 +7546,9 @@ function applyFilters() {
     // Count visible (non-header) matches for the search result badge
     updateSearchResultCount(visibleCount);
     clearSearchDebounceIndicator();
+    // Update clustering progress indicator (inside settings panel)
+    _hideClusteringStatus();
+    hideLoadingIndicator();
     if (typeof refreshVisibleFilenameHighlights === 'function') refreshVisibleFilenameHighlights();
 
     perfTest.end('applyFilters', perfStart, { cardCount: currentItems.length });
@@ -9471,6 +9528,8 @@ async function scheduleBackgroundEmbedding(items) {
     const uncached = mediaItems.filter(i => !currentEmbeddings.has(i.path));
     if (uncached.length === 0) {
         hideEmbedProgressUI();
+        // All embeddings loaded from cache — re-filter if clustering is active
+        if (aiClusteringMode === 'similarity') applyFilters();
         return;
     }
 
@@ -9526,8 +9585,9 @@ async function scheduleBackgroundEmbedding(items) {
 
     if (!signal.aborted) {
         hideEmbedProgressUI();
-        // If AI search is active with a query, re-filter now that embeddings are ready
-        if (aiSearchActive && currentTextEmbedding && document.getElementById('search-box').value.trim()) {
+        // Re-filter now that embeddings are ready — needed for AI search and visual clustering
+        if ((aiSearchActive && currentTextEmbedding && document.getElementById('search-box').value.trim()) ||
+            aiClusteringMode === 'similarity') {
             applyFilters();
         }
     }
@@ -9605,7 +9665,7 @@ async function _startIdlePreEmbedding() {
         }
     }
 
-    if (!signal.aborted && aiSearchActive && currentTextEmbedding) {
+    if (!signal.aborted && ((aiSearchActive && currentTextEmbedding) || aiClusteringMode === 'similarity')) {
         applyFilters();
     }
     _idleEmbedAbort = null;

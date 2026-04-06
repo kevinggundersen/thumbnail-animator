@@ -1,8 +1,8 @@
 
-// ============================================================================
-// CONFIGURATION CONSTANTS - Adjust these values to fine-tune performance
+// ═══════════════════════════════════════════════════════════════════════════
+// CONFIGURATION CONSTANTS
 // User-configurable values are `let` and hydrated from localStorage below.
-// ============================================================================
+// ═══════════════════════════════════════════════════════════════════════════
 
 // Media Loading Configuration
 let MAX_VIDEOS = 120; // Max concurrent videos
@@ -93,9 +93,7 @@ let sidebarMaxWidthSetting = 500;
 let folderPreviewCountSetting = 4;
 let folderPreviewSizeSetting = 192;
 
-// ============================================================================
-// Hydrate configurable constants from localStorage
-// ============================================================================
+// ── Hydrate configurable constants from localStorage ──
 (function hydrateSettings() {
     const _int = (key, fallback) => { const v = localStorage.getItem(key); return v !== null ? parseInt(v, 10) : fallback; };
     const _str = (key, fallback) => localStorage.getItem(key) || fallback;
@@ -165,15 +163,14 @@ let folderPreviewSizeSetting = 192;
 // Derived after hydration
 let MAX_TOTAL_MEDIA = MAX_VIDEOS + MAX_IMAGES;
 
-// ============================================================================
-// END CONFIGURATION CONSTANTS
-// ============================================================================
 
-// ============================================================================
+
+
+// ═══════════════════════════════════════════════════════════════════════════
 // VIRTUAL SCROLLING ENGINE
 // Only renders DOM cards that are visible + buffer zone.
 // For 10,000 items, only ~50-100 cards exist in the DOM at any time.
-// ============================================================================
+// ═══════════════════════════════════════════════════════════════════════════
 
 // Virtual scrolling state
 const vsState = {
@@ -1366,11 +1363,11 @@ function vsGetCardForIndex(index) {
     return vsState.activeCards.get(index) || null;
 }
 
-// ============================================================================
-// END VIRTUAL SCROLLING ENGINE
-// ============================================================================
+// ═══════════════════════════════════════════════════════════════════════════
+// STORAGE, NOTIFICATIONS & DIALOGS
+// ═══════════════════════════════════════════════════════════════════════════
 
-// --- Batched localStorage writes ---
+// ── Batched localStorage writes ──
 // Collects pending writes and flushes them together in the next idle frame
 const _pendingStorageWrites = new Map();
 let _storageFlushScheduled = false;
@@ -1478,7 +1475,7 @@ function formatEta(ms) {
     return mr > 0 ? `~${h}h ${mr}m left` : `~${h}h left`;
 }
 
-// ===== Toast Notification System =====
+// ── Toast Notification System ──
 const toastContainer = document.getElementById('toast-container');
 const TOAST_ICONS = {
     success: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>',
@@ -1591,7 +1588,7 @@ function showToastOnce(key, message, type = 'info', options = {}) {
     return showToast(message, type, options);
 }
 
-// ===== Auto-Update Notifications =====
+// ── Auto-Update Notifications ──
 (function initAutoUpdateListeners() {
     let updateToast = null;
     let downloading = false;
@@ -1660,7 +1657,7 @@ function showToastOnce(key, message, type = 'info', options = {}) {
     });
 })();
 
-// ===== Friendly Error Messages =====
+// ── Friendly Error Messages ──
 function friendlyError(err) {
     const msg = typeof err === 'string' ? err : (err && err.message) || 'Unknown error';
     if (/EPERM|EACCES/i.test(msg)) return 'Permission denied \u2014 the file may be read-only or in use';
@@ -1677,7 +1674,7 @@ function friendlyError(err) {
     return msg;
 }
 
-// ===== Application Menu Command Handler =====
+// ── Application Menu Command Handler ──
 window.electronAPI.onMenuCommand((command) => {
     switch (command) {
         case 'open-folder': selectFolderBtn.click(); break;
@@ -1704,7 +1701,7 @@ window.electronAPI.onMenuCommand((command) => {
     }
 });
 
-// ===== Custom Confirmation Dialog =====
+// ── Custom Confirmation Dialog ──
 const confirmDialog = document.getElementById('confirm-dialog');
 const confirmDialogTitle = document.getElementById('confirm-dialog-title');
 const confirmDialogMessage = document.getElementById('confirm-dialog-message');
@@ -1802,7 +1799,7 @@ document.addEventListener('keydown', (e) => {
     }
 });
 
-// ===== File Conflict Dialog =====
+// ── File Conflict Dialog ──
 const fileConflictDialog = document.getElementById('file-conflict-dialog');
 const fileConflictMessage = document.getElementById('file-conflict-message');
 const fileConflictRememberLabel = document.getElementById('file-conflict-remember-label');
@@ -2812,11 +2809,11 @@ async function cleanupIndexedDBCache() {
     }
 }
 
-// → collections.js (collections CRUD, smart rules, dimension/embedding cache)
+// ═══ → collections.js (collections CRUD, smart rules, dimension/embedding cache) ═══
 
-// ============================================================================
+// ═══════════════════════════════════════════════════════════════════════════
 // FIND SIMILAR (Reverse Image Search)
-// ============================================================================
+// ═══════════════════════════════════════════════════════════════════════════
 
 /**
  * Activate "Find Similar" for a source image.
@@ -3023,9 +3020,8 @@ function clearFindSimilar() {
     }
 }
 
-// ============================================================================
-// END FIND SIMILAR
-// ============================================================================
+
+
 
 async function getCachedGifDuration(filePath, mtime) {
     if (!db) return null;
@@ -3293,7 +3289,7 @@ function normalizePath(path) {
     return result;
 }
 
-// → sidebar-tree.js (folder tree, sidebar resize, init, expand/collapse)
+// ═══ → sidebar-tree.js (folder tree, sidebar resize, init, expand/collapse) ═══
 
 // Function to invalidate cache for a folder and its parent
 async function invalidateFolderCache(folderPath) {
@@ -3386,7 +3382,7 @@ const navigationHistory = {
     }
 };
 
-// → lightbox.js (lightbox DOM elements, state, zoom controls placement)
+// ═══ → lightbox.js (lightbox DOM elements, state, zoom controls placement) ═══
 
 // Context Menu Elements
 const contextMenu = document.getElementById('context-menu');
@@ -3429,7 +3425,9 @@ function scheduleGC() {
 // --- Track all video cards for periodic cleanup check ---
 const videoCards = new WeakSet();
 
-// --- Periodic cleanup check to catch videos that IntersectionObserver might miss ---
+// ═══════════════════════════════════════════════════════════════════════════
+// MEDIA CLEANUP & LOADING
+// ═══════════════════════════════════════════════════════════════════════════
 let cleanupCheckInterval;
 let cleanupScrollTimeout = null;
 let cleanupAnimationFrame = null;
@@ -4454,7 +4452,9 @@ function getClosestAspectRatio(videoWidth, videoHeight) {
     return closest.name;
 }
 
-// --- Card metadata helpers (grid cards) ---
+// ═══════════════════════════════════════════════════════════════════════════
+// CARD RENDERING HELPERS
+// ═══════════════════════════════════════════════════════════════════════════
 function formatBytesForCardLabel(bytes) {
     if (bytes == null || bytes <= 0 || !isFinite(bytes)) return '';
     const k = 1024;
@@ -4819,7 +4819,9 @@ function applyAspectRatioToCard(card, aspectRatioName, aspectRatioSource) {
     }
 }
 
-// --- Masonry Layout System ---
+// ═══════════════════════════════════════════════════════════════════════════
+// MASONRY LAYOUT
+// ═══════════════════════════════════════════════════════════════════════════
 let masonryColumns = 0;
 let columnHeights = [];
 let resizeTimeout;
@@ -5790,7 +5792,7 @@ function updateSorting() {
     applySorting();
 }
 
-// → settings-ui.js (toggleSettingsModal, closeSettingsModal, shortcuts overlay)
+// ═══ → settings-ui.js (toggleSettingsModal, closeSettingsModal, shortcuts overlay) ═══
 
 async function resolveGifDuration(card, imageUrl) {
     if (card.dataset.gifDuration) return;
@@ -6800,7 +6802,9 @@ function scheduleObserverRefresh() {
 window.addEventListener('resize', scheduleObserverRefresh);
 
 
-// --- Filter and Search Functionality ---
+// ═══════════════════════════════════════════════════════════════════════════
+// FILTER & SEARCH
+// ═══════════════════════════════════════════════════════════════════════════
 // Debounce timer for search input
 let filterDebounceTimer = null;
 // RAF coalescing for filter changes — batches rapid clicks into one pass
@@ -7599,7 +7603,9 @@ function refreshVisibleFilenameHighlights() {
     }
 }
 
-// --- Delegated Event Handlers for Grid Cards ---
+// ═══════════════════════════════════════════════════════════════════════════
+// GRID INTERACTION
+// ═══════════════════════════════════════════════════════════════════════════
 // Instead of attaching listeners to each card, delegate from gridContainer
 
 let currentHoveredCard = null;
@@ -8241,7 +8247,9 @@ gridContainer.addEventListener('scroll', _hideCardTooltip, { passive: true });
 gridContainer.addEventListener('mousedown', _hideCardTooltip, true);
 document.addEventListener('contextmenu', _hideCardTooltip, true);
 
-// --- Drag & Drop Support ---
+// ═══════════════════════════════════════════════════════════════════════════
+// DRAG & DROP
+// ═══════════════════════════════════════════════════════════════════════════
 
 // Floating drag label
 const dragDropLabel = document.getElementById('drag-drop-label');
@@ -8594,7 +8602,9 @@ window.addEventListener('beforeunload', () => {
     }
 });
 
-// --- Event Listeners ---
+// ═══════════════════════════════════════════════════════════════════════════
+// EVENT WIRING
+// ═══════════════════════════════════════════════════════════════════════════
 
 selectFolderBtn.addEventListener('click', async () => {
     // Get the last folder path from localStorage if remembering is enabled
@@ -9297,7 +9307,7 @@ settingsBtn.addEventListener('click', (e) => {
     toggleSettingsModal();
 });
 
-// → settings-ui.js (settings modal listeners, export/import, cache, plugins, playback, hover scale, AI settings)
+// ═══ → settings-ui.js (settings modal listeners, export/import, cache, plugins, playback, hover scale, AI settings) ═══
 
 // --- Find Similar banner event listeners ---
 (function initFindSimilarBanner() {
@@ -9620,7 +9630,7 @@ document.addEventListener('click', (e) => {
     }
 });
 
-// → lightbox.js (zoom, rotation, crop, open/close, pan, wheel, copy buttons)
+// ═══ → lightbox.js (zoom, rotation, crop, open/close, pan, wheel, copy buttons) ═══
 
 // --- Blow-Up Preview (right-click hold) ---
 
@@ -9761,7 +9771,10 @@ document.addEventListener('keydown', (e) => {
 document.addEventListener('mouseleave', () => { hideBlowUp(); });
 window.addEventListener('blur', () => { hideBlowUp(); });
 
-// → context-menu.js (context menus, action dispatch, rename dialog)
+// ═══ → context-menu.js (context menus, action dispatch, rename dialog) ═══
+// ═══════════════════════════════════════════════════════════════════════════
+// BATCH OPERATIONS
+// ═══════════════════════════════════════════════════════════════════════════
 // ── Batch Rename ─────────────────────────────────────────────────────
 const batchRenameOverlay = document.getElementById('batch-rename-overlay');
 const batchRenameType = document.getElementById('batch-rename-type');
@@ -11085,9 +11098,9 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
     }
 }
 
-// ============================================================================
-// COLLECTIONS UI
-// ============================================================================
+// ═══════════════════════════════════════════════════════════════════════════
+// COLLECTIONS & SAVED SEARCHES UI
+// ═══════════════════════════════════════════════════════════════════════════
 
 const collectionsListEl = document.getElementById('collections-list');
 const newCollectionBtn = document.getElementById('new-collection-btn');
@@ -11845,7 +11858,9 @@ if (typeof updateSaveSearchButtonState === 'function') updateSaveSearchButtonSta
 // Initialize theme system (must be after all let/const declarations to avoid TDZ errors)
 ThemeManager.init();
 
-// ==================== COMMAND PALETTE REGISTRATIONS ====================
+// ═══════════════════════════════════════════════════════════════════════════
+// COMMAND PALETTE
+// ═══════════════════════════════════════════════════════════════════════════
 function openSettingsToTab(tabId) {
     settingsModal.classList.remove('hidden');
     document.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
@@ -11925,7 +11940,9 @@ if (typeof CommandPalette !== 'undefined') {
     }
 }
 
-// ── Tagging System ───────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// TAGGING SYSTEM
+// ═══════════════════════════════════════════════════════════════════════════
 
 // In-memory tag cache
 let allTagsCache = [];
@@ -12503,7 +12520,11 @@ refreshTagsCache();
 console.log('[Tags] renderer.js fully loaded, end of file reached');
 
 
-// ==================== SEARCH HISTORY ====================
+// ═══════════════════════════════════════════════════════════════════════════
+// UTILITY FEATURES
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── Search History ──
 (function initSearchHistory() {
     const SEARCH_HISTORY_KEY = 'searchHistory';
     const MAX_SEARCH_HISTORY = searchHistoryLimitSetting;
@@ -12594,7 +12615,7 @@ console.log('[Tags] renderer.js fully loaded, end of file reached');
 })();
 
 
-// ==================== DATE GROUP HEADERS ====================
+// ── Date Group Headers ──
 let groupByDate = false;
 let dateGroupGranularity = 'month';
 const collapsedDateGroups = new Set();
@@ -12714,7 +12735,7 @@ let preDateGroupSortType = null;
 })();
 
 
-// ==================== COMPARE MODE ====================
+// ── Compare Mode ──
 let cmoZoomState = { scale: 1, panX: 0, panY: 0 };
 let cmoPanelStates = []; // per-panel zoom state when not synced
 
@@ -12867,7 +12888,7 @@ function closeCompareMode() {
 })();
 
 
-// ==================== SLIDESHOW MODE ====================
+// ── Slideshow Mode ──
 const slideshowState = {
     active: false,
     items: [],
@@ -13076,9 +13097,9 @@ function ssUpdateControls() {
     });
 })();
 
-// ============================================================================
+// ═══════════════════════════════════════════════════════════════════════════
 // ENHANCED LIGHTBOX: Filmstrip + A-B Loop + Inspector + Save Frame
-// ============================================================================
+// ═══════════════════════════════════════════════════════════════════════════
 
 // ── Shared state ──
 let filmstripInstance = null;
@@ -14152,13 +14173,15 @@ function toggleInspectorPanel() {
 // Expose on window so the MediaControlBar (in playback-controller.js) can invoke
 window.saveCurrentFrame = saveCurrentFrame;
 
-// → convert-dialog.js (ffmpeg trim, convert, batch convert)
+// ═══ → convert-dialog.js (ffmpeg trim, convert, batch convert) ═══
 
-// → lightbox.js (enhanced lightbox instances)
+// ═══ → lightbox.js (enhanced lightbox instances) ═══
 
-// → settings-ui.js (keyboard shortcuts, settings handlers, CSS hydration)
+// ═══ → settings-ui.js (keyboard shortcuts, settings handlers, CSS hydration) ═══
 
-// ── Canvas Grid bridge ────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// CANVAS GRID BRIDGE
+// ═══════════════════════════════════════════════════════════════════════════
 // Exposes the renderer's layout + state + actions to canvas-grid.js.
 // canvas-grid.js reads from this host to paint without owning any DOM.
 window.__cgHost = {

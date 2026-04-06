@@ -325,3 +325,7 @@ class FilmstripScrubber {
         this.hide();
     }
 }
+
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = { FilmstripScrubber, SCRUBBER_TILE_WIDTH, SCRUBBER_TILE_HEIGHT, SCRUBBER_TILE_COUNT };
+}

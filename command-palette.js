@@ -268,3 +268,7 @@ const CommandPalette = (() => {
 
     return { open, close, toggle, isVisible: () => isOpen, register, registerMany, unregister };
 })();
+
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = CommandPalette;
+}

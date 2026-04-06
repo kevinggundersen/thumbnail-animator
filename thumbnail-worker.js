@@ -3,19 +3,15 @@
  * Handles both image (via sharp) and video (via ffmpeg) thumbnails.
  * Runs off the main process to keep IPC responsive during heavy thumbnail workloads.
  *
- * Message protocol:
- *   Request:  { id, type: 'image'|'video', filePath, thumbPath, maxSize?, ffmpegPath?, ffprobePath? }
- *   Response: { id, type: 'result', success, thumbPath? }
- *   Batch:    { id, type: 'batch', items: Array<Request> }
- *   Response: { id, type: 'batch-result', results: Array<Response> }
+ * Piscina protocol: export a single async function that processes one item.
  */
-const { parentPort, workerData } = require('worker_threads');
+const Piscina = require('piscina');
 const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
 
-const ffmpegPath = workerData.ffmpegPath || null;
-const ffprobePath = workerData.ffprobePath || null;
+const ffmpegPath = Piscina.workerData.ffmpegPath || null;
+const ffprobePath = Piscina.workerData.ffprobePath || null;
 const MAX_CONCURRENT_FFMPEG = 4;
 
 let sharp;
@@ -155,7 +151,7 @@ async function computeDHashForFile(filePath) {
     }
 }
 
-async function processItem(item) {
+module.exports = async function(item) {
     try {
         // Check if already cached
         let alreadyCached = false;
@@ -182,39 +178,12 @@ async function processItem(item) {
             const result = await generateImageThumbnail(item.filePath, item.thumbPath, item.maxSize || 512);
             success = result.success;
             if (success && item.computeDHash) {
-                // Compute dHash from the just-written small thumbnail (fast: ~2ms)
                 dHash = await computeDHashForFile(item.thumbPath);
             }
         }
 
-        return { id: item.id, type: 'result', success, thumbPath: success ? item.thumbPath : null, dHash };
+        return { success, thumbPath: success ? item.thumbPath : null, dHash };
     } catch {
-        return { id: item.id, type: 'result', success: false, thumbPath: null, dHash: null };
+        return { success: false, thumbPath: null, dHash: null };
     }
-}
-
-parentPort.on('message', async (msg) => {
-    if (msg.type === 'image' || msg.type === 'video') {
-        const result = await processItem(msg);
-        parentPort.postMessage(result);
-    } else if (msg.type === 'batch') {
-        // Process batch items with bounded concurrency
-        const BATCH_CONCURRENCY = 6;
-        const results = [];
-        const items = msg.items || [];
-
-        // Process in chunks for bounded concurrency
-        for (let i = 0; i < items.length; i += BATCH_CONCURRENCY) {
-            const chunk = items.slice(i, i + BATCH_CONCURRENCY);
-            const chunkResults = await Promise.all(chunk.map(processItem));
-            results.push(...chunkResults);
-
-            // Stream intermediate results back so renderer gets thumbnails ASAP
-            for (const r of chunkResults) {
-                parentPort.postMessage(r);
-            }
-        }
-
-        parentPort.postMessage({ id: msg.id, type: 'batch-complete', count: results.length });
-    }
-});
+};

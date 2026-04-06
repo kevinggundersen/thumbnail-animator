@@ -48,43 +48,9 @@ const CommandPalette = (() => {
         });
     }
 
-    // -- Fuzzy search --
-    function fuzzyScore(query, text) {
-        const q = query.toLowerCase();
-        const t = text.toLowerCase();
-
-        // Exact substring match (best)
-        if (t.includes(q)) {
-            return 100 + (q.length / t.length) * 50;
-        }
-
-        // Subsequence match
-        let qi = 0;
-        let score = 0;
-        let lastMatchIdx = -1;
-        for (let ti = 0; ti < t.length && qi < q.length; ti++) {
-            if (t[ti] === q[qi]) {
-                // Bonus for word boundary matches
-                if (ti === 0 || t[ti - 1] === ' ' || t[ti - 1] === ':' || t[ti - 1] === '-') {
-                    score += 10;
-                } else {
-                    score += 5;
-                }
-                // Bonus for consecutive matches
-                if (lastMatchIdx === ti - 1) score += 3;
-                lastMatchIdx = ti;
-                qi++;
-            }
-        }
-
-        // All query chars matched?
-        if (qi < q.length) return -1;
-        return score;
-    }
-
+    // -- Fuzzy search (powered by Fuse.js) --
     function getFiltered() {
         const query = input.value.trim();
-        let results;
 
         if (!query) {
             // Show recents first, then all commands
@@ -94,24 +60,34 @@ const CommandPalette = (() => {
                 .filter(c => !c.when || c.when());
             const rest = commands
                 .filter(c => !recentIds.includes(c.id) && (!c.when || c.when()));
-            results = [
+            return [
                 ...recentCmds.map(c => ({ cmd: c, score: 1000, isRecent: true })),
                 ...rest.map(c => ({ cmd: c, score: 0, isRecent: false }))
             ];
-        } else {
-            results = [];
-            for (const cmd of commands) {
-                if (cmd.when && !cmd.when()) continue;
-                const searchStr = cmd.label + ' ' + (cmd.keywords || []).join(' ') + ' ' + (cmd.category || '');
-                const score = fuzzyScore(query, searchStr);
-                if (score > 0) {
-                    results.push({ cmd, score, isRecent: recentIds.includes(cmd.id) });
-                }
-            }
-            // Recently used commands get a bonus
-            results.forEach(r => { if (r.isRecent) r.score += 20; });
-            results.sort((a, b) => b.score - a.score);
         }
+
+        const available = commands.filter(c => !c.when || c.when());
+        const fuse = new Fuse(available, {
+            keys: [
+                { name: 'label', weight: 0.6 },
+                { name: 'keywords', weight: 0.25 },
+                { name: 'category', weight: 0.15 }
+            ],
+            threshold: 0.4,
+            includeScore: true,
+            ignoreLocation: true
+        });
+
+        const fuseResults = fuse.search(query);
+        const results = fuseResults.map(r => ({
+            cmd: r.item,
+            score: (1 - r.score) * 100, // fuse: 0=perfect, 1=worst -> invert to 0-100
+            isRecent: recentIds.includes(r.item.id)
+        }));
+
+        // Recently used commands get a bonus
+        results.forEach(r => { if (r.isRecent) r.score += 20; });
+        results.sort((a, b) => b.score - a.score);
 
         return results;
     }

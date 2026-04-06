@@ -1,33 +1,31 @@
-// Mock worker_threads is set up globally via setup-db-alias.js
-// which redirects require('worker_threads') to test/mock-worker-threads.js.
-const { allMockWorkers } = require('./mock-worker-threads');
 const HashWorkerPool = require('../hash-pool');
 
-beforeEach(() => {
-    allMockWorkers.length = 0;
-});
+// Helper: replace pool.run with a mock that simulates hash results
+function mockPoolRun(pool) {
+    pool.pool.run = vi.fn(async (files) => {
+        return files.map(f => ({
+            path: f.path,
+            exactHash: `exact_${f.path}`,
+            perceptualHash: `phash_${f.path}`,
+        }));
+    });
+}
 
 // ── Constructor ───────────────────────────────────────────────────────
 
 describe('HashWorkerPool constructor', () => {
-    it('creates between 2 and 8 workers', () => {
+    it('creates a pool with workerCount between 2 and 8', () => {
         const pool = new HashWorkerPool();
-        expect(pool.workers.length).toBeGreaterThanOrEqual(2);
-        expect(pool.workers.length).toBeLessThanOrEqual(8);
+        expect(pool.workerCount).toBeGreaterThanOrEqual(2);
+        expect(pool.workerCount).toBeLessThanOrEqual(8);
         pool.terminate();
     });
 
-    it('workerCount matches the workers array length', () => {
+    it('has a piscina pool instance', () => {
         const pool = new HashWorkerPool();
-        expect(pool.workers.length).toBe(pool.workerCount);
-        pool.terminate();
-    });
-
-    it('passes hash-worker.js path to each Worker', () => {
-        const pool = new HashWorkerPool();
-        for (const worker of pool.workers) {
-            expect(worker.__workerPath).toMatch(/hash-worker\.js$/);
-        }
+        expect(pool.pool).toBeDefined();
+        expect(typeof pool.pool.run).toBe('function');
+        expect(typeof pool.pool.destroy).toBe('function');
         pool.terminate();
     });
 });
@@ -39,6 +37,7 @@ describe('scanHashes', () => {
 
     beforeEach(() => {
         pool = new HashWorkerPool();
+        mockPoolRun(pool);
     });
 
     afterEach(() => {
@@ -66,7 +65,7 @@ describe('scanHashes', () => {
         expect(result.get('/c.mp4').exactHash).toBe('exact_/c.mp4');
     });
 
-    it('sends hash messages to workers via postMessage', async () => {
+    it('sends chunks to pool.run()', async () => {
         const files = [
             { path: '/a.jpg', isImage: true, isVideo: false },
             { path: '/b.jpg', isImage: true, isVideo: false },
@@ -74,11 +73,9 @@ describe('scanHashes', () => {
 
         await pool.scanHashes(files);
 
-        const messaged = pool.workers.filter(w => w.__messages.length > 0);
-        expect(messaged.length).toBeGreaterThan(0);
-        for (const w of messaged) {
-            expect(w.__messages[0].type).toBe('hash');
-            expect(Array.isArray(w.__messages[0].files)).toBe(true);
+        expect(pool.pool.run).toHaveBeenCalled();
+        for (const call of pool.pool.run.mock.calls) {
+            expect(Array.isArray(call[0])).toBe(true);
         }
     });
 
@@ -114,64 +111,24 @@ describe('scanHashes', () => {
         const result = await pool.scanHashes(files);
         expect(result.size).toBe(50);
     });
-});
 
-// ── Worker error recovery ─────────────────────────────────────────────
-
-describe('worker error recovery', () => {
-    let consoleSpy;
-    beforeEach(() => { consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {}); });
-    afterEach(() => { consoleSpy.mockRestore(); });
-
-    it('recreates a worker when one emits error', () => {
-        const pool = new HashWorkerPool();
-        const originalWorker = pool.workers[0];
-
-        originalWorker.emit('error', new Error('worker crashed'));
-
-        expect(pool.workers[0]).not.toBe(originalWorker);
-        pool.terminate();
-    });
-
-    it('scanHashes resolves with empty results for crashed worker chunk', async () => {
-        const pool = new HashWorkerPool();
-
-        // Make the first worker crash instead of returning results
-        pool.workers[0].postMessage = function (msg) {
-            process.nextTick(() => {
-                this.emit('error', new Error('crash'));
-            });
-        };
+    it('handles pool.run() rejection gracefully', async () => {
+        pool.pool.run = vi.fn(async () => { throw new Error('worker crash'); });
 
         const files = [{ path: '/a.jpg', isImage: true, isVideo: false }];
         const result = await pool.scanHashes(files);
         expect(result).toBeInstanceOf(Map);
-        pool.terminate();
+        expect(result.size).toBe(0);
     });
 });
 
 // ── terminate ─────────────────────────────────────────────────────────
 
 describe('terminate', () => {
-    it('terminates all workers', () => {
+    it('destroys the piscina pool', () => {
         const pool = new HashWorkerPool();
-        const workers = [...pool.workers];
+        const destroySpy = vi.spyOn(pool.pool, 'destroy');
         pool.terminate();
-
-        for (const w of workers) {
-            expect(w.__terminated).toBe(true);
-        }
-    });
-
-    it('clears the workers array', () => {
-        const pool = new HashWorkerPool();
-        pool.terminate();
-        expect(pool.workers).toEqual([]);
-    });
-
-    it('handles null workers in the array', () => {
-        const pool = new HashWorkerPool();
-        pool.workers[0] = null;
-        expect(() => pool.terminate()).not.toThrow();
+        expect(destroySpy).toHaveBeenCalled();
     });
 });

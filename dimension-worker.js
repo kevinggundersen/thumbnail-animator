@@ -1,12 +1,12 @@
 /**
  * Worker thread for scanning image/video dimensions.
- * Receives batches of file paths, returns { path, width, height } results.
+ * Piscina protocol: export a single async function that processes one file.
  */
-const { parentPort, workerData } = require('worker_threads');
+const Piscina = require('piscina');
 const fs = require('fs');
 const { execFile } = require('child_process');
 
-const ffprobePath = workerData.ffprobePath;
+const ffprobePath = Piscina.workerData.ffprobePath;
 
 // Load image-size the same way as main.js
 let sizeOf = null;
@@ -67,34 +67,13 @@ function getVideoDimensions(filePath) {
     });
 }
 
-const WORKER_CONCURRENCY = 4;
-
-parentPort.on('message', async (msg) => {
-    if (msg.type !== 'scan') return;
-
-    const results = new Array(msg.files.length);
-    const executing = new Set();
-
-    for (let i = 0; i < msg.files.length; i++) {
-        const index = i;
-        const file = msg.files[i];
-        const p = (async () => {
-            const dims = file.isImage
-                ? await getImageDimensions(file.path)
-                : await getVideoDimensions(file.path);
-            results[index] = {
-                path: file.path,
-                width: dims ? dims.width : undefined,
-                height: dims ? dims.height : undefined
-            };
-        })();
-        executing.add(p);
-        p.then(() => executing.delete(p), () => executing.delete(p));
-        if (executing.size >= WORKER_CONCURRENCY) {
-            await Promise.race(executing);
-        }
-    }
-    await Promise.all(executing);
-
-    parentPort.postMessage({ type: 'result', results });
-});
+module.exports = async function({ path: filePath, isImage }) {
+    const dims = isImage
+        ? await getImageDimensions(filePath)
+        : await getVideoDimensions(filePath);
+    return {
+        path: filePath,
+        width: dims ? dims.width : undefined,
+        height: dims ? dims.height : undefined
+    };
+};

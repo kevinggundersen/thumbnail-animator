@@ -2,35 +2,19 @@
  * Pool of hash-computing worker threads.
  * Distributes file batches across workers for parallel hashing.
  */
-const { Worker } = require('worker_threads');
+const Piscina = require('piscina');
 const path = require('path');
 const os = require('os');
 
 class HashWorkerPool {
     constructor() {
         this.workerCount = Math.min(Math.max(os.cpus().length, 2), 8);
-        this.workers = [];
-        this.workerPath = path.join(__dirname, 'hash-worker.js');
-        this._initWorkers();
-    }
-
-    _initWorkers() {
-        for (let i = 0; i < this.workerCount; i++) {
-            this._createWorker(i);
-        }
-    }
-
-    _createWorker(index) {
-        const worker = new Worker(this.workerPath);
-        worker.on('error', (err) => {
-            console.error(`Hash worker ${index} error:`, err);
-            try {
-                this._createWorker(index);
-            } catch {
-                console.error(`Failed to recreate hash worker ${index}`);
-            }
+        this.pool = new Piscina({
+            filename: path.join(__dirname, 'hash-worker.js'),
+            minThreads: this.workerCount,
+            maxThreads: this.workerCount,
+            concurrentTasksPerWorker: 1
         });
-        this.workers[index] = worker;
     }
 
     /**
@@ -49,32 +33,15 @@ class HashWorkerPool {
         }
 
         let completed = 0;
-        const promises = chunks.map((chunk, i) => {
-            const workerIndex = i % this.workers.length;
-            const worker = this.workers[workerIndex];
-            if (!worker) return Promise.resolve([]);
+        const allResults = await Promise.all(
+            chunks.map(async (chunk) => {
+                const results = await this.pool.run(chunk).catch(() => []);
+                completed += chunk.length;
+                if (onProgress) onProgress(completed, files.length);
+                return results;
+            })
+        );
 
-            return new Promise((resolve) => {
-                const onMessage = (msg) => {
-                    if (msg.type === 'result') {
-                        worker.removeListener('message', onMessage);
-                        worker.removeListener('error', onError);
-                        completed += chunk.length;
-                        if (onProgress) onProgress(completed, files.length);
-                        resolve(msg.results);
-                    }
-                };
-                const onError = () => {
-                    worker.removeListener('message', onMessage);
-                    resolve([]); // Return empty results for crashed worker's chunk
-                };
-                worker.on('message', onMessage);
-                worker.once('error', onError);
-                worker.postMessage({ type: 'hash', files: chunk });
-            });
-        });
-
-        const allResults = await Promise.all(promises);
         const resultMap = new Map();
         for (const results of allResults) {
             for (const r of results) {
@@ -88,12 +55,7 @@ class HashWorkerPool {
     }
 
     terminate() {
-        for (const worker of this.workers) {
-            if (worker) {
-                try { worker.terminate(); } catch { /* ignore */ }
-            }
-        }
-        this.workers = [];
+        this.pool.destroy();
     }
 }
 

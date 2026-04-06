@@ -1,8 +1,9 @@
 /**
  * Worker thread for computing file hashes (exact + perceptual).
- * Receives batches of files and returns SHA-256 and dHash results.
+ * Piscina protocol: export a single async function that processes a batch of files.
+ * Batch dispatch is used (rather than per-item) to preserve chunk-level progress
+ * reporting and internal mini-batching for sharp pipeline overlap.
  */
-const { parentPort } = require('worker_threads');
 const crypto = require('crypto');
 const fs = require('fs');
 const sharp = require('sharp');
@@ -31,16 +32,6 @@ function pixelsToDHashHex(pixels) {
         }
     }
     return Buffer.from(bytes).toString('hex');
-}
-
-async function computeDHash(filePath) {
-    // Resize to 9x8 greyscale, compare adjacent pixels horizontally
-    const pixels = await sharp(filePath)
-        .greyscale()
-        .resize(9, 8, { fit: 'fill' })
-        .raw()
-        .toBuffer();
-    return pixelsToDHashHex(pixels);
 }
 
 async function processFile(file) {
@@ -84,16 +75,14 @@ async function processFile(file) {
     return result;
 }
 
-parentPort.on('message', async (msg) => {
-    if (msg.type === 'hash') {
-        // Process in mini-batches to allow sharp pipeline overlap
-        const BATCH = 4;
-        const results = [];
-        for (let i = 0; i < msg.files.length; i += BATCH) {
-            const batch = msg.files.slice(i, i + BATCH);
-            const batchResults = await Promise.all(batch.map(f => processFile(f)));
-            results.push(...batchResults);
-        }
-        parentPort.postMessage({ type: 'result', results });
+module.exports = async function(files) {
+    // Process in mini-batches to allow sharp pipeline overlap
+    const BATCH = 4;
+    const results = [];
+    for (let i = 0; i < files.length; i += BATCH) {
+        const batch = files.slice(i, i + BATCH);
+        const batchResults = await Promise.all(batch.map(f => processFile(f)));
+        results.push(...batchResults);
     }
-});
+    return results;
+};

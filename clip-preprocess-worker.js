@@ -3,11 +3,9 @@
  * Uses sharp to resize/crop images to 224x224, then normalises pixel data
  * into a float32 CHW tensor ready for CLIP ViT-B/32 inference.
  *
- * Message protocol:
- *   Request:  { id, type: 'preprocess', files: Array<{ path, index }> }
- *   Response: { id, type: 'result', results: Array<{ index, pixels: Float32Array|null }> }
+ * Piscina protocol: export a single async function that processes one file.
  */
-const { parentPort } = require('worker_threads');
+const Piscina = require('piscina');
 
 let sharp;
 try {
@@ -47,15 +45,7 @@ async function preprocessOne(filePath) {
     }
 }
 
-parentPort.on('message', async (msg) => {
-    if (msg.type === 'preprocess') {
-        const results = [];
-        const transfers = [];
-        for (const file of msg.files) {
-            const pixels = await preprocessOne(file.path);
-            results.push({ index: file.index, pixels });
-            if (pixels) transfers.push(pixels.buffer);
-        }
-        parentPort.postMessage({ id: msg.id, type: 'result', results }, transfers);
-    }
-});
+module.exports = async function(filePath) {
+    const tensor = await preprocessOne(filePath);
+    return tensor ? Piscina.move(tensor) : null;
+};

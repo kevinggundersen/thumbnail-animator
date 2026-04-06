@@ -455,6 +455,7 @@ function _pluginsHeadingHtml() {
     return `<div class="plugins-heading-row">
         <div class="settings-content-heading">Plugins</div>
         <div class="plugins-heading-actions">
+            <button id="open-plugins-folder-btn" class="settings-action-btn" title="Open plugins folder in file explorer">Open Folder</button>
             <button id="reload-plugins-btn" class="settings-action-btn">Reload</button>
             <button id="install-plugin-btn" class="settings-action-btn">Install Plugin\u2026</button>
         </div>
@@ -489,6 +490,19 @@ function _wireInstallButton(container) {
         } finally {
             installBtn.disabled = false;
             installBtn.textContent = 'Install Plugin\u2026';
+        }
+    });
+}
+
+function _wireOpenFolderButton(container) {
+    const btn = container.querySelector('#open-plugins-folder-btn');
+    if (!btn) return;
+    btn.addEventListener('click', async () => {
+        try {
+            const res = await window.electronAPI.openPluginsFolder();
+            if (res && !res.ok) showToast(`Could not open plugins folder: ${res.error}`, 'error');
+        } catch (err) {
+            showToast('Could not open plugins folder', 'error');
         }
     });
 }
@@ -537,6 +551,7 @@ async function initPluginsTab() {
     } catch (err) {
         container.innerHTML = _pluginsHeadingHtml() +
             `<div class="settings-item"><span class="settings-label" style="color:var(--color-danger)">Failed to load plugins: ${err.message}</span></div>`;
+        _wireOpenFolderButton(container);
         _wireInstallButton(container);
         _wireReloadButton(container);
         return;
@@ -545,6 +560,7 @@ async function initPluginsTab() {
     if (!manifests || manifests.length === 0) {
         container.innerHTML = _pluginsHeadingHtml() +
             `<div class="settings-item"><span class="settings-label" style="opacity:0.6">No plugins installed.</span></div>`;
+        _wireOpenFolderButton(container);
         _wireInstallButton(container);
         _wireReloadButton(container);
         return;
@@ -595,6 +611,7 @@ async function initPluginsTab() {
     }).join('');
 
     // Wire heading buttons
+    _wireOpenFolderButton(container);
     _wireInstallButton(container);
     _wireReloadButton(container);
 

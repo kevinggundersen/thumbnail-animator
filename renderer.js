@@ -12133,6 +12133,7 @@ if (typeof CommandPalette !== 'undefined') {
                 showToast(`Reload failed: ${err.message}`, 'error');
             }
         }},
+        { id: 'settings.open-plugins-folder', label: 'Open Plugins Folder', category: 'Settings', keywords: ['plugin', 'folder', 'directory', 'explore'], action: () => window.electronAPI.openPluginsFolder() },
 
         // Collections & Favorites
         { id: 'collections.new', label: 'New Collection', category: 'Collections', keywords: ['collection', 'smart', 'create'], action: () => { const btn = document.getElementById('new-collection-btn'); if (btn) btn.click(); } },

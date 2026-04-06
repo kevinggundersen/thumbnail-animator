@@ -5436,6 +5436,18 @@ ipcMain.handle('reload-plugins', async () => {
     }
 });
 
+ipcMain.handle('open-plugins-folder', async () => {
+    try {
+        const dir = path.join(app.getPath('userData'), 'plugins');
+        await fs.promises.mkdir(dir, { recursive: true });
+        const errStr = await shell.openPath(dir);
+        if (errStr) return { ok: false, error: errStr };
+        return { ok: true, value: null };
+    } catch (err) {
+        return { ok: false, error: err.message };
+    }
+});
+
 // Cleanup watchers on app quit
 // Undo file operation
 ipcMain.handle('undo-file-operation', async () => {

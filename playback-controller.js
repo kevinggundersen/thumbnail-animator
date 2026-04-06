@@ -1085,3 +1085,7 @@ class MediaControlBar {
         this.detachAutoHide();
     }
 }
+
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = { MediaPlaybackController, VideoPlaybackController, AnimatedImagePlaybackController, MediaControlBar };
+}

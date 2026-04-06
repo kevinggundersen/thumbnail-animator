@@ -155,3 +155,7 @@ function parseWebpDuration(buffer) {
     if (!isAnimated || frameCount === 0) return null;
     return { totalDuration, frameCount };
 }
+
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = { parseGifDuration, parseWebpDuration };
+}

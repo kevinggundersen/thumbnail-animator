@@ -22,6 +22,9 @@ native-scanner/*.node
 native-scanner/index.js
 native-scanner/index.d.ts
 
+# Test coverage
+coverage/
+
 # Claude Code
 .claude/
 CLAUDE.local.md

@@ -12184,8 +12184,8 @@ console.log('[Tags] renderer.js fully loaded, end of file reached');
 
     function getHistory() {
         // Prefer a pending deferred write so rapid save→read sees fresh data
-        if (_pendingStorageWrites.has(SEARCH_HISTORY_KEY)) {
-            try { return JSON.parse(_pendingStorageWrites.get(SEARCH_HISTORY_KEY)); } catch { /* fall through */ }
+        if (window.appSettings._pendingWrites.has(SEARCH_HISTORY_KEY)) {
+            try { return JSON.parse(window.appSettings._pendingWrites.get(SEARCH_HISTORY_KEY)); } catch { /* fall through */ }
         }
         try { return JSON.parse(localStorage.getItem(SEARCH_HISTORY_KEY) || '[]'); } catch { return []; }
     }

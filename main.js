@@ -3456,6 +3456,40 @@ ipcMain.handle('scan-duplicates', async (event, folderPath, options = {}) => {
         }
         event.sender.send('duplicate-scan-progress', { current: cachedHashMap.size, total: files.length, phase: 'hashing' });
 
+        // ── Gate: identify stale files that can skip perceptual hashing ──
+        // 1) Files < 10KB — dHash at 9×8 is meaningless for tiny icons/sprites
+        // 2) Files with exact duplicates — already grouped, no perceptual needed
+        const PERCEPTUAL_MIN_SIZE = 10240; // 10 KB
+        const skipPerceptualPaths = new Set();
+        for (const f of staleFiles) {
+            if (f.size < PERCEPTUAL_MIN_SIZE) skipPerceptualPaths.add(f.path);
+        }
+        // If we have exact hashes (native path), find stale files in exact-dup groups
+        // (include cached hashes so cross-cache duplicates are caught)
+        if (exactHashMap) {
+            const allExactHashes = new Map(); // hash → [path, ...]
+            for (const [fp, h] of cachedHashMap) {
+                if (h.exactHash) {
+                    if (!allExactHashes.has(h.exactHash)) allExactHashes.set(h.exactHash, []);
+                    allExactHashes.get(h.exactHash).push(fp);
+                }
+            }
+            for (const [fp, hash] of exactHashMap) {
+                if (hash) {
+                    if (!allExactHashes.has(hash)) allExactHashes.set(hash, []);
+                    allExactHashes.get(hash).push(fp);
+                }
+            }
+            for (const group of allExactHashes.values()) {
+                if (group.length >= 2) {
+                    for (const fp of group) skipPerceptualPaths.add(fp);
+                }
+            }
+        }
+        if (skipPerceptualPaths.size > 0) {
+            console.log(`[scan-duplicates] skipping perceptual hash for ${skipPerceptualPaths.size} files (small/exact-dup)`);
+        }
+
         // Perceptual hashes: prefer native Rust (rayon-parallel, faster decode
         // than sharp). Falls back to the JS worker pool if native isn't available.
         let freshHashMap = new Map();
@@ -3463,9 +3497,10 @@ ipcMain.handle('scan-duplicates', async (event, folderPath, options = {}) => {
             // Prefer cached 512px thumbnails over original files — decoding a
             // 5MB JPEG is ~30-80ms vs. ~2-5ms for a 512px PNG thumbnail.
             // Pre-generate missing image thumbnails first (same pattern as CLIP).
+            const perceptualStaleFiles = staleFiles.filter(f => !skipPerceptualPaths.has(f.path));
             if (nativeScanner.generateImageThumbnails && imageThumbDir) {
                 const missing = [];
-                for (const f of staleFiles) {
+                for (const f of perceptualStaleFiles) {
                     if (!f.isImage) continue;
                     if (f.path.toLowerCase().endsWith('.svg')) continue;
                     if (!f.mtime) continue;
@@ -3498,22 +3533,24 @@ ipcMain.handle('scan-duplicates', async (event, folderPath, options = {}) => {
 
             const inputs = [];
             const inputIndices = [];
-            for (let i = 0; i < staleFiles.length; i++) {
-                const src = resolveHashSource(staleFiles[i]);
+            for (let i = 0; i < perceptualStaleFiles.length; i++) {
+                const src = resolveHashSource(perceptualStaleFiles[i]);
                 if (src) { inputs.push(src); inputIndices.push(i); }
             }
-            const phStart = performance.now();
-            const results = nativeScanner.computePerceptualHashes(inputs);
-            console.log(`[scan-duplicates] native perceptual hashes: ${inputs.length} files in ${(performance.now() - phStart).toFixed(0)}ms`);
+            if (inputs.length > 0) {
+                const phStart = performance.now();
+                const results = nativeScanner.computePerceptualHashes(inputs);
+                console.log(`[scan-duplicates] native perceptual hashes: ${inputs.length} files in ${(performance.now() - phStart).toFixed(0)}ms`);
 
-            for (let k = 0; k < results.length; k++) {
-                const file = staleFiles[inputIndices[k]];
-                freshHashMap.set(file.path, {
-                    exactHash: exactHashMap ? exactHashMap.get(file.path) : null,
-                    perceptualHash: results[k].hash || null
-                });
+                for (let k = 0; k < results.length; k++) {
+                    const file = perceptualStaleFiles[inputIndices[k]];
+                    freshHashMap.set(file.path, {
+                        exactHash: exactHashMap ? exactHashMap.get(file.path) : null,
+                        perceptualHash: results[k].hash || null
+                    });
+                }
             }
-            // Any stale files without a perceptual source still need an entry
+            // All stale files need an entry — skipped ones get null perceptualHash
             for (const file of staleFiles) {
                 if (!freshHashMap.has(file.path)) {
                     freshHashMap.set(file.path, {
@@ -3530,6 +3567,7 @@ ipcMain.handle('scan-duplicates', async (event, folderPath, options = {}) => {
                 const thumbItems = [];
                 const thumbFileMap = new Map(); // index in thumbItems → file
                 for (const f of staleFiles) {
+                    if (skipPerceptualPaths.has(f.path)) continue;
                     if (!f.isImage || !f.mtime) continue;
                     if (f.path.toLowerCase().endsWith('.svg')) continue;
                     const tp = getImageThumbCachePath(f.path, f.mtime, 512);
@@ -3556,8 +3594,10 @@ ipcMain.handle('scan-duplicates', async (event, folderPath, options = {}) => {
                 }
             }
 
-            // Pass pre-computed dHashes so hash-worker skips perceptual for those files
+            // Pass pre-computed dHashes so hash-worker skips perceptual for those files.
+            // Also skip perceptual for gated files (small / exact-dup).
             const hashFiles = staleFiles.map(f => {
+                if (skipPerceptualPaths.has(f.path)) return { ...f, skipPerceptual: true };
                 const dHash = precomputedDHash.get(f.path);
                 return dHash ? { ...f, perceptualHash: dHash } : f;
             });

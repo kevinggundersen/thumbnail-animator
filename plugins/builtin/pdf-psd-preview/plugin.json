@@ -34,6 +34,9 @@
       }
     ],
     "contextMenuItems": [],
+    "lightboxRenderers": [
+      { "id": "pdf-viewer", "extensions": [".pdf"], "mode": "embed", "mimeType": "application/pdf" }
+    ],
     "thumbnailGenerators": [
       {
         "id": "psd-thumbnail",
@@ -46,9 +49,9 @@
         "method": "generatePDFThumbnail"
       }
     ],
-    "fileTypes": {
-      "extensions": [".psd", ".pdf"],
-      "category": "image"
-    }
+    "fileTypes": [
+      { "extensions": [".psd"], "category": "image" },
+      { "extensions": [".pdf"], "category": "pdf" }
+    ]
   }
 }

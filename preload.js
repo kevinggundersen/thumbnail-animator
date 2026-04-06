@@ -106,6 +106,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
         ipcRenderer.invoke('execute-plugin-settings-action', pluginId, action, data),
     pluginGenerateThumbnail: (filePath, ext) =>
         ipcRenderer.invoke('plugin-generate-thumbnail', filePath, ext),
+    getPluginFileTypeMap: () => ipcRenderer.invoke('get-plugin-file-type-map'),
+    getLightboxRenderers: () => ipcRenderer.invoke('get-lightbox-renderers'),
     getPluginStates: () => ipcRenderer.invoke('get-plugin-states'),
     setPluginEnabled: (pluginId, enabled) => ipcRenderer.invoke('set-plugin-enabled', pluginId, enabled),
     installPluginFromFolder: () => ipcRenderer.invoke('install-plugin-from-folder'),

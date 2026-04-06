@@ -3292,12 +3292,48 @@ ipcMain.handle('generate-thumbnails-batch', async (event, items) => {
             else videoBatch.push(item);
         }
 
+        // Extract plugin-handled extensions BEFORE sending to native/sharp pipeline.
+        // These formats (e.g. .psd, .pdf) cannot be decoded by native/sharp,
+        // so routing them to plugin generators first avoids wasted work.
+        const pluginBatch = [];
+        const nativeImageBatch = [];
+        for (const item of imageBatch) {
+            const ext = path.extname(item.filePath).toLowerCase();
+            if (pluginRegistry.hasCustomThumbnailGenerator(ext)) {
+                pluginBatch.push(item);
+            } else {
+                nativeImageBatch.push(item);
+            }
+        }
+
+        // Process plugin-handled thumbnails in parallel
+        if (pluginBatch.length > 0) {
+            await Promise.all(pluginBatch.map(async (item) => {
+                try {
+                    const ext = path.extname(item.filePath).toLowerCase();
+                    const dataUrl = await pluginRegistry.generateThumbnail(item.filePath, ext);
+                    if (dataUrl && typeof dataUrl === 'string' && dataUrl.startsWith('data:')) {
+                        const base64 = dataUrl.replace(/^data:image\/\w+;base64,/, '');
+                        if (item.thumbPath) {
+                            await fs.promises.mkdir(path.dirname(item.thumbPath), { recursive: true });
+                            await fs.promises.writeFile(item.thumbPath, Buffer.from(base64, 'base64'));
+                            resultMap.set(item.filePath, { filePath: item.filePath, ok: true, url: pathToFileUrl(item.thumbPath) });
+                        } else {
+                            resultMap.set(item.filePath, { filePath: item.filePath, ok: true, url: dataUrl });
+                        }
+                    }
+                } catch (err) {
+                    console.warn(`[Plugin thumbnail] ${path.basename(item.filePath)} failed:`, err.message);
+                }
+            }));
+        }
+
         let nativeFailures = [];
         let nativeMs = 0;
         let nativeSuccesses = 0;
-        // Native Rust batch for images
-        if (imageBatch.length > 0 && nativeScanner && nativeScanner.generateImageThumbnails) {
-            const nativeRequests = imageBatch.map(item => ({
+        // Native Rust batch for images (excluding plugin-handled formats)
+        if (nativeImageBatch.length > 0 && nativeScanner && nativeScanner.generateImageThumbnails) {
+            const nativeRequests = nativeImageBatch.map(item => ({
                 filePath: item.filePath,
                 thumbPath: item.thumbPath,
                 maxSize: item.maxSize || 512
@@ -3316,12 +3352,12 @@ ipcMain.handle('generate-thumbnails-batch', async (event, items) => {
                     });
                 } else {
                     // Native couldn't handle this image (e.g. SVG) — fall back to sharp
-                    nativeFailures.push(imageBatch[i]);
+                    nativeFailures.push(nativeImageBatch[i]);
                 }
             }
         } else {
             // No native addon — everything goes through sharp
-            nativeFailures = imageBatch;
+            nativeFailures = nativeImageBatch;
         }
 
         // Worker-pool path for videos + native-failed images
@@ -3355,51 +3391,8 @@ ipcMain.handle('generate-thumbnails-batch', async (event, items) => {
             resultMap.set(item.filePath, { filePath: item.filePath, ok: false, url: null });
         }
 
-        // Plugin thumbnail generator fallback — for file types (e.g. .psd, .pdf, .svg)
-        // that failed both native and worker-pool paths, try plugin generators.
-        const pluginFallbackItems = [];
-        for (const [fp, result] of resultMap) {
-            if (!result.ok) {
-                const ext = path.extname(fp).toLowerCase();
-                if (pluginRegistry.hasCustomThumbnailGenerator(ext)) {
-                    const thumbPath = prepared.find(p => p.filePath === fp)?.thumbPath || null;
-                    pluginFallbackItems.push({ filePath: fp, ext, thumbPath });
-                }
-            }
-        }
-        if (pluginFallbackItems.length > 0) {
-            await Promise.all(pluginFallbackItems.map(async (item) => {
-                try {
-                    const dataUrl = await pluginRegistry.generateThumbnail(item.filePath, item.ext);
-                    if (dataUrl && typeof dataUrl === 'string' && dataUrl.startsWith('data:')) {
-                        // Write the base64 data to the thumb cache file so it persists
-                        const base64Data = dataUrl.replace(/^data:image\/\w+;base64,/, '');
-                        const thumbPath = item.thumbPath;
-                        if (thumbPath) {
-                            await fs.promises.mkdir(path.dirname(thumbPath), { recursive: true });
-                            await fs.promises.writeFile(thumbPath, Buffer.from(base64Data, 'base64'));
-                            resultMap.set(item.filePath, {
-                                filePath: item.filePath,
-                                ok: true,
-                                url: pathToFileUrl(thumbPath),
-                            });
-                        } else {
-                            // No thumb path — return the data URL directly
-                            resultMap.set(item.filePath, {
-                                filePath: item.filePath,
-                                ok: true,
-                                url: dataUrl,
-                            });
-                        }
-                    }
-                } catch (err) {
-                    console.warn(`[Plugin thumbnail fallback] ${path.basename(item.filePath)} failed:`, err.message);
-                }
-            }));
-        }
-
         const output = items.map(item => resultMap.get(item.filePath) || { filePath: item.filePath, ok: false, url: null });
-        const nativeCount = imageBatch.length - nativeFailures.length;
+        const nativeCount = nativeImageBatch.length - nativeFailures.length;
         logPerf('generate-thumbnails-batch', startTime, {
             count: items.length,
             success: output.filter(r => r.ok).length,
@@ -5330,7 +5323,17 @@ wrapIpc('get-plugin-manifests', () => pluginRegistry.getManifests());
 
 ipcMain.handle('execute-plugin-action', async (event, pluginId, actionId, filePath, metadata) => {
     try {
-        const result = await pluginRegistry.executeAction(pluginId, actionId, filePath, metadata);
+        // Auto-resolve metadata when the caller passes null and the action declares appliesTo.hasMetadata
+        let resolvedMetadata = metadata;
+        if (!resolvedMetadata) {
+            const manifest = pluginRegistry._manifests.get(pluginId);
+            const actionDef = (manifest?.capabilities?.contextMenuItems || []).find(i => i.id === actionId);
+            if (actionDef?.appliesTo?.hasMetadata) {
+                const ext = path.extname(filePath).toLowerCase();
+                resolvedMetadata = await pluginRegistry.extractMetadata(filePath, ext);
+            }
+        }
+        const result = await pluginRegistry.executeAction(pluginId, actionId, filePath, resolvedMetadata);
         return { ok: true, value: result };
     } catch (err) {
         console.warn(`[Plugin action] ${pluginId}/${actionId} failed:`, err.message);
@@ -5339,6 +5342,23 @@ ipcMain.handle('execute-plugin-action', async (event, pluginId, actionId, filePa
 });
 
 wrapIpc('get-plugin-info-sections', () => pluginRegistry.getAllInfoSections());
+
+wrapIpc('get-lightbox-renderers', () => pluginRegistry.getAllLightboxRenderers());
+
+wrapIpc('get-plugin-file-type-map', () => {
+    const map = {};
+    for (const manifest of pluginRegistry.getManifests()) {
+        const ft = manifest.capabilities?.fileTypes;
+        if (!ft) continue;
+        const entries = Array.isArray(ft) ? ft : [ft];
+        for (const entry of entries) {
+            for (const ext of (entry.extensions || [])) {
+                map[ext.toLowerCase()] = entry.category || 'image';
+            }
+        }
+    }
+    return map;
+});
 
 ipcMain.handle('render-plugin-info-section', async (event, pluginId, sectionId, filePath, pluginMetadata) => {
     try {

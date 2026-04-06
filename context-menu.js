@@ -94,14 +94,16 @@ function showLightboxContextMenu(event) {
     const cropItem = contextMenu.querySelector('[data-action="crop-image"]');
     if (cropItem) cropItem.style.display = lightboxCropMeta.enabled && !lightboxCropState.active ? '' : 'none';
 
-    // Inject plugin items
+    // Inject plugin items (filtered by appliesTo for the current file)
     contextMenu.querySelectorAll('.context-menu-item[data-plugin], .context-menu-plugin-separator').forEach(el => el.remove());
     getPluginMenuItems().then(items => {
-        if (!items.length) return;
+        const filtered = typeof filterPluginMenuItems === 'function'
+            ? filterPluginMenuItems(items, filePath) : items;
+        if (!filtered.length) return;
         const separator = document.createElement('div');
         separator.className = 'context-menu-separator context-menu-plugin-separator';
         contextMenu.appendChild(separator);
-        for (const item of items) {
+        for (const item of filtered) {
             const el = document.createElement('div');
             el.className = 'context-menu-item';
             el.dataset.action = `plugin:${item.pluginId}:${item.id}`;
@@ -227,12 +229,15 @@ function showContextMenu(event, card) {
         // Remove any previously injected plugin items and their separator
         menu.querySelectorAll('.context-menu-item[data-plugin], .context-menu-plugin-separator').forEach(el => el.remove());
         // Load and inject asynchronously — menu is already visible so items appear shortly after
+        const _ctxFilePath = card.dataset.path;
         getPluginMenuItems().then(items => {
-            if (!items.length) return;
+            const filtered = typeof filterPluginMenuItems === 'function'
+                ? filterPluginMenuItems(items, _ctxFilePath) : items;
+            if (!filtered.length) return;
             const separator = document.createElement('div');
             separator.className = 'context-menu-separator context-menu-plugin-separator';
             menu.appendChild(separator);
-            for (const item of items) {
+            for (const item of filtered) {
                 const el = document.createElement('div');
                 el.className = 'context-menu-item';
                 el.dataset.action = `plugin:${item.pluginId}:${item.id}`;

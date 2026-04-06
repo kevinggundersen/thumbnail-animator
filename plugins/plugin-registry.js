@@ -43,6 +43,8 @@ class PluginRegistry {
         this._batchOpsByPlugin = new Map();
         // Map<pluginId, settingsPanel>
         this._settingsPanelsByPlugin = new Map();
+        // Map<ext, {pluginId, rendererId, mode, mimeType}> — lightbox renderers
+        this._lightboxRenderersByExt = new Map();
         // Set of plugin IDs that came from builtin directories
         this._builtinPluginIds = new Set();
         // Global plugin ordering — controls execution priority
@@ -174,12 +176,15 @@ class PluginRegistry {
             this._contextMenuItemsByPlugin.set(id, capabilities.contextMenuItems);
         }
 
-        // Index file type extensions
+        // Index file type extensions (supports single object or array of {extensions, category})
         if (capabilities.fileTypes) {
-            const { extensions = [], category } = capabilities.fileTypes;
-            for (const ext of extensions) {
-                if (category === 'video') this._extraVideoExtensions.add(ext.toLowerCase());
-                else this._extraImageExtensions.add(ext.toLowerCase());
+            const entries = Array.isArray(capabilities.fileTypes) ? capabilities.fileTypes : [capabilities.fileTypes];
+            for (const entry of entries) {
+                const { extensions = [], category } = entry;
+                for (const ext of extensions) {
+                    if (category === 'video') this._extraVideoExtensions.add(ext.toLowerCase());
+                    else this._extraImageExtensions.add(ext.toLowerCase());
+                }
             }
         }
 
@@ -207,6 +212,20 @@ class PluginRegistry {
         // Index settings panels
         if (capabilities.settingsPanel) {
             this._settingsPanelsByPlugin.set(id, capabilities.settingsPanel);
+        }
+
+        // Index lightbox renderers
+        if (Array.isArray(capabilities.lightboxRenderers)) {
+            for (const renderer of capabilities.lightboxRenderers) {
+                for (const ext of (renderer.extensions || [])) {
+                    this._lightboxRenderersByExt.set(ext.toLowerCase(), {
+                        pluginId: id,
+                        rendererId: renderer.id,
+                        mode: renderer.mode || 'image',
+                        mimeType: renderer.mimeType || null,
+                    });
+                }
+            }
         }
 
         // Sort handler arrays by global plugin order
@@ -450,6 +469,18 @@ class PluginRegistry {
             panels.push({ ...panel, pluginId });
         }
         return panels;
+    }
+
+    /**
+     * Returns all plugin-contributed lightbox renderers as an object keyed by extension.
+     */
+    getAllLightboxRenderers() {
+        const renderers = {};
+        for (const [ext, info] of this._lightboxRenderersByExt) {
+            if (this._disabledPlugins.has(info.pluginId)) continue;
+            renderers[ext] = info;
+        }
+        return renderers;
     }
 
     /**

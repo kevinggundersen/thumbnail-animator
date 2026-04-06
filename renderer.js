@@ -3243,13 +3243,24 @@ function _setLocalPluginState(pluginId, enabled) {
 
 // Load plugin manifests for context menu contributions
 let _pluginMenuItems = null; // lazily populated
+// Map<extractorId, Set<ext>> — built from manifests for appliesTo filtering
+let _extractorExtMap = {};
+
 async function getPluginMenuItems() {
     if (_pluginMenuItems !== null) return _pluginMenuItems;
     try {
         const _manRes = await window.electronAPI.getPluginManifests();
         const manifests = _manRes && _manRes.ok ? (_manRes.value || []) : [];
         _pluginMenuItems = [];
+        _extractorExtMap = {};
         for (const manifest of manifests) {
+            // Build extractor → extensions map for appliesTo filtering
+            for (const extractor of (manifest.capabilities?.metadataExtractors || [])) {
+                if (!_extractorExtMap[extractor.id]) _extractorExtMap[extractor.id] = new Set();
+                for (const ext of (extractor.extensions || [])) {
+                    _extractorExtMap[extractor.id].add(ext.toLowerCase());
+                }
+            }
             if (!isPluginEnabled(manifest.id)) continue;
             const items = manifest.capabilities?.contextMenuItems || [];
             for (const item of items) {
@@ -3266,6 +3277,23 @@ async function getPluginMenuItems() {
         _pluginMenuItems = [];
     }
     return _pluginMenuItems;
+}
+
+/**
+ * Filter plugin menu items based on appliesTo criteria and the target file's extension.
+ * Items without appliesTo are always shown. Items with appliesTo.hasMetadata are shown
+ * only if the referenced extractor is registered for the file's extension.
+ */
+function filterPluginMenuItems(items, filePath) {
+    if (!filePath || !items) return items || [];
+    const dotIdx = filePath.lastIndexOf('.');
+    const ext = dotIdx !== -1 ? filePath.substring(dotIdx).toLowerCase() : '';
+    return items.filter(item => {
+        if (!item.appliesTo?.hasMetadata) return true; // no filter = always show
+        const extractorId = item.appliesTo.hasMetadata;
+        const validExts = _extractorExtMap[extractorId];
+        return validExts ? validExts.has(ext) : true; // unknown extractor = show
+    });
 }
 
 // Load plugin batch operations for context menu contributions (multi-select)
@@ -4429,18 +4457,30 @@ function getCachedCardRect(card) {
     return rect;
 }
 
-// Helper function to detect file type from URL
+// Helper function to detect file type from URL.
+// Plugin-registered file types (from capabilities.fileTypes) are loaded once at startup
+// and take priority over the built-in list, so new formats can be added without editing this file.
+let _pluginFileTypeMap = null;
+(async () => {
+    try {
+        const res = await window.electronAPI.getPluginFileTypeMap();
+        _pluginFileTypeMap = res?.ok ? (res.value || {}) : {};
+    } catch { _pluginFileTypeMap = {}; }
+})();
+
 function getFileType(url) {
     const urlLower = url.toLowerCase();
-    // Image formats
-    if (urlLower.endsWith('.gif') || urlLower.endsWith('.jpg') || urlLower.endsWith('.jpeg') ||
-        urlLower.endsWith('.png') || urlLower.endsWith('.webp') || urlLower.endsWith('.bmp') ||
-        urlLower.endsWith('.svg') || urlLower.endsWith('.psd')) return 'image';
-    // PDF — treated as a special type for embedded viewer
-    if (urlLower.endsWith('.pdf')) return 'pdf';
-    // Video formats
-    if (urlLower.endsWith('.mp4') || urlLower.endsWith('.webm') ||
-        urlLower.endsWith('.ogg') || urlLower.endsWith('.mov')) return 'video';
+    const dotIdx = urlLower.lastIndexOf('.');
+    const ext = dotIdx !== -1 ? urlLower.substring(dotIdx) : '';
+
+    // Plugin-registered types take priority
+    if (_pluginFileTypeMap && _pluginFileTypeMap[ext]) {
+        return _pluginFileTypeMap[ext];
+    }
+
+    // Built-in types
+    if (['.gif', '.jpg', '.jpeg', '.png', '.webp', '.bmp', '.svg'].includes(ext)) return 'image';
+    if (['.mp4', '.webm', '.ogg', '.mov'].includes(ext)) return 'video';
     return 'video'; // Default to video for unknown types
 }
 

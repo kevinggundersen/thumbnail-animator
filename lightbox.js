@@ -11,6 +11,15 @@ const lightboxImage = document.getElementById('lightbox-image');
 const lightboxGifCanvas = document.getElementById('lightbox-gif-canvas');
 const lightboxPdfEmbed = document.getElementById('lightbox-pdf-embed');
 const closeLightboxBtn = document.getElementById('close-lightbox');
+
+// Plugin lightbox renderers — loaded once at startup
+let _lightboxRenderers = null;
+(async () => {
+    try {
+        const res = await window.electronAPI.getLightboxRenderers();
+        _lightboxRenderers = res?.ok ? (res.value || {}) : {};
+    } catch { _lightboxRenderers = {}; }
+})();
 const lightboxZoomControls = document.getElementById('lightbox-zoom-controls');
 const lightboxZoomFloatingMount = document.getElementById('lightbox-zoom-floating-mount');
 const lightboxZoomDockMount = document.getElementById('lb-insp-view-mount');
@@ -805,8 +814,13 @@ function openLightbox(mediaUrl, filePath, fileName) {
             _showStaticImage(mediaUrl, lightboxImage, lightboxGifCanvas, lightbox, mediaControlBarInstance);
             setLightboxCropAvailability(filePath, true);
         }
-    } else if (mediaType === 'pdf') {
-        // PDF — use Chromium's native PDF viewer via <embed>
+    } else if (_lightboxRenderers && _lightboxRenderers[urlLower.substring(urlLower.lastIndexOf('.'))] || mediaType === 'pdf') {
+        // Plugin-registered lightbox renderer (embed/iframe/image mode) or PDF fallback
+        const ext = urlLower.substring(urlLower.lastIndexOf('.'));
+        const renderer = _lightboxRenderers?.[ext];
+        const mode = renderer?.mode || (mediaType === 'pdf' ? 'embed' : 'image');
+        const mimeType = renderer?.mimeType || (mediaType === 'pdf' ? 'application/pdf' : '');
+
         stopLightboxGifProgress();
         lightboxVideo.pause();
         lightboxVideo.removeAttribute('src');
@@ -816,10 +830,14 @@ function openLightbox(mediaUrl, filePath, fileName) {
         lightboxGifCanvas.style.display = 'none';
         if (mediaControlBarInstance) mediaControlBarInstance.hide();
 
-        if (lightboxPdfEmbed) {
+        if (mode === 'embed' && lightboxPdfEmbed) {
+            lightboxPdfEmbed.type = mimeType;
             lightboxPdfEmbed.style.display = 'block';
             lightboxPdfEmbed.src = mediaUrl;
             lightboxPdfEmbed.dataset.src = mediaUrl;
+        } else if (mode === 'image') {
+            // Show as static image (thumbnail or full-size)
+            _showStaticImage(mediaUrl, lightboxImage, lightboxGifCanvas, lightbox, mediaControlBarInstance);
         }
         lightbox.classList.remove('hidden');
         setLightboxCropAvailability(filePath, false);

@@ -46,10 +46,58 @@ function createPluginAPI(pluginId, cacheBaseDir) {
                 fs.mkdirSync(path.dirname(resolved), { recursive: true });
                 return fs.promises.writeFile(resolved, data, options);
             },
+
+            /**
+             * Atomically replace a file's contents at its original location.
+             * Writes to a temp file first, then renames over the original.
+             * NOT sandboxed — intended for plugins that modify user files in-place.
+             * @param {string} filePath - Absolute path to the file to replace
+             * @param {Buffer|string} data - New file contents
+             */
+            async replaceFile(filePath, data) {
+                const resolved = path.resolve(filePath);
+                const tempPath = resolved + '.plugin-tmp-' + Date.now();
+                try {
+                    await fs.promises.writeFile(tempPath, data);
+                    await fs.promises.rename(tempPath, resolved);
+                } catch (err) {
+                    try { await fs.promises.unlink(tempPath); } catch { /* ignore */ }
+                    throw err;
+                }
+            },
         },
 
         path,
         zlib,
+
+        /**
+         * Commonly-needed npm modules, exposed as lazy getters.
+         * Returns null if the module is not available. Plugins should check
+         * for null before use (matches the existing try/catch require pattern).
+         */
+        modules: {
+            get sharp()      { try { return require('sharp'); } catch { return null; } },
+            get exifreader() { try { return require('exifreader'); } catch { return null; } },
+            get pngChunks()  { try { return require('png-chunks-extract'); } catch { return null; } },
+        },
+
+        /**
+         * Execute an external command safely (no shell injection — uses execFile).
+         * @param {string} cmd - Executable path or name
+         * @param {string[]} [args] - Arguments array
+         * @param {Object} [options] - { timeout, cwd, env, maxBuffer, encoding }
+         * @returns {Promise<{stdout: Buffer|string, stderr: Buffer|string}>}
+         */
+        exec(cmd, args = [], options = {}) {
+            const { execFile } = require('child_process');
+            const { timeout = 30000, cwd, env, maxBuffer = 10 * 1024 * 1024, encoding = 'buffer' } = options;
+            return new Promise((resolve, reject) => {
+                execFile(cmd, args, { timeout, cwd, env, maxBuffer, encoding, windowsHide: true }, (err, stdout, stderr) => {
+                    if (err) return reject(err);
+                    resolve({ stdout, stderr });
+                });
+            });
+        },
 
         /**
          * Read up to maxBytes from the start of a file into a Buffer.

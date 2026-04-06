@@ -1260,6 +1260,8 @@ function loadTabs() {
     }
 }
 
+let tabDragInProgress = false;
+
 function saveTabs() {
     deferLocalStorageWrite('tabs', JSON.stringify(tabs));
     deferLocalStorageWrite('activeTabId', activeTabId);
@@ -1496,11 +1498,15 @@ function renderTabs() {
     tabs.forEach(tab => {
         const tabEl = document.createElement('div');
         tabEl.className = `tab ${tab.id === activeTabId ? 'active' : ''}`;
+        tabEl.dataset.tabId = tab.id;
         tabEl.innerHTML = `
             <span class="tab-name" title="${tab.path || 'Home'}">${tab.name}</span>
             <span class="tab-close" data-tab-id="${tab.id}">${icon('x', 14)}</span>
         `;
+
+        // Click handler (guarded against post-drag clicks)
         tabEl.addEventListener('click', (e) => {
+            if (tabDragInProgress) return;
             if (e.target.closest('.tab-close')) {
                 e.stopPropagation();
                 closeTab(tab.id);
@@ -1508,9 +1514,18 @@ function renderTabs() {
                 switchToTab(tab.id);
             }
         });
+
+        // Mousedown initiates drag reordering
+        tabEl.addEventListener('mousedown', (e) => {
+            if (e.target.closest('.tab-close')) return;
+            if (e.button !== 0) return;
+            if (tabs.length <= 1) return;
+            initTabDragReorder(e, tabEl);
+        });
+
         tabsContainer.appendChild(tabEl);
     });
-    
+
     // Add "+" button
     const addBtn = document.createElement('div');
     addBtn.className = 'tab-add';
@@ -1520,6 +1535,118 @@ function renderTabs() {
         selectFolderBtn.click();
     });
     tabsContainer.appendChild(addBtn);
+}
+
+function initTabDragReorder(e, dragEl) {
+    const allTabs = Array.from(tabsContainer.querySelectorAll('.tab'));
+    const originalIndex = allTabs.indexOf(dragEl);
+    if (originalIndex === -1) return;
+
+    const startX = e.clientX;
+
+    // Cache bounding rects of all tabs before anything moves
+    const tabPositions = allTabs.map(t => {
+        const r = t.getBoundingClientRect();
+        return { left: r.left, width: r.width, centerX: r.left + r.width / 2 };
+    });
+
+    // Shift amount = dragged tab width + container gap
+    const gap = parseFloat(getComputedStyle(tabsContainer).gap) || 0;
+    const shiftAmount = tabPositions[originalIndex].width + gap;
+
+    let hasDragStarted = false;
+    let currentSlot = originalIndex;
+
+    function onMouseMove(ev) {
+        const deltaX = ev.clientX - startX;
+
+        // Require a small threshold before committing to a drag
+        if (!hasDragStarted) {
+            if (Math.abs(deltaX) < 5) return;
+            hasDragStarted = true;
+            tabDragInProgress = true;
+            tabsContainer.classList.add('tab-reordering');
+            dragEl.classList.add('tab-drag-active');
+            // Enable smooth transitions on all other tabs
+            allTabs.forEach((t, i) => {
+                if (i !== originalIndex) t.classList.add('tab-shift-animate');
+            });
+        }
+
+        // The dragged tab follows the cursor directly (no transition)
+        dragEl.style.transform = `translateX(${deltaX}px)`;
+
+        // Visual center of the dragged tab
+        const draggedCenter = tabPositions[originalIndex].centerX + deltaX;
+
+        // Determine which slot the dragged tab belongs in
+        let targetSlot = originalIndex;
+        if (deltaX < 0) {
+            // Moving left — check tabs to the left
+            for (let i = originalIndex - 1; i >= 0; i--) {
+                if (draggedCenter < tabPositions[i].centerX) {
+                    targetSlot = i;
+                } else {
+                    break;
+                }
+            }
+        } else {
+            // Moving right — check tabs to the right
+            for (let i = originalIndex + 1; i < tabPositions.length; i++) {
+                if (draggedCenter > tabPositions[i].centerX) {
+                    targetSlot = i;
+                } else {
+                    break;
+                }
+            }
+        }
+
+        // Only update transforms when the target slot actually changes
+        if (targetSlot !== currentSlot) {
+            currentSlot = targetSlot;
+            allTabs.forEach((t, i) => {
+                if (i === originalIndex) return;
+                if (targetSlot < originalIndex && i >= targetSlot && i < originalIndex) {
+                    // These tabs shift right to make room
+                    t.style.transform = `translateX(${shiftAmount}px)`;
+                } else if (targetSlot > originalIndex && i > originalIndex && i <= targetSlot) {
+                    // These tabs shift left to fill the gap
+                    t.style.transform = `translateX(${-shiftAmount}px)`;
+                } else {
+                    t.style.transform = '';
+                }
+            });
+        }
+    }
+
+    function onMouseUp() {
+        document.removeEventListener('mousemove', onMouseMove);
+        document.removeEventListener('mouseup', onMouseUp);
+
+        if (!hasDragStarted) return;
+
+        // Clean up all visual state
+        tabsContainer.classList.remove('tab-reordering');
+        dragEl.classList.remove('tab-drag-active');
+        allTabs.forEach(t => {
+            t.classList.remove('tab-shift-animate');
+            t.style.transform = '';
+        });
+
+        // Commit the reorder if position changed
+        if (currentSlot !== originalIndex) {
+            const [moved] = tabs.splice(originalIndex, 1);
+            tabs.splice(currentSlot, 0, moved);
+            saveTabs();
+            renderTabs();
+        }
+
+        // Reset flag after the click event fires (click fires synchronously after mouseup)
+        setTimeout(() => { tabDragInProgress = false; }, 0);
+    }
+
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
 }
 
 // ==================== VIDEO SCRUBBER ====================

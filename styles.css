@@ -1479,6 +1479,27 @@ header {
     color: var(--accent);
 }
 
+/* Tab drag reordering */
+.tabs-container.tab-reordering {
+    cursor: grabbing;
+    user-select: none;
+}
+
+.tab.tab-drag-active {
+    z-index: var(--z-sticky);
+    opacity: 0.9;
+    box-shadow: var(--shadow-md);
+    cursor: grabbing;
+}
+
+.tab.tab-drag-active .tab-close {
+    pointer-events: none;
+}
+
+.tab.tab-shift-animate {
+    transition: transform var(--duration-slow) var(--ease-out);
+}
+
 .zoom-slider {
     flex: 1;
     height: 6px;

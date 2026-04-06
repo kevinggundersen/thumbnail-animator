@@ -6923,7 +6923,7 @@ video.blow-up-media {
 .media-controls {
     position: fixed;
     bottom: var(--space-5);
-    left: 50%;
+    left: calc(50% - (var(--lb-inspector-width, 0px) / 2));
     transform: translateX(-50%);
     z-index: 1002;
     display: none; /* shown when media is open */
@@ -6934,9 +6934,9 @@ video.blow-up-media {
     border: 1px solid var(--border-default);
     border-radius: 10px;
     box-shadow: var(--shadow-lg);
-    transition: opacity 0.3s ease, visibility 0.3s ease;
+    transition: opacity 0.3s ease, visibility 0.3s ease, left 0.18s ease, max-width 0.18s ease;
     user-select: none;
-    max-width: 90vw;
+    max-width: min(90vw, calc(100vw - 80px - var(--lb-inspector-width, 0px)));
 }
 
 .media-controls.mc-hidden {
@@ -9336,7 +9336,7 @@ body.reduce-motion *::after {
 .lightbox-filmstrip {
     position: fixed;
     bottom: 80px;
-    left: 50%;
+    left: calc(50% - (var(--lb-inspector-width, 0px) / 2));
     transform: translateX(-50%);
     width: min(calc(100vw - 80px - var(--lb-inspector-width, 0px)), 1200px);
     height: 68px;
@@ -9346,7 +9346,7 @@ body.reduce-motion *::after {
     border-radius: 8px;
     padding: var(--space-1);
     box-shadow: var(--shadow-lg);
-    transition: opacity 0.3s ease, visibility 0.3s ease, bottom 0.2s ease;
+    transition: opacity 0.3s ease, visibility 0.3s ease, bottom 0.2s ease, left 0.18s ease, width 0.18s ease;
     user-select: none;
 }
 .lightbox-filmstrip.hidden { display: none; }

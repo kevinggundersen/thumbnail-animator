@@ -12134,6 +12134,7 @@ if (typeof CommandPalette !== 'undefined') {
             }
         }},
         { id: 'settings.open-plugins-folder', label: 'Open Plugins Folder', category: 'Settings', keywords: ['plugin', 'folder', 'directory', 'explore'], action: () => window.electronAPI.openPluginsFolder() },
+        { id: 'settings.create-plugin', label: 'Create New Plugin', category: 'Settings', keywords: ['plugin', 'scaffold', 'create', 'new', 'develop', 'template'], action: () => openSettingsToTab('plugins') },
 
         // Collections & Favorites
         { id: 'collections.new', label: 'New Collection', category: 'Collections', keywords: ['collection', 'smart', 'create'], action: () => { const btn = document.getElementById('new-collection-btn'); if (btn) btn.click(); } },

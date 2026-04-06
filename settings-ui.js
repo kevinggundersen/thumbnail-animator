@@ -458,6 +458,7 @@ function _pluginsHeadingHtml() {
             <button id="open-plugins-folder-btn" class="settings-action-btn" title="Open plugins folder in file explorer">Open Folder</button>
             <button id="reload-plugins-btn" class="settings-action-btn">Reload</button>
             <button id="install-plugin-btn" class="settings-action-btn">Install Plugin\u2026</button>
+            <button id="create-plugin-btn" class="settings-action-btn" title="Scaffold a new plugin project">Create Plugin\u2026</button>
         </div>
     </div>`;
 }
@@ -529,6 +530,52 @@ function _wireOpenFolderButton(container) {
     });
 }
 
+function _wireCreatePluginButton(container) {
+    const btn = container.querySelector('#create-plugin-btn');
+    if (!btn) return;
+    btn.addEventListener('click', async () => {
+        const id = await showPromptDialog('Plugin ID', {
+            placeholder: 'my-plugin',
+            confirmLabel: 'Next',
+        });
+        if (!id) return;
+        const trimmedId = id.trim();
+        if (!/^[a-z][a-z0-9-]*$/.test(trimmedId)) {
+            showToast('Plugin ID must start with a lowercase letter and contain only lowercase letters, numbers, and hyphens', 'error', { duration: 6000 });
+            return;
+        }
+        if (trimmedId.length > 64) {
+            showToast('Plugin ID must be 64 characters or fewer', 'error');
+            return;
+        }
+        const defaultName = trimmedId.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+        const name = await showPromptDialog('Plugin Name', {
+            defaultValue: defaultName,
+            placeholder: 'My Plugin',
+            confirmLabel: 'Create',
+        });
+        if (!name) return;
+
+        btn.disabled = true;
+        btn.textContent = 'Creating\u2026';
+        try {
+            const res = await window.electronAPI.scaffoldPlugin({ id: trimmedId, name: name.trim() || defaultName });
+            if (!res || !res.ok) {
+                showToast(`Create failed: ${res ? res.error : 'Unknown error'}`, 'error');
+                return;
+            }
+            showToast(`Plugin "${res.value.name}" created and opened in file explorer`, 'success');
+            _invalidatePluginCaches();
+            await initPluginsTab();
+        } catch (err) {
+            showToast(`Create failed: ${err.message}`, 'error');
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Create Plugin\u2026';
+        }
+    });
+}
+
 function _wireReloadButton(container) {
     const reloadBtn = container.querySelector('#reload-plugins-btn');
     if (!reloadBtn) return;
@@ -575,6 +622,7 @@ async function initPluginsTab() {
             `<div class="settings-item"><span class="settings-label" style="color:var(--color-danger)">Failed to load plugins: ${err.message}</span></div>`;
         _wireOpenFolderButton(container);
         _wireInstallButton(container);
+        _wireCreatePluginButton(container);
         _wireReloadButton(container);
         return;
     }
@@ -584,6 +632,7 @@ async function initPluginsTab() {
             `<div class="settings-item"><span class="settings-label" style="opacity:0.6">No plugins installed.</span></div>`;
         _wireOpenFolderButton(container);
         _wireInstallButton(container);
+        _wireCreatePluginButton(container);
         _wireReloadButton(container);
         return;
     }
@@ -643,6 +692,7 @@ async function initPluginsTab() {
     // Wire heading buttons
     _wireOpenFolderButton(container);
     _wireInstallButton(container);
+    _wireCreatePluginButton(container);
     _wireReloadButton(container);
 
     // Wire toggle handlers

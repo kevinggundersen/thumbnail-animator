@@ -5491,6 +5491,123 @@ ipcMain.handle('reload-plugins', async () => {
     }
 });
 
+ipcMain.handle('scaffold-plugin', async (event, { id, name }) => {
+    try {
+        if (!id || typeof id !== 'string' || !/^[a-z][a-z0-9-]*$/.test(id)) {
+            return { ok: false, error: 'Plugin ID must start with a lowercase letter and contain only lowercase letters, numbers, and hyphens' };
+        }
+        if (id.length > 64) {
+            return { ok: false, error: 'Plugin ID must be 64 characters or fewer' };
+        }
+        if (pluginRegistry._manifests.has(id)) {
+            return { ok: false, error: `Plugin "${id}" already exists` };
+        }
+
+        const userPluginsDir = path.join(app.getPath('userData'), 'plugins');
+        const destDir = path.join(userPluginsDir, id);
+        if (fs.existsSync(destDir)) {
+            return { ok: false, error: `A folder with ID "${id}" already exists in the plugins directory` };
+        }
+
+        await fs.promises.mkdir(destDir, { recursive: true });
+
+        const pluginName = name || id;
+
+        // Write plugin.json
+        const manifest = {
+            id,
+            name: pluginName,
+            version: '1.0.0',
+            description: 'A custom plugin.',
+            main: 'index.js',
+            capabilities: {
+                metadataExtractors: [
+                    {
+                        id: `${id}-metadata`,
+                        name: `${pluginName} Metadata`,
+                        extensions: ['.png', '.jpg', '.jpeg'],
+                        method: 'extractMetadata',
+                    },
+                ],
+            },
+        };
+        await fs.promises.writeFile(
+            path.join(destDir, 'plugin.json'),
+            JSON.stringify(manifest, null, 4)
+        );
+
+        // Write index.js
+        const indexJs = `'use strict';
+
+/**
+ * Plugin: ${pluginName}
+ *
+ * Available API surface (passed to activate):
+ *   api.fs.readFile(path, opts)    - Read a file (async)
+ *   api.fs.stat(path)              - Stat a file (async)
+ *   api.fs.readdir(dir)            - List directory contents (async)
+ *   api.fs.writeFile(sub, data)    - Write to plugin cache dir (async, scoped)
+ *   api.path                       - Node.js path module
+ *   api.zlib                       - Node.js zlib module
+ *   api.readImageHeader(path, n)   - Read first N bytes of a file (default 512KB)
+ *   api.getCachePath(sub?)         - Get/create plugin cache directory
+ *   api.storage.get(key, default)  - Read from persistent key-value storage
+ *   api.storage.set(key, value)    - Write to persistent key-value storage
+ *   api.storage.delete(key)        - Delete from persistent storage
+ *   api.storage.getAll()           - Get all stored key-value pairs
+ *
+ * Capability types you can add to plugin.json:
+ *   metadataExtractors   - Extract metadata from files during scanning
+ *   infoSections         - Render custom panels in the file inspector
+ *   contextMenuItems     - Add items to the right-click context menu
+ *   thumbnailGenerators  - Generate custom thumbnails for file types
+ *   batchOperations      - Operate on multiple selected files at once
+ *   settingsPanel        - Add a settings tab for your plugin
+ *   fileTypes            - Register new file extensions as image or video
+ */
+
+let _api;
+
+function activate(api) {
+    _api = api;
+    return {
+        extractMetadata,
+    };
+}
+
+/**
+ * Extract metadata from a file.
+ * Return an object with your metadata, or null to skip this file.
+ *
+ * @param {string} filePath - Absolute path to the file
+ * @returns {object|null} Metadata object or null
+ */
+async function extractMetadata(filePath) {
+    // TODO: Implement your metadata extraction logic here.
+    // Example: read file header, parse custom data, etc.
+    //
+    // const header = await _api.readImageHeader(filePath, 1024);
+    // return { myField: 'value' };
+    return null;
+}
+
+module.exports = { activate };
+`;
+        await fs.promises.writeFile(path.join(destDir, 'index.js'), indexJs);
+
+        // Register the new plugin
+        pluginRegistry.registerFromDirectory(destDir);
+
+        // Open the folder in file explorer
+        shell.openPath(destDir);
+
+        return { ok: true, value: { pluginId: id, name: pluginName, dir: destDir } };
+    } catch (err) {
+        console.warn('[Plugin scaffold] failed:', err.message);
+        return { ok: false, error: err.message };
+    }
+});
+
 ipcMain.handle('open-plugins-folder', async () => {
     try {
         const dir = path.join(app.getPath('userData'), 'plugins');

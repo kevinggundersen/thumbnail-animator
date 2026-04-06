@@ -3268,6 +3268,20 @@ async function getPluginMenuItems() {
     return _pluginMenuItems;
 }
 
+// Load plugin batch operations for context menu contributions (multi-select)
+let _pluginBatchOps = null; // lazily populated
+async function getPluginBatchOperations() {
+    if (_pluginBatchOps !== null) return _pluginBatchOps;
+    try {
+        const res = await window.electronAPI.getPluginBatchOperations();
+        _pluginBatchOps = res && res.ok ? (res.value || []) : [];
+    } catch (err) {
+        console.warn('Could not load plugin batch operations:', err);
+        _pluginBatchOps = [];
+    }
+    return _pluginBatchOps;
+}
+
 // Warm the plugin cache so the first context menu open doesn't flicker items in async
 setTimeout(() => { getPluginMenuItems(); }, 0);
 

@@ -241,6 +241,25 @@ function showContextMenu(event, card) {
                 menu.appendChild(el);
             }
         });
+
+        // Inject batch operations when multiple files are selected
+        menu.querySelectorAll('.context-menu-item[data-batch-op], .context-menu-batch-op-separator').forEach(el => el.remove());
+        if (selectedCardPaths.size > 1) {
+            getPluginBatchOperations().then(ops => {
+                if (!ops.length) return;
+                const batchSep = document.createElement('div');
+                batchSep.className = 'context-menu-separator context-menu-batch-op-separator';
+                menu.appendChild(batchSep);
+                for (const op of ops) {
+                    const el = document.createElement('div');
+                    el.className = 'context-menu-item';
+                    el.dataset.action = `batch-op:${op.pluginId}:${op.id}`;
+                    el.dataset.batchOp = op.pluginId;
+                    el.textContent = op.name;
+                    menu.appendChild(el);
+                }
+            });
+        }
     }
 
     const x = event.clientX;
@@ -568,7 +587,24 @@ contextMenu.addEventListener('click', async (e) => {
             break;
 
         default:
-            if (action.startsWith('plugin:')) {
+            if (action.startsWith('batch-op:')) {
+                const [, pluginId, operationId] = action.split(':');
+                const filePaths = Array.from(selectedCardPaths);
+                if (filePaths.length === 0) break;
+                showToast(`Running batch operation on ${filePaths.length} files\u2026`, 'info', { duration: 2000 });
+                try {
+                    const result = await window.electronAPI.executePluginBatchOperation(
+                        pluginId, operationId, filePaths, {}
+                    );
+                    if (result.ok) {
+                        showToast('Batch operation completed', 'success');
+                    } else {
+                        showToast(`Batch operation failed: ${friendlyError(result.error)}`, 'error');
+                    }
+                } catch (error) {
+                    showToast(`Batch operation error: ${friendlyError(error)}`, 'error');
+                }
+            } else if (action.startsWith('plugin:')) {
                 const [, pluginId, actionId] = action.split(':');
                 try {
                     const result = await window.electronAPI.executePluginAction(pluginId, actionId, filePath, null);

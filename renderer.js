@@ -3456,6 +3456,8 @@ function invalidateScrollCaches() {
     cachedViewportBounds = null;
     viewportBoundsCacheTime = 0;
     cardRectCacheGeneration++;
+    // Invalidate cached scrub rect so next mousemove re-reads once
+    if (currentHoveredCard) delete currentHoveredCard._scrubRect;
 }
 
 function scheduleScrollCleanup() {
@@ -3502,14 +3504,16 @@ function performCleanupCheck() {
     const viewportLeft = bounds.left;
     const viewportRight = bounds.right;
 
-    // Build card → media map using cached _mediaEl reference (no DOM queries)
+    // Build card → media map and inverse media → card map (no DOM queries)
     const cardMediaMap = new Map();
+    const mediaToCard = new Map(); // Inverse lookup to avoid .closest() DOM walks in passes 2 & 3
     let allVideos = [];
     let allImages = [];
     for (const card of cardSource) {
         if (!card.classList.contains('video-card')) continue;
         const mediaEl = card._mediaEl;
         if (!mediaEl) continue;
+        mediaToCard.set(mediaEl, card);
         if (mediaEl.tagName === 'VIDEO') {
             cardMediaMap.set(card, { videos: [mediaEl], images: [] });
             allVideos.push(mediaEl);
@@ -3532,6 +3536,10 @@ function performCleanupCheck() {
 
     // Batch all getBoundingClientRect calls together to minimize layout thrashing
     const rects = cardsWithMedia.map(card => getCachedCardRect(card));
+
+    // Build card → rect lookup for reuse in passes 2 & 3 (avoids re-querying rects)
+    const cardToRect = new Map();
+    cardsWithMedia.forEach((card, i) => cardToRect.set(card, rects[i]));
 
     // Track destroyed elements to remove from local arrays
     const destroyedVideos = new Set();
@@ -3586,15 +3594,15 @@ function performCleanupCheck() {
 
     // Second pass: If we still have too many videos, aggressively remove furthest ones
     if (allVideos.length > MAX_VIDEOS) {
-        const videoCards = allVideos.map(video => video.closest('.video-card')).filter(Boolean);
-        const videoRects = videoCards.map(card => getCachedCardRect(card));
+        // Use mediaToCard inverse lookup instead of .closest() DOM walk
+        const videoCards = allVideos.map(video => mediaToCard.get(video)).filter(Boolean);
 
         const viewportCenterY = bounds.centerY;
         const viewportCenterX = bounds.centerX;
         const videoDistances = allVideos.map((video, index) => {
             const card = videoCards[index];
             if (!card) return { video, distance: Infinity };
-            const rect = videoRects[index];
+            const rect = cardToRect.get(card) || getCachedCardRect(card);
             const cardCenterY = rect.top + rect.height / 2;
             const cardCenterX = rect.left + rect.width / 2;
             const verticalDistance = Math.abs(cardCenterY - viewportCenterY);
@@ -3622,14 +3630,14 @@ function performCleanupCheck() {
             ...allImages.map(i => ({ element: i, type: 'image' }))
         ];
 
-        const mediaCards = allMedia.map(({ element }) => element.closest('.video-card')).filter(Boolean);
-        const mediaRects = mediaCards.map(card => getCachedCardRect(card));
+        // Use mediaToCard inverse lookup instead of .closest() DOM walk
+        const mediaCards = allMedia.map(({ element }) => mediaToCard.get(element)).filter(Boolean);
 
         const viewportCenterY = bounds.centerY;
         const mediaDistances = allMedia.map(({ element, type }, index) => {
             const card = mediaCards[index];
             if (!card) return { element, distance: Infinity, type };
-            const rect = mediaRects[index];
+            const rect = cardToRect.get(card) || getCachedCardRect(card);
             const cardCenterY = rect.top + rect.height / 2;
             const distance = Math.abs(cardCenterY - viewportCenterY);
             return { element, distance, type };
@@ -6443,9 +6451,11 @@ function proactiveLoadMedia() {
     // Don't load if we're at capacity
     if (totalMediaCount >= MAX_TOTAL_MEDIA) return;
     
-    // Get all cards that need media
-    const allCards = gridContainer.querySelectorAll('.video-card');
-        const cardsNeedingMedia = Array.from(allCards).filter(card => {
+    // Get all cards that need media (use vsState.activeCards when available to avoid full DOM traversal)
+    const allCards = vsState.enabled
+        ? Array.from(vsState.activeCards.values())
+        : Array.from(gridContainer.querySelectorAll('.video-card'));
+        const cardsNeedingMedia = allCards.filter(card => {
             if (card.classList.contains('folder-card')) return false;
             // Check if card is in retry queue but ready to retry
             const retryInfo = mediaToRetry.get(card);
@@ -6560,8 +6570,10 @@ function retryPendingVideos() {
     // Also proactively load media for cards in preload zone that aren't in retry queue
     // This catches cards that IntersectionObserver might have missed
     if (retriedCount < getEffectiveLoadLimit() * 2) {
-        const allCards = gridContainer.querySelectorAll('.video-card');
-        const cardsToLoad = Array.from(allCards).filter(card => {
+        const allCards = vsState.enabled
+            ? Array.from(vsState.activeCards.values())
+            : Array.from(gridContainer.querySelectorAll('.video-card'));
+        const cardsToLoad = allCards.filter(card => {
             if (card.classList.contains('folder-card')) return false;
             return !card.dataset.hasMedia &&
                    !pendingMediaCreations.has(card) &&
@@ -8045,6 +8057,7 @@ gridContainer.addEventListener('mouseover', (e) => {
                 if (hoverScrubEnabled) {
                     video.pause();
                     card._scrubbing = true;
+                    card._scrubRect = card.getBoundingClientRect(); // Cache rect for scrub mousemove
                 }
             }
         } else if (card.dataset.gifDuration && Number(card.dataset.gifDuration) > 0) {
@@ -8071,11 +8084,10 @@ gridContainer.addEventListener('mouseover', (e) => {
                 tagsEl.classList.remove('tags-shifted');
                 return;
             }
-            const range = document.createRange();
-            range.selectNodeContents(info);
-            const textWidth = range.getBoundingClientRect().width;
-            const cardLeft = card.getBoundingClientRect().left;
-            const badgeLeft = firstBadge.getBoundingClientRect().left - cardLeft;
+            // Use scrollWidth + offsetLeft instead of 3 getBoundingClientRect calls
+            // to avoid forced synchronous layout during hover
+            const textWidth = info.scrollWidth;
+            const badgeLeft = firstBadge.offsetLeft;
             tagsEl.classList.toggle('tags-shifted', textWidth + 16 > badgeLeft);
         };
         if ('requestIdleCallback' in window) {
@@ -8102,7 +8114,8 @@ gridContainer.addEventListener('mousemove', (e) => {
         requestAnimationFrame(() => {
             _scrubRafPending = false;
             if (!card._scrubbing) return;
-            const rect = card.getBoundingClientRect();
+            // Use cached rect to avoid forced synchronous layout every frame
+            const rect = card._scrubRect || (card._scrubRect = card.getBoundingClientRect());
             const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
             video.currentTime = pct * video.duration;
             // Update the time label and progress bar
@@ -8120,6 +8133,7 @@ gridContainer.addEventListener('mouseout', (e) => {
             const video = currentHoveredCard.querySelector('video');
             if (video && !(isWindowBlurred && pauseOnBlur) && !(isLightboxOpen && pauseOnLightbox)) video.play().catch(() => {});
             currentHoveredCard._scrubbing = false;
+            delete currentHoveredCard._scrubRect; // Invalidate cached rect
         }
         hideScrubber(currentHoveredCard);
         hideGifProgress(currentHoveredCard);

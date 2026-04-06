@@ -774,7 +774,7 @@ button:active:not(:disabled):not(.lightbox-nav-btn):not(.lb-inspector-toggle) {
     font-size: 13px;
     cursor: pointer;
     text-align: center;
-    transition: all var(--duration-fast);
+    transition: background-color var(--duration-fast), border-color var(--duration-fast), color var(--duration-fast);
 }
 
 .collection-dialog-type-btn.active {
@@ -882,7 +882,7 @@ button:active:not(:disabled):not(.lightbox-nav-btn):not(.lb-inspector-toggle) {
     font-size: 13px;
     cursor: pointer;
     border: 1px solid var(--border-default);
-    transition: all var(--duration-fast);
+    transition: background-color var(--duration-fast), border-color var(--duration-fast), color var(--duration-fast);
 }
 
 .collection-dialog-cancel {
@@ -2672,6 +2672,8 @@ button:hover {
     align-items: center;
     justify-content: center;
     contain: layout style paint;
+    content-visibility: auto;
+    contain-intrinsic-size: auto 200px;
     will-change: transform;
 }
 
@@ -3172,7 +3174,6 @@ button:hover {
     height: 100%;
     z-index: calc(var(--z-overlay-modal) + 3);
     background: var(--scrim-opaque);
-    backdrop-filter: blur(16px);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -3592,7 +3593,6 @@ video.blow-up-media {
     border-radius: var(--radius-sm);
     box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.56);
     background: rgba(255, 255, 255, 0.08);
-    backdrop-filter: blur(1px);
     min-width: 10px;
     min-height: 10px;
 }
@@ -3773,12 +3773,11 @@ video.blow-up-media {
     left: 0;
     width: 100%;
     height: 100%;
-    background-color: var(--scrim-medium);
+    background-color: var(--scrim-strong);
     display: flex;
     justify-content: center;
     align-items: center;
     z-index: 3000;
-    backdrop-filter: blur(16px);
 }
 
 .rename-dialog.hidden {
@@ -3918,12 +3917,11 @@ video.blow-up-media {
 #batch-rename-overlay {
     position: fixed;
     top: 0; left: 0; width: 100%; height: 100%;
-    background-color: var(--scrim-medium);
+    background-color: var(--scrim-strong);
     display: flex;
     justify-content: center;
     align-items: center;
     z-index: var(--z-modal);
-    backdrop-filter: blur(var(--modal-blur));
 }
 #batch-rename-overlay.hidden { display: none; }
 .batch-rename-modal .modal-header {
@@ -4084,12 +4082,11 @@ video.blow-up-media {
 #convert-overlay {
     position: fixed;
     top: 0; left: 0; width: 100%; height: 100%;
-    background-color: var(--scrim-medium);
+    background-color: var(--scrim-strong);
     display: flex;
     justify-content: center;
     align-items: center;
     z-index: var(--z-modal);
-    backdrop-filter: blur(var(--modal-blur));
 }
 #trim-options-overlay.hidden,
 #convert-overlay.hidden { display: none; }
@@ -4173,12 +4170,11 @@ video.blow-up-media {
 .auto-tag-overlay {
     position: fixed;
     top: 0; left: 0; width: 100%; height: 100%;
-    background-color: var(--scrim-medium);
+    background-color: var(--scrim-strong);
     display: flex;
     justify-content: center;
     align-items: center;
     z-index: var(--z-modal);
-    backdrop-filter: blur(var(--modal-blur));
 }
 .auto-tag-overlay.hidden { display: none; }
 .auto-tag-modal {
@@ -5021,12 +5017,11 @@ video.blow-up-media {
     left: 0;
     width: 100%;
     height: 100%;
-    background-color: var(--modal-backdrop);
+    background-color: var(--scrim-strong);
     display: flex;
     justify-content: center;
     align-items: center;
     z-index: var(--z-modal);
-    backdrop-filter: blur(var(--modal-blur));
 }
 
 .advanced-search-panel.hidden {
@@ -5351,12 +5346,11 @@ video.blow-up-media {
     left: 0;
     width: 100%;
     height: 100%;
-    background-color: var(--scrim-medium);
+    background-color: var(--scrim-strong);
     display: flex;
     justify-content: center;
     align-items: center;
     z-index: 2000;
-    backdrop-filter: blur(16px);
 }
 
 .organize-dialog.hidden {
@@ -5480,12 +5474,11 @@ video.blow-up-media {
     left: 0;
     width: 100%;
     height: 100%;
-    background-color: var(--scrim-medium);
+    background-color: var(--scrim-strong);
     display: flex;
     justify-content: center;
     align-items: center;
     z-index: var(--z-modal);
-    backdrop-filter: blur(var(--modal-blur));
 }
 
 .duplicates-modal.hidden {
@@ -6578,8 +6571,7 @@ video.blow-up-media {
     left: 0;
     right: 0;
     bottom: 0;
-    background: rgba(0, 0, 0, 0.4);
-    backdrop-filter: blur(var(--modal-blur-light));
+    background: var(--scrim-medium);
     z-index: var(--z-palette);
     display: flex;
     align-items: flex-start;
@@ -6796,7 +6788,6 @@ video.blow-up-media {
     right: 0;
     bottom: 0;
     background: var(--scrim-medium);
-    backdrop-filter: blur(4px);
     z-index: var(--z-overlay-modal);
     display: flex;
     align-items: center;
@@ -7115,12 +7106,11 @@ video.blow-up-media {
 .ai-confirm-overlay {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.55);
+    background: var(--scrim-medium);
     z-index: 9999;
     display: flex;
     align-items: center;
     justify-content: center;
-    backdrop-filter: blur(2px);
 }
 
 .ai-confirm-dialog {
@@ -7462,12 +7452,11 @@ video.blow-up-media {
     left: 0;
     width: 100%;
     height: 100%;
-    background-color: var(--scrim-medium);
+    background-color: var(--scrim-strong);
     display: flex;
     justify-content: center;
     align-items: center;
     z-index: 3000;
-    backdrop-filter: blur(16px);
 }
 
 .confirm-dialog.hidden {
@@ -9226,8 +9215,8 @@ video.ss-media {
     border-color: var(--accent-color);
 }
 @keyframes shortcut-pulse {
-    0%, 100% { box-shadow: 0 0 0 0 rgba(232, 164, 74, 0.3); }
-    50% { box-shadow: 0 0 0 4px rgba(232, 164, 74, 0.15); }
+    0%, 100% { outline: 0px solid rgba(232, 164, 74, 0); outline-offset: 0; }
+    50% { outline: 4px solid rgba(232, 164, 74, 0.15); outline-offset: 0; }
 }
 .shortcut-reset-btn {
     background: none;
@@ -9462,7 +9451,6 @@ body.reduce-motion *::after {
     width: 340px;
     height: 100vh;
     background: rgba(15, 15, 18, 0.96);
-    backdrop-filter: blur(12px);
     border-left: 1px solid var(--border-default);
     z-index: 1003;
     transform: translateX(0);

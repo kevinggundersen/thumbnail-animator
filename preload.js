@@ -86,6 +86,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     removeClipDownloadProgressListener: () => ipcRenderer.removeAllListeners('clip-download-progress'),
     onClipGpuFallback: (callback) => ipcRenderer.on('clip-gpu-fallback', callback),
     removeClipGpuFallbackListener: () => ipcRenderer.removeAllListeners('clip-gpu-fallback'),
+    // Florence-2 Image Captioning (Discover New Tags)
+    captionCheckCache: () => ipcRenderer.invoke('caption-check-cache'),
+    captionInit: () => ipcRenderer.invoke('caption-init'),
+    captionGenerate: (files) => ipcRenderer.invoke('caption-generate', files),
+    captionStatus: () => ipcRenderer.invoke('caption-status'),
+    captionTerminate: () => ipcRenderer.invoke('caption-terminate'),
+    onCaptionProgress: (callback) => ipcRenderer.on('caption-progress', callback),
+    removeCaptionProgressListener: () => ipcRenderer.removeAllListeners('caption-progress'),
+    onCaptionDownloadProgress: (callback) => ipcRenderer.on('caption-download-progress', callback),
+    removeCaptionDownloadProgressListener: () => ipcRenderer.removeAllListeners('caption-download-progress'),
     // Collections
     resolveFilePaths: (filePaths, options) => ipcRenderer.invoke('resolve-file-paths', filePaths, options),
     scanFoldersForSmartCollection: (folderPaths, options, rules, scanId) => ipcRenderer.invoke('scan-folders-for-smart-collection', folderPaths, options, rules, scanId),

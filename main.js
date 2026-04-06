@@ -5145,6 +5145,119 @@ ipcMain.handle('clip-terminate', async () => {
     return { ok: true, value: null };
 });
 
+// ── Florence-2 Image Captioning ─────────────────────────────────────
+// Used by "Discover New Tags" mode in auto-tag to generate free-form
+// image descriptions, from which new tag candidates are extracted.
+const CAPTION_MODEL_NAME = 'onnx-community/Florence-2-base-ft';
+let captionModel = null; // { model, processor, tokenizer }
+
+ipcMain.handle('caption-init', async (event) => {
+    try {
+        if (captionModel) return { ok: true, value: { model: 'florence2' } };
+
+        const transformers = require('@huggingface/transformers');
+        const { env, AutoModelForImageTextToText, AutoProcessor, AutoTokenizer } = transformers;
+
+        env.cacheDir = getClipCacheDir();
+        env.allowLocalModels = true;
+        env.allowRemoteModels = true;
+
+        const progressCb = (progress) => {
+            try { event.sender.send('caption-download-progress', progress); } catch {}
+        };
+        const opts = { progress_callback: progressCb };
+        // Use quantized (q4) for smaller download and lower memory
+        const modelOpts = { ...opts, dtype: 'q4' };
+
+        console.log('[caption] Loading Florence-2-base-ft...');
+        const t0 = Date.now();
+
+        const [processor, tokenizer, model] = await Promise.all([
+            AutoProcessor.from_pretrained(CAPTION_MODEL_NAME, opts),
+            AutoTokenizer.from_pretrained(CAPTION_MODEL_NAME, opts),
+            AutoModelForImageTextToText.from_pretrained(CAPTION_MODEL_NAME, modelOpts),
+        ]);
+
+        captionModel = { model, processor, tokenizer };
+        console.log(`[caption] Florence-2 loaded in ${Date.now() - t0}ms`);
+        return { ok: true, value: { model: 'florence2' } };
+    } catch (err) {
+        captionModel = null;
+        console.error('caption-init error:', err);
+        return { ok: false, error: err.message };
+    }
+});
+
+ipcMain.handle('caption-generate', async (event, files) => {
+    if (!captionModel) return { ok: false, error: 'Caption model not loaded' };
+    try {
+        const transformers = require('@huggingface/transformers');
+        const { RawImage } = transformers;
+        const { model, processor, tokenizer } = captionModel;
+
+        const results = [];
+        for (let i = 0; i < files.length; i++) {
+            const file = files[i];
+            try {
+                // Load image from disk — read as buffer to handle paths with spaces
+                const imgPath = file.thumbPath || file.path;
+                const buf = fs.readFileSync(imgPath);
+                const blob = new Blob([buf]);
+                const image = await RawImage.fromBlob(blob);
+
+                // Florence-2 uses task prompts. The processor's construct_prompts()
+                // maps task tokens to the actual prompt text and tokenizes it.
+                const taskPrompt = '<MORE_DETAILED_CAPTION>';
+                const inputs = await processor(image, taskPrompt);
+
+                const generated = await model.generate({
+                    ...inputs,
+                    max_new_tokens: 256,
+                });
+
+                // Decode and post-process via the Florence-2 processor
+                const decoded = tokenizer.batch_decode(generated, { skip_special_tokens: true })[0] || '';
+                const result = processor.post_process_generation(decoded, taskPrompt, [image.height, image.width]);
+                const caption = (result[taskPrompt] || '').trim();
+
+                results.push({ path: file.path, caption });
+            } catch (fileErr) {
+                console.warn(`[caption] Failed to caption ${file.path}:`, fileErr.message);
+                results.push({ path: file.path, caption: '' });
+            }
+
+            // Report progress per file
+            try { event.sender.send('caption-progress', { done: i + 1, total: files.length }); } catch {}
+        }
+
+        return { ok: true, value: results };
+    } catch (err) {
+        console.error('caption-generate error:', err);
+        return { ok: false, error: err.message };
+    }
+});
+
+ipcMain.handle('caption-status', async () => {
+    return { ok: true, value: { loaded: !!captionModel } };
+});
+
+ipcMain.handle('caption-terminate', async () => {
+    captionModel = null;
+    return { ok: true, value: null };
+});
+
+ipcMain.handle('caption-check-cache', async () => {
+    try {
+        const cacheDir = getClipCacheDir();
+        // Check for Florence-2 model files in the cache
+        const modelDir = path.join(cacheDir, 'onnx-community', 'Florence-2-base-ft', 'onnx');
+        const exists = fs.existsSync(modelDir) && fs.readdirSync(modelDir).some(f => f.endsWith('.onnx'));
+        return { ok: true, value: { cached: exists } };
+    } catch {
+        return { ok: true, value: { cached: false } };
+    }
+});
+
 // Plugin system IPC handlers
 ipcMain.handle('get-plugin-manifests', () => {
     try { return { ok: true, value: pluginRegistry.getManifests() }; }

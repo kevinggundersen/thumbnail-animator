@@ -4236,6 +4236,42 @@ video.blow-up-media {
 .auto-tag-view-toggle button:hover { background: var(--bg-hover); color: var(--text-primary); }
 .auto-tag-view-toggle button.active { background: var(--accent-muted); color: var(--accent); }
 .auto-tag-view-toggle button + button { border-left: 1px solid var(--border-default); }
+/* Mode toggle (Match Tags / Discover New) — same style as view toggle */
+.auto-tag-mode-toggle {
+    display: inline-flex;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    flex-shrink: 0;
+}
+.auto-tag-mode-toggle button {
+    padding: 5px var(--space-3);
+    background: transparent;
+    color: var(--text-secondary);
+    border: none;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color var(--duration-normal), color var(--duration-normal);
+}
+.auto-tag-mode-toggle button:hover { background: var(--bg-hover); color: var(--text-primary); }
+.auto-tag-mode-toggle button.active { background: var(--accent-muted); color: var(--accent); }
+.auto-tag-mode-toggle button + button { border-left: 1px solid var(--border-default); }
+/* "NEW" badge on discovered tag chips/rows */
+.auto-tag-new-badge {
+    display: inline-block;
+    padding: 1px 5px;
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--accent);
+    background: var(--accent-muted);
+    border-radius: var(--radius-xs);
+    margin-left: var(--space-1);
+    vertical-align: middle;
+    line-height: 1.4;
+}
 .auto-tag-threshold-row {
     display: flex;
     align-items: center;

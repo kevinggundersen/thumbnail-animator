@@ -11276,6 +11276,7 @@ const autoTagState = {
     cancelScan: false,
     io: null, // IntersectionObserver for File view cards
     tileIO: null, // IntersectionObserver for Tag view tiles
+    mode: 'match', // 'match' | 'discover'
 };
 
 function closeAutoTag() {
@@ -11286,6 +11287,7 @@ function closeAutoTag() {
     autoTagState.byTag.clear();
     autoTagState.collapsedTags.clear();
     autoTagState.cancelScan = false;
+    autoTagState.mode = 'match';
     if (autoTagState.io) { try { autoTagState.io.disconnect(); } catch {} autoTagState.io = null; }
     if (autoTagState.tileIO) { try { autoTagState.tileIO.disconnect(); } catch {} autoTagState.tileIO = null; }
     autoTagShowProgress(false);
@@ -11293,6 +11295,9 @@ function closeAutoTag() {
     autoTagViewTagEl.innerHTML = '';
     autoTagStatus.textContent = '';
     autoTagUpdateCounter();
+    // Restore threshold row visibility for next open
+    const threshRow = autoTagOverlay.querySelector('.auto-tag-threshold-row');
+    if (threshRow) threshRow.classList.remove('hidden');
 }
 
 async function embedTagLabels() {
@@ -11313,8 +11318,48 @@ async function embedTagLabels() {
     return autoTagState.labelEmbeddings.size > 0;
 }
 
-async function openAutoTag(filePaths) {
+// ── Discover New Tags (Florence-2 captioning) ───────────────────────
+
+const CAPTION_NOISE_WORDS = new Set([
+    'photo', 'image', 'picture', 'photograph', 'illustration', 'scene',
+    'close-up', 'closeup', 'view', 'shot', 'background', 'foreground',
+    'top', 'bottom', 'left', 'right', 'center', 'front', 'back', 'side',
+    'various', 'several', 'many', 'some', 'other', 'one', 'two', 'three',
+    'large', 'small', 'big', 'little', 'very', 'also', 'more', 'most',
+]);
+
+function extractTagCandidatesFromCaption(caption) {
+    if (!caption) return [];
+    // Split on natural delimiters
+    const segments = caption
+        .replace(/[.!?;]/g, ',')
+        .split(/,|\band\b|\bwith\b|\bfeaturing\b|\bin\s+(?:a|an|the)\b|\bon\s+(?:a|an|the)\b/i);
+
+    const candidates = [];
+    for (let seg of segments) {
+        seg = seg.trim().toLowerCase();
+        // Strip leading articles/prepositions
+        seg = seg.replace(/^(?:a|an|the|of|some|its|their|this|that)\s+/i, '');
+        seg = seg.trim();
+        if (!seg || seg.length < 2) continue;
+        // Skip if too many words (not a concise tag)
+        const words = seg.split(/\s+/);
+        if (words.length > 4) continue;
+        // Skip if all words are noise
+        if (words.every(w => CAPTION_NOISE_WORDS.has(w))) continue;
+        // Remove trailing noise words
+        while (words.length > 1 && CAPTION_NOISE_WORDS.has(words[words.length - 1])) words.pop();
+        while (words.length > 1 && CAPTION_NOISE_WORDS.has(words[0])) words.shift();
+        const clean = words.join(' ');
+        if (clean.length >= 2) candidates.push(clean);
+    }
+    // Deduplicate
+    return [...new Set(candidates)];
+}
+
+async function openAutoTagDiscover(filePaths) {
     autoTagState.filePaths = filePaths;
+    autoTagState.mode = 'discover';
     autoTagOverlay.classList.remove('hidden');
     autoTagState.data = [];
     autoTagState.selection.clear();
@@ -11325,6 +11370,260 @@ async function openAutoTag(filePaths) {
     autoTagViewTagEl.innerHTML = '';
     autoTagApply.disabled = true;
     autoTagUpdateCounter();
+    autoTagApplyModeToggle();
+
+    // Restore last-used view preference
+    try {
+        const saved = localStorage.getItem('autoTagLastView');
+        autoTagState.view = (saved === 'tag' || saved === 'file') ? saved : 'file';
+    } catch { autoTagState.view = 'file'; }
+    autoTagApplyViewToggle();
+
+    // Hide threshold in discover mode (captions don't produce a CLIP-style threshold)
+    autoTagOverlay.querySelector('.auto-tag-threshold-row').classList.add('hidden');
+
+    // 1. Ensure CLIP is loaded (for re-ranking candidates)
+    autoTagStatus.textContent = 'Checking AI model...';
+    try {
+        const status = await window.electronAPI.clipStatus();
+        if (!status.value?.loaded) {
+            autoTagStatus.textContent = 'Loading CLIP model...';
+            const init = await window.electronAPI.clipInit(getClipGpuMode());
+            if (!init.ok) {
+                autoTagStatus.textContent = 'Could not load CLIP model.';
+                return;
+            }
+        }
+    } catch {
+        autoTagStatus.textContent = 'CLIP model not available.';
+        return;
+    }
+
+    // 2. Load Florence-2 caption model
+    try {
+        const capStatus = await window.electronAPI.captionStatus();
+        if (!capStatus.value?.loaded) {
+            // Check if model is already downloaded
+            const cacheCheck = await window.electronAPI.captionCheckCache();
+            const isCached = cacheCheck && cacheCheck.ok && cacheCheck.value?.cached;
+
+            if (!isCached) {
+                // Ask user to confirm download
+                const confirmed = await showConfirm(
+                    'Download Caption Model',
+                    'The "Discover New Tags" feature requires a one-time download of the Florence-2 AI caption model (~150 MB). Download now?',
+                    { confirmLabel: 'Download' }
+                );
+                if (!confirmed) {
+                    autoTagStatus.textContent = 'Download cancelled.';
+                    return;
+                }
+            }
+
+            autoTagStatus.textContent = isCached ? 'Loading caption model...' : 'Downloading caption model (~150 MB)...';
+            autoTagShowProgress(true);
+            autoTagUpdateProgress(0, 100);
+
+            const downloadHandler = (_e, progress) => {
+                if (progress && progress.progress != null) {
+                    autoTagUpdateProgress(Math.round(progress.progress), 100);
+                }
+            };
+            window.electronAPI.onCaptionDownloadProgress(downloadHandler);
+
+            const capInit = await window.electronAPI.captionInit();
+            window.electronAPI.removeCaptionDownloadProgressListener();
+            autoTagShowProgress(false);
+
+            if (!capInit.ok) {
+                autoTagStatus.textContent = `Caption model failed: ${capInit.error || 'unknown error'}`;
+                return;
+            }
+        }
+    } catch (err) {
+        autoTagShowProgress(false);
+        autoTagStatus.textContent = `Caption model error: ${err.message}`;
+        return;
+    }
+
+    // 3. Get image embeddings (reuse from CLIP cache)
+    autoTagStatus.textContent = 'Generating image embeddings...';
+    autoTagShowProgress(true);
+    autoTagUpdateProgress(0, filePaths.length);
+
+    const imageEmbeddings = new Map();
+    const BATCH = 8;
+    for (let i = 0; i < filePaths.length; i += BATCH) {
+        if (autoTagState.cancelScan) break;
+        const batch = filePaths.slice(i, i + BATCH);
+        const items = batch.map(fp => {
+            const item = vsState.sortedItems.find(it => it.path === fp);
+            return { path: fp, mtime: item ? (item.mtime || 0) : 0, thumbPath: null };
+        });
+
+        for (const it of items) {
+            const cached = currentEmbeddings.get(it.path);
+            if (cached) imageEmbeddings.set(it.path, cached);
+        }
+        const needsEmbed = items.filter(it => !imageEmbeddings.has(it.path));
+        if (needsEmbed.length > 0) {
+            try {
+                const resp = await window.electronAPI.clipEmbedImages(needsEmbed);
+                const results = resp && resp.ok ? (resp.value || []) : [];
+                for (const r of results) {
+                    if (r && r.embedding) {
+                        const emb = new Float32Array(r.embedding);
+                        imageEmbeddings.set(r.path, emb);
+                        currentEmbeddings.set(r.path, emb);
+                    }
+                }
+            } catch {}
+        }
+        autoTagUpdateProgress(Math.min(i + BATCH, filePaths.length), filePaths.length);
+    }
+
+    if (autoTagState.cancelScan) {
+        autoTagShowProgress(false);
+        autoTagStatus.textContent = 'Cancelled.';
+        return;
+    }
+
+    // 4. Generate captions with Florence-2
+    autoTagStatus.textContent = 'Generating AI captions...';
+    autoTagUpdateProgress(0, filePaths.length);
+
+    const captions = new Map(); // path → caption string
+    for (let i = 0; i < filePaths.length; i++) {
+        if (autoTagState.cancelScan) break;
+        const fp = filePaths[i];
+        try {
+            const resp = await window.electronAPI.captionGenerate([{ path: fp, thumbPath: null }]);
+            if (resp && resp.ok && resp.value && resp.value[0]) {
+                captions.set(fp, resp.value[0].caption);
+            }
+        } catch {}
+        autoTagUpdateProgress(i + 1, filePaths.length);
+    }
+
+    if (autoTagState.cancelScan) {
+        autoTagShowProgress(false);
+        autoTagStatus.textContent = 'Cancelled.';
+        return;
+    }
+
+    // 5. Extract tag candidates from captions, CLIP re-rank, deduplicate
+    autoTagStatus.textContent = 'Extracting tag candidates...';
+    await refreshTagsCache();
+    const existingNames = new Set(allTagsCache.map(t => t.name.toLowerCase()));
+
+    // Collect all unique candidates across all files
+    const allCandidates = new Set();
+    const fileCandidates = new Map(); // path → candidate[]
+    for (const [fp, caption] of captions) {
+        const candidates = extractTagCandidatesFromCaption(caption);
+        fileCandidates.set(fp, candidates);
+        for (const c of candidates) allCandidates.add(c);
+    }
+
+    // Remove candidates that already exist as user tags
+    for (const name of existingNames) allCandidates.delete(name);
+
+    // CLIP embed each unique candidate for re-ranking
+    const candidateEmbeddings = new Map();
+    const candidateArr = [...allCandidates];
+    for (let i = 0; i < candidateArr.length; i++) {
+        autoTagStatus.textContent = `Verifying candidates... ${i + 1}/${candidateArr.length}`;
+        try {
+            const raw = await window.electronAPI.clipEmbedText(`a photo of ${candidateArr[i]}`);
+            if (raw && raw.ok && raw.value) candidateEmbeddings.set(candidateArr[i], new Float32Array(raw.value));
+        } catch {}
+    }
+
+    // Build data array: for each file, score its candidates against its image embedding
+    const DISCOVER_THRESHOLD = 0.18;
+    for (const fp of filePaths) {
+        const imgEmb = imageEmbeddings.get(fp);
+        const candidates = fileCandidates.get(fp) || [];
+        const suggestions = [];
+        for (const c of candidates) {
+            if (existingNames.has(c)) continue;
+            const cEmb = candidateEmbeddings.get(c);
+            if (!imgEmb || !cEmb) continue;
+            const score = cosineSimilarity(imgEmb, cEmb);
+            if (score >= DISCOVER_THRESHOLD) suggestions.push({ label: c, score });
+        }
+        suggestions.sort((a, b) => b.score - a.score);
+
+        const name = fp.split(/[\\/]/).pop();
+        const item = vsState.sortedItems.find(it => it.path === fp);
+        const isVideo = item && item.type === 'video';
+        autoTagState.data.push({
+            path: fp,
+            name,
+            thumbType: isVideo ? 'video' : 'image',
+            thumbSrc: isVideo ? null : (item ? (item.url || '') : ''),
+            suggestions,
+        });
+    }
+
+    autoTagShowProgress(false);
+    const analyzed = autoTagState.data.length;
+    autoTagStatus.textContent = `Done. ${analyzed} file${analyzed === 1 ? '' : 's'} analyzed — discovered tags shown below.`;
+    renderAutoTagResults();
+}
+
+function autoTagApplyModeToggle() {
+    const buttons = autoTagOverlay.querySelectorAll('.auto-tag-mode-toggle button');
+    buttons.forEach(b => {
+        const active = b.dataset.mode === autoTagState.mode;
+        b.classList.toggle('active', active);
+        b.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    // Show/hide threshold row based on mode
+    const threshRow = autoTagOverlay.querySelector('.auto-tag-threshold-row');
+    if (threshRow) threshRow.classList.toggle('hidden', autoTagState.mode === 'discover');
+}
+
+async function autoTagSwitchMode(mode) {
+    if (mode === autoTagState.mode) return;
+    const filePaths = autoTagState.filePaths.slice(); // preserve
+    if (filePaths.length === 0) return;
+
+    // Reset scan state
+    autoTagState.cancelScan = true; // cancel any in-progress scan
+    await new Promise(r => setTimeout(r, 50)); // yield
+    autoTagState.data = [];
+    autoTagState.selection.clear();
+    autoTagState.byTag.clear();
+    autoTagState.collapsedTags.clear();
+    autoTagViewFileEl.innerHTML = '';
+    autoTagViewTagEl.innerHTML = '';
+    autoTagApply.disabled = true;
+    autoTagUpdateCounter();
+
+    if (mode === 'discover') {
+        openAutoTagDiscover(filePaths);
+    } else {
+        autoTagState.mode = 'match';
+        autoTagApplyModeToggle();
+        openAutoTag(filePaths);
+    }
+}
+
+async function openAutoTag(filePaths) {
+    autoTagState.filePaths = filePaths;
+    autoTagState.mode = 'match';
+    autoTagOverlay.classList.remove('hidden');
+    autoTagState.data = [];
+    autoTagState.selection.clear();
+    autoTagState.byTag.clear();
+    autoTagState.collapsedTags.clear();
+    autoTagState.cancelScan = false;
+    autoTagViewFileEl.innerHTML = '';
+    autoTagViewTagEl.innerHTML = '';
+    autoTagApply.disabled = true;
+    autoTagUpdateCounter();
+    autoTagApplyModeToggle();
 
     // Restore last-used view preference
     try {
@@ -11450,6 +11749,8 @@ function clipScoreToDisplayPct(score) {
 }
 
 function autoTagGetThreshold() {
+    // In discover mode, all suggestions are pre-filtered — use a minimal threshold
+    if (autoTagState.mode === 'discover') return 0;
     return (parseInt(autoTagThreshold.value) || 25) / 100;
 }
 
@@ -11698,7 +11999,8 @@ function renderAutoTagFileView() {
                 chip.dataset.path = file.path;
                 chip.dataset.label = s.label;
                 chip.dataset.role = 'chip';
-                chip.innerHTML = `${escapeHtml(s.label)} <span class="auto-tag-conf">${clipScoreToDisplayPct(s.score)}%</span>`;
+                const newBadge = autoTagState.mode === 'discover' ? '<span class="auto-tag-new-badge">NEW</span>' : '';
+                chip.innerHTML = `${escapeHtml(s.label)}${newBadge} <span class="auto-tag-conf">${clipScoreToDisplayPct(s.score)}%</span>`;
                 chips.appendChild(chip);
             }
         }
@@ -11721,7 +12023,10 @@ function renderAutoTagTagView() {
         return;
     }
     if (autoTagState.byTag.size === 0) {
-        autoTagViewTagEl.innerHTML = '<div class="auto-tag-empty">No tags above threshold. Try lowering the confidence slider.</div>';
+        const msg = autoTagState.mode === 'discover'
+            ? 'No new tag candidates found for these files.'
+            : 'No tags above threshold. Try lowering the confidence slider.';
+        autoTagViewTagEl.innerHTML = `<div class="auto-tag-empty">${msg}</div>`;
         return;
     }
 
@@ -11745,7 +12050,8 @@ function renderAutoTagTagView() {
         title.className = 'auto-tag-tag-row-title';
         title.dataset.role = 'tag-toggle';
         title.dataset.label = label;
-        title.innerHTML = `${chevronSvg}<span class="auto-tag-tag-row-name" title="${escapeHtml(label)}">${escapeHtml(label)}</span><span class="auto-tag-tag-row-count">${selectedCount}/${matches.length} selected</span>`;
+        const rowNewBadge = autoTagState.mode === 'discover' ? '<span class="auto-tag-new-badge">NEW</span>' : '';
+        title.innerHTML = `${chevronSvg}<span class="auto-tag-tag-row-name" title="${escapeHtml(label)}">${escapeHtml(label)}</span>${rowNewBadge}<span class="auto-tag-tag-row-count">${selectedCount}/${matches.length} selected</span>`;
         header.appendChild(title);
 
         const actions = document.createElement('div');
@@ -11792,13 +12098,15 @@ function renderAutoTagTagView() {
         frag.appendChild(row);
     }
 
-    // Note about tags with no matches
-    const tagsWithNoMatches = allTagsCache.length - autoTagState.byTag.size;
-    if (tagsWithNoMatches > 0) {
-        const note = document.createElement('div');
-        note.className = 'auto-tag-no-tags-note';
-        note.textContent = `${tagsWithNoMatches} tag${tagsWithNoMatches === 1 ? '' : 's'} had no matches above threshold.`;
-        frag.appendChild(note);
+    // Note about tags with no matches (only in match mode)
+    if (autoTagState.mode !== 'discover') {
+        const tagsWithNoMatches = allTagsCache.length - autoTagState.byTag.size;
+        if (tagsWithNoMatches > 0) {
+            const note = document.createElement('div');
+            note.className = 'auto-tag-no-tags-note';
+            note.textContent = `${tagsWithNoMatches} tag${tagsWithNoMatches === 1 ? '' : 's'} had no matches above threshold.`;
+            frag.appendChild(note);
+        }
     }
 
     autoTagViewTagEl.appendChild(frag);
@@ -11833,6 +12141,10 @@ document.getElementById('auto-tag-cancel-scan').addEventListener('click', cancel
 
 autoTagOverlay.querySelectorAll('.auto-tag-view-toggle button').forEach(btn => {
     btn.addEventListener('click', () => autoTagSetView(btn.dataset.view));
+});
+
+autoTagOverlay.querySelectorAll('.auto-tag-mode-toggle button').forEach(btn => {
+    btn.addEventListener('click', () => autoTagSwitchMode(btn.dataset.mode));
 });
 
 document.getElementById('auto-tag-select-all').addEventListener('click', () => {
@@ -11940,10 +12252,26 @@ autoTagApply.addEventListener('click', async () => {
             }
         }
 
+        // Color palette for auto-created tags in discover mode
+        const discoverColors = ['#6366f1', '#8b5cf6', '#ec4899', '#f43f5e', '#f97316', '#eab308', '#22c55e', '#14b8a6', '#06b6d4', '#3b82f6'];
+        let colorIdx = 0;
+
         for (const [label, filePaths] of labelToFiles) {
             // Find the existing tag by name
-            const tag = allTagsCache.find(t => t.name.toLowerCase() === label.toLowerCase());
-            if (!tag) continue; // Should not happen since labels come from allTagsCache
+            let tag = allTagsCache.find(t => t.name.toLowerCase() === label.toLowerCase());
+
+            // In discover mode, create the tag if it doesn't exist
+            if (!tag && autoTagState.mode === 'discover') {
+                const color = discoverColors[colorIdx % discoverColors.length];
+                colorIdx++;
+                const result = await window.electronAPI.dbCreateTag(label, null, color);
+                if (result.ok && result.value) {
+                    await refreshTagsCache();
+                    tag = allTagsCache.find(t => t.name.toLowerCase() === label.toLowerCase());
+                }
+            }
+
+            if (!tag) continue;
 
             // Bulk assign
             const normalizedPaths = filePaths.map(fp => normalizePath(fp));

@@ -12117,6 +12117,22 @@ if (typeof CommandPalette !== 'undefined') {
         { id: 'settings.ai-search', label: 'Settings: AI Search', category: 'Settings', keywords: ['ai', 'clip', 'visual', 'search', 'embedding'], action: () => openSettingsToTab('ai-search') },
         { id: 'settings.plugins', label: 'Settings: Plugins', category: 'Settings', keywords: ['plugin', 'extension', 'addon'], action: () => openSettingsToTab('plugins') },
         { id: 'settings.data', label: 'Settings: Data', category: 'Settings', keywords: ['data', 'export', 'import', 'backup'], action: () => openSettingsToTab('data') },
+        { id: 'settings.reload-plugins', label: 'Reload Plugins', category: 'Settings', keywords: ['plugin', 'reload', 'refresh', 'rescan'], action: async () => {
+            try {
+                const result = await window.electronAPI.reloadPlugins();
+                if (result && result.ok) {
+                    showToast(`Reloaded ${result.value.count} plugin(s)`, 'success');
+                    _pluginMenuItems = null;
+                    if (typeof _pluginBatchOps !== 'undefined') _pluginBatchOps = null;
+                    if (typeof _pluginInfoSections !== 'undefined') _pluginInfoSections = null;
+                    if (typeof InspectorPanel !== 'undefined') InspectorPanel._pluginInfoSectionsCache = null;
+                } else {
+                    showToast(`Reload failed: ${result ? result.error : 'Unknown error'}`, 'error');
+                }
+            } catch (err) {
+                showToast(`Reload failed: ${err.message}`, 'error');
+            }
+        }},
 
         // Collections & Favorites
         { id: 'collections.new', label: 'New Collection', category: 'Collections', keywords: ['collection', 'smart', 'create'], action: () => { const btn = document.getElementById('new-collection-btn'); if (btn) btn.click(); } },

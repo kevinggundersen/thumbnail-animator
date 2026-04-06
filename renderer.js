@@ -9,6 +9,8 @@ let MAX_VIDEOS = 120; // Max concurrent videos
 let MAX_IMAGES = 120; // Max concurrent images
 let PARALLEL_LOAD_LIMIT = 10; // Load up to N items in parallel for faster initial load
 let PRELOAD_BUFFER_PX = 1000; // Preload content N pixels before it enters viewport
+const MIN_MEDIA_VIEWPORT_BUFFER_PX = 240; // Keep a small warm zone around the grid viewport
+const MAX_MEDIA_VIEWPORT_BUFFER_RATIO = 0.5; // Cap warm zone at half a viewport to avoid over-keeping media alive
 
 // Scale parallel load limit based on zoom level - at lower zoom, more cards are visible
 function getEffectiveLoadLimit() {
@@ -5041,13 +5043,14 @@ function performCleanupCheck() {
 
     let cleaned = false;
 
-    // Calculate viewport bounds with a buffer zone for cleanup
-    // Media outside this buffer zone will be cleaned up aggressively
-    // Use same buffer as PRELOAD_BUFFER_PX for consistency
-    const viewportTop = -PRELOAD_BUFFER_PX;
-    const viewportBottom = window.innerHeight + PRELOAD_BUFFER_PX;
-    const viewportLeft = -PRELOAD_BUFFER_PX;
-    const viewportRight = window.innerWidth + PRELOAD_BUFFER_PX
+    // Calculate cleanup bounds around the grid's own viewport, not the whole
+    // window. Using the window kept far too many media elements alive while the
+    // user was scrolling inside the grid.
+    const bounds = getViewportBounds();
+    const viewportTop = bounds.top;
+    const viewportBottom = bounds.bottom;
+    const viewportLeft = bounds.left;
+    const viewportRight = bounds.right;
 
     // Build card → media map using cached _mediaEl reference (no DOM queries)
     const cardMediaMap = new Map();
@@ -5136,8 +5139,8 @@ function performCleanupCheck() {
         const videoCards = allVideos.map(video => video.closest('.video-card')).filter(Boolean);
         const videoRects = videoCards.map(card => getCachedCardRect(card));
 
-        const viewportCenterY = window.innerHeight / 2;
-        const viewportCenterX = window.innerWidth / 2;
+        const viewportCenterY = bounds.centerY;
+        const viewportCenterX = bounds.centerX;
         const videoDistances = allVideos.map((video, index) => {
             const card = videoCards[index];
             if (!card) return { video, distance: Infinity };
@@ -5172,7 +5175,7 @@ function performCleanupCheck() {
         const mediaCards = allMedia.map(({ element }) => element.closest('.video-card')).filter(Boolean);
         const mediaRects = mediaCards.map(card => getCachedCardRect(card));
 
-        const viewportCenterY = window.innerHeight / 2;
+        const viewportCenterY = bounds.centerY;
         const mediaDistances = allMedia.map(({ element, type }, index) => {
             const card = mediaCards[index];
             if (!card) return { element, distance: Infinity, type };
@@ -5428,23 +5431,50 @@ function getMediaCounts() {
     return { videos: activeVideoCount, images: activeImageCount };
 }
 
-// Optimized function to get viewport bounds with caching
+function getGridViewportRect() {
+    if (!gridContainer) {
+        return {
+            top: 0,
+            left: 0,
+            right: window.innerWidth,
+            bottom: window.innerHeight,
+            width: window.innerWidth,
+            height: window.innerHeight
+        };
+    }
+    return gridContainer.getBoundingClientRect();
+}
+
+function getEffectiveMediaBufferPx(viewportRect = null) {
+    const rect = viewportRect || getGridViewportRect();
+    const viewportHeight = Math.max(1, rect.height || gridContainer?.clientHeight || window.innerHeight || 1);
+    return Math.max(
+        MIN_MEDIA_VIEWPORT_BUFFER_PX,
+        Math.min(PRELOAD_BUFFER_PX, Math.round(viewportHeight * MAX_MEDIA_VIEWPORT_BUFFER_RATIO))
+    );
+}
+
+// Optimized function to get preload/cleanup bounds around the grid viewport
 function getViewportBounds() {
     const now = Date.now();
     if (cachedViewportBounds && (now - viewportBoundsCacheTime < VIEWPORT_CACHE_TTL)) {
         return cachedViewportBounds;
     }
-    
+
+    const rect = getGridViewportRect();
+    const buffer = getEffectiveMediaBufferPx(rect);
+
     // Update cache
     cachedViewportBounds = {
-        top: -PRELOAD_BUFFER_PX,
-        bottom: window.innerHeight + PRELOAD_BUFFER_PX,
-        left: -PRELOAD_BUFFER_PX,
-        right: window.innerWidth + PRELOAD_BUFFER_PX,
-        centerY: window.innerHeight / 2
+        top: rect.top - buffer,
+        bottom: rect.bottom + buffer,
+        left: rect.left - buffer,
+        right: rect.right + buffer,
+        centerX: rect.left + (rect.width / 2),
+        centerY: rect.top + (rect.height / 2)
     };
     viewportBoundsCacheTime = now;
-    
+
     return cachedViewportBounds;
 }
 
@@ -5841,7 +5871,7 @@ async function loadFolderPreview(card) {
 }
 
 // Optimized function to check if card is in preload zone
-// Uses viewport coordinates since IntersectionObserver uses viewport as root
+// Uses the grid viewport plus a small warm buffer.
 function isCardInPreloadZone(card) {
     const cardRect = getCachedCardRect(card);
     const bounds = getViewportBounds();
@@ -7156,7 +7186,7 @@ function renderItemsProgressive(items) {
 
         if (cardsToCheck.length === 0) return;
         
-        // Use viewport bounds (consistent with IntersectionObserver root: null)
+        // Use the same grid-viewport bounds as the media observer/cleanup logic.
         const bounds = getViewportBounds();
         const cardsToLoadNow = [];
         
@@ -7937,10 +7967,9 @@ function processEntries(entries) {
             // If no media exists and not pending, add to load queue
             if (!card._mediaEl && !pendingMediaCreations.has(card)) {
                 // Use IntersectionObserver entry data for accurate positioning
-                // entry.boundingClientRect is relative to viewport
-                // Calculate distance from viewport center for prioritization
+                // and prioritize cards closest to the grid viewport center.
                 const cardRect = entry.boundingClientRect;
-                const viewportCenterY = window.innerHeight / 2;
+                const viewportCenterY = getViewportBounds().centerY;
                 const cardCenterY = cardRect.top + cardRect.height / 2;
                 const distance = Math.abs(cardCenterY - viewportCenterY);
                 cardsToLoad.push({ card, mediaUrl: card.dataset.src, distance });
@@ -8121,16 +8150,6 @@ function retryPendingVideos() {
     }
 }
 
-// --- Intersection Observer ---
-// Using viewport (null) as root. gridContainer is the scroll container but
-// root:null works because absolutely-positioned cards' viewport rects naturally
-// reflect their scroll position. rootMargin expands the viewport detection zone.
-const observerOptions = {
-    root: null,
-    rootMargin: `${PRELOAD_BUFFER_PX}px ${PRELOAD_BUFFER_PX}px ${PRELOAD_BUFFER_PX}px ${PRELOAD_BUFFER_PX}px`,
-    threshold: 0.0
-};
-
 // Helper function to aggressively clean up video elements
 function destroyVideoElement(video) {
     if (!video) return;
@@ -8307,22 +8326,53 @@ function destroyImageElement(img) {
 
 // Throttle cleanup check in IntersectionObserver callback
 let observerCleanupThrottle = null;
+let observerRefreshTimeout = null;
 // Using OBSERVER_CLEANUP_THROTTLE_MS from configuration constants at top of file
 
-const observer = new IntersectionObserver((entries) => {
-    // Process entries immediately - no throttling that could cause missed cleanups
-    processEntries(entries);
-    
-    // Throttle cleanup check to avoid excessive calls when many entries change at once
-    if (!observerCleanupThrottle) {
-        observerCleanupThrottle = setTimeout(() => {
-            performCleanupCheck();
-            retryPendingVideos();
-            proactiveLoadMedia(); // Also proactively load media when observer fires
-            observerCleanupThrottle = null;
-        }, OBSERVER_CLEANUP_THROTTLE_MS);
-    }
-}, observerOptions);
+function createMediaObserver() {
+    const buffer = getEffectiveMediaBufferPx();
+    return new IntersectionObserver((entries) => {
+        // Process entries immediately - no throttling that could cause missed cleanups
+        processEntries(entries);
+
+        // Throttle cleanup check to avoid excessive calls when many entries change at once
+        if (!observerCleanupThrottle) {
+            observerCleanupThrottle = setTimeout(() => {
+                performCleanupCheck();
+                retryPendingVideos();
+                proactiveLoadMedia(); // Also proactively load media when observer fires
+                observerCleanupThrottle = null;
+            }, OBSERVER_CLEANUP_THROTTLE_MS);
+        }
+    }, {
+        root: gridContainer,
+        rootMargin: `${buffer}px ${buffer}px ${buffer}px ${buffer}px`,
+        threshold: 0.0
+    });
+}
+
+let observer = createMediaObserver();
+
+function refreshMediaObserver() {
+    const cardsToObserve = vsState.enabled
+        ? Array.from(vsState.activeCards.values())
+        : Array.from(gridContainer.querySelectorAll('.video-card, .folder-card'));
+
+    if (observer) observer.disconnect();
+    observer = createMediaObserver();
+    cardsToObserve.forEach(card => observer.observe(card));
+}
+
+function scheduleObserverRefresh() {
+    clearTimeout(observerRefreshTimeout);
+    observerRefreshTimeout = setTimeout(() => {
+        observerRefreshTimeout = null;
+        invalidateScrollCaches();
+        refreshMediaObserver();
+    }, 150);
+}
+
+window.addEventListener('resize', scheduleObserverRefresh);
 
 
 // --- Filter and Search Functionality ---

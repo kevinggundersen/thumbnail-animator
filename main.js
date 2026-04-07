@@ -919,11 +919,15 @@ function createWindow() {
         backgroundColor: '#1a1a1a', // Dark mode base
         autoHideMenuBar: true, // Hide menu bar by default, show with Alt key
         titleBarStyle: 'hidden',
-        titleBarOverlay: {
-            color: '#161618',
-            symbolColor: '#9d9da6',
-            height: 38
-        }
+        ...(process.platform === 'win32' ? {
+            titleBarOverlay: {
+                color: '#161618',
+                symbolColor: '#9d9da6',
+                height: 38
+            }
+        } : process.platform === 'darwin' ? {
+            trafficLightPosition: { x: 12, y: 12 }
+        } : {})
     };
     
     // Only set x/y if they are valid numbers
@@ -973,8 +977,9 @@ function createWindow() {
         }
     });
     
-    // Update title bar overlay colors when theme changes
+    // Update title bar overlay colors when theme changes (Windows only)
     ipcMain.on('update-titlebar-overlay', (event, overlay) => {
+        if (process.platform !== 'win32') return;
         const sender = BrowserWindow.fromWebContents(event.sender);
         if (sender) {
             try { sender.setTitleBarOverlay(overlay); } catch {}
@@ -2651,9 +2656,40 @@ ipcMain.handle('open-with', async (event, filePath) => {
 // Get available drives (Windows only)
 ipcMain.handle('get-drives', async () => {
     try {
+        if (process.platform === 'darwin') {
+            // macOS: root + mounted volumes
+            const drives = [{ letter: '', path: '/', name: 'Macintosh HD' }];
+            try {
+                const entries = await fs.promises.readdir('/Volumes', { withFileTypes: true });
+                for (const entry of entries) {
+                    if (entry.isDirectory() || entry.isSymbolicLink()) {
+                        const volPath = `/Volumes/${entry.name}`;
+                        // Skip the root volume symlink (usually "Macintosh HD")
+                        try {
+                            const real = await fs.promises.realpath(volPath);
+                            if (real === '/') continue;
+                        } catch {}
+                        drives.push({ letter: '', path: volPath, name: entry.name });
+                    }
+                }
+            } catch {}
+            return { ok: true, value: drives };
+        }
         if (process.platform !== 'win32') {
-            // For non-Windows, return empty array or root paths
-            return { ok: true, value: [] };
+            // Linux / other Unix: root filesystem
+            const drives = [{ letter: '', path: '/', name: '/' }];
+            try {
+                // Include common mount points
+                for (const mountRoot of ['/media', '/mnt']) {
+                    const entries = await fs.promises.readdir(mountRoot, { withFileTypes: true }).catch(() => []);
+                    for (const entry of entries) {
+                        if (entry.isDirectory()) {
+                            drives.push({ letter: '', path: `${mountRoot}/${entry.name}`, name: entry.name });
+                        }
+                    }
+                }
+            } catch {}
+            return { ok: true, value: drives };
         }
         
         const drives = [];

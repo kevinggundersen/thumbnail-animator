@@ -1068,12 +1068,23 @@ button:active:not(:disabled):not(.lightbox-nav-btn):not(.lb-inspector-toggle) {
     display: flex;
     align-items: center;
     padding-left: var(--space-2);
-    padding-right: 138px;
+    padding-right: 138px; /* Windows: space for title bar overlay buttons */
     background-color: var(--bg-secondary);
     border-bottom: 1px solid var(--border-subtle);
     -webkit-app-region: drag;
     flex-shrink: 0;
     z-index: 101;
+}
+
+/* macOS: traffic lights are on the left, no overlay buttons on the right */
+[data-platform="darwin"] .titlebar-tabs {
+    padding-left: 80px;
+    padding-right: var(--space-2);
+}
+
+/* Linux: no overlay buttons at all */
+[data-platform="linux"] .titlebar-tabs {
+    padding-right: var(--space-2);
 }
 
 header {

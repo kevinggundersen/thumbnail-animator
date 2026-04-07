@@ -281,18 +281,22 @@ function sidebarHighlightActive(folderPath) {
 async function sidebarExpandToPath(folderPath) {
     if (!folderPath || !sidebarTree) return;
 
-    // Parse the path into segments  (e.g. "C:\Users\foo" → ["C:", "Users", "foo"])
-    const normalized = folderPath.replace(/\//g, '\\');
-    const parts = normalized.split('\\').filter(Boolean);
+    // Detect Windows vs Unix path style
+    const isWinPath = folderPath.includes('\\') || (folderPath.length > 1 && folderPath[1] === ':');
+    const sep = isWinPath ? '\\' : '/';
+
+    // Parse the path into segments (e.g. "C:\Users\foo" → ["C:", "Users", "foo"])
+    const normalized = isWinPath ? folderPath.replace(/\//g, '\\') : folderPath;
+    const parts = normalized.split(sep).filter(Boolean);
     if (parts.length === 0) return;
 
-    // Build the drive path (e.g. "C:\")
-    const drivePart = parts[0].endsWith(':') ? parts[0] + '\\' : parts[0];
+    // Build the root path (Windows: "C:\", Unix: "/")
+    const rootPart = (isWinPath && parts[0].endsWith(':')) ? parts[0] + '\\' : '/';
 
     // Find the drive node
     let driveNode = null;
     for (const node of sidebarTree.querySelectorAll(':scope > .tree-node')) {
-        if (sidebarNormalize(node.dataset.path) === sidebarNormalize(drivePart)) {
+        if (sidebarNormalize(node.dataset.path) === sidebarNormalize(rootPart)) {
             driveNode = node;
             break;
         }
@@ -307,10 +311,10 @@ async function sidebarExpandToPath(folderPath) {
 
     // Walk down the remaining path segments
     let parentContainer = driveChildren;
-    let currentPath = drivePart;
+    let currentPath = rootPart;
 
     for (let i = 1; i < parts.length; i++) {
-        currentPath = currentPath.replace(/\\$/, '') + '\\' + parts[i];
+        currentPath = currentPath.replace(/[\\/]$/, '') + sep + parts[i];
         const targetNorm = sidebarNormalize(currentPath);
 
         // Wait a tick so freshly-appended children are queryable

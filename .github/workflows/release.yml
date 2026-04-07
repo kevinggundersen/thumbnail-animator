@@ -10,21 +10,40 @@ permissions:
 
 jobs:
   build:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            build_cmd: npm run build:win
+          - os: macos-latest
+            build_cmd: npm run build:mac
+          - os: ubuntu-latest
+            build_cmd: npm run build:linux
+
+    runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+      - uses: dtolnay/rust-toolchain@stable
 
       - run: npm ci
-      - run: npm run dist
+      - name: Build native scanner
+        run: cd native-scanner && npm run build
+      - run: ${{ matrix.build_cmd }}
 
       - name: Upload to Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/*.exe
+            dist/*.dmg
+            dist/*.zip
+            dist/*.AppImage
             dist/latest.yml
+            dist/latest-mac.yml
+            dist/latest-linux.yml
             dist/*.blockmap

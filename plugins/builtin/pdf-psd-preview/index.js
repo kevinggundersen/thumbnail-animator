@@ -586,6 +586,17 @@ async function _doDetectPDFTool() {
         }
     }
 
+    // On macOS, check common Homebrew installation paths
+    if (process.platform === 'darwin') {
+        for (const gsPath of ['/opt/homebrew/bin/gs', '/usr/local/bin/gs']) {
+            const available = await _tryExec(gsPath, ['-v']);
+            if (available) {
+                console.log(`[pdf-psd-preview] Found Ghostscript at: ${gsPath}`);
+                return { available: true, tool: 'gs', cmd: gsPath };
+            }
+        }
+    }
+
     return { available: false, tool: null, cmd: null };
 }
 

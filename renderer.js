@@ -1,5 +1,22 @@
 
 // ═══════════════════════════════════════════════════════════════════════════
+// PLATFORM DETECTION
+// Set data-platform on <html> so CSS can branch per OS (title bar, etc.)
+// ═══════════════════════════════════════════════════════════════════════════
+const _platform = window.electronAPI?.platform || 'win32';
+document.documentElement.dataset.platform = _platform;
+
+/**
+ * Convert a native file path to a file:// URL.
+ * Windows paths need `file:///C:/...`, Unix paths need `file:///path/...`
+ * (which is `file://` + `/path`).
+ */
+function pathToFileUrl(filePath) {
+    const normalized = filePath.replace(/\\/g, '/');
+    return normalized.startsWith('/') ? `file://${normalized}` : `file:///${normalized}`;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // CONFIGURATION CONSTANTS
 // User-configurable values are `let` and hydrated from localStorage below.
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1970,7 +1987,7 @@ async function _populateConflictComparison(sourcePath, destPath) {
 }
 
 function _loadConflictThumb(container, filePath) {
-    const fileUrl = 'file:///' + filePath.replace(/\\/g, '/');
+    const fileUrl = pathToFileUrl(filePath);
     const type = getFileType(filePath);
     if (type === 'image') {
         const img = document.createElement('img');
@@ -3043,9 +3060,7 @@ async function executeCrossFolderFindSimilar() {
     // Build item objects from matches (must include url for thumbnails and lightbox)
     const resultItems = matches.map(m => {
         const name = m.path.split(/[/\\]/).pop();
-        // Construct file:// URL from path (Windows: file:///C:/..., Unix: file:///...)
-        const normalizedPath = m.path.replace(/\\/g, '/');
-        const url = normalizedPath.startsWith('/') ? `file://${normalizedPath}` : `file:///${normalizedPath}`;
+        const url = pathToFileUrl(m.path);
         return {
             path: m.path,
             name,
@@ -12624,7 +12639,7 @@ function openCompareMode(paths) {
         const ext = name.split('.').pop().toLowerCase();
         const isVid = ['mp4','webm','mov','avi','mkv','m4v','ogg'].includes(ext);
         const item = vsState.sortedItems.find(it => it.path === p);
-        const src = item ? item.url : 'file:///' + p.replace(/\\/g, '/');
+        const src = item ? item.url : pathToFileUrl(p);
 
         const panel = document.createElement('div');
         panel.className = 'cmo-panel';
@@ -13115,9 +13130,9 @@ class InspectorPanel {
             // navigate among the similar set rather than the folder behind.
             if (this._lastSimilarResults && this._currentPath) {
                 const navList = [
-                    { url: 'file:///' + this._currentPath.replace(/\\/g, '/'), path: this._currentPath, name: this._currentPath.split(/[\\/]/).pop(), type: 'image' },
+                    { url: pathToFileUrl(this._currentPath), path: this._currentPath, name: this._currentPath.split(/[\\/]/).pop(), type: 'image' },
                     ...this._lastSimilarResults.map(r => ({
-                        url: 'file:///' + r.path.replace(/\\/g, '/'),
+                        url: pathToFileUrl(r.path),
                         path: r.path,
                         name: r.path.split(/[\\/]/).pop(),
                         type: 'image'
@@ -13129,7 +13144,7 @@ class InspectorPanel {
                 _lightboxNextIndexHint = clickedIdx >= 0 ? clickedIdx : null;
                 showToast(`Nav: ${clickedIdx + 1}/${navList.length} similar — use ← → to browse`, 'info');
             }
-            const url = 'file:///' + path.replace(/\\/g, '/');
+            const url = pathToFileUrl(path);
             const name = path.split(/[\\/]/).pop();
             if (typeof openLightbox === 'function') openLightbox(url, path, name);
         });
@@ -13570,7 +13585,7 @@ class InspectorPanel {
             card.className = 'lb-insp-similar-card';
             card.dataset.path = r.path;
             card.dataset.name = r.path.split(/[\\/]/).pop();
-            card.dataset.src = 'file:///' + r.path.replace(/\\/g, '/');
+            card.dataset.src = pathToFileUrl(r.path);
             card.title = card.dataset.name;
             const item = (typeof currentItems !== 'undefined')
                 ? currentItems.find(i => i.path === r.path)
@@ -13587,7 +13602,7 @@ class InspectorPanel {
                     if (url && card.isConnected) img.src = url;
                 }).catch(() => { /* leave blank tile */ });
             } else {
-                img.src = 'file:///' + r.path.replace(/\\/g, '/');
+                img.src = pathToFileUrl(r.path);
             }
             card.appendChild(img);
             const score = document.createElement('span');

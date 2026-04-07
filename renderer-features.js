@@ -1085,7 +1085,7 @@ async function loadRecentFiles() {
                 return {
                     path: p,
                     name,
-                    url: 'file:///' + p.replace(/\\/g, '/'),
+                    url: pathToFileUrl(p),
                     type,
                     timestamp: r.addedAt || Date.now()
                 };
@@ -3771,7 +3771,7 @@ function renderSliderMedia(side, fileIndex) {
     layer.innerHTML = '';
 
     // Render media
-    const fileUrl = `file:///${file.path.replace(/\\/g, '/')}`;
+    const fileUrl = pathToFileUrl(file.path);
     const ext = file.name.split('.').pop().toLowerCase();
     const videoExts = ['mp4', 'webm', 'ogg', 'mov'];
 
@@ -3884,7 +3884,7 @@ function renderShowAllGrid() {
         // Media
         const mediaDiv = document.createElement('div');
         mediaDiv.className = 'compare-grid-item-media';
-        const fileUrl = `file:///${file.path.replace(/\\/g, '/')}`;
+        const fileUrl = pathToFileUrl(file.path);
         const ext = file.name.split('.').pop().toLowerCase();
 
         if (videoExts.includes(ext)) {

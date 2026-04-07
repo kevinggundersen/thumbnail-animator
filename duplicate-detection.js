@@ -349,7 +349,7 @@ function createDuplicateItemEl(file, groupIdx) {
     // Data attributes for blow-up preview (right-click hold)
     const dupExt = file.name.split('.').pop().toLowerCase();
     const dupVideoExts = ['mp4', 'webm', 'ogg', 'mov'];
-    const dupFileUrl = `file:///${file.path.replace(/\\/g, '/')}`;
+    const dupFileUrl = pathToFileUrl(file.path);
     el.dataset.src = dupFileUrl;
     el.dataset.name = file.name;
     if (dupVideoExts.includes(dupExt)) el.dataset.mediaType = 'video';
@@ -442,14 +442,14 @@ function createDuplicateItemEl(file, groupIdx) {
 
         if (isVideo) {
             const vid = document.createElement('video');
-            vid.src = `file:///${file.path.replace(/\\/g, '/')}`;
+            vid.src = pathToFileUrl(file.path);
             vid.muted = true;
             vid.loop = true;
             vid.play().catch(() => {});
             preview.appendChild(vid);
         } else {
             const img = document.createElement('img');
-            img.src = `file:///${file.path.replace(/\\/g, '/')}`;
+            img.src = pathToFileUrl(file.path);
             preview.appendChild(img);
         }
 

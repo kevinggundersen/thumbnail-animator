@@ -11,6 +11,8 @@
     "build:win": "electron-builder --win",
     "build:native": "cd native-scanner && npm run build",
     "build:native:ps": "powershell -Command \"cd native-scanner; npm run build\"",
+    "build:mac": "electron-builder --mac",
+    "build:linux": "electron-builder --linux",
     "dist": "electron-builder --publish=never",
     "release": "electron-builder --publish=always"
   },
@@ -89,6 +91,21 @@
         }
       ],
       "icon": "build/icon.ico"
+    },
+    "mac": {
+      "target": [
+        { "target": "dmg", "arch": ["arm64"] },
+        { "target": "zip", "arch": ["arm64"] }
+      ],
+      "icon": "build/icon.icns",
+      "category": "public.app-category.photography"
+    },
+    "linux": {
+      "target": [
+        { "target": "AppImage", "arch": ["x64"] }
+      ],
+      "icon": "build/icons",
+      "category": "Graphics"
     },
     "nsis": {
       "oneClick": false,

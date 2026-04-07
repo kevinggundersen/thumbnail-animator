@@ -1,6 +1,7 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
+    platform: process.platform,
     getPathForFile: (file) => webUtils.getPathForFile(file),
     selectFolder: (defaultPath) => ipcRenderer.invoke('select-folder', defaultPath),
     scanFolder: (path, options) => ipcRenderer.invoke('scan-folder', path, options),

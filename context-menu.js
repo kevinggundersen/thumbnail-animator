@@ -777,7 +777,7 @@ async function handleRenameConfirm() {
             if (isLightboxOpen && contextMenuSource === 'lightbox') {
                 const dir = oldPath.substring(0, oldPath.lastIndexOf(oldPath.includes('/') ? '/' : '\\') + 1);
                 const newPath = dir + newName;
-                const newUrl = 'file:///' + newPath.replace(/\\/g, '/');
+                const newUrl = pathToFileUrl(newPath);
                 window.currentLightboxFilePath = newPath;
                 window.currentLightboxFileUrl = newUrl;
                 setLightboxCropAvailability(newPath, lightboxImage.style.display !== 'none' && !activePlaybackController);

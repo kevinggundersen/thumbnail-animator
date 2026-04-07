@@ -413,20 +413,30 @@ async function injectPluginSettingsPanels() {
         contentEl.innerHTML = panel.html || `<p class="settings-label">No settings available for ${panel.pluginId}.</p>`;
         panelEl.appendChild(contentEl);
 
+        // Collect form data and save helper
+        const savePluginSettings = async () => {
+            const formData = {};
+            contentEl.querySelectorAll('[data-plugin-setting-key]').forEach(input => {
+                formData[input.dataset.pluginSettingKey] = input.type === 'checkbox' ? input.checked : input.value;
+            });
+            try {
+                await window.electronAPI.executePluginSettingsAction(panel.pluginId, 'save', formData);
+                showToast('Settings saved', 'success');
+            } catch (err) {
+                showToast(`Settings error: ${err.message}`, 'error');
+            }
+        };
+
         // Wire save button if present
         contentEl.querySelectorAll('[data-plugin-settings-save]').forEach(btn => {
-            btn.addEventListener('click', async () => {
-                const formData = {};
-                contentEl.querySelectorAll('[data-plugin-setting-key]').forEach(input => {
-                    formData[input.dataset.pluginSettingKey] = input.type === 'checkbox' ? input.checked : input.value;
-                });
-                try {
-                    await window.electronAPI.executePluginSettingsAction(panel.pluginId, 'save', formData);
-                    showToast('Settings saved', 'success');
-                } catch (err) {
-                    showToast(`Settings error: ${err.message}`, 'error');
-                }
-            });
+            btn.addEventListener('click', savePluginSettings);
+        });
+
+        // Auto-save when toggle/checkbox inputs change (no need to click Save for simple toggles)
+        contentEl.querySelectorAll('[data-plugin-setting-key]').forEach(input => {
+            if (input.type === 'checkbox') {
+                input.addEventListener('change', savePluginSettings);
+            }
         });
 
         // Load existing settings into inputs

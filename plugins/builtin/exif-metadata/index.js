@@ -9,8 +9,28 @@ try {
 
 // ─── Plugin entry point ────────────────────────────────────────────────────────
 
+let _api = null;
+
 function activate(api) {
-    return { extractEXIF, renderEXIFSection, copyEXIFJSON };
+    _api = api;
+    return { extractEXIF, renderEXIFSection, copyEXIFJSON, buildTooltipHtml, loadSettings, saveSettings };
+}
+
+function buildTooltipHtml(filePath, pluginMetadata) {
+    if (_api && !_api.storage.get('showInTooltip', true)) return null;
+    const data = pluginMetadata?.['exif-metadata'];
+    if (!data) return null;
+    const model = data.Model?.description || data.Model?.value || data.Model;
+    const label = model ? `EXIF (${escHtml(model)})` : 'EXIF';
+    return { html: `<span>${label}</span>` };
+}
+
+function loadSettings() {
+    return { showInTooltip: _api ? _api.storage.get('showInTooltip', true) : true };
+}
+
+function saveSettings(data) {
+    if (_api) _api.storage.set('showInTooltip', data.showInTooltip === true || data.showInTooltip === 'true');
 }
 
 /**
@@ -22,9 +42,12 @@ async function extractEXIF(filePath) {
     try {
         const buf = await require('fs').promises.readFile(filePath);
         const tags = ExifReader.load(buf, { expanded: true });
-        // Return null if there's truly nothing useful (only 'file' group)
-        const groups = Object.keys(tags).filter(k => k !== 'file');
-        if (groups.length === 0 && !tags.exif) return null;
+        // Only consider meaningful EXIF/IPTC/XMP/GPS groups as real metadata.
+        // The 'png', 'file', 'pngFile' groups are just container-level info
+        // (e.g. PNG text chunks) — not actual EXIF data.
+        const meaningfulGroups = ['exif', 'gps', 'iptc', 'xmp', 'icc', 'Thumbnail', 'ifd0', 'ifd1'];
+        const hasRealMetadata = meaningfulGroups.some(g => tags[g] && Object.keys(tags[g]).length > 0);
+        if (!hasRealMetadata) return null;
         return tags;
     } catch (err) {
         if (err.name === 'MetadataMissingError') return null;

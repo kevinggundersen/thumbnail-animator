@@ -9,12 +9,33 @@ try {
     console.warn('[comfyui-workflow] png-chunks-extract not available:', err.message);
 }
 
+let _api = null;
+
 function activate(api) {
+    _api = api;
     return {
         extractWorkflow,
         copyWorkflowJSON,
         renderInfoSection,
+        buildTooltipHtml,
+        loadSettings,
+        saveSettings,
     };
+}
+
+function buildTooltipHtml(filePath, pluginMetadata) {
+    if (_api && !_api.storage.get('showInTooltip', true)) return null;
+    const data = pluginMetadata?.['comfyui-workflow'];
+    if (!data) return null;
+    return { html: '<span>ComfyUI Workflow</span>' };
+}
+
+function loadSettings() {
+    return { showInTooltip: _api ? _api.storage.get('showInTooltip', true) : true };
+}
+
+function saveSettings(data) {
+    if (_api) _api.storage.set('showInTooltip', data.showInTooltip === true || data.showInTooltip === 'true');
 }
 
 /**

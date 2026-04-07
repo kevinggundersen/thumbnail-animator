@@ -7780,21 +7780,13 @@ async function _appendPluginTooltipSections(tooltipEl, card) {
     if (sections.length === 0) return;
     if (_cardTooltipCurrentCard !== card) return; // stale
 
-    // Gather plugin metadata from vsState if available
-    let pluginMetadata = null;
-    if (typeof card._vsItemIndex === 'number' && vsState.sortedItems?.[card._vsItemIndex]) {
-        pluginMetadata = vsState.sortedItems[card._vsItemIndex].pluginMetadata || null;
-    }
-
+    // Plugin metadata is not available on grid items (only in lightbox/inspector),
+    // so we pass null and let the main process auto-resolve via extractMetadata().
+    let appended = false;
     for (const section of sections) {
-        // Check appliesTo filter
-        if (section.appliesTo?.hasMetadata && (!pluginMetadata || !pluginMetadata[section.appliesTo.hasMetadata])) {
-            continue;
-        }
-
         try {
             const res = await window.electronAPI.renderPluginTooltipSection(
-                section.pluginId, section.id, filePath, pluginMetadata
+                section.pluginId, section.id, filePath, null
             );
             if (_cardTooltipCurrentCard !== card) return; // stale after await
             if (!res || !res.ok || !res.value?.html) continue;
@@ -7803,12 +7795,14 @@ async function _appendPluginTooltipSections(tooltipEl, card) {
             wrapper.className = 'cht-plugin-section';
             wrapper.innerHTML = res.value.html;
             tooltipEl.appendChild(wrapper);
-
-            // Reposition after content change
-            _positionCardTooltip(tooltipEl, card);
+            appended = true;
         } catch {
             // Silently skip failed plugin sections in tooltip
         }
+    }
+    // Reposition once after all sections appended
+    if (appended && _cardTooltipCurrentCard === card) {
+        _positionCardTooltip(tooltipEl, card);
     }
 }
 

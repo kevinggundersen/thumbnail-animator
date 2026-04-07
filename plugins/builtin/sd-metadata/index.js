@@ -20,12 +20,35 @@ const zlib = require('zlib');
 
 // ─── Plugin entry point ────────────────────────────────────────────────────────
 
+let _api = null;
+
 function activate(api) {
+    _api = api;
     return {
         extractSDParams,
         renderSDSection,
         copySDParams,
+        buildTooltipHtml,
+        loadSettings,
+        saveSettings,
     };
+}
+
+function buildTooltipHtml(filePath, pluginMetadata) {
+    if (_api && !_api.storage.get('showInTooltip', true)) return null;
+    const data = pluginMetadata?.['sd-metadata'];
+    if (!data) return null;
+    const model = data.model || data.Model;
+    const label = model ? `SD Params (${escHtml(model)})` : 'SD Params';
+    return { html: `<span>${label}</span>` };
+}
+
+function loadSettings() {
+    return { showInTooltip: _api ? _api.storage.get('showInTooltip', true) : true };
+}
+
+function saveSettings(data) {
+    if (_api) _api.storage.set('showInTooltip', data.showInTooltip === true || data.showInTooltip === 'true');
 }
 
 // ─── Metadata Extractor ────────────────────────────────────────────────────────

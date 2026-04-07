@@ -21,6 +21,14 @@
         "method": "renderSDSection"
       }
     ],
+    "tooltipSections": [
+      {
+        "id": "sd-tooltip",
+        "label": "SD Tooltip",
+        "appliesTo": { "hasMetadata": "sd-metadata" },
+        "method": "buildTooltipHtml"
+      }
+    ],
     "contextMenuItems": [
       {
         "id": "copy-sd-params",
@@ -30,6 +38,12 @@
         "position": "after:reveal"
       }
     ],
-    "fileTypes": []
+    "fileTypes": [],
+    "settingsPanel": {
+      "label": "SD Parameters",
+      "loadMethod": "loadSettings",
+      "saveMethod": "saveSettings",
+      "html": "<div class=\"settings-content-heading\">SD Parameters Settings</div><div class=\"settings-item\"><label class=\"settings-label\"><div class=\"settings-item-info\"><div class=\"settings-item-title\">Show in Card Hover Tooltip</div><div class=\"settings-item-description\">Display a badge on the hover tooltip when a file has Stable Diffusion parameters.</div></div><div class=\"toggle-switch\"><input type=\"checkbox\" data-plugin-setting-key=\"showInTooltip\" checked><span class=\"toggle-slider\"></span></div></label></div>"
+    }
   }
 }

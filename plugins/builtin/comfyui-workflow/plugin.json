@@ -21,6 +21,14 @@
         "method": "renderInfoSection"
       }
     ],
+    "tooltipSections": [
+      {
+        "id": "comfyui-tooltip",
+        "label": "ComfyUI Tooltip",
+        "appliesTo": { "hasMetadata": "comfyui-workflow" },
+        "method": "buildTooltipHtml"
+      }
+    ],
     "contextMenuItems": [
       {
         "id": "copy-workflow-json",
@@ -30,6 +38,12 @@
         "position": "after:reveal"
       }
     ],
-    "fileTypes": []
+    "fileTypes": [],
+    "settingsPanel": {
+      "label": "ComfyUI Workflow",
+      "loadMethod": "loadSettings",
+      "saveMethod": "saveSettings",
+      "html": "<div class=\"settings-content-heading\">ComfyUI Workflow Settings</div><div class=\"settings-item\"><label class=\"settings-label\"><div class=\"settings-item-info\"><div class=\"settings-item-title\">Show in Card Hover Tooltip</div><div class=\"settings-item-description\">Display a badge on the hover tooltip when a file has an embedded ComfyUI workflow.</div></div><div class=\"toggle-switch\"><input type=\"checkbox\" data-plugin-setting-key=\"showInTooltip\" checked><span class=\"toggle-slider\"></span></div></label></div>"
+    }
   }
 }

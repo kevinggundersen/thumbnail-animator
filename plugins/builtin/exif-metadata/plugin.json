@@ -21,6 +21,14 @@
         "method": "renderEXIFSection"
       }
     ],
+    "tooltipSections": [
+      {
+        "id": "exif-tooltip",
+        "label": "EXIF Tooltip",
+        "appliesTo": { "hasMetadata": "exif-metadata" },
+        "method": "buildTooltipHtml"
+      }
+    ],
     "contextMenuItems": [
       {
         "id": "copy-exif-json",
@@ -30,6 +38,12 @@
         "position": "after:reveal"
       }
     ],
-    "fileTypes": []
+    "fileTypes": [],
+    "settingsPanel": {
+      "label": "EXIF Metadata",
+      "loadMethod": "loadSettings",
+      "saveMethod": "saveSettings",
+      "html": "<div class=\"settings-content-heading\">EXIF Metadata Settings</div><div class=\"settings-item\"><label class=\"settings-label\"><div class=\"settings-item-info\"><div class=\"settings-item-title\">Show in Card Hover Tooltip</div><div class=\"settings-item-description\">Display a badge on the hover tooltip when a file has EXIF data.</div></div><div class=\"toggle-switch\"><input type=\"checkbox\" data-plugin-setting-key=\"showInTooltip\" checked><span class=\"toggle-slider\"></span></div></label></div>"
+    }
   }
 }

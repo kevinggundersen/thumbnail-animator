@@ -630,6 +630,95 @@ if (!fs.existsSync(userDataPath)) {
 }
 app.setPath('userData', userDataPath);
 
+// ── Crash log persistence ────────────────────────────────────────────────────
+// Write crash/rejection details to {userData}/crash-log.txt so users can report
+// production errors even when the DevTools console is unavailable.
+const crashLogPath = path.join(userDataPath, 'crash-log.txt');
+function writeCrashLog(label, err) {
+    try {
+        const entry = `[${new Date().toISOString()}] ${label}\n${String(err?.stack || err)}\n\n`;
+        fs.appendFileSync(crashLogPath, entry);
+        // Cap at 1 MB — keep the newest half
+        const stat = fs.statSync(crashLogPath);
+        if (stat.size > 1024 * 1024) {
+            const data = fs.readFileSync(crashLogPath, 'utf8');
+            fs.writeFileSync(crashLogPath, data.slice(data.length / 2));
+        }
+    } catch { /* best-effort */ }
+}
+// Re-register handlers to also persist to disk
+process.removeAllListeners('uncaughtException');
+process.removeAllListeners('unhandledRejection');
+process.on('uncaughtException', (err) => {
+    console.error('UNCAUGHT EXCEPTION:', err);
+    writeCrashLog('UNCAUGHT EXCEPTION', err);
+});
+process.on('unhandledRejection', (err) => {
+    console.error('UNHANDLED REJECTION:', err);
+    writeCrashLog('UNHANDLED REJECTION', err);
+});
+
+// ── Single-instance lock ─────────────────────────────────────────────────────
+// Prevent multiple app windows from opening and risking database corruption.
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+    app.quit();
+} else {
+    app.on('second-instance', () => {
+        if (mainWindow) {
+            if (mainWindow.isMinimized()) mainWindow.restore();
+            mainWindow.show();
+            mainWindow.focus();
+        }
+    });
+}
+
+// ── Persistent file logger ────────────────────────────────────────────────────
+// Date-stamped log files in {userData}/logs/ with automatic rotation (keep 5).
+const util = require('util');
+const logsDir = path.join(userDataPath, 'logs');
+if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
+
+const _logDate = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+const _logFilePath = path.join(logsDir, `app-${_logDate}.log`);
+let _logBuffer = [];
+let _logFlushTimer = null;
+
+function _flushLogBuffer() {
+    if (_logBuffer.length === 0) return;
+    try {
+        fs.appendFileSync(_logFilePath, _logBuffer.join(''));
+    } catch { /* best-effort */ }
+    _logBuffer = [];
+}
+
+function logToFile(level, args) {
+    const msg = args.map(a => (typeof a === 'string' ? a : util.inspect(a, { depth: 4 }))).join(' ');
+    _logBuffer.push(`[${new Date().toISOString()}] [${level}] ${msg}\n`);
+    if (_logBuffer.length >= 100) {
+        _flushLogBuffer();
+    } else if (!_logFlushTimer) {
+        _logFlushTimer = setTimeout(() => { _logFlushTimer = null; _flushLogBuffer(); }, 1000);
+    }
+}
+
+// Intercept console.error and console.warn to also write to log file
+const _origConsoleError = console.error;
+const _origConsoleWarn = console.warn;
+console.error = (...args) => { _origConsoleError(...args); logToFile('ERROR', args); };
+console.warn = (...args) => { _origConsoleWarn(...args); logToFile('WARN', args); };
+
+// Rotate old log files (keep newest 5)
+try {
+    const logFiles = fs.readdirSync(logsDir)
+        .filter(f => f.startsWith('app-') && f.endsWith('.log'))
+        .sort();
+    while (logFiles.length > 5) {
+        const oldest = logFiles.shift();
+        try { fs.unlinkSync(path.join(logsDir, oldest)); } catch { /* ignore */ }
+    }
+} catch { /* ignore */ }
+
 // Initialize SQLite database
 const appDb = new DatabaseProxy(path.join(userDataPath, 'thumbnail-animator.db'));
 markStartup('db-initialized');
@@ -1147,6 +1236,45 @@ function wrapIpc(channel, fn) {
         }
     });
 }
+
+// ── Path validation helper ────────────────────────────────────────────────────
+/**
+ * Validate and resolve a user-supplied file path.
+ * @param {*} p - The path to validate
+ * @param {{ mustExist?: boolean }} [opts] - Options
+ * @returns {string} Resolved absolute path
+ * @throws {Error} If validation fails
+ */
+function validateUserPath(p, opts = {}) {
+    if (typeof p !== 'string' || p.trim().length === 0) {
+        throw new Error('Invalid path: must be a non-empty string');
+    }
+    const resolved = path.resolve(p);
+    if (opts.mustExist && !fs.existsSync(resolved)) {
+        throw new Error(`Path does not exist: ${resolved}`);
+    }
+    return resolved;
+}
+
+// ── App info & logs IPC ──────────────────────────────────────────────────────
+wrapIpc('get-app-info', () => ({
+    name: app.getName(),
+    version: app.getVersion(),
+    electron: process.versions.electron,
+    chrome: process.versions.chrome,
+    node: process.versions.node,
+    platform: process.platform,
+    arch: process.arch
+}));
+
+wrapIpc('get-logs', async () => {
+    const files = await fs.promises.readdir(logsDir);
+    const logFiles = files.filter(f => f.startsWith('app-') && f.endsWith('.log')).sort().reverse();
+    const currentLog = logFiles[0];
+    if (!currentLog) return { files: [], content: '' };
+    const content = await fs.promises.readFile(path.join(logsDir, currentLog), 'utf8');
+    return { files: logFiles, content };
+});
 
 // IPC Handlers
 ipcMain.handle('select-folder', async (event, defaultPath) => {
@@ -1684,6 +1812,7 @@ function getFolderPreviewCachePath(folderPath) {
 ipcMain.handle('get-folder-preview', async (event, folderPath, previewCount) => {
     const startTime = performance.now();
     try {
+        validateUserPath(folderPath);
         // Check folder mtime for cache invalidation
         let folderMtime;
         try {
@@ -1761,6 +1890,7 @@ ipcMain.handle('get-folder-preview', async (event, folderPath, previewCount) => 
 
 ipcMain.handle('scan-folder', async (event, folderPath, options = {}) => {
     try {
+        folderPath = validateUserPath(folderPath, { mustExist: true });
         const { folders, mediaFiles } = await scanFolderInternal(folderPath, options);
         return { ok: true, value: folders.length + mediaFiles.length > 0 ? [...folders, ...mediaFiles] : [] };
     } catch (error) {
@@ -1793,6 +1923,7 @@ ipcMain.handle('scan-folder-stream', async (event, folderPath, options = {}) => 
     };
 
     try {
+        folderPath = validateUserPath(folderPath, { mustExist: true });
         // Phase A: fast enumeration (no dimensions)
         const phaseAStart = performance.now();
         const { folders, mediaFiles } = await scanFolderInternal(folderPath, {
@@ -1976,6 +2107,14 @@ ipcMain.handle('scan-folders-for-smart-collection', async (event, folderEntries,
     const isWindows = process.platform === 'win32';
     const imageExtensions = pluginRegistry.getImageExtensions();
     const videoExtensions = pluginRegistry.getVideoExtensions();
+
+    // Validate all folder entry paths
+    for (const entry of folderEntries) {
+        const p = typeof entry === 'string' ? entry : entry.path;
+        try { validateUserPath(p, { mustExist: true }); } catch (e) {
+            errors.push({ path: p, error: e.message });
+        }
+    }
 
     let allFiles = [];
 
@@ -2217,6 +2356,7 @@ const DIMENSION_CACHE_MAX = 10000;
 // Context menu IPC handlers
 ipcMain.handle('reveal-in-explorer', async (event, filePath) => {
     try {
+        filePath = validateUserPath(filePath, { mustExist: true });
         // shell.showItemInFolder opens the file's parent folder and selects the file
         shell.showItemInFolder(filePath);
         return { ok: true, value: null };
@@ -2386,6 +2526,7 @@ ipcMain.handle('batch-rename', async (event, filePaths, patternType, patternOpti
 
 ipcMain.handle('delete-file', async (event, filePath) => {
     try {
+        filePath = validateUserPath(filePath, { mustExist: true });
         const basename = path.basename(filePath);
         if (useSystemTrash) {
             await shell.trashItem(filePath);
@@ -2964,6 +3105,7 @@ ipcMain.handle('create-folder', async (event, folderPath, folderName) => {
 // Optional conflictResolution: 'replace' | 'keep-both' | 'skip' — if omitted and conflict exists, returns { conflict: true }
 ipcMain.handle('copy-file', async (event, sourcePath, destFolderOrPath, fileName, conflictResolution) => {
     try {
+        sourcePath = validateUserPath(sourcePath, { mustExist: true });
         const destPath = fileName
             ? path.join(destFolderOrPath, fileName)
             : destFolderOrPath;
@@ -3007,6 +3149,7 @@ ipcMain.handle('copy-file', async (event, sourcePath, destFolderOrPath, fileName
 // Optional conflictResolution: 'replace' | 'keep-both' | 'skip' — if omitted and conflict exists, returns { conflict: true }
 ipcMain.handle('move-file', async (event, sourcePath, destFolderOrPath, fileName, conflictResolution) => {
     try {
+        sourcePath = validateUserPath(sourcePath, { mustExist: true });
         const destPath = fileName
             ? path.join(destFolderOrPath, fileName)
             : destFolderOrPath;
@@ -4098,6 +4241,7 @@ ipcMain.handle('delete-files-batch', async (event, filePaths) => {
     for (let i = 0; i < total; i++) {
         const filePath = filePaths[i];
         try {
+            validateUserPath(filePath, { mustExist: true });
             if (useSystemTrash) {
                 await shell.trashItem(filePath);
             } else {

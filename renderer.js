@@ -1715,8 +1715,49 @@ window.electronAPI.onMenuCommand((command) => {
         case 'zoom-reset': { zoomSlider.value = 100; zoomLevel = 100; applyZoom(); deferLocalStorageWrite('zoomLevel', '100'); updateStatusBar(); break; }
         case 'show-shortcuts': toggleShortcutsOverlay(); break;
         case 'open-settings': toggleSettingsModal(); break;
-        case 'about': showToast('Thumbnail Animator v' + (document.title.match(/v[\d.]+/)?.[0] || ''), 'info'); break;
+        case 'about': showAboutDialog(); break;
     }
+});
+
+// ── About Dialog ──
+async function showAboutDialog() {
+    const dialog = document.getElementById('about-dialog');
+    try {
+        const result = await window.electronAPI.getAppInfo();
+        if (result.ok) {
+            const info = result.value;
+            document.getElementById('about-app-version').textContent = `v${info.version}`;
+            document.getElementById('about-runtime').textContent =
+                `Electron ${info.electron} \u00B7 Chrome ${info.chrome} \u00B7 Node ${info.node}`;
+        }
+    } catch { /* show dialog anyway with whatever info is available */ }
+    dialog.classList.remove('hidden');
+}
+
+document.getElementById('about-dialog-close').addEventListener('click', () => {
+    document.getElementById('about-dialog').classList.add('hidden');
+});
+
+// Close on backdrop click
+document.getElementById('about-dialog').addEventListener('click', (e) => {
+    if (e.target === e.currentTarget) e.currentTarget.classList.add('hidden');
+});
+
+// Close on Escape
+document.getElementById('about-dialog').addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+        document.getElementById('about-dialog').classList.add('hidden');
+    }
+});
+
+// About dialog links
+document.getElementById('about-link-github').addEventListener('click', (e) => {
+    e.preventDefault();
+    window.electronAPI.openUrl('https://github.com/kevinggundersen/thumnail-animator');
+});
+document.getElementById('about-link-issues').addEventListener('click', (e) => {
+    e.preventDefault();
+    window.electronAPI.openUrl('https://github.com/kevinggundersen/thumnail-animator/issues');
 });
 
 // ── Custom Confirmation Dialog ──

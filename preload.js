@@ -195,5 +195,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Menu commands from application menu
     onMenuCommand: (callback) => ipcRenderer.on('menu-command', (_e, command) => callback(command)),
     removeMenuCommandListener: () => ipcRenderer.removeAllListeners('menu-command'),
-    updateMainSetting: (key, value) => ipcRenderer.invoke('update-main-setting', key, value)
+    updateMainSetting: (key, value) => ipcRenderer.invoke('update-main-setting', key, value),
+    getAppInfo: () => ipcRenderer.invoke('get-app-info'),
+    getLogs: () => ipcRenderer.invoke('get-logs')
 });

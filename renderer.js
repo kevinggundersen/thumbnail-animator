@@ -6,6 +6,42 @@
 const _platform = window.electronAPI?.platform || 'win32';
 document.documentElement.dataset.platform = _platform;
 
+// ═══════════════════════════════════════════════════════════════════════════
+// PLATFORM-AWARE UI STRINGS
+// Returns OS-appropriate terminology so all renderer-side files can share
+// one source of truth (context-menu.js, renderer-features.js, etc.).
+// ═══════════════════════════════════════════════════════════════════════════
+function platformString(key, arg) {
+    const isMac   = _platform === 'darwin';
+    const isLinux = _platform === 'linux';
+    const trashName = (isMac || isLinux) ? 'Trash' : 'Recycle Bin';
+    const osName    = isMac ? 'macOS' : isLinux ? 'system' : 'Windows';
+
+    const strings = {
+        trash:          trashName,
+        moveToTrash:    `Move to ${trashName}`,
+        movedToTrash:   `Moved ${arg} to ${trashName}`,
+        moveToTrashQ:   `Move ${arg} files to the ${trashName}?`,
+        revealIn:       isMac ? 'Reveal in Finder' : isLinux ? 'Show in File Manager' : 'Reveal in Explorer',
+        revealInFull:   isMac ? 'Reveal in Finder' : isLinux ? 'Show in File Manager' : 'Reveal in File Explorer',
+        useTrashTitle:  (isMac || isLinux) ? 'Use Trash' : 'Use Recycle Bin',
+        useTrashDesc:   `Send deleted files to the ${osName} ${trashName} instead of internal staging. Undo is not available in this mode.`,
+        openWith:       _platform === 'win32' ? 'Open With...' : 'Open (Default App)',
+        openWithToast:  _platform === 'win32' ? 'Opening "Open With" dialog...' : 'Opening with default app...',
+    };
+    return strings[key] ?? key;
+}
+
+// Update static HTML text to match platform
+document.addEventListener('DOMContentLoaded', () => {
+    const set = (id, text) => { const e = document.getElementById(id); if (e) e.textContent = text; };
+    set('ctx-open-with-label', platformString('openWith'));
+    set('ctx-reveal-label', platformString('revealIn'));
+    set('ctx-reveal-folder-label', platformString('revealIn'));
+    set('use-trash-title', platformString('useTrashTitle'));
+    set('use-trash-desc', platformString('useTrashDesc'));
+});
+
 /**
  * Convert a native file path to a file:// URL.
  * Windows paths need `file:///C:/...`, Unix paths need `file:///path/...`
@@ -11747,7 +11783,7 @@ if (typeof CommandPalette !== 'undefined') {
         // File Actions (require focused card -- dispatch keyboard events to reuse existing handlers)
         { id: 'file.rename', label: 'Rename File', category: 'File', shortcut: 'F2', keywords: ['rename', 'name'], when: () => focusedCardIndex >= 0, action: () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'F2', bubbles: true })) },
         { id: 'file.delete', label: 'Delete File', category: 'File', shortcut: 'Delete', keywords: ['delete', 'remove', 'trash'], when: () => focusedCardIndex >= 0, action: () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true })) },
-        { id: 'file.reveal', label: 'Reveal in File Explorer', category: 'File', keywords: ['reveal', 'explorer', 'show', 'finder'], when: () => focusedCardIndex >= 0, action: () => { const card = visibleCards[focusedCardIndex]; if (card) { const fp = card.dataset.path; if (fp) window.electronAPI.revealInExplorer(fp); } } },
+        { id: 'file.reveal', label: platformString('revealInFull'), category: 'File', keywords: ['reveal', 'explorer', 'show', 'finder'], when: () => focusedCardIndex >= 0, action: () => { const card = visibleCards[focusedCardIndex]; if (card) { const fp = card.dataset.path; if (fp) window.electronAPI.revealInExplorer(fp); } } },
 
         // Tools
         { id: 'tools.organize', label: 'Organize Files', category: 'Tools', keywords: ['organize', 'move', 'sort', 'folder'], action: () => document.getElementById('organize-btn').click() },

@@ -97,7 +97,7 @@ function initDuplicateDetection() {
             const errorSummary = groupBatchErrors(failedArr);
             showToast(`Failed to delete ${failCount} file(s): ${errorSummary}`, 'error');
         } else if (batchVal.trashed) {
-            showToast(`Moved ${count} file(s) to Recycle Bin`, 'success');
+            showToast(platformString('movedToTrash', `${count} file(s)`), 'success');
         } else {
             showToast(`Deleted ${count} file(s)`, 'success', {
                 duration: 8000,

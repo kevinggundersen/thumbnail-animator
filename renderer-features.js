@@ -204,9 +204,9 @@ function initKeyboardShortcuts() {
                 e.preventDefault();
                 const paths = [...selectedCardPaths];
                 const count = paths.length;
-                const deleteLabel = useSystemTrash ? 'Move to Recycle Bin' : 'Delete';
+                const deleteLabel = useSystemTrash ? platformString('moveToTrash') : 'Delete';
                 const promptLabel = useSystemTrash
-                    ? `Move ${count} files to the Recycle Bin?`
+                    ? platformString('moveToTrashQ', count)
                     : `Delete ${count} files?`;
                 if (await showConfirm(deleteLabel, promptLabel, { confirmLabel: deleteLabel, danger: true })) {
                     showProgress(0, count, `${deleteLabel.replace(/ing$/, '')}ing ${count} files...`);
@@ -222,7 +222,7 @@ function initKeyboardShortcuts() {
                         const successCount = count - failCount;
                         if (successCount > 0) {
                             const msg = useSystemTrash
-                                ? `Moved ${successCount} files to Recycle Bin`
+                                ? platformString('movedToTrash', `${successCount} files`)
                                 : `Deleted ${successCount} files`;
                             showToast(msg, failCount > 0 ? 'warning' : 'success', {
                                 duration: 8000,

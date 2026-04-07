@@ -13,6 +13,26 @@ let _ffmpegAvailable = null;
     } catch { _ffmpegAvailable = false; }
 })();
 
+/** Show a platform-specific toast when FFmpeg is missing. */
+function _ffmpegInstallToast() {
+    if (_platform === 'darwin') {
+        showToast('FFmpeg not found. Install with: brew install ffmpeg', 'error', {
+            actionLabel: 'Copy command',
+            actionCallback: () => navigator.clipboard.writeText('brew install ffmpeg'),
+        });
+    } else if (_platform === 'linux') {
+        showToast('FFmpeg not found. Install via your package manager (e.g. sudo apt install ffmpeg)', 'error', {
+            actionLabel: 'Copy command',
+            actionCallback: () => navigator.clipboard.writeText('sudo apt install ffmpeg'),
+        });
+    } else {
+        showToast('FFmpeg not found on system PATH', 'error', {
+            actionLabel: 'How to install',
+            actionCallback: () => window.electronAPI.openUrl('https://ffmpeg.org/download.html'),
+        });
+    }
+}
+
 function _ffGetPathParts(filePath) {
     const isWin = filePath.includes('\\');
     const sep = isWin ? '\\' : '/';
@@ -129,10 +149,7 @@ function _openTrimOptionsModal(startSec, endSec) {
 
 async function exportTrim() {
     if (_ffmpegAvailable === false) {
-        showToast('FFmpeg not found on system PATH', 'error', {
-            actionLabel: 'How to install',
-            actionCallback: () => window.electronAPI.openUrl('https://ffmpeg.org/download.html'),
-        });
+        _ffmpegInstallToast();
         return;
     }
     if (!activePlaybackController) { showToast('No media loaded', 'info'); return; }
@@ -238,10 +255,7 @@ function _ffEstimateTotalSec(path) {
 
 function openConvertDialog(paths, ctx = {}) {
     if (_ffmpegAvailable === false) {
-        showToast('FFmpeg not found on system PATH', 'error', {
-            actionLabel: 'How to install',
-            actionCallback: () => window.electronAPI.openUrl('https://ffmpeg.org/download.html'),
-        });
+        _ffmpegInstallToast();
         return;
     }
     if (!paths || !paths.length) return;

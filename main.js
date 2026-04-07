@@ -2567,21 +2567,48 @@ ipcMain.handle('copy-image-to-clipboard', async (event, filePath) => {
                     `Set-Clipboard -LiteralPath '${escaped}'`
                 ], { windowsHide: true }, (err) => err ? reject(err) : resolve());
             });
+        } else if (process.platform === 'darwin') {
+            // macOS: use osascript to put a file reference on the clipboard
+            const { execFile } = require('child_process');
+            const escaped = filePath.replace(/"/g, '\\"');
+            await new Promise((resolve, reject) => {
+                execFile('osascript', [
+                    '-e', `set the clipboard to (POSIX file "${escaped}")`
+                ], (err) => err ? reject(err) : resolve());
+            });
         } else {
-            // Fallback for non-Windows: copy as image data
-            const ext = path.extname(filePath).toLowerCase();
-            let image;
-            if (['.gif', '.webp', '.avif', '.tiff', '.tif'].includes(ext)) {
-                const sharp = require('sharp');
-                const pngBuffer = await sharp(filePath, { animated: false }).png().toBuffer();
-                image = nativeImage.createFromBuffer(pngBuffer);
-            } else {
-                image = nativeImage.createFromPath(filePath);
+            // Linux: try xclip for a file URI (paste-in-file-manager), fall back to image data
+            let copied = false;
+            try {
+                const { spawn } = require('child_process');
+                const fileUri = `file://${filePath}`;
+                await new Promise((resolve, reject) => {
+                    const child = spawn('xclip', [
+                        '-selection', 'clipboard', '-t', 'text/uri-list', '-i'
+                    ], { stdio: ['pipe', 'ignore', 'ignore'] });
+                    child.on('error', reject);
+                    child.on('exit', (code) => code === 0 ? resolve() : reject(new Error(`xclip exit ${code}`)));
+                    child.stdin.write(fileUri + '\n');
+                    child.stdin.end();
+                });
+                copied = true;
+            } catch { /* xclip not available — fall back to image pixel copy */ }
+
+            if (!copied) {
+                const ext = path.extname(filePath).toLowerCase();
+                let image;
+                if (['.gif', '.webp', '.avif', '.tiff', '.tif'].includes(ext)) {
+                    const sharp = require('sharp');
+                    const pngBuffer = await sharp(filePath, { animated: false }).png().toBuffer();
+                    image = nativeImage.createFromBuffer(pngBuffer);
+                } else {
+                    image = nativeImage.createFromPath(filePath);
+                }
+                if (image.isEmpty()) {
+                    return { ok: false, error: 'Could not load image' };
+                }
+                clipboard.writeImage(image);
             }
-            if (image.isEmpty()) {
-                return { ok: false, error:'Could not load image' };
-            }
-            clipboard.writeImage(image);
         }
         return { ok: true, value: null };
     } catch (error) {

@@ -375,7 +375,7 @@ contextMenu.addEventListener('click', async (e) => {
 
         case 'delete':
             try {
-                const deleteLabel = useSystemTrash ? 'Move to Recycle Bin' : 'Delete';
+                const deleteLabel = useSystemTrash ? platformString('moveToTrash') : 'Delete';
                 if (await showConfirm(deleteLabel, `${deleteLabel} "${fileName}"?`, { confirmLabel: deleteLabel, danger: true })) {
                     setStatusActivity(`Deleting ${fileName}...`);
                     const result = await window.electronAPI.deleteFile(filePath);
@@ -402,7 +402,7 @@ contextMenu.addEventListener('click', async (e) => {
                                     });
                                 }
                             };
-                        const toastMsg = trashed ? `Moved "${fileName}" to Recycle Bin` : `Deleted "${fileName}"`;
+                        const toastMsg = trashed ? platformString('movedToTrash', `"${fileName}"`) : `Deleted "${fileName}"`;
                         showToast(toastMsg, 'success', toastOpts);
                         if (currentFolderPath) {
                             invalidateFolderCache(currentFolderPath);
@@ -444,7 +444,7 @@ contextMenu.addEventListener('click', async (e) => {
         case 'open-with':
             try {
                 console.log('[open-with] action triggered, filePath:', filePath);
-                showToast('Opening "Open With" dialog...', 'info');
+                showToast(platformString('openWithToast'), 'info');
                 const owResult = await window.electronAPI.openWith(filePath);
                 console.log('[open-with] IPC result:', owResult);
                 if (owResult && !owResult.ok) {

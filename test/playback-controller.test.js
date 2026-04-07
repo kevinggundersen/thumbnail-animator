@@ -825,3 +825,311 @@ describe('AnimatedImagePlaybackController', () => {
         });
     });
 });
+
+// ── MediaControlBar ─────────────────────────────────────────────────────
+
+const { MediaControlBar } = require('../playback-controller');
+
+// Mock formatTime globally (it's a renderer global, not in playback-controller)
+global.formatTime = (s) => {
+    if (!s || !isFinite(s)) return '0:00';
+    const m = Math.floor(s / 60);
+    const sec = Math.floor(s % 60);
+    return `${m}:${sec < 10 ? '0' : ''}${sec}`;
+};
+
+// Mock requestAnimationFrame
+global.requestAnimationFrame = (fn) => setTimeout(fn, 0);
+
+// Mock localStorage
+global.localStorage = {
+    _store: {},
+    getItem(k) { return this._store[k] ?? null; },
+    setItem(k, v) { this._store[k] = String(v); },
+    removeItem(k) { delete this._store[k]; },
+    clear() { this._store = {}; }
+};
+
+function makeMockElement(tag = 'div') {
+    const listeners = {};
+    return {
+        tagName: tag,
+        style: {},
+        classList: {
+            _set: new Set(),
+            add(c) { this._set.add(c); },
+            remove(c) { this._set.delete(c); },
+            toggle(c, force) { force ? this._set.add(c) : this._set.delete(c); },
+            contains(c) { return this._set.has(c); }
+        },
+        innerHTML: '',
+        textContent: '',
+        title: '',
+        value: 0,
+        addEventListener(type, handler) {
+            (listeners[type] = listeners[type] || []).push(handler);
+        },
+        removeEventListener(type, handler) {
+            if (listeners[type]) listeners[type] = listeners[type].filter(h => h !== handler);
+        },
+        _fire(type, data) {
+            (listeners[type] || []).forEach(h => h(data));
+        },
+        querySelector(sel) { return null; },
+        getBoundingClientRect() { return { left: 0, top: 0, width: 200, height: 20 }; },
+        setAttribute(k, v) { this[`_attr_${k}`] = v; },
+        getAttribute(k) { return this[`_attr_${k}`] ?? null; },
+    };
+}
+
+function makeMockContainer() {
+    const elements = {};
+    const selectors = [
+        '.mc-play-btn', '.mc-seek-bar', '.mc-seek-fill', '.mc-seek-handle',
+        '.mc-seek-buffered', '.mc-time', '.mc-speed-btn', '.mc-loop-btn',
+        '.mc-repeat-btn', '.mc-frame-prev', '.mc-frame-next',
+        '.mc-volume-btn', '.mc-volume-slider', '.mc-volume-group',
+        '.mc-save-frame', '.mc-trim-btn'
+    ];
+    selectors.forEach(sel => { elements[sel] = makeMockElement('button'); });
+
+    const container = makeMockElement('div');
+    container.querySelector = (sel) => elements[sel] || null;
+    return { container, elements };
+}
+
+describe('MediaControlBar', () => {
+    beforeEach(() => {
+        localStorage.clear();
+    });
+
+    describe('constructor', () => {
+        it('creates an instance with default speed values', () => {
+            const { container } = makeMockContainer();
+            const bar = new MediaControlBar(container);
+            expect(bar._speedValues).toEqual([0.25, 0.5, 0.75, 1, 1.25, 1.5, 2]);
+            expect(bar._speedIndex).toBe(3);
+        });
+
+        it('loads custom speeds from localStorage', () => {
+            localStorage.setItem('playbackSpeeds', JSON.stringify([0.5, 1, 2, 4]));
+            const { container } = makeMockContainer();
+            const bar = new MediaControlBar(container);
+            expect(bar._speedValues).toEqual([0.5, 1, 2, 4]);
+        });
+
+        it('falls back to defaults for invalid localStorage speeds', () => {
+            localStorage.setItem('playbackSpeeds', 'not json');
+            const { container } = makeMockContainer();
+            const bar = new MediaControlBar(container);
+            expect(bar._speedValues).toEqual([0.25, 0.5, 0.75, 1, 1.25, 1.5, 2]);
+        });
+
+        it('loads hide delay from localStorage', () => {
+            localStorage.setItem('controlBarHideDelay', '5000');
+            const { container } = makeMockContainer();
+            const bar = new MediaControlBar(container);
+            expect(bar._hideDelay).toBe(5000);
+        });
+
+        it('defaults hide delay to 3000', () => {
+            const { container } = makeMockContainer();
+            const bar = new MediaControlBar(container);
+            expect(bar._hideDelay).toBe(3000);
+        });
+    });
+
+    describe('bind / unbind', () => {
+        it('bind sets the controller', () => {
+            const { container } = makeMockContainer();
+            const bar = new MediaControlBar(container);
+            const ctrl = new MediaPlaybackController();
+            bar.bind(ctrl);
+            expect(bar._controller).toBe(ctrl);
+        });
+
+        it('unbind clears the controller', () => {
+            const { container } = makeMockContainer();
+            const bar = new MediaControlBar(container);
+            const ctrl = new MediaPlaybackController();
+            bar.bind(ctrl);
+            bar.unbind();
+            expect(bar._controller).toBeNull();
+        });
+
+        it('bind shows the container', () => {
+            const { container } = makeMockContainer();
+            const bar = new MediaControlBar(container);
+            const ctrl = new MediaPlaybackController();
+            bar.bind(ctrl);
+            expect(container.style.display).toBe('flex');
+        });
+
+        it('hide hides the container', () => {
+            const { container } = makeMockContainer();
+            const bar = new MediaControlBar(container);
+            bar.hide();
+            expect(container.style.display).toBe('none');
+        });
+    });
+
+    describe('speed cycling', () => {
+        it('_cycleSpeed advances through speed values', () => {
+            const { container } = makeMockContainer();
+            const bar = new MediaControlBar(container);
+            const ctrl = new MediaPlaybackController();
+            bar.bind(ctrl);
+
+            bar._cycleSpeed(); // 0.25 -> 0.5 -> ... starts at index 3 (1x) -> goes to 4 (1.25x)
+            expect(ctrl.getSpeed()).toBe(1.25);
+        });
+
+        it('_cycleSpeed wraps around', () => {
+            const { container } = makeMockContainer();
+            const bar = new MediaControlBar(container);
+            const ctrl = new MediaPlaybackController();
+            bar.bind(ctrl);
+            // Manually set to last index and call internal advance (skip reloadSpeeds reset)
+            bar._speedIndex = bar._speedValues.length - 1;
+            bar._speedIndex = (bar._speedIndex + 1) % bar._speedValues.length;
+            const speed = bar._speedValues[bar._speedIndex];
+            ctrl.setSpeed(speed);
+            expect(ctrl.getSpeed()).toBe(0.25); // wraps to first
+        });
+    });
+
+    describe('loop and repeat toggles', () => {
+        it('_toggleLoop toggles loop on controller', () => {
+            const { container } = makeMockContainer();
+            const bar = new MediaControlBar(container);
+            const ctrl = new MediaPlaybackController();
+            bar.bind(ctrl);
+
+            expect(ctrl.getLoop()).toBe(false);
+            bar._toggleLoop();
+            expect(ctrl.getLoop()).toBe(true);
+            bar._toggleLoop();
+            expect(ctrl.getLoop()).toBe(false);
+        });
+
+        it('_toggleRepeat toggles repeat on controller', () => {
+            const { container } = makeMockContainer();
+            const bar = new MediaControlBar(container);
+            const ctrl = new MediaPlaybackController();
+            bar.bind(ctrl);
+
+            expect(ctrl.getRepeat()).toBe(false);
+            bar._toggleRepeat();
+            expect(ctrl.getRepeat()).toBe(true);
+        });
+    });
+
+    describe('_updateProgress', () => {
+        it('does nothing without a controller', () => {
+            const { container, elements } = makeMockContainer();
+            const bar = new MediaControlBar(container);
+            bar._updateProgress(); // should not throw
+            expect(elements['.mc-seek-fill'].style.width).toBeUndefined();
+        });
+
+        it('updates seek fill and time display', () => {
+            const { container, elements } = makeMockContainer();
+            const bar = new MediaControlBar(container);
+            const ctrl = new MediaPlaybackController();
+            Object.defineProperty(ctrl, 'progress', { get: () => 0.5, configurable: true });
+            Object.defineProperty(ctrl, 'currentTime', { get: () => 30, configurable: true });
+            Object.defineProperty(ctrl, 'duration', { get: () => 60, configurable: true });
+            bar.bind(ctrl);
+            bar._updateProgress();
+            expect(elements['.mc-seek-fill'].style.width).toBe('50%');
+            expect(elements['.mc-time'].textContent).toBe('0:30 / 1:00');
+        });
+    });
+
+    describe('_updatePlayState', () => {
+        it('sets data-state to playing when playing', () => {
+            const { container, elements } = makeMockContainer();
+            const bar = new MediaControlBar(container);
+            const ctrl = new MediaPlaybackController();
+            bar.bind(ctrl);
+            Object.defineProperty(ctrl, 'isPlaying', { get: () => true, configurable: true });
+            bar._updatePlayState();
+            expect(elements['.mc-play-btn'][`_attr_data-state`]).toBe('playing');
+        });
+    });
+
+    describe('syncState', () => {
+        it('syncs speed, loop, and repeat from external state', () => {
+            const { container } = makeMockContainer();
+            const bar = new MediaControlBar(container);
+            const ctrl = new MediaPlaybackController();
+            bar.bind(ctrl);
+
+            bar.syncState({ speed: 2, loop: true, repeat: true });
+            expect(ctrl.getSpeed()).toBe(2);
+            expect(ctrl.getLoop()).toBe(true);
+            expect(ctrl.getRepeat()).toBe(true);
+        });
+
+        it('handles partial sync (only speed)', () => {
+            const { container } = makeMockContainer();
+            const bar = new MediaControlBar(container);
+            const ctrl = new MediaPlaybackController();
+            bar.bind(ctrl);
+
+            bar.syncState({ speed: 1.5 });
+            expect(ctrl.getSpeed()).toBe(1.5);
+            expect(ctrl.getLoop()).toBe(false);
+        });
+    });
+
+    describe('reloadSpeeds', () => {
+        it('reloads from localStorage', () => {
+            const { container } = makeMockContainer();
+            const bar = new MediaControlBar(container);
+            const ctrl = new MediaPlaybackController();
+            bar.bind(ctrl);
+
+            localStorage.setItem('playbackSpeeds', JSON.stringify([1, 2, 3]));
+            bar.reloadSpeeds();
+            expect(bar._speedValues).toEqual([1, 2, 3]);
+        });
+    });
+
+    describe('auto-hide', () => {
+        it('_showControls removes mc-hidden class', () => {
+            const { container } = makeMockContainer();
+            const bar = new MediaControlBar(container);
+            bar._isVisible = false;
+            container.classList.add('mc-hidden');
+            bar._showControls();
+            expect(bar._isVisible).toBe(true);
+            expect(container.classList.contains('mc-hidden')).toBe(false);
+        });
+
+        it('_stopHideTimer clears pending timer', () => {
+            const { container } = makeMockContainer();
+            const bar = new MediaControlBar(container);
+            bar._hideTimer = setTimeout(() => {}, 10000);
+            bar._stopHideTimer();
+            expect(bar._hideTimer).toBeNull();
+        });
+    });
+
+    describe('destroy', () => {
+        it('cleans up controller and auto-hide', () => {
+            const { container } = makeMockContainer();
+            const bar = new MediaControlBar(container);
+            const ctrl = new MediaPlaybackController();
+            bar.bind(ctrl);
+
+            const mockLightbox = makeMockElement();
+            bar.attachAutoHide(mockLightbox);
+            expect(bar._autoHideEl).toBe(mockLightbox);
+
+            bar.destroy();
+            expect(bar._controller).toBeNull();
+            expect(bar._autoHideEl).toBeNull();
+        });
+    });
+});

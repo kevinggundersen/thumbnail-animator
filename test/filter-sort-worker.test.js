@@ -643,3 +643,83 @@ describe('counts and error handling', () => {
         expect(msg.type).toBe('result');
     });
 });
+
+// ── Embedding batch operations ──────────────────────────────────────────
+
+describe('setEmbeddingsBatch', () => {
+    it('adds multiple embeddings from entries array', () => {
+        const vec1 = new Float32Array([1, 2, 3]);
+        const vec2 = new Float32Array([4, 5, 6]);
+        send({ type: 'setEmbeddingsBatch', entries: [
+            { path: '/a.png', vec: vec1 },
+            { path: '/b.png', vec: vec2 }
+        ]});
+        // Verify by using AI sort (which requires embeddings)
+        send({ type: 'setItems', items: [makeItem('a.png', { path: '/a.png' }), makeItem('b.png', { path: '/b.png' })] });
+        // If embeddings are set, AI score sorting should not crash
+        const msg = applyFilters({ sortType: 'aiScore', sortOrder: 'desc' });
+        expect(msg.type).toBe('result');
+    });
+
+    it('handles entries with plain arrays (converts to Float32Array)', () => {
+        send({ type: 'setEmbeddingsBatch', entries: [
+            { path: '/c.png', vec: [0.1, 0.2, 0.3] }
+        ]});
+        // Should not throw
+        send({ type: 'setItems', items: [makeItem('c.png', { path: '/c.png' })] });
+        const msg = applyFilters({});
+        expect(msg.type).toBe('result');
+    });
+
+    it('handles removals in batch', () => {
+        const vec = new Float32Array([1, 2, 3]);
+        send({ type: 'setEmbedding', path: '/x.png', vec });
+        send({ type: 'setEmbeddingsBatch', entries: [], removed: ['/x.png'] });
+        // After removal, embedding should be gone
+        send({ type: 'setItems', items: [makeItem('x.png', { path: '/x.png' })] });
+        const msg = applyFilters({});
+        expect(msg.type).toBe('result');
+    });
+
+    it('skips entries with missing path or vec', () => {
+        send({ type: 'setEmbeddingsBatch', entries: [
+            { path: null, vec: [1, 2] },
+            { path: '/valid.png', vec: null },
+            { path: '/ok.png', vec: [1, 2, 3] }
+        ]});
+        // Should not throw
+        const msg = applyFilters({});
+        expect(msg.type).toBe('result');
+    });
+});
+
+// ── setTextEmbedding / setFindSimilarEmbedding ─────────────────────────
+
+describe('setTextEmbedding', () => {
+    it('sets text embedding from Float32Array', () => {
+        send({ type: 'setTextEmbedding', vec: new Float32Array([0.5, 0.5]) });
+        // Should not throw
+        const msg = applyFilters({});
+        expect(msg.type).toBe('result');
+    });
+
+    it('clears text embedding when vec is null', () => {
+        send({ type: 'setTextEmbedding', vec: null });
+        const msg = applyFilters({});
+        expect(msg.type).toBe('result');
+    });
+});
+
+describe('setFindSimilarEmbedding', () => {
+    it('sets find-similar embedding', () => {
+        send({ type: 'setFindSimilarEmbedding', vec: new Float32Array([0.1, 0.2, 0.3]) });
+        const msg = applyFilters({});
+        expect(msg.type).toBe('result');
+    });
+
+    it('clears find-similar embedding when vec is null', () => {
+        send({ type: 'setFindSimilarEmbedding', vec: null });
+        const msg = applyFilters({});
+        expect(msg.type).toBe('result');
+    });
+});

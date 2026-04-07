@@ -7875,7 +7875,9 @@ function _positionCardTooltip(tooltip, card) {
     const hasScrubUI = card._scrubbing || !!card.querySelector('.gif-progress-bar.show');
     const posPref = cardInfoSettings.tooltipPosition || 'auto';
 
-    let left = rect.left;
+    // Center horizontally on the card, clamp to viewport edges
+    let left = rect.left + (rect.width - tw) / 2;
+    left = Math.max(8, Math.min(left, vw - tw - 8));
     let top;
 
     if (posPref === 'above' || (posPref === 'auto' && hasScrubUI)) {
@@ -7886,12 +7888,11 @@ function _positionCardTooltip(tooltip, card) {
         top = rect.bottom + 8;
         if (top + th > vh - 8) top = Math.max(8, rect.top - th - 8);
     } else {
-        // auto, no scrub UI: original logic — prefer below-right, flip if not enough room
+        // auto, no scrub UI: prefer below, flip above if not enough room
         top = rect.bottom + 8;
         if (top + th > vh - 8) top = Math.max(8, rect.top - th - 8);
     }
 
-    if (left + tw > vw - 8) left = Math.max(8, vw - tw - 8);
     tooltip.style.left = `${Math.round(left)}px`;
     tooltip.style.top = `${Math.round(top)}px`;
 }

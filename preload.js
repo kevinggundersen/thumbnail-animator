@@ -197,5 +197,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     removeMenuCommandListener: () => ipcRenderer.removeAllListeners('menu-command'),
     updateMainSetting: (key, value) => ipcRenderer.invoke('update-main-setting', key, value),
     getAppInfo: () => ipcRenderer.invoke('get-app-info'),
-    getLogs: () => ipcRenderer.invoke('get-logs')
+    getLogs: () => ipcRenderer.invoke('get-logs'),
+    getReleaseNotes: (version) => ipcRenderer.invoke('get-release-notes', version)
 });

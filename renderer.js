@@ -1594,8 +1594,20 @@ function showToastOnce(key, message, type = 'info', options = {}) {
 
     window.electronAPI.onUpdateAvailable((info) => {
         if (updateToast) dismissToast(updateToast);
+        // Show a snippet of the GitHub release notes if available
+        let details = 'A new version is ready to download.';
+        if (info.releaseNotes) {
+            const notes = typeof info.releaseNotes === 'string'
+                ? info.releaseNotes
+                : Array.isArray(info.releaseNotes)
+                    ? info.releaseNotes.map(n => n.note || n).join('\n')
+                    : '';
+            // Strip markdown formatting and take first ~120 chars as a preview
+            const plain = notes.replace(/[#*_`~>\[\]()!|-]/g, '').replace(/\n{2,}/g, '\n').trim();
+            if (plain) details = plain.length > 120 ? plain.slice(0, 120) + '...' : plain;
+        }
         updateToast = showToast(`Update v${info.version} available`, 'info', {
-            details: 'A new version is ready to download.',
+            details,
             duration: 0,
             actionLabel: 'Download',
             actionCallback: () => {
@@ -1721,17 +1733,38 @@ window.electronAPI.onMenuCommand((command) => {
 
 // ── About Dialog ──
 async function showAboutDialog() {
-    const dialog = document.getElementById('about-dialog');
+    const dlg = document.getElementById('about-dialog');
+    const notesEl = document.getElementById('about-release-notes');
+    let appVersion = '';
     try {
         const result = await window.electronAPI.getAppInfo();
         if (result.ok) {
             const info = result.value;
+            appVersion = info.version;
             document.getElementById('about-app-version').textContent = `v${info.version}`;
             document.getElementById('about-runtime').textContent =
                 `Electron ${info.electron} \u00B7 Chrome ${info.chrome} \u00B7 Node ${info.node}`;
         }
     } catch { /* show dialog anyway with whatever info is available */ }
-    dialog.classList.remove('hidden');
+    dlg.classList.remove('hidden');
+
+    // Fetch release notes from GitHub (non-blocking — dialog shows immediately)
+    if (appVersion && notesEl) {
+        notesEl.classList.add('hidden');
+        notesEl.textContent = '';
+        try {
+            const rn = await window.electronAPI.getReleaseNotes(appVersion);
+            if (rn.ok && rn.value?.notes) {
+                const v = rn.value.version || '';
+                // If the fetched release differs from the current version, label it
+                const header = (v && v !== `v${appVersion}`)
+                    ? `Latest release (${v}):\n\n`
+                    : '';
+                notesEl.textContent = header + rn.value.notes;
+                notesEl.classList.remove('hidden');
+            }
+        } catch { /* offline or no release found — just hide the section */ }
+    }
 }
 
 document.getElementById('about-dialog-close').addEventListener('click', () => {

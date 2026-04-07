@@ -1276,6 +1276,54 @@ wrapIpc('get-logs', async () => {
     return { files: logFiles, content };
 });
 
+// Fetch release notes from GitHub for a given version (or latest).
+// Caches the result so repeated About-dialog opens don't re-fetch.
+let _releaseNotesCache = {};
+function _fetchGitHubRelease(tag) {
+    const https = require('https');
+    const url = `https://api.github.com/repos/kevinggundersen/thumnail-animator/releases/${tag}`;
+    const headers = { 'User-Agent': 'ThumbnailAnimator', Accept: 'application/vnd.github.v3+json' };
+    return new Promise((resolve, reject) => {
+        const doGet = (fetchUrl, redirectsLeft) => {
+            const req = https.get(fetchUrl, { headers }, (res) => {
+                // Follow 3xx redirects (GitHub redirects repo-based URLs)
+                if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirectsLeft > 0) {
+                    res.resume(); // drain response
+                    doGet(res.headers.location, redirectsLeft - 1);
+                    return;
+                }
+                let data = '';
+                res.on('data', (chunk) => { data += chunk; });
+                res.on('end', () => {
+                    if (res.statusCode === 200) resolve(JSON.parse(data));
+                    else reject(new Error(`GitHub API ${res.statusCode}`));
+                });
+            });
+            req.on('error', reject);
+            req.setTimeout(8000, () => { req.destroy(); reject(new Error('Request timed out')); });
+        };
+        doGet(url, 3);
+    });
+}
+wrapIpc('get-release-notes', async (version) => {
+    if (_releaseNotesCache[version]) return _releaseNotesCache[version];
+    let release;
+    // Try exact version tag, then with dot prefix (v.X.Y.Z), then fall back to latest
+    const tagVariants = [`tags/v${version}`, `tags/v.${version}`];
+    for (const tag of tagVariants) {
+        try {
+            release = await _fetchGitHubRelease(tag);
+            break;
+        } catch { /* try next variant */ }
+    }
+    if (!release) {
+        release = await _fetchGitHubRelease('latest');
+    }
+    const result = { version: release.tag_name, notes: release.body || '', url: release.html_url };
+    _releaseNotesCache[version] = result;
+    return result;
+});
+
 // IPC Handlers
 ipcMain.handle('select-folder', async (event, defaultPath) => {
     try {

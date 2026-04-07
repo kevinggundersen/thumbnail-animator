@@ -478,6 +478,13 @@ function initKeyboardShortcuts() {
             return;
         }
 
+        // New tab group from active tab
+        if (matchesShortcut(e, 'newTabGroup')) {
+            e.preventDefault();
+            createTabGroupFromActiveTab();
+            return;
+        }
+
         // Open lightbox for focused card
         if (matchesShortcut(e, 'lightboxOpen') && focusedCardIndex >= 0) {
             e.preventDefault();
@@ -600,12 +607,24 @@ function navigateCards(direction) {
     visibleCards = cards;
 
     if (focusedCardIndex < 0) {
-        // Find first visible card
-        const firstVisible = cards.find(card => {
-            const rect = card.getBoundingClientRect();
-            return rect.top >= 0 && rect.top < window.innerHeight;
-        });
-        focusedCardIndex = firstVisible ? cards.indexOf(firstVisible) : 0;
+        // Perf: use pre-computed VS positions when available, avoid getBoundingClientRect loop
+        if (vsState.enabled && vsState.positions) {
+            const scrollTop = gridContainer.scrollTop;
+            const firstVisibleIdx = cards.findIndex(c => {
+                const idx = c._vsItemIndex;
+                if (idx == null) return false;
+                const top = vsState.positions[idx * 4 + 1];
+                return top >= scrollTop;
+            });
+            focusedCardIndex = firstVisibleIdx >= 0 ? firstVisibleIdx : 0;
+        } else {
+            // Find first visible card (fallback for non-VS mode)
+            const firstVisible = cards.find(card => {
+                const rect = card.getBoundingClientRect();
+                return rect.top >= 0 && rect.top < window.innerHeight;
+            });
+            focusedCardIndex = firstVisible ? cards.indexOf(firstVisible) : 0;
+        }
     } else {
         // Navigate based on direction
         const currentCard = cards[focusedCardIndex];
@@ -639,20 +658,21 @@ function navigateCards(direction) {
         }
     }
 
-    // Update focus visual
-    cards.forEach((card, index) => {
-        if (index === focusedCardIndex) {
-            card.style.outline = '2px solid var(--accent)';
-            card.style.outlineOffset = '2px';
-            card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        } else {
-            card.style.outline = '';
-            card.style.outlineOffset = '';
-        }
-    });
+    // Perf: O(1) outline update instead of O(n) forEach
+    if (_lastFocusedCard) {
+        _lastFocusedCard.style.outline = '';
+        _lastFocusedCard.style.outlineOffset = '';
+    }
+    const newCard = cards[focusedCardIndex];
+    if (newCard) {
+        newCard.style.outline = '2px solid var(--accent)';
+        newCard.style.outlineOffset = '2px';
+        newCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        _lastFocusedCard = newCard;
+    }
 
     // Update status bar with focused card info
-    updateStatusBarSelection(cards[focusedCardIndex] || null);
+    updateStatusBarSelection(newCard || null);
 }
 
 function switchFilter(filter) {
@@ -669,6 +689,7 @@ function switchFilter(filter) {
     
     applyFilters();
     focusedCardIndex = -1; // Reset focus
+    _lastFocusedCard = null;
 }
 
 // ==================== FAVORITES ====================
@@ -728,7 +749,7 @@ function saveFavorites() {
 }
 
 function renderFavorites() {
-    favoritesList.innerHTML = '';
+    favoritesList.replaceChildren();
     const totalItems = favorites.groups.reduce((sum, g) => sum + g.items.length, 0);
     if (totalItems === 0 && favorites.groups.length <= 1) {
         favoritesList.innerHTML = '<div class="tools-menu-empty">No favorites yet</div>';
@@ -935,7 +956,7 @@ function hideFavContextMenu() {
 function showFavGroupContextMenu(e, groupId) {
     hideFavContextMenu();
     hideContextMenu();
-    favContextMenu.innerHTML = '';
+    favContextMenu.replaceChildren();
 
     const newGroupItem = document.createElement('div');
     newGroupItem.className = 'context-menu-item';
@@ -977,7 +998,7 @@ function showFavGroupContextMenu(e, groupId) {
 function showFavItemContextMenu(e, groupId, itemIndex) {
     hideFavContextMenu();
     hideContextMenu();
-    favContextMenu.innerHTML = '';
+    favContextMenu.replaceChildren();
 
     const group = favorites.groups.find(g => g.id === groupId);
     if (!group || !group.items[itemIndex]) return;
@@ -1233,6 +1254,24 @@ function clearRecentFiles() {
 }
 
 // ==================== TABS ====================
+
+const TAB_GROUP_COLORS = [
+    { id: 'grey',   label: 'Grey',   value: '#9d9da6' },
+    { id: 'blue',   label: 'Blue',   value: '#60a5fa' },
+    { id: 'red',    label: 'Red',    value: '#f87171' },
+    { id: 'yellow', label: 'Yellow', value: '#fbbf24' },
+    { id: 'green',  label: 'Green',  value: '#4ade80' },
+    { id: 'pink',   label: 'Pink',   value: '#f472b6' },
+    { id: 'purple', label: 'Purple', value: '#a78bfa' },
+    { id: 'cyan',   label: 'Cyan',   value: '#22d3ee' },
+];
+const DEFAULT_GROUP_COLOR = 'blue';
+
+function _getGroupColor(colorId) {
+    const entry = TAB_GROUP_COLORS.find(c => c.id === colorId);
+    return entry ? entry.value : TAB_GROUP_COLORS[0].value;
+}
+
 function loadTabs() {
     const saved = localStorage.getItem('tabs');
     if (saved) {
@@ -1245,16 +1284,37 @@ function loadTabs() {
                     tab.historyPaths = tab.path ? [tab.path] : [];
                     tab.historyIndex = tab.historyPaths.length - 1;
                 }
+                // Backfill groupId for tabs saved before tab groups
+                if (tab.groupId === undefined) tab.groupId = null;
             }
         } catch (e) {
             tabs = [];
         }
     }
+
+    // Load tab groups
+    const savedGroups = localStorage.getItem('tabGroups');
+    if (savedGroups) {
+        try {
+            tabGroups = JSON.parse(savedGroups);
+            tabGroupIdCounter = Math.max(...tabGroups.map(g => g.id), 0) + 1;
+        } catch (e) { tabGroups = []; }
+    }
+
+    const rawSavedGroups = localStorage.getItem('savedTabGroups');
+    if (rawSavedGroups) {
+        try {
+            savedTabGroups = JSON.parse(rawSavedGroups);
+            savedTabGroupIdCounter = Math.max(...savedTabGroups.map(g => g.id), 0) + 1;
+        } catch (e) { savedTabGroups = []; }
+    }
+
     if (tabs.length === 0) {
         // Create initial tab if none exist
         createTab(null, 'Home');
     }
     renderTabs();
+    renderSavedTabGroupsSidebar();
     const savedActiveTabId = localStorage.getItem('activeTabId');
     if (savedActiveTabId) activeTabId = parseInt(savedActiveTabId, 10);
     if (activeTabId && tabs.find(t => t.id === activeTabId)) {
@@ -1269,6 +1329,11 @@ let tabDragInProgress = false;
 function saveTabs() {
     deferLocalStorageWrite('tabs', JSON.stringify(tabs));
     deferLocalStorageWrite('activeTabId', activeTabId);
+    deferLocalStorageWrite('tabGroups', JSON.stringify(tabGroups));
+}
+
+function saveSavedTabGroups() {
+    deferLocalStorageWrite('savedTabGroups', JSON.stringify(savedTabGroups));
 }
 
 // Snapshot the current tab's DOM into a DocumentFragment for instant restore
@@ -1327,7 +1392,7 @@ function restoreTabDomSnapshot(tabId) {
     return true;
 }
 
-function createTab(path, name, collectionId = null) {
+function createTab(path, name, collectionId = null, groupId = null) {
     const tab = {
         id: tabIdCounter++,
         path: path || null,
@@ -1336,7 +1401,8 @@ function createTab(path, name, collectionId = null) {
         sortOrder: sortOrder || 'ascending', // Use current order or default
         historyPaths: [],
         historyIndex: -1,
-        collectionId: collectionId || null
+        collectionId: collectionId || null,
+        groupId: groupId
     };
     tabs.push(tab);
     saveTabs();
@@ -1354,12 +1420,15 @@ function createTab(path, name, collectionId = null) {
     return tab.id;
 }
 
-function closeTab(tabId) {
-    if (tabs.length <= 1) return; // Don't close last tab
-    // Clean up DOM cache for the closed tab
+function _cleanupTabCaches(tabId) {
     tabDomCache.delete(tabId);
     tabFolderScrollPositions.delete(tabId);
     tabContentCache.delete(tabId);
+}
+
+function closeTab(tabId) {
+    if (tabs.length <= 1) return; // Don't close last tab
+    _cleanupTabCaches(tabId);
     tabs = tabs.filter(t => t.id !== tabId);
     if (activeTabId === tabId) {
         activeTabId = tabs[0]?.id ?? null;
@@ -1499,36 +1568,60 @@ function updateCurrentTab(path, name) {
 
 function renderTabs() {
     tabsContainer.innerHTML = '';
-    tabs.forEach(tab => {
-        const tabEl = document.createElement('div');
-        tabEl.className = `tab ${tab.id === activeTabId ? 'active' : ''}`;
-        tabEl.dataset.tabId = tab.id;
-        tabEl.innerHTML = `
-            <span class="tab-name" title="${tab.path || 'Home'}">${tab.name}</span>
-            <span class="tab-close" data-tab-id="${tab.id}">${icon('x', 14)}</span>
+
+    // Clean up orphaned groupIds (tab references a group that no longer exists)
+    const validGroupIds = new Set(tabGroups.map(g => g.id));
+    for (const tab of tabs) {
+        if (tab.groupId != null && !validGroupIds.has(tab.groupId)) {
+            tab.groupId = null;
+        }
+    }
+
+    // Build ordered render list: grouped tabs (in tabGroups order), then ungrouped
+    const renderedTabIds = new Set();
+
+    for (const group of tabGroups) {
+        const groupTabs = tabs.filter(t => t.groupId === group.id);
+        if (groupTabs.length === 0) continue; // Skip empty groups
+
+        const colorValue = _getGroupColor(group.color);
+
+        // Render group label
+        const labelEl = document.createElement('div');
+        labelEl.className = 'tab-group-label';
+        labelEl.dataset.groupId = group.id;
+        labelEl.style.setProperty('--tab-group-color', colorValue);
+        const chevronClass = group.collapsed ? '' : ' expanded';
+        labelEl.innerHTML = `
+            <span class="tab-group-toggle${chevronClass}">${icon('chevron-right', 12)}</span>
+            <span class="tab-group-name">${escapeHtml(group.name)}</span>
+            ${group.collapsed ? `<span class="tab-group-count">${groupTabs.length}</span>` : ''}
         `;
-
-        // Click handler (guarded against post-drag clicks)
-        tabEl.addEventListener('click', (e) => {
+        labelEl.addEventListener('click', (e) => {
             if (tabDragInProgress) return;
-            if (e.target.closest('.tab-close')) {
-                e.stopPropagation();
-                closeTab(tab.id);
-            } else {
-                switchToTab(tab.id);
-            }
+            e.stopPropagation();
+            toggleTabGroupCollapse(group.id);
         });
-
-        // Mousedown initiates drag reordering
-        tabEl.addEventListener('mousedown', (e) => {
-            if (e.target.closest('.tab-close')) return;
-            if (e.button !== 0) return;
-            if (tabs.length <= 1) return;
-            initTabDragReorder(e, tabEl);
+        labelEl.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            showTabGroupContextMenu(e, group);
         });
+        tabsContainer.appendChild(labelEl);
 
+        // Render group's tabs
+        for (const tab of groupTabs) {
+            renderedTabIds.add(tab.id);
+            const tabEl = _createTabElement(tab, colorValue, group.collapsed);
+            tabsContainer.appendChild(tabEl);
+        }
+    }
+
+    // Render ungrouped tabs
+    for (const tab of tabs) {
+        if (renderedTabIds.has(tab.id)) continue;
+        const tabEl = _createTabElement(tab, null, false);
         tabsContainer.appendChild(tabEl);
-    });
+    }
 
     // Add "+" button
     const addBtn = document.createElement('div');
@@ -1541,17 +1634,68 @@ function renderTabs() {
     tabsContainer.appendChild(addBtn);
 }
 
+function _createTabElement(tab, groupColorValue, isGroupCollapsed) {
+    const tabEl = document.createElement('div');
+    let cls = `tab ${tab.id === activeTabId ? 'active' : ''}`;
+    if (isGroupCollapsed) cls += ' tab-group-collapsed';
+    tabEl.className = cls;
+    tabEl.dataset.tabId = tab.id;
+    if (tab.groupId != null) {
+        tabEl.dataset.groupId = tab.groupId;
+        if (groupColorValue) tabEl.style.setProperty('--tab-group-color', groupColorValue);
+    }
+    tabEl.innerHTML = `
+        <span class="tab-name" title="${escapeHtml(tab.path || 'Home')}">${escapeHtml(tab.name)}</span>
+        <span class="tab-close" data-tab-id="${tab.id}">${icon('x', 14)}</span>
+    `;
+
+    // Click handler (guarded against post-drag clicks)
+    tabEl.addEventListener('click', (e) => {
+        if (tabDragInProgress) return;
+        if (e.target.closest('.tab-close')) {
+            e.stopPropagation();
+            closeTab(tab.id);
+        } else {
+            switchToTab(tab.id);
+        }
+    });
+
+    // Right-click → tab context menu
+    tabEl.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        showTabContextMenu(e, tab);
+    });
+
+    // Mousedown initiates drag reordering
+    tabEl.addEventListener('mousedown', (e) => {
+        if (e.target.closest('.tab-close')) return;
+        if (e.button !== 0) return;
+        if (tabs.length <= 1) return;
+        initTabDragReorder(e, tabEl);
+    });
+
+    return tabEl;
+}
+
 function initTabDragReorder(e, dragEl) {
     const allTabs = Array.from(tabsContainer.querySelectorAll('.tab'));
     const originalIndex = allTabs.indexOf(dragEl);
     if (originalIndex === -1) return;
 
     const startX = e.clientX;
+    const dragTabId = parseInt(dragEl.dataset.tabId, 10);
 
     // Cache bounding rects of all tabs before anything moves
     const tabPositions = allTabs.map(t => {
         const r = t.getBoundingClientRect();
         return { left: r.left, width: r.width, centerX: r.left + r.width / 2 };
+    });
+
+    // Cache group label positions for group-aware dropping
+    const allGroupLabels = Array.from(tabsContainer.querySelectorAll('.tab-group-label'));
+    const groupLabelPositions = allGroupLabels.map(gl => {
+        const r = gl.getBoundingClientRect();
+        return { el: gl, groupId: parseInt(gl.dataset.groupId, 10), left: r.left, right: r.right, centerX: r.left + r.width / 2 };
     });
 
     // Shift amount = dragged tab width + container gap
@@ -1560,13 +1704,16 @@ function initTabDragReorder(e, dragEl) {
 
     let hasDragStarted = false;
     let currentSlot = originalIndex;
+    let _tabDragRAF = null;
+    let _latestDeltaX = 0;
+    let _hoveredGroupLabel = null;
 
     function onMouseMove(ev) {
-        const deltaX = ev.clientX - startX;
+        _latestDeltaX = ev.clientX - startX;
 
         // Require a small threshold before committing to a drag
         if (!hasDragStarted) {
-            if (Math.abs(deltaX) < 5) return;
+            if (Math.abs(_latestDeltaX) < 5) return;
             hasDragStarted = true;
             tabDragInProgress = true;
             tabsContainer.classList.add('tab-reordering');
@@ -1577,47 +1724,69 @@ function initTabDragReorder(e, dragEl) {
             });
         }
 
-        // The dragged tab follows the cursor directly (no transition)
-        dragEl.style.transform = `translateX(${deltaX}px)`;
+        // Perf: coalesce DOM writes into single RAF (avoids >60fps style writes on high-refresh displays)
+        if (!_tabDragRAF) {
+            _tabDragRAF = requestAnimationFrame(() => {
+                _tabDragRAF = null;
+                const deltaX = _latestDeltaX;
 
-        // Visual center of the dragged tab
-        const draggedCenter = tabPositions[originalIndex].centerX + deltaX;
+                // The dragged tab follows the cursor directly (no transition)
+                dragEl.style.transform = `translateX(${deltaX}px)`;
 
-        // Determine which slot the dragged tab belongs in
-        let targetSlot = originalIndex;
-        if (deltaX < 0) {
-            // Moving left — check tabs to the left
-            for (let i = originalIndex - 1; i >= 0; i--) {
-                if (draggedCenter < tabPositions[i].centerX) {
-                    targetSlot = i;
-                } else {
-                    break;
+                // Visual center of the dragged tab
+                const draggedCenter = tabPositions[originalIndex].centerX + deltaX;
+
+                // Highlight group labels when hovered during drag
+                let newHovered = null;
+                for (const glp of groupLabelPositions) {
+                    if (draggedCenter >= glp.left && draggedCenter <= glp.right) {
+                        newHovered = glp;
+                        break;
+                    }
                 }
-            }
-        } else {
-            // Moving right — check tabs to the right
-            for (let i = originalIndex + 1; i < tabPositions.length; i++) {
-                if (draggedCenter > tabPositions[i].centerX) {
-                    targetSlot = i;
-                } else {
-                    break;
+                if (newHovered !== _hoveredGroupLabel) {
+                    if (_hoveredGroupLabel) _hoveredGroupLabel.el.classList.remove('drag-over');
+                    _hoveredGroupLabel = newHovered;
+                    if (_hoveredGroupLabel) _hoveredGroupLabel.el.classList.add('drag-over');
                 }
-            }
-        }
 
-        // Only update transforms when the target slot actually changes
-        if (targetSlot !== currentSlot) {
-            currentSlot = targetSlot;
-            allTabs.forEach((t, i) => {
-                if (i === originalIndex) return;
-                if (targetSlot < originalIndex && i >= targetSlot && i < originalIndex) {
-                    // These tabs shift right to make room
-                    t.style.transform = `translateX(${shiftAmount}px)`;
-                } else if (targetSlot > originalIndex && i > originalIndex && i <= targetSlot) {
-                    // These tabs shift left to fill the gap
-                    t.style.transform = `translateX(${-shiftAmount}px)`;
+                // Determine which slot the dragged tab belongs in
+                let targetSlot = originalIndex;
+                if (deltaX < 0) {
+                    // Moving left — check tabs to the left
+                    for (let i = originalIndex - 1; i >= 0; i--) {
+                        if (draggedCenter < tabPositions[i].centerX) {
+                            targetSlot = i;
+                        } else {
+                            break;
+                        }
+                    }
                 } else {
-                    t.style.transform = '';
+                    // Moving right — check tabs to the right
+                    for (let i = originalIndex + 1; i < tabPositions.length; i++) {
+                        if (draggedCenter > tabPositions[i].centerX) {
+                            targetSlot = i;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+
+                // Only update transforms when the target slot actually changes
+                if (targetSlot !== currentSlot) {
+                    currentSlot = targetSlot;
+                    allTabs.forEach((t, i) => {
+                        if (i === originalIndex) return;
+                        if (targetSlot < originalIndex && i >= targetSlot && i < originalIndex) {
+                            // These tabs shift right to make room
+                            t.style.transform = `translateX(${shiftAmount}px)`;
+                        } else if (targetSlot > originalIndex && i > originalIndex && i <= targetSlot) {
+                            // These tabs shift left to fill the gap
+                            t.style.transform = `translateX(${-shiftAmount}px)`;
+                        } else {
+                            t.style.transform = '';
+                        }
+                    });
                 }
             });
         }
@@ -1626,6 +1795,10 @@ function initTabDragReorder(e, dragEl) {
     function onMouseUp() {
         document.removeEventListener('mousemove', onMouseMove);
         document.removeEventListener('mouseup', onMouseUp);
+        if (_tabDragRAF) { cancelAnimationFrame(_tabDragRAF); _tabDragRAF = null; }
+
+        // Clean up group label hover state
+        if (_hoveredGroupLabel) _hoveredGroupLabel.el.classList.remove('drag-over');
 
         if (!hasDragStarted) return;
 
@@ -1641,9 +1814,27 @@ function initTabDragReorder(e, dragEl) {
         if (currentSlot !== originalIndex) {
             const [moved] = tabs.splice(originalIndex, 1);
             tabs.splice(currentSlot, 0, moved);
-            saveTabs();
-            renderTabs();
         }
+
+        // Group-aware drop: if dropped on a group label, assign to that group
+        if (_hoveredGroupLabel) {
+            const tab = tabs.find(t => t.id === dragTabId);
+            if (tab) tab.groupId = _hoveredGroupLabel.groupId;
+        } else {
+            // Determine group from neighboring tabs at the drop position
+            const neighborTab = allTabs[currentSlot];
+            if (neighborTab && neighborTab !== dragEl) {
+                const neighborGroupId = neighborTab.dataset.groupId ? parseInt(neighborTab.dataset.groupId, 10) : null;
+                const dragTab = tabs.find(t => t.id === dragTabId);
+                if (dragTab) {
+                    // If dropped among grouped tabs, join that group; if among ungrouped, leave group
+                    dragTab.groupId = neighborGroupId || null;
+                }
+            }
+        }
+
+        saveTabs();
+        renderTabs();
 
         // Reset flag after the click event fires (click fires synchronously after mouseup)
         setTimeout(() => { tabDragInProgress = false; }, 0);
@@ -1651,6 +1842,494 @@ function initTabDragReorder(e, dragEl) {
 
     document.addEventListener('mousemove', onMouseMove);
     document.addEventListener('mouseup', onMouseUp);
+}
+
+// ==================== TAB GROUPS ====================
+
+function createTabGroup(name, colorId, tabIds) {
+    const group = {
+        id: tabGroupIdCounter++,
+        name: name || 'New Group',
+        color: colorId || TAB_GROUP_COLORS[0].id,
+        collapsed: false,
+    };
+    tabGroups.push(group);
+    for (const tid of tabIds) {
+        const tab = tabs.find(t => t.id === tid);
+        if (tab) tab.groupId = group.id;
+    }
+    saveTabs();
+    renderTabs();
+    return group.id;
+}
+
+async function renameTabGroup(groupId) {
+    const group = tabGroups.find(g => g.id === groupId);
+    if (!group) return;
+    const newName = await showPromptDialog('Rename Tab Group', { defaultValue: group.name, placeholder: 'Group name' });
+    if (newName == null || newName.trim() === '') return;
+    group.name = newName.trim();
+    saveTabs();
+    renderTabs();
+    renderSavedTabGroupsSidebar();
+}
+
+function setTabGroupColor(groupId, colorId) {
+    const group = tabGroups.find(g => g.id === groupId);
+    if (!group) return;
+    group.color = colorId;
+    saveTabs();
+    renderTabs();
+}
+
+function toggleTabGroupCollapse(groupId) {
+    const group = tabGroups.find(g => g.id === groupId);
+    if (!group) return;
+    group.collapsed = !group.collapsed;
+    saveTabs();
+    renderTabs();
+}
+
+function ungroupTabs(groupId) {
+    for (const tab of tabs) {
+        if (tab.groupId === groupId) tab.groupId = null;
+    }
+    tabGroups = tabGroups.filter(g => g.id !== groupId);
+    saveTabs();
+    renderTabs();
+}
+
+function addTabToGroup(tabId, groupId) {
+    const tab = tabs.find(t => t.id === tabId);
+    if (!tab) return;
+    tab.groupId = groupId;
+    saveTabs();
+    renderTabs();
+}
+
+function removeTabFromGroup(tabId) {
+    const tab = tabs.find(t => t.id === tabId);
+    if (!tab) return;
+    tab.groupId = null;
+    saveTabs();
+    renderTabs();
+}
+
+function closeTabGroup(groupId) {
+    const groupTabs = tabs.filter(t => t.groupId === groupId);
+    // Keep at least one tab alive
+    const idsToClose = new Set();
+    for (const t of groupTabs) {
+        if (tabs.length - idsToClose.size <= 1) break;
+        _cleanupTabCaches(t.id);
+        idsToClose.add(t.id);
+    }
+    tabs = tabs.filter(t => !idsToClose.has(t.id));
+    tabGroups = tabGroups.filter(g => g.id !== groupId);
+    if (!tabs.find(t => t.id === activeTabId)) {
+        activeTabId = tabs[0]?.id ?? null;
+    }
+    if (activeTabId != null) {
+        switchToTab(activeTabId);
+    } else {
+        saveTabs();
+        renderTabs();
+    }
+}
+
+function _snapshotTabsForSave(tabList) {
+    return tabList.map(t => ({
+        path: t.path,
+        name: t.name,
+        collectionId: t.collectionId || null,
+        sortType: t.sortType,
+        sortOrder: t.sortOrder,
+    }));
+}
+
+function saveTabGroupToSaved(groupId) {
+    const group = tabGroups.find(g => g.id === groupId);
+    if (!group) return;
+    const groupTabs = tabs.filter(t => t.groupId === groupId);
+    if (groupTabs.length === 0) return;
+    savedTabGroups.push({
+        id: savedTabGroupIdCounter++,
+        name: group.name,
+        color: group.color,
+        tabs: _snapshotTabsForSave(groupTabs),
+        savedAt: Date.now(),
+    });
+    saveSavedTabGroups();
+    renderSavedTabGroupsSidebar();
+    showToast(`Saved tab group "${group.name}"`);
+}
+
+async function saveAllTabsAsGroup() {
+    if (tabs.length === 0) return;
+    const name = await showPromptDialog('Save All Tabs as Group', { placeholder: 'Group name', confirmLabel: 'Save' });
+    if (name == null || name.trim() === '') return;
+    savedTabGroups.push({
+        id: savedTabGroupIdCounter++,
+        name: name.trim(),
+        color: DEFAULT_GROUP_COLOR,
+        tabs: _snapshotTabsForSave(tabs),
+        savedAt: Date.now(),
+    });
+    saveSavedTabGroups();
+    renderSavedTabGroupsSidebar();
+    showToast(`Saved ${tabs.length} tab${tabs.length === 1 ? '' : 's'} as "${name.trim()}"`);
+}
+
+async function restoreSavedTabGroup(savedGroupId) {
+    const saved = savedTabGroups.find(g => g.id === savedGroupId);
+    if (!saved || saved.tabs.length === 0) return;
+
+    const mode = await showRestoreTabGroupDialog(saved.name, saved.tabs.length);
+    if (!mode) return; // cancelled
+
+    if (mode === 'replace') {
+        for (const t of tabs) _cleanupTabCaches(t.id);
+        tabs = [];
+        tabGroups = [];
+    }
+
+    // Create a new tab group for the restored tabs
+    const newGroup = {
+        id: tabGroupIdCounter++,
+        name: saved.name,
+        color: saved.color,
+        collapsed: false,
+    };
+    tabGroups.push(newGroup);
+
+    let firstTabId = null;
+    for (const st of saved.tabs) {
+        const tab = {
+            id: tabIdCounter++,
+            path: st.path || null,
+            name: st.name || 'Home',
+            sortType: st.sortType || 'name',
+            sortOrder: st.sortOrder || 'ascending',
+            historyPaths: st.path ? [st.path] : [],
+            historyIndex: st.path ? 0 : -1,
+            collectionId: st.collectionId || null,
+            groupId: newGroup.id,
+        };
+        tabs.push(tab);
+        if (firstTabId === null) firstTabId = tab.id;
+    }
+
+    saveTabs();
+    renderTabs();
+    if (firstTabId != null) switchToTab(firstTabId);
+    showToast(`Restored tab group "${saved.name}"`);
+}
+
+function deleteSavedTabGroup(savedGroupId) {
+    savedTabGroups = savedTabGroups.filter(g => g.id !== savedGroupId);
+    saveSavedTabGroups();
+    renderSavedTabGroupsSidebar();
+}
+
+async function renameSavedTabGroup(savedGroupId) {
+    const saved = savedTabGroups.find(g => g.id === savedGroupId);
+    if (!saved) return;
+    const newName = await showPromptDialog('Rename Saved Tab Group', { defaultValue: saved.name, placeholder: 'Group name' });
+    if (newName == null || newName.trim() === '') return;
+    saved.name = newName.trim();
+    saveSavedTabGroups();
+    renderSavedTabGroupsSidebar();
+}
+
+// ── Sidebar: Saved Tab Groups ──
+
+function renderSavedTabGroupsSidebar() {
+    if (!savedTabGroupsList) return;
+    if (savedTabGroups.length === 0) {
+        savedTabGroupsList.innerHTML = '<div class="collections-list-empty">No saved tab groups</div>';
+        return;
+    }
+    savedTabGroupsList.innerHTML = '';
+    for (const sg of savedTabGroups) {
+        const item = document.createElement('div');
+        item.className = 'collection-item';
+        item.dataset.savedTabGroupId = sg.id;
+        const dotColor = _getGroupColor(sg.color);
+        item.innerHTML = `<span class="saved-tab-group-dot" style="background-color: ${dotColor}"></span>` +
+            `<span class="collection-item-name">${escapeHtml(sg.name)}</span>` +
+            `<span class="collection-item-count">${sg.tabs.length}</span>`;
+        item.title = `${sg.name} (${sg.tabs.length} tab${sg.tabs.length === 1 ? '' : 's'})`;
+        item.addEventListener('click', () => restoreSavedTabGroup(sg.id));
+        item.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            showSavedTabGroupContextMenu(e, sg);
+        });
+        savedTabGroupsList.appendChild(item);
+    }
+}
+
+// ── Tab Context Menu ──
+
+let _tabGroupContextMenuEl = null;
+
+function _hideTabGroupContextMenu() {
+    if (_tabGroupContextMenuEl) {
+        _tabGroupContextMenuEl.remove();
+        _tabGroupContextMenuEl = null;
+    }
+    document.removeEventListener('click', _onTabGroupContextMenuOutsideClick, true);
+}
+
+function _onTabGroupContextMenuOutsideClick(e) {
+    if (_tabGroupContextMenuEl && !_tabGroupContextMenuEl.contains(e.target)) {
+        _hideTabGroupContextMenu();
+    }
+}
+
+function _showContextMenuAt(menuEl, e) {
+    _hideTabGroupContextMenu();
+    _tabGroupContextMenuEl = menuEl;
+    document.body.appendChild(menuEl);
+
+    const menuWidth = 200;
+    const menuHeight = menuEl.offsetHeight || 200;
+    let x = e.clientX;
+    let y = e.clientY;
+    if (x + menuWidth > window.innerWidth) x = window.innerWidth - menuWidth - 5;
+    if (y + menuHeight > window.innerHeight) y = window.innerHeight - menuHeight - 5;
+    if (y < 0) y = 5;
+    menuEl.style.left = `${x}px`;
+    menuEl.style.top = `${y}px`;
+
+    setTimeout(() => document.addEventListener('click', _onTabGroupContextMenuOutsideClick, true), 0);
+}
+
+function showTabContextMenu(e, tab) {
+    hideContextMenu();
+    const menu = document.createElement('div');
+    menu.className = 'tab-group-context-menu';
+
+    const newGroupItem = document.createElement('div');
+    newGroupItem.className = 'context-menu-item';
+    newGroupItem.textContent = 'Add to New Group';
+    newGroupItem.addEventListener('click', async () => {
+        _hideTabGroupContextMenu();
+        const name = await showPromptDialog('New Tab Group', { placeholder: 'Group name', confirmLabel: 'Create' });
+        if (name == null || name.trim() === '') return;
+        createTabGroup(name.trim(), DEFAULT_GROUP_COLOR, [tab.id]);
+    });
+    menu.appendChild(newGroupItem);
+
+    const availableGroups = tabGroups.filter(g => g.id !== tab.groupId);
+    if (availableGroups.length > 0) {
+        const moveContainer = document.createElement('div');
+        moveContainer.className = 'context-menu-submenu';
+        const moveLabel = document.createElement('div');
+        moveLabel.className = 'context-menu-item';
+        moveLabel.innerHTML = `Add to Group <span style="float:right; opacity:0.5">${icon('chevron-right', 12)}</span>`;
+        moveContainer.appendChild(moveLabel);
+        const submenu = document.createElement('div');
+        submenu.className = 'context-menu-submenu-items';
+        for (const g of availableGroups) {
+            const subItem = document.createElement('div');
+            subItem.className = 'context-menu-item';
+            const dotColor = _getGroupColor(g.color);
+            subItem.innerHTML = `<span class="saved-tab-group-dot" style="background-color: ${dotColor}"></span> ${escapeHtml(g.name)}`;
+            subItem.addEventListener('click', () => {
+                _hideTabGroupContextMenu();
+                addTabToGroup(tab.id, g.id);
+            });
+            submenu.appendChild(subItem);
+        }
+        moveContainer.appendChild(submenu);
+        menu.appendChild(moveContainer);
+    }
+
+    if (tab.groupId != null) {
+        const removeFromGroup = document.createElement('div');
+        removeFromGroup.className = 'context-menu-item';
+        removeFromGroup.textContent = 'Remove from Group';
+        removeFromGroup.addEventListener('click', () => {
+            _hideTabGroupContextMenu();
+            removeTabFromGroup(tab.id);
+        });
+        menu.appendChild(removeFromGroup);
+    }
+
+    const divider = document.createElement('div');
+    divider.className = 'context-menu-divider';
+    menu.appendChild(divider);
+
+    const closeItem = document.createElement('div');
+    closeItem.className = 'context-menu-item';
+    closeItem.textContent = 'Close Tab';
+    closeItem.addEventListener('click', () => {
+        _hideTabGroupContextMenu();
+        closeTab(tab.id);
+    });
+    menu.appendChild(closeItem);
+
+    if (tabs.length > 1) {
+        const closeOthers = document.createElement('div');
+        closeOthers.className = 'context-menu-item';
+        closeOthers.textContent = 'Close Other Tabs';
+        closeOthers.addEventListener('click', () => {
+            _hideTabGroupContextMenu();
+            const idsToClose = new Set(tabs.filter(t => t.id !== tab.id).map(t => t.id));
+            for (const tid of idsToClose) _cleanupTabCaches(tid);
+            tabs = tabs.filter(t => !idsToClose.has(t.id));
+            tabGroups = tabGroups.filter(g => tabs.some(t => t.groupId === g.id));
+            activeTabId = tab.id;
+            switchToTab(activeTabId);
+        });
+        menu.appendChild(closeOthers);
+    }
+
+    const tabIndex = tabs.indexOf(tab);
+    if (tabIndex < tabs.length - 1) {
+        const closeRight = document.createElement('div');
+        closeRight.className = 'context-menu-item';
+        closeRight.textContent = 'Close Tabs to the Right';
+        closeRight.addEventListener('click', () => {
+            _hideTabGroupContextMenu();
+            const idsToClose = new Set(tabs.slice(tabIndex + 1).map(t => t.id));
+            for (const tid of idsToClose) _cleanupTabCaches(tid);
+            tabs = tabs.filter(t => !idsToClose.has(t.id));
+            tabGroups = tabGroups.filter(g => tabs.some(t => t.groupId === g.id));
+            if (!tabs.find(t => t.id === activeTabId)) activeTabId = tab.id;
+            switchToTab(activeTabId);
+        });
+        menu.appendChild(closeRight);
+    }
+
+    _showContextMenuAt(menu, e);
+}
+
+// ── Tab Group Label Context Menu ──
+
+function showTabGroupContextMenu(e, group) {
+    hideContextMenu();
+    const menu = document.createElement('div');
+    menu.className = 'tab-group-context-menu';
+
+    const renameItem = document.createElement('div');
+    renameItem.className = 'context-menu-item';
+    renameItem.textContent = 'Rename Group';
+    renameItem.addEventListener('click', () => {
+        _hideTabGroupContextMenu();
+        renameTabGroup(group.id);
+    });
+    menu.appendChild(renameItem);
+
+    const colorContainer = document.createElement('div');
+    colorContainer.className = 'context-menu-item tab-group-color-picker-row';
+    const colorLabel = document.createElement('span');
+    colorLabel.textContent = 'Color';
+    colorLabel.style.marginRight = 'auto';
+    colorContainer.appendChild(colorLabel);
+    const pickerWrap = document.createElement('div');
+    pickerWrap.className = 'tab-group-color-picker';
+    for (const c of TAB_GROUP_COLORS) {
+        const swatch = document.createElement('div');
+        swatch.className = `tab-group-color-swatch${c.id === group.color ? ' active' : ''}`;
+        swatch.style.backgroundColor = c.value;
+        swatch.title = c.label;
+        swatch.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            _hideTabGroupContextMenu();
+            setTabGroupColor(group.id, c.id);
+        });
+        pickerWrap.appendChild(swatch);
+    }
+    colorContainer.appendChild(pickerWrap);
+    menu.appendChild(colorContainer);
+
+    const div1 = document.createElement('div');
+    div1.className = 'context-menu-divider';
+    menu.appendChild(div1);
+
+    const ungroupItem = document.createElement('div');
+    ungroupItem.className = 'context-menu-item';
+    ungroupItem.textContent = 'Ungroup';
+    ungroupItem.addEventListener('click', () => {
+        _hideTabGroupContextMenu();
+        ungroupTabs(group.id);
+    });
+    menu.appendChild(ungroupItem);
+
+    const closeGroupItem = document.createElement('div');
+    closeGroupItem.className = 'context-menu-item context-menu-item-danger';
+    closeGroupItem.textContent = 'Close Group';
+    closeGroupItem.addEventListener('click', () => {
+        _hideTabGroupContextMenu();
+        closeTabGroup(group.id);
+    });
+    menu.appendChild(closeGroupItem);
+
+    const div2 = document.createElement('div');
+    div2.className = 'context-menu-divider';
+    menu.appendChild(div2);
+
+    const saveItem = document.createElement('div');
+    saveItem.className = 'context-menu-item';
+    saveItem.textContent = 'Save Group';
+    saveItem.addEventListener('click', () => {
+        _hideTabGroupContextMenu();
+        saveTabGroupToSaved(group.id);
+    });
+    menu.appendChild(saveItem);
+
+    _showContextMenuAt(menu, e);
+}
+
+// ── Saved Tab Group Context Menu (sidebar) ──
+
+function showSavedTabGroupContextMenu(e, savedGroup) {
+    hideContextMenu();
+    const menu = document.createElement('div');
+    menu.className = 'tab-group-context-menu';
+
+    const restoreItem = document.createElement('div');
+    restoreItem.className = 'context-menu-item';
+    restoreItem.textContent = 'Restore';
+    restoreItem.addEventListener('click', () => {
+        _hideTabGroupContextMenu();
+        restoreSavedTabGroup(savedGroup.id);
+    });
+    menu.appendChild(restoreItem);
+
+    const renameItem = document.createElement('div');
+    renameItem.className = 'context-menu-item';
+    renameItem.textContent = 'Rename';
+    renameItem.addEventListener('click', () => {
+        _hideTabGroupContextMenu();
+        renameSavedTabGroup(savedGroup.id);
+    });
+    menu.appendChild(renameItem);
+
+    const divider = document.createElement('div');
+    divider.className = 'context-menu-divider';
+    menu.appendChild(divider);
+
+    const deleteItem = document.createElement('div');
+    deleteItem.className = 'context-menu-item context-menu-item-danger';
+    deleteItem.textContent = 'Delete';
+    deleteItem.addEventListener('click', () => {
+        _hideTabGroupContextMenu();
+        deleteSavedTabGroup(savedGroup.id);
+    });
+    menu.appendChild(deleteItem);
+
+    _showContextMenuAt(menu, e);
+}
+
+// ── Create Tab Group from Active Tab (keyboard shortcut entry point) ──
+
+async function createTabGroupFromActiveTab() {
+    if (!activeTabId) return;
+    const name = await showPromptDialog('New Tab Group', { placeholder: 'Group name', confirmLabel: 'Create' });
+    if (name == null || name.trim() === '') return;
+    createTabGroup(name.trim(), DEFAULT_GROUP_COLOR, [activeTabId]);
 }
 
 // ==================== VIDEO SCRUBBER ====================
@@ -4095,8 +4774,18 @@ function initWindowLifecycleHandlers() {
         if (isWindowBlurred || isWindowMinimized) return;
         isWindowBlurred = true;
         if (!pauseOnBlur) return;
-        gridContainer.querySelectorAll('video').forEach(v => v.pause());
-        gridContainer.querySelectorAll('.gif-static-overlay').forEach(o => o.classList.add('visible'));
+        // Perf: use VS active cards when available instead of querySelectorAll
+        if (vsState.enabled) {
+            for (const [, card] of vsState.activeCards) {
+                const v = card._mediaEl;
+                if (v && v.tagName === 'VIDEO') v.pause();
+                const overlay = card.querySelector('.gif-static-overlay');
+                if (overlay) overlay.classList.add('visible');
+            }
+        } else {
+            gridContainer.querySelectorAll('video').forEach(v => v.pause());
+            gridContainer.querySelectorAll('.gif-static-overlay').forEach(o => o.classList.add('visible'));
+        }
     });
 
     window.addEventListener('focus', () => {
@@ -4104,10 +4793,20 @@ function initWindowLifecycleHandlers() {
         isWindowBlurred = false;
         if (!pauseOnBlur) return;
         if (isLightboxOpen && pauseOnLightbox) return;
-        gridContainer.querySelectorAll('video').forEach(v => {
-            const p = v.play(); if (p !== undefined) p.catch(() => {});
-        });
-        gridContainer.querySelectorAll('.gif-static-overlay').forEach(o => o.classList.remove('visible'));
+        // Perf: use VS active cards when available instead of querySelectorAll
+        if (vsState.enabled) {
+            for (const [, card] of vsState.activeCards) {
+                const v = card._mediaEl;
+                if (v && v.tagName === 'VIDEO') { const p = v.play(); if (p !== undefined) p.catch(() => {}); }
+                const overlay = card.querySelector('.gif-static-overlay');
+                if (overlay) overlay.classList.remove('visible');
+            }
+        } else {
+            gridContainer.querySelectorAll('video').forEach(v => {
+                const p = v.play(); if (p !== undefined) p.catch(() => {});
+            });
+            gridContainer.querySelectorAll('.gif-static-overlay').forEach(o => o.classList.remove('visible'));
+        }
     });
 }
 

@@ -100,6 +100,7 @@ const SETTINGS_EXPORT_KEYS_JSON = [
     'tabs', 'sidebarExpandedNodes', 'pluginStates',
     'folderSortPrefs',
     'extensionColors', 'keyboardShortcuts', 'playbackSpeeds',
+    'tabGroups', 'savedTabGroups',
 ];
 
 function showSettingsDataStatus(message, type) {
@@ -1479,6 +1480,7 @@ const DEFAULT_SHORTCUTS = {
     convertFile:        { key: 'e', ctrl: true, shift: true, label: 'Convert file', category: 'File Actions' },
     dialogConfirm:  { key: 'Enter', label: 'Confirm dialog', category: 'Dialogs' },
     dialogCancel:   { key: 'Escape', label: 'Cancel dialog', category: 'Dialogs' },
+    newTabGroup:    { key: 'g', ctrl: true, shift: true, label: 'New tab group', category: 'Tabs' },
 };
 
 // Merge user overrides over defaults

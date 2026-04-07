@@ -303,6 +303,7 @@ document.addEventListener('keydown', (e) => {
         const wasMenuVisible = !contextMenu.classList.contains('hidden') || !folderContextMenu.classList.contains('hidden');
         hideContextMenu();
         if (favContextMenu) hideFavContextMenu();
+        if (typeof _hideTabGroupContextMenu === 'function') _hideTabGroupContextMenu();
         if (findSimilarState.active) { clearFindSimilar(); return; }
         if (wasMenuVisible) {
             e.stopImmediatePropagation();

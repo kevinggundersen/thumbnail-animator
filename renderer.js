@@ -278,7 +278,15 @@ function px(n) {
     if (s === undefined) {
         s = k + 'px';
         _pxCache.set(k, s);
-        if (_pxCache.size > PX_CACHE_MAX_SIZE) _pxCache.clear(); // bound memory
+        if (_pxCache.size > PX_CACHE_MAX_SIZE) {
+            // Perf: evict oldest 25% instead of clearing entire cache to avoid burst re-allocations
+            const evictCount = PX_CACHE_MAX_SIZE >>> 2;
+            let i = 0;
+            for (const key of _pxCache.keys()) {
+                if (i++ >= evictCount) break;
+                _pxCache.delete(key);
+            }
+        }
     }
     return s;
 }
@@ -788,6 +796,10 @@ function vsUpdateDOM(startIndex, endIndex) {
 
             // Add to recycle pool
             if (recyclePool.length < VS_MAX_POOL_SIZE) {
+                // Perf: clear focus outline to prevent stale styles on recycled cards
+                if (card === _lastFocusedCard) _lastFocusedCard = null;
+                card.style.outline = '';
+                card.style.outlineOffset = '';
                 recyclePool.push(card);
             }
         }
@@ -1122,6 +1134,7 @@ function _vsScrollRafCallback() {
 }
 
 function _vsScrollSettleCallback() {
+    document.body.classList.remove('is-scrolling'); // Perf: unpause skeleton shimmer
     invalidateScrollCaches();
     runCleanupCycle();
     // Catch up on any visible cards whose media was deferred during fast scroll
@@ -1139,6 +1152,8 @@ function vsOnScroll() {
         window.CG.scheduleRender();
         return;
     }
+
+    document.body.classList.add('is-scrolling'); // Perf: pause skeleton shimmer during scroll
 
     if (vsState.scrollRafId) return; // Already scheduled
     vsState.scrollRafId = requestAnimationFrame(_vsScrollRafCallback);
@@ -1983,6 +1998,46 @@ function showPromptDialog(title, { defaultValue = '', placeholder = '', confirmL
     });
 }
 
+// Restore Tab Group dialog — returns 'replace', 'append', or null (cancel).
+function showRestoreTabGroupDialog(groupName, tabCount) {
+    return new Promise((resolve) => {
+        const overlay = document.createElement('div');
+        overlay.className = 'confirm-dialog';
+        overlay.innerHTML = `
+            <div class="confirm-dialog-content">
+                <h3 class="confirm-dialog-title"></h3>
+                <p class="confirm-dialog-body"></p>
+                <div class="confirm-dialog-buttons restore-dialog-buttons">
+                    <button class="restore-dialog-cancel">Cancel</button>
+                    <button class="restore-dialog-append">Append</button>
+                    <button class="restore-dialog-replace confirm-dialog-ok">Replace All</button>
+                </div>
+            </div>
+        `;
+        overlay.querySelector('.confirm-dialog-title').textContent = `Restore: ${groupName}`;
+        overlay.querySelector('.confirm-dialog-body').textContent = `This group contains ${tabCount} tab${tabCount === 1 ? '' : 's'}. Replace all current tabs or append alongside them?`;
+        const cancelBtn = overlay.querySelector('.restore-dialog-cancel');
+        const appendBtn = overlay.querySelector('.restore-dialog-append');
+        const replaceBtn = overlay.querySelector('.restore-dialog-replace');
+        document.body.appendChild(overlay);
+        setTimeout(() => replaceBtn.focus(), 0);
+
+        const cleanup = (value) => {
+            document.removeEventListener('keydown', onKey, true);
+            overlay.remove();
+            resolve(value);
+        };
+        const onKey = (e) => {
+            if (matchesShortcut(e, 'dialogCancel')) { e.preventDefault(); e.stopPropagation(); cleanup(null); }
+        };
+        document.addEventListener('keydown', onKey, true);
+        replaceBtn.addEventListener('click', () => cleanup('replace'));
+        appendBtn.addEventListener('click', () => cleanup('append'));
+        cancelBtn.addEventListener('click', () => cleanup(null));
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) cleanup(null); });
+    });
+}
+
 confirmDialogOk.addEventListener('click', () => _closeConfirmDialog(true));
 confirmDialogCancel.addEventListener('click', () => _closeConfirmDialog(false));
 confirmDialog.addEventListener('click', (e) => {
@@ -2283,6 +2338,8 @@ const sidebarTree = document.getElementById('sidebar-tree');
 const sidebarResizeHandle = document.getElementById('sidebar-resize-handle');
 const sidebarToggleBtn = document.getElementById('sidebar-toggle-btn');
 const sidebarCollapseBtn = document.getElementById('sidebar-collapse-btn');
+const savedTabGroupsList = document.getElementById('saved-tab-groups-list');
+const saveTabGroupBtn = document.getElementById('save-tab-group-btn');
 
 // ── Inline event wiring (DOM-dependent) ──
 // Make keyboard hint in status bar clickable
@@ -2490,9 +2547,17 @@ let favorites = { version: 2, groups: [] }; // Grouped favorites structure
 let recentFiles = []; // Array of { path, name, url, type, timestamp }
 
 // Track tabs
-let tabs = []; // Array of { id, path, name, sortType, sortOrder }
+let tabs = []; // Array of { id, path, name, sortType, sortOrder, groupId }
 let activeTabId = null;
 let tabIdCounter = 1;
+
+// Track tab groups (visual groups in the tab bar)
+let tabGroups = []; // Array of { id, name, color, collapsed }
+let tabGroupIdCounter = 1;
+
+// Saved tab groups (snapshots for later restoration)
+let savedTabGroups = []; // Array of { id, name, color, tabs: [{ path, name, collectionId, sortType, sortOrder }], savedAt }
+let savedTabGroupIdCounter = 1;
 
 // Track lightbox navigation
 let currentLightboxIndex = -1;
@@ -3593,6 +3658,7 @@ async function invalidateFolderCache(folderPath) {
 // Track currently focused card for keyboard navigation
 let focusedCardIndex = -1;
 let visibleCards = [];
+let _lastFocusedCard = null; // Perf: O(1) outline clear instead of O(n) forEach
 
 // Video scrubber state
 let scrubberCard = null;
@@ -5912,6 +5978,7 @@ function renderItemsProgressive(items) {
         for (let i = 0; i < cardsToObserve.length; i++) {
             observer.observe(cardsToObserve[i]);
         }
+        cardsToObserve.length = 0; // Perf: release initial batch references
 
         // Only trigger masonry layout here for small lists that won't have more chunks
         if (layoutMode === 'masonry' && currentIndex >= items.length) {
@@ -5921,7 +5988,7 @@ function renderItemsProgressive(items) {
         // Start proactive loading for initial chunk
         scheduleProactiveLoadForChunk();
     });
-    
+
     // Continue rendering remaining items in chunks
     function renderNextChunk() {
         if (currentIndex >= items.length) {
@@ -5959,12 +6026,12 @@ function renderItemsProgressive(items) {
             // Batch observer registration for this chunk
             chunkCardsToObserve.forEach(card => {
                 observer.observe(card);
-                cardsToObserve.push(card);
+                // Perf: removed cardsToObserve.push(card) — outer array not needed per-chunk
             });
 
             // No per-chunk masonry relayout — single pass after all cards are in DOM
-            // Trigger proactive loading for this chunk
-            scheduleProactiveLoadForChunk();
+            // Perf: removed per-chunk scheduleProactiveLoadForChunk() — IntersectionObserver
+            // handles visibility-triggered loading; proactive pass runs on initial + final chunk only
         });
         
         // Continue rendering next chunk after allowing UI to breathe
@@ -6032,7 +6099,11 @@ function renderItemsProgressive(items) {
         
         // Sort by distance and load closest items first
         cardsToLoadNow.sort((a, b) => a.distance - b.distance);
-        cardsToLoadNow.slice(0, PARALLEL_LOAD_LIMIT * 2).forEach(({ card, mediaUrl }) => {
+        // Perf: respect media capacity limit to avoid thrashing cleanup cycles
+        const { videos: cv, images: ci } = getMediaCounts();
+        const remainingCapacity = Math.max(0, MAX_TOTAL_MEDIA - cv - ci);
+        const maxToLoad = Math.min(remainingCapacity, PARALLEL_LOAD_LIMIT * 2);
+        cardsToLoadNow.slice(0, maxToLoad).forEach(({ card, mediaUrl }) => {
             createMediaForCard(card, mediaUrl);
         });
     }
@@ -6096,6 +6167,7 @@ function renderItems(items, preservedScrollTop = null) {
     }
     currentHoveredCard = null;
     focusedCardIndex = -1;
+    _lastFocusedCard = null;
     gridContainer.classList.remove('masonry');
     gridContainer.classList.remove('grid');
 
@@ -6180,6 +6252,8 @@ async function resolveGifDuration(card, imageUrl) {
 
     // Try cache first
     const cached = await getCachedGifDuration(filePath, mtime);
+    // Perf: guard against card being recycled during async operations
+    if (!card.isConnected || card.dataset.path !== filePath) return;
     if (cached) {
         card.dataset.gifDuration = String(cached.totalDuration);
         card.dataset.gifFrameCount = String(cached.frameCount);
@@ -6195,7 +6269,9 @@ async function resolveGifDuration(card, imageUrl) {
 
     try {
         const response = await fetch(imageUrl);
+        if (!card.isConnected || card.dataset.path !== filePath) return; // recycled
         const buffer = await response.arrayBuffer();
+        if (!card.isConnected || card.dataset.path !== filePath) return; // recycled
         const urlLower = imageUrl.toLowerCase();
         let result = null;
 
@@ -6205,12 +6281,15 @@ async function resolveGifDuration(card, imageUrl) {
             result = parseWebpDuration(buffer);
             if (!result) {
                 // Static WebP – not animated
-                card.dataset.isStaticWebp = 'true';
-                card.dataset.gifDuration = '0';
+                if (card.isConnected && card.dataset.path === filePath) {
+                    card.dataset.isStaticWebp = 'true';
+                    card.dataset.gifDuration = '0';
+                }
                 return;
             }
         }
 
+        if (!card.isConnected || card.dataset.path !== filePath) return; // recycled
         if (result && result.totalDuration > 0) {
             card.dataset.gifDuration = String(result.totalDuration);
             card.dataset.gifFrameCount = String(result.frameCount);
@@ -6219,7 +6298,9 @@ async function resolveGifDuration(card, imageUrl) {
             card.dataset.gifDuration = '0';
         }
     } catch {
-        card.dataset.gifDuration = '0';
+        if (card.isConnected && card.dataset.path === filePath) {
+            card.dataset.gifDuration = '0';
+        }
     }
 }
 
@@ -6317,6 +6398,7 @@ function createImageForCard(card, imageUrl) {
         }
         const skel = card.querySelector('.card-skeleton');
         if (skel) skel.remove();
+        mediaToRetry.delete(card); // Perf: clear retry entry on successful load
 
         // Detect and apply aspect ratio to card
         // Replace placeholder fallback ratios once real dimensions are known; keep prescanned/hydrated.
@@ -6608,6 +6690,7 @@ function createVideoForCard(card, videoUrl) {
     let hasLoaded = false;
     video.addEventListener('loadedmetadata', () => {
         hasLoaded = true;
+        mediaToRetry.delete(card); // Perf: clear retry entry on successful load
 
         // Remove skeleton placeholder on video load
         const skel = card.querySelector('.card-skeleton');
@@ -7843,22 +7926,32 @@ gridContainer.addEventListener('auxclick', (e) => {
     const card = e.target.closest('.video-card, .folder-card');
     if (!card) return;
 
-    const cards = Array.from(gridContainer.querySelectorAll('.video-card, .folder-card'))
-        .filter(c => c.style.display !== 'none');
-    const index = cards.indexOf(card);
-    if (index < 0) return;
+    // Perf: O(1) clear of previous focus instead of O(n) forEach
+    if (_lastFocusedCard) {
+        _lastFocusedCard.style.outline = '';
+        _lastFocusedCard.style.outlineOffset = '';
+    }
 
-    // Clear previous focus
-    cards.forEach(c => {
-        c.style.outline = '';
-        c.style.outlineOffset = '';
-    });
+    let cards, index;
+    if (vsState.enabled) {
+        // Perf: use VS active cards instead of querySelectorAll
+        cards = Array.from(vsState.activeCards.entries())
+            .sort((a, b) => a[0] - b[0])
+            .map(([, c]) => c);
+        index = cards.indexOf(card);
+    } else {
+        cards = Array.from(gridContainer.querySelectorAll('.video-card, .folder-card'))
+            .filter(c => c.style.display !== 'none');
+        index = cards.indexOf(card);
+    }
+    if (index < 0) return;
 
     // Set new focus
     focusedCardIndex = index;
     visibleCards = cards;
     card.style.outline = '2px solid var(--accent)';
     card.style.outlineOffset = '2px';
+    _lastFocusedCard = card;
 
     updateStatusBarSelection(card);
 });
@@ -7871,6 +7964,7 @@ gridContainer.addEventListener('mouseover', (e) => {
             currentHoveredCard = card;
             const video = card.querySelector('video');
             if (video) {
+                card._scrubVideo = video; // Perf: cache for mousemove handler (avoids querySelector per frame)
                 showScrubber(card, video);
                 // Pause video for scrub mode if hover scrub is enabled
                 if (hoverScrubEnabled) {
@@ -7924,7 +8018,7 @@ gridContainer.addEventListener('mousemove', (e) => {
     if (marqueeState.active) return;
     if (!currentHoveredCard || !currentHoveredCard._scrubbing) return;
     const card = currentHoveredCard;
-    const video = card.querySelector('video');
+    const video = card._scrubVideo || card.querySelector('video'); // Perf: use cached ref
     if (!video || video.readyState < 2 || !video.duration || isNaN(video.duration)) return;
 
     if (!_scrubRafPending) {
@@ -7949,10 +8043,11 @@ gridContainer.addEventListener('mouseout', (e) => {
     if (relatedCard !== currentHoveredCard) {
         // Resume video playback when leaving a scrubbed card
         if (currentHoveredCard._scrubbing) {
-            const video = currentHoveredCard.querySelector('video');
+            const video = currentHoveredCard._scrubVideo || currentHoveredCard.querySelector('video');
             if (video && !(isWindowBlurred && pauseOnBlur) && !(isLightboxOpen && pauseOnLightbox)) video.play().catch(() => {});
             currentHoveredCard._scrubbing = false;
             delete currentHoveredCard._scrubRect; // Invalidate cached rect
+            delete currentHoveredCard._scrubVideo; // Perf: cleanup cached video ref
         }
         hideScrubber(currentHoveredCard);
         hideGifProgress(currentHoveredCard);
@@ -9104,6 +9199,7 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
 
         // Reset keyboard focus
         focusedCardIndex = -1;
+        _lastFocusedCard = null;
         perfTest.end('navigateToFolder', perfStart);
     } catch (error) {
         currentFolderPath = previousFolderPath;
@@ -9495,21 +9591,20 @@ let zoomLayoutTimer = null;
 zoomSlider.addEventListener('input', (e) => {
     zoomLevel = parseInt(e.target.value, 10);
     zoomValue.textContent = `${zoomLevel}%`;
-    // Clear cached tag overlap checks since card sizes changed
-    gridContainer.querySelectorAll('.video-card[data-tag-overlap-checked]').forEach(c => delete c.dataset.tagOverlapChecked);
-    // Instant CSS variable update for visual feedback
+    // Instant CSS variable update for visual feedback (no layout recalc)
     document.documentElement.style.setProperty('--zoom-level', zoomLevel);
     // Re-apply hover scale if it's zoom-dependent
     if (hoverScaleState.withZoom) applyHoverScale();
-    // Throttle the expensive layout recalculation + localStorage write
-    if (zoomLayoutTimer === null) {
-        zoomLayoutTimer = requestAnimationFrame(() => {
-            zoomLayoutTimer = null;
-            applyZoom();
-            deferLocalStorageWrite('zoomLevel', zoomLevel.toString());
-            updateStatusBar();
-        });
-    }
+    // Perf: debounce the expensive layout recalculation (150ms) instead of RAF-per-frame
+    if (zoomLayoutTimer !== null) clearTimeout(zoomLayoutTimer);
+    zoomLayoutTimer = setTimeout(() => {
+        zoomLayoutTimer = null;
+        // Clear cached tag overlap checks since card sizes changed (moved inside debounce)
+        gridContainer.querySelectorAll('.video-card[data-tag-overlap-checked]').forEach(c => delete c.dataset.tagOverlapChecked);
+        applyZoom();
+        deferLocalStorageWrite('zoomLevel', zoomLevel.toString());
+        updateStatusBar();
+    }, 150);
 });
 
 // Tools menu toggle
@@ -11824,6 +11919,11 @@ if (newCollectionBtn) {
     } else {
         console.warn('save-current-search-btn not found in DOM');
     }
+}
+
+// Wire up save-tab-group button
+if (saveTabGroupBtn) {
+    saveTabGroupBtn.addEventListener('click', () => saveAllTabsAsGroup());
 }
 
 // Load collections + saved searches on startup

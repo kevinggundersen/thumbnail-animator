@@ -714,16 +714,18 @@ const _origConsoleWarn = console.warn;
 console.error = (...args) => { _origConsoleError(...args); logToFile('ERROR', args); };
 console.warn = (...args) => { _origConsoleWarn(...args); logToFile('WARN', args); };
 
-// Rotate old log files (keep newest 5)
-try {
-    const logFiles = fs.readdirSync(logsDir)
-        .filter(f => f.startsWith('app-') && f.endsWith('.log'))
-        .sort();
-    while (logFiles.length > 5) {
-        const oldest = logFiles.shift();
-        try { fs.unlinkSync(path.join(logsDir, oldest)); } catch { /* ignore */ }
-    }
-} catch { /* ignore */ }
+// Perf: rotate old log files asynchronously (keep newest 5) — avoid blocking startup
+(async () => {
+    try {
+        const logFiles = (await fs.promises.readdir(logsDir))
+            .filter(f => f.startsWith('app-') && f.endsWith('.log'))
+            .sort();
+        while (logFiles.length > 5) {
+            const oldest = logFiles.shift();
+            await fs.promises.unlink(path.join(logsDir, oldest)).catch(() => {});
+        }
+    } catch { /* ignore */ }
+})();
 
 // Initialize SQLite database
 const appDb = new DatabaseProxy(path.join(userDataPath, 'thumbnail-animator.db'));
@@ -770,11 +772,15 @@ if (nativeScanner && nativeScanner.planCacheEviction) {
 
 // Undo/Redo: app-managed staging folder for deleted files
 const undoTrashDir = path.join(userDataPath, 'undo-trash');
-// Clean any leftovers from previous session (crash recovery), then recreate
-if (fs.existsSync(undoTrashDir)) {
-    fs.rmSync(undoTrashDir, { recursive: true, force: true });
-}
-fs.mkdirSync(undoTrashDir, { recursive: true });
+// Perf: clean leftovers asynchronously to avoid blocking startup (50-200ms for populated dirs)
+let undoTrashReady = false;
+(async () => {
+    try {
+        await fs.promises.rm(undoTrashDir, { recursive: true, force: true });
+    } catch { /* didn't exist */ }
+    await fs.promises.mkdir(undoTrashDir, { recursive: true });
+    undoTrashReady = true;
+})();
 
 let useSystemTrash = false;
 
@@ -1837,11 +1843,16 @@ ipcMain.handle('get-folder-preview', async (event, folderPath, previewCount) => 
                 // Verify the referenced thumbnail files still exist on disk.
                 // Cache eviction may have deleted them; stale URLs yield 404s in the
                 // renderer's <img> tags. If any are missing, regenerate from scratch.
-                const allExist = cacheData.results.every(r => {
-                    if (!r || !r.url) return false;
-                    const p = fileUrlToPath(r.url);
-                    return p && fs.existsSync(p);
-                });
+                // Perf: parallel async access() instead of sequential existsSync()
+                const existChecks = await Promise.all(
+                    cacheData.results.map(async r => {
+                        if (!r || !r.url) return false;
+                        const p = fileUrlToPath(r.url);
+                        if (!p) return false;
+                        try { await fs.promises.access(p); return true; } catch { return false; }
+                    })
+                );
+                const allExist = existChecks.every(Boolean);
                 if (allExist) {
                     logPerf('get-folder-preview', startTime, { cached: 1, count: cacheData.results.length });
                     return { ok: true, value: cacheData.results.slice(0, effectiveCount) };
@@ -2835,248 +2846,6 @@ try {
     console.warn('chokidar not available, file watching disabled');
 }
 const watchedFolders = new Map(); // Map<folderPath, watcher>
-
-// ComfyUI workflow extraction has been moved to plugins/builtin/comfyui-workflow/index.js
-function extractComfyUIWorkflow_REMOVED(filePath) {
-    try {
-        // Only process PNG files
-        if (path.extname(filePath).toLowerCase() !== '.png') {
-            return null;
-        }
-
-        let pngChunksExtract;
-        try {
-            pngChunksExtract = require('png-chunks-extract');
-        } catch (error) {
-            console.warn('png-chunks-extract not available:', error.message);
-            return null;
-        }
-
-        const fileBuffer = fs.readFileSync(filePath);
-        const chunks = pngChunksExtract(fileBuffer);
-
-        // ComfyUI stores workflow data in text chunks
-        // Look for chunks with name "tEXt" or "zTXt" (compressed text) or "iTXt" (international text)
-        const workflowKeys = ['workflow', 'Workflow', 'WORKFLOW', 'prompt', 'Prompt', 'PROMPT', 'comfyui_workflow', 'ComfyUI_Workflow'];
-        
-        // First pass: look for known workflow keys
-        for (const chunk of chunks) {
-            if (chunk.name === 'tEXt' || chunk.name === 'zTXt' || chunk.name === 'iTXt') {
-                try {
-                    let textData;
-                    if (chunk.name === 'zTXt') {
-                        // zTXt chunks are compressed with zlib
-                        const zlib = require('zlib');
-                        // Ensure proper buffer handling
-                        const bufferData = Buffer.isBuffer(chunk.data) ? chunk.data : Buffer.from(chunk.data);
-                        textData = zlib.inflateSync(bufferData).toString('utf8');
-                    } else if (chunk.name === 'iTXt') {
-                        // iTXt chunks have a more complex structure: keyword\0compression\0langtag\0transkey\0text
-                        // For simplicity, try to extract text after the last null byte
-                        let dataStr;
-                        if (Buffer.isBuffer(chunk.data)) {
-                            dataStr = chunk.data.toString('utf8');
-                        } else if (chunk.data instanceof Uint8Array || Array.isArray(chunk.data)) {
-                            dataStr = Buffer.from(chunk.data).toString('utf8');
-                        } else {
-                            dataStr = String(chunk.data);
-                        }
-                        const lastNullIndex = dataStr.lastIndexOf('\0');
-                        if (lastNullIndex !== -1) {
-                            textData = dataStr.substring(lastNullIndex + 1);
-                        } else {
-                            textData = dataStr;
-                        }
-                    } else {
-                        // tEXt chunks are plain text
-                        // Ensure chunk.data is treated as a Buffer and decoded properly
-                        // png-chunks-extract returns data as Uint8Array or Buffer
-                        if (Buffer.isBuffer(chunk.data)) {
-                            textData = chunk.data.toString('utf8');
-                        } else if (chunk.data instanceof Uint8Array || Array.isArray(chunk.data)) {
-                            textData = Buffer.from(chunk.data).toString('utf8');
-                        } else if (typeof chunk.data === 'string') {
-                            textData = chunk.data;
-                        } else {
-                            // Try to convert to buffer
-                            textData = Buffer.from(chunk.data).toString('utf8');
-                        }
-                    }
-
-                    // ComfyUI workflow data format: "key\0value" where \0 is null byte separator
-                    const nullIndex = textData.indexOf('\0');
-                    if (nullIndex === -1) {
-                        // If no null separator, try parsing the entire text as JSON (some formats might not use null separator)
-                        try {
-                            const parsed = JSON.parse(textData);
-                            // Check if it looks like a workflow object
-                            if (parsed && typeof parsed === 'object' && (parsed.nodes || parsed.workflow || parsed.prompt)) {
-                                return {
-                                    key: 'workflow',
-                                    workflow: parsed,
-                                    raw: textData
-                                };
-                            }
-                        } catch (e) {
-                            // Not JSON, continue
-                        }
-                        continue;
-                    }
-
-                    const key = textData.substring(0, nullIndex);
-                    const value = textData.substring(nullIndex + 1);
-
-                    // Check if this is ComfyUI workflow data (case-insensitive check)
-                    const keyLower = key.toLowerCase();
-                    const isWorkflowKey = workflowKeys.some(wk => keyLower === wk.toLowerCase()) || 
-                                         keyLower.includes('workflow') || 
-                                         keyLower.includes('comfyui');
-
-                    // Also check for "prompt" key (ComfyUI stores prompt data separately)
-                    const isPromptKey = keyLower === 'prompt';
-
-                    if (isWorkflowKey || isPromptKey || value.trim().startsWith('{') || value.trim().startsWith('[')) {
-                        try {
-                            // Try to parse as JSON
-                            const workflow = JSON.parse(value);
-                            console.log(`[ComfyUI Debug] Successfully parsed workflow from key "${key}"`);
-                            // For "prompt" key, we still want to return it as workflow data
-                            // For "workflow" key, return as-is
-                            return {
-                                key: key,
-                                workflow: workflow,
-                                raw: value
-                            };
-                        } catch (parseError) {
-                            console.warn(`[ComfyUI Debug] Failed to parse JSON for key "${key}":`, parseError.message);
-                            // If JSON parsing fails, check if it starts with JSON-like characters
-                            const trimmedValue = value.trim();
-                            if (trimmedValue.startsWith('{') || trimmedValue.startsWith('[')) {
-                                // Looks like JSON but failed to parse - return raw
-                                return {
-                                    key: key,
-                                    workflow: null,
-                                    raw: value
-                                };
-                            }
-                            // Not JSON-like, continue to next chunk
-                            continue;
-                        }
-                    }
-                } catch (chunkError) {
-                    // Continue to next chunk if this one fails
-                    console.warn('Error processing PNG chunk:', chunkError.message);
-                    continue;
-                }
-            }
-        }
-        
-        // Second pass: if no workflow found with known keys, check ALL text chunks for JSON that looks like workflow
-        for (const chunk of chunks) {
-            if (chunk.name === 'tEXt' || chunk.name === 'zTXt' || chunk.name === 'iTXt') {
-                try {
-                    let textData;
-                    if (chunk.name === 'zTXt') {
-                        const zlib = require('zlib');
-                        textData = zlib.inflateSync(chunk.data).toString('utf8');
-                    } else if (chunk.name === 'iTXt') {
-                        const dataStr = chunk.data.toString('utf8');
-                        const lastNullIndex = dataStr.lastIndexOf('\0');
-                        if (lastNullIndex !== -1) {
-                            textData = dataStr.substring(lastNullIndex + 1);
-                        } else {
-                            textData = dataStr;
-                        }
-                    } else {
-                        textData = chunk.data.toString('utf8');
-                    }
-
-                    // Try to extract value after null separator
-                    const nullIndex = textData.indexOf('\0');
-                    let valueToCheck = textData;
-                    let key = 'unknown';
-                    
-                    if (nullIndex !== -1) {
-                        key = textData.substring(0, nullIndex);
-                        valueToCheck = textData.substring(nullIndex + 1);
-                    }
-
-                    // Try to parse as JSON
-                    try {
-                        const parsed = JSON.parse(valueToCheck);
-                        // Check if it looks like a ComfyUI workflow (has nodes, workflow structure, etc.)
-                        if (parsed && typeof parsed === 'object') {
-                            // ComfyUI workflows typically have nodes array or workflow/prompt structure
-                            if (Array.isArray(parsed) || 
-                                parsed.nodes || 
-                                parsed.workflow || 
-                                parsed.prompt ||
-                                (typeof parsed === 'object' && Object.keys(parsed).length > 0 && 
-                                 (Object.values(parsed).some(v => typeof v === 'object' && v.class_type)))) {
-                                return {
-                                    key: key,
-                                    workflow: parsed,
-                                    raw: valueToCheck
-                                };
-                            }
-                        }
-                    } catch (parseError) {
-                        // Not valid JSON, skip
-                        continue;
-                    }
-                } catch (chunkError) {
-                    continue;
-                }
-            }
-        }
-
-        // If we get here, no workflow was found - log available chunks for debugging
-        const textChunks = chunks.filter(c => c.name === 'tEXt' || c.name === 'zTXt' || c.name === 'iTXt');
-        if (textChunks.length > 0) {
-            console.log(`[ComfyUI Debug] Found ${textChunks.length} text chunks in PNG, but no workflow detected`);
-            // Log keys and previews of each text chunk for debugging
-            textChunks.forEach((chunk, idx) => {
-                try {
-                    let textData = '';
-                    if (chunk.name === 'zTXt') {
-                        const zlib = require('zlib');
-                        textData = zlib.inflateSync(chunk.data).toString('utf8');
-                    } else {
-                        // Ensure proper buffer decoding for debug output
-                        if (Buffer.isBuffer(chunk.data)) {
-                            textData = chunk.data.toString('utf8');
-                        } else if (chunk.data instanceof Uint8Array || Array.isArray(chunk.data)) {
-                            textData = Buffer.from(chunk.data).toString('utf8');
-                        } else if (typeof chunk.data === 'string') {
-                            textData = chunk.data;
-                        } else {
-                            textData = Buffer.from(chunk.data).toString('utf8');
-                        }
-                    }
-                    
-                    const nullIndex = textData.indexOf('\0');
-                    if (nullIndex !== -1) {
-                        const key = textData.substring(0, nullIndex);
-                        const valuePreview = textData.substring(nullIndex + 1, nullIndex + 150);
-                        console.log(`[ComfyUI Debug] Chunk ${idx} (${chunk.name}): key="${key}", value preview: ${valuePreview}...`);
-                    } else {
-                        console.log(`[ComfyUI Debug] Chunk ${idx} (${chunk.name}): ${textData.substring(0, 150)}...`);
-                    }
-                } catch (e) {
-                    console.log(`[ComfyUI Debug] Chunk ${idx} (${chunk.name}): [could not decode] - ${e.message}`);
-                }
-            });
-        } else {
-            console.log(`[ComfyUI Debug] No text chunks found in PNG file`);
-        }
-
-        return null;
-    } catch (error) {
-        console.warn('Error extracting ComfyUI workflow:', error.message);
-        console.error(error);
-        return null;
-    }
-}
 
 // Get file information
 ipcMain.handle('get-file-info', async (event, filePath) => {

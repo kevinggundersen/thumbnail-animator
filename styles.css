@@ -1537,6 +1537,146 @@ header {
     transition: transform var(--duration-slow) var(--ease-out);
 }
 
+/* ── Tab Group Labels ── */
+.tab-group-label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: var(--space-1) var(--space-2);
+    background-color: color-mix(in srgb, var(--tab-group-color) 15%, transparent);
+    color: var(--tab-group-color);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+    height: 28px;
+    flex-shrink: 0;
+    -webkit-app-region: no-drag;
+    transition: background-color var(--duration-normal);
+    user-select: none;
+}
+
+.tab-group-label:hover {
+    background-color: color-mix(in srgb, var(--tab-group-color) 25%, transparent);
+}
+
+.tab-group-toggle {
+    display: flex;
+    align-items: center;
+    transition: transform var(--duration-fast) var(--ease-out);
+}
+
+.tab-group-toggle.expanded {
+    transform: rotate(90deg);
+}
+
+.tab-group-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100px;
+}
+
+.tab-group-count {
+    font-size: 10px;
+    opacity: 0.7;
+    margin-left: 2px;
+    background: color-mix(in srgb, var(--tab-group-color) 20%, transparent);
+    padding: 1px 6px;
+    border-radius: 8px;
+}
+
+/* Grouped tab indicator — left border tint */
+.tab[data-group-id] {
+    border-left: 2px solid var(--tab-group-color, transparent);
+}
+
+/* Group collapse: hidden member tabs */
+.tab.tab-group-collapsed {
+    display: none !important;
+}
+
+/* Tab group drag-over highlight */
+.tab-group-label.drag-over {
+    outline: 2px solid var(--tab-group-color);
+    outline-offset: -2px;
+    background-color: color-mix(in srgb, var(--tab-group-color) 30%, transparent);
+}
+
+/* ── Tab Group Context Menu ── */
+.tab-group-context-menu {
+    position: fixed;
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    padding: var(--space-1);
+    min-width: 180px;
+    box-shadow: var(--shadow-lg);
+    z-index: var(--z-overlay-modal);
+}
+
+/* Color picker row inside context menu */
+.tab-group-color-picker-row {
+    flex-wrap: wrap;
+}
+
+.tab-group-color-picker {
+    display: flex;
+    gap: var(--space-1);
+    flex-wrap: wrap;
+}
+
+.tab-group-color-swatch {
+    width: 16px;
+    height: 16px;
+    border-radius: var(--radius-full, 50%);
+    cursor: pointer;
+    border: 2px solid transparent;
+    transition: border-color var(--duration-fast), transform var(--duration-fast);
+    flex-shrink: 0;
+}
+
+.tab-group-color-swatch:hover {
+    transform: scale(1.2);
+    border-color: var(--text-primary);
+}
+
+.tab-group-color-swatch.active {
+    border-color: var(--text-primary);
+}
+
+/* ── Sidebar: Saved Tab Group Items ── */
+.saved-tab-group-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: var(--radius-full, 50%);
+    flex-shrink: 0;
+}
+
+/* Restore dialog three-button layout */
+.restore-dialog-buttons {
+    display: flex;
+    gap: var(--space-2);
+    justify-content: flex-end;
+}
+
+.restore-dialog-cancel {
+    background-color: transparent !important;
+    color: var(--text-primary) !important;
+    border: 1px solid var(--border-default) !important;
+}
+
+.restore-dialog-append {
+    background-color: transparent !important;
+    color: var(--text-primary) !important;
+    border: 1px solid var(--border-default) !important;
+}
+
+.restore-dialog-replace {
+    background-color: var(--accent) !important;
+    color: white !important;
+}
+
 .zoom-slider {
     flex: 1;
     height: 6px;
@@ -1871,7 +2011,7 @@ header {
     cursor: pointer;
     font-size: 13px;
     font-weight: 500;
-    transition: background-color var(--duration-normal), color var(--duration-normal), box-shadow var(--duration-normal);
+    transition: background-color var(--duration-normal), color var(--duration-normal);
     display: flex;
     align-items: center;
     gap: 5px;
@@ -2002,7 +2142,7 @@ header {
     justify-content: center;
     align-items: center;
     z-index: var(--z-modal);
-    backdrop-filter: blur(var(--modal-blur));
+    backdrop-filter: blur(4px);
 }
 
 .settings-modal.hidden {
@@ -2023,6 +2163,7 @@ header {
     flex-direction: column;
     animation: modal-enter var(--modal-enter-duration) var(--ease-out-expo);
     overflow: hidden;
+    will-change: transform, opacity;
 }
 
 .settings-modal-header {
@@ -2348,7 +2489,7 @@ header {
     font-family: inherit;
     cursor: pointer;
     outline: none;
-    transition: border-color var(--duration-normal), box-shadow var(--duration-normal);
+    transition: border-color var(--duration-normal);
     min-width: 120px;
 }
 
@@ -2443,7 +2584,7 @@ header {
     border: 1px solid var(--border-default);
     border-radius: var(--radius-full);
     font-size: 13px;
-    transition: border-color var(--duration-normal), box-shadow var(--duration-normal), width var(--duration-slow);
+    transition: border-color var(--duration-normal), width var(--duration-slow);
 }
 
 .search-clear-btn {
@@ -2740,15 +2881,13 @@ button:hover {
 
 /* Gradient overlay for card info */
 .video-card::after {
-    content: '';
+    content: none; /* Perf: pseudo-element not created until hover — eliminates compositor layer on every idle card */
     position: absolute;
     bottom: 0;
     left: 0;
     right: 0;
     height: 50%;
     background: linear-gradient(to top, rgba(0, 0, 0, 0.6) 0%, transparent 100%);
-    opacity: 0;
-    transition: opacity var(--duration-slow) ease;
     pointer-events: none;
     z-index: 1;
 }
@@ -2788,7 +2927,7 @@ button:hover {
     box-shadow: 0 0 0 2px var(--accent), var(--shadow-lg);
     background-color: var(--accent-muted);
     transform: scale(1.03);
-    transition: transform var(--duration-normal) ease, box-shadow var(--duration-normal) ease, background-color var(--duration-normal) ease;
+    transition: transform var(--duration-normal) ease, background-color var(--duration-normal) ease;
 }
 
 .folder-icon {
@@ -2944,6 +3083,7 @@ button:hover {
 }
 
 .video-card:hover::after {
+    content: '';
     opacity: 1;
 }
 
@@ -3008,6 +3148,10 @@ button:hover {
     background: linear-gradient(90deg, transparent 0%, var(--bg-hover) 50%, transparent 100%);
     background-size: 200% 100%;
     animation: skeleton-shimmer 1.5s ease-in-out infinite;
+}
+/* Perf: pause shimmer during scroll to reduce paint pressure */
+.is-scrolling .card-skeleton::after {
+    animation-play-state: paused;
 }
 
 .video-card img.media-thumbnail.thumb-loading { opacity: 0; }
@@ -3371,7 +3515,7 @@ video.blow-up-media {
 }
 
 #lightbox:not(.hidden) {
-    backdrop-filter: blur(24px);
+    backdrop-filter: blur(4px);
 }
 
 #lightbox.hidden {
@@ -3395,6 +3539,7 @@ video.blow-up-media {
     /* Pop effect */
     padding-bottom: 80px; /* Space for file info below */
     overflow: visible;
+    will-change: transform, opacity;
 }
 
 #lightbox.hidden .lightbox-content {
@@ -3838,6 +3983,7 @@ video.blow-up-media {
     z-index: 2000;
     animation: context-menu-enter var(--duration-fast) var(--ease-out);
     contain: layout style paint;
+    will-change: transform, opacity;
 }
 
 .context-menu.hidden {
@@ -3995,7 +4141,7 @@ video.blow-up-media {
     outline: none;
     box-sizing: border-box;
     margin-bottom: var(--space-4);
-    transition: border-color var(--duration-normal), box-shadow var(--duration-normal);
+    transition: border-color var(--duration-normal);
 }
 
 .rename-dialog-content #rename-input:focus {
@@ -6154,7 +6300,7 @@ video.blow-up-media {
 }
 
 .duplicate-compare-lightbox:not(.hidden) {
-    backdrop-filter: blur(24px);
+    backdrop-filter: blur(4px);
 }
 
 .duplicate-compare-lightbox.hidden {
@@ -10171,3 +10317,38 @@ body.reduce-motion *::after {
     margin-top: 6px;
 }
 .lb-insp-similar-empty button:hover { filter: brightness(1.15); }
+
+/* ═══ Accessibility: Reduced Motion ═══ */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+
+    .card-skeleton::after {
+        animation: none;
+    }
+}
+
+/* ═══ Perf: Skip layout/style for hidden modals & overlays ═══ */
+.settings-modal.hidden,
+.organize-dialog.hidden,
+.duplicates-modal.hidden,
+.tag-picker-dialog.hidden,
+.rename-dialog.hidden,
+#batch-rename-overlay.hidden,
+#trim-options-overlay.hidden,
+#convert-overlay.hidden,
+.auto-tag-modal.hidden,
+#ai-model-confirm-overlay.hidden,
+.about-dialog.hidden,
+.confirm-dialog.hidden,
+#file-conflict-dialog.hidden,
+.duplicate-compare-lightbox.hidden {
+    content-visibility: hidden;
+    contain-intrinsic-size: 0;
+}

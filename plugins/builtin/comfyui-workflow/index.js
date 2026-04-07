@@ -46,8 +46,43 @@ function extractWorkflow(filePath) {
     try {
         if (!pngChunksExtract) return null;
 
-        const fileBuffer = require('fs').readFileSync(filePath);
-        const chunks = pngChunksExtract(fileBuffer);
+        const fsModule = require('fs');
+        // Perf: try header-only read first (64KB) — ComfyUI metadata is usually in first few KB.
+        // Avoids reading 10-50MB AI-generated PNGs in full.
+        const HEADER_SIZE = 64 * 1024;
+        let fileBuffer;
+        let chunks;
+        try {
+            const stats = fsModule.statSync(filePath);
+            if (stats.size <= HEADER_SIZE) {
+                fileBuffer = fsModule.readFileSync(filePath);
+                chunks = pngChunksExtract(fileBuffer);
+            } else {
+                // Read only the header first
+                const fd = fsModule.openSync(filePath, 'r');
+                try {
+                    const headerBuf = Buffer.alloc(HEADER_SIZE);
+                    const bytesRead = fsModule.readSync(fd, headerBuf, 0, HEADER_SIZE, 0);
+                    const header = headerBuf.subarray(0, bytesRead);
+                    try {
+                        chunks = pngChunksExtract(header);
+                        fileBuffer = header;
+                    } catch {
+                        // Truncated buffer — fall back to full read
+                        const fullBuf = Buffer.alloc(stats.size);
+                        fsModule.readSync(fd, fullBuf, 0, stats.size, 0);
+                        fileBuffer = fullBuf;
+                        chunks = pngChunksExtract(fileBuffer);
+                    }
+                } finally {
+                    fsModule.closeSync(fd);
+                }
+            }
+        } catch {
+            // Fallback: original full-file read
+            fileBuffer = fsModule.readFileSync(filePath);
+            chunks = pngChunksExtract(fileBuffer);
+        }
 
         // First pass: look for known workflow keys
         for (const chunk of chunks) {
@@ -124,6 +159,20 @@ function extractWorkflow(filePath) {
             } catch (_) { continue; }
         }
 
+        // Perf: if we only read the header and found no workflow, retry with full file
+        if (fileBuffer.length < HEADER_SIZE) {
+            // Already read full file (small file) — no need to retry
+        } else if (fileBuffer.length === HEADER_SIZE) {
+            try {
+                const fullBuffer = require('fs').readFileSync(filePath);
+                if (fullBuffer.length > HEADER_SIZE) {
+                    const fullChunks = pngChunksExtract(fullBuffer);
+                    const result = _searchChunksForWorkflow(fullChunks);
+                    if (result) return result;
+                }
+            } catch { /* give up */ }
+        }
+
         // Debug: log available text chunks when no workflow found
         const textChunks = chunks.filter(c => c.name === 'tEXt' || c.name === 'zTXt' || c.name === 'iTXt');
         if (textChunks.length > 0) {
@@ -169,6 +218,43 @@ function copyWorkflowJSON(filePath, metadata) {
 }
 
 // --- helpers ---
+
+/** Perf: consolidated search used by the full-file fallback path */
+function _searchChunksForWorkflow(chunks) {
+    for (const chunk of chunks) {
+        if (chunk.name !== 'tEXt' && chunk.name !== 'zTXt' && chunk.name !== 'iTXt') continue;
+        try {
+            const textData = _decodeChunk(chunk);
+            if (textData === null) continue;
+            const nullIndex = textData.indexOf('\0');
+            if (nullIndex === -1) {
+                try {
+                    const parsed = JSON.parse(textData);
+                    if (parsed && typeof parsed === 'object' && (parsed.nodes || parsed.workflow || parsed.prompt)) {
+                        return { key: 'workflow', workflow: parsed, raw: textData };
+                    }
+                } catch (_) { /* not JSON */ }
+                continue;
+            }
+            const key = textData.substring(0, nullIndex);
+            const value = textData.substring(nullIndex + 1);
+            const keyLower = key.toLowerCase();
+            const isWorkflowKey = workflowKeys.some(wk => keyLower === wk.toLowerCase()) ||
+                keyLower.includes('workflow') || keyLower.includes('comfyui');
+            const isPromptKey = keyLower === 'prompt';
+            if (isWorkflowKey || isPromptKey || value.trim().startsWith('{') || value.trim().startsWith('[')) {
+                try {
+                    const workflow = JSON.parse(value);
+                    return { key, workflow, raw: value };
+                } catch (_) {
+                    const trimmed = value.trim();
+                    if (trimmed.startsWith('{') || trimmed.startsWith('[')) return { key, workflow: null, raw: value };
+                }
+            }
+        } catch (_) { continue; }
+    }
+    return null;
+}
 
 function _decodeChunk(chunk) {
     const zlib = require('zlib');

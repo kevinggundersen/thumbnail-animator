@@ -97,7 +97,21 @@
     --modal-blur-strong: 24px;
     --modal-blur-light: 4px;
     --modal-enter-duration: 0.2s;
+
+    /* Scrollbar */
+    --scrollbar-width: 8px;
+    --scrollbar-radius: 4px;
+    --scrollbar-track: transparent;
+    --scrollbar-thumb: var(--border-strong);
+    --scrollbar-thumb-hover: var(--text-tertiary);
 }
+
+/* ---- Global Scrollbar ---- */
+*::-webkit-scrollbar { width: var(--scrollbar-width); height: var(--scrollbar-width); }
+*::-webkit-scrollbar-track { background: var(--scrollbar-track); }
+*::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: var(--scrollbar-radius); }
+*::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
+* { scrollbar-width: thin; scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track); }
 
 /* Smooth theme color transitions */
 body,
@@ -525,22 +539,6 @@ button:active:not(:disabled):not(.lightbox-nav-btn):not(.lb-inspector-toggle) {
     padding: var(--space-1) 0;
 }
 
-.sidebar-tree::-webkit-scrollbar {
-    width: 6px;
-}
-
-.sidebar-tree::-webkit-scrollbar-track {
-    background: transparent;
-}
-
-.sidebar-tree::-webkit-scrollbar-thumb {
-    background: var(--border-strong);
-    border-radius: 3px;
-}
-
-.sidebar-tree::-webkit-scrollbar-thumb:hover {
-    background: var(--text-tertiary);
-}
 
 /* --- Collections sidebar section --- */
 .sidebar-collections {
@@ -605,18 +603,6 @@ button:active:not(:disabled):not(.lightbox-nav-btn):not(.lb-inspector-toggle) {
     padding: 0 0 var(--space-1) 0;
 }
 
-.collections-list::-webkit-scrollbar {
-    width: 6px;
-}
-
-.collections-list::-webkit-scrollbar-track {
-    background: transparent;
-}
-
-.collections-list::-webkit-scrollbar-thumb {
-    background: var(--border-strong);
-    border-radius: 3px;
-}
 
 .collections-list-empty {
     padding: var(--space-2) var(--space-3);
@@ -4635,7 +4621,6 @@ video.blow-up-media {
     gap: var(--space-2);
     overflow-x: auto;
     padding: var(--space-1) 0 var(--space-2);
-    scrollbar-width: thin;
 }
 .auto-tag-tag-row.collapsed .auto-tag-tag-row-strip { display: none; }
 .auto-tag-tag-tile {
@@ -9783,11 +9768,9 @@ body.reduce-motion *::after {
     overflow-y: auto;
     height: 100vh;
     padding: 18px 18px 40px;
-    scrollbar-width: thin;
+    --scrollbar-thumb: rgba(255, 255, 255, 0.16);
+    --scrollbar-thumb-hover: rgba(255, 255, 255, 0.28);
 }
-.lb-inspector-scroll::-webkit-scrollbar { width: 8px; }
-.lb-inspector-scroll::-webkit-scrollbar-track { background: transparent; }
-.lb-inspector-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 4px; }
 
 .lb-insp-sec { margin-bottom: 22px; }
 .lb-insp-sec h4 {

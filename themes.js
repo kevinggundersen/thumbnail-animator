@@ -11,7 +11,8 @@ const THEME_VARIABLES = [
     '--text-primary', '--text-secondary', '--text-tertiary', '--text-color',
     '--accent', '--accent-hover', '--accent-muted', '--accent-strong', '--accent-color',
     '--success', '--warning', '--danger', '--info',
-    '--shadow-sm', '--shadow-md', '--shadow-lg', '--shadow-xl'
+    '--shadow-sm', '--shadow-md', '--shadow-lg', '--shadow-xl',
+    '--scrollbar-thumb', '--scrollbar-thumb-hover', '--scrollbar-track'
 ];
 
 // ---- Color utilities ----

@@ -207,6 +207,14 @@ function showContextMenu(event, card) {
         }
     }
 
+    // Show single-file actions (Open, Open With) — grid context
+    if (!isFolder) {
+        const openItem = menu.querySelector('[data-action="open"]');
+        if (openItem) openItem.style.display = '';
+        const openWithItem = menu.querySelector('[data-action="open-with"]');
+        if (openWithItem) openWithItem.style.display = '';
+    }
+
     // "Export Trim…" — lightbox-only (needs marker state from the filmstrip)
     // and "Convert…" — always available for media files
     if (!isFolder) {
@@ -424,7 +432,10 @@ contextMenu.addEventListener('click', async (e) => {
 
         case 'open':
             try {
-                await window.electronAPI.openWithDefault(filePath);
+                const odResult = await window.electronAPI.openWithDefault(filePath);
+                if (odResult && !odResult.ok) {
+                    showToast(`Could not open file: ${friendlyError(odResult.error)}`, 'error');
+                }
             } catch (error) {
                 showToast(`Could not open file: ${friendlyError(error)}`, 'error');
             }
@@ -432,8 +443,15 @@ contextMenu.addEventListener('click', async (e) => {
 
         case 'open-with':
             try {
-                await window.electronAPI.openWith(filePath);
+                console.log('[open-with] action triggered, filePath:', filePath);
+                showToast('Opening "Open With" dialog...', 'info');
+                const owResult = await window.electronAPI.openWith(filePath);
+                console.log('[open-with] IPC result:', owResult);
+                if (owResult && !owResult.ok) {
+                    showToast(`Could not open file: ${friendlyError(owResult.error)}`, 'error');
+                }
             } catch (error) {
+                console.error('[open-with] error:', error);
                 showToast(`Could not open file: ${friendlyError(error)}`, 'error');
             }
             break;

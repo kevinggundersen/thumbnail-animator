@@ -2587,29 +2587,55 @@ ipcMain.handle('copy-image-to-clipboard', async (event, filePath) => {
 ipcMain.handle('open-with', async (event, filePath) => {
     try {
         if (process.platform === 'win32') {
-            const { execFile } = require('child_process');
+            const { spawn } = require('child_process');
 
             // Ensure we have an absolute path
             const absolutePath = path.resolve(filePath);
 
             // Verify the file exists
             if (!fs.existsSync(absolutePath)) {
-                console.error('File does not exist:', absolutePath);
-                return { ok: false, error:'File does not exist' };
+                console.error('[open-with] File does not exist:', absolutePath);
+                return { ok: false, error: 'File does not exist' };
             }
 
-            // Use execFile to avoid shell injection - passes args as array, not through shell
+            // rundll32 doesn't use standard argv parsing — it reads the raw command
+            // line and passes everything after the function name verbatim to the DLL
+            // entry point.  Node's default quoting wraps paths-with-spaces in double
+            // quotes, but OpenAs_RunDLL receives those literal quote chars, can't find
+            // the file, and silently exits.  windowsVerbatimArguments:true prevents
+            // Node from adding quotes so the raw path reaches the function correctly.
+            const win = BrowserWindow.fromWebContents(event.sender);
             return new Promise((resolve) => {
-                execFile('rundll32.exe', ['shell32.dll,OpenAs_RunDLL', absolutePath], {
+                let resolved = false;
+                const child = spawn('rundll32.exe',
+                    ['shell32.dll,OpenAs_RunDLL ' + absolutePath], {
+                    windowsVerbatimArguments: true,
                     cwd: path.dirname(absolutePath)
-                }, (error) => {
-                    if (error) {
-                        console.error('Error executing open-with command:', error);
-                        resolve({ ok: false, error:error.message });
-                    } else {
-                        resolve({ ok: true, value: null });
+                });
+
+                child.on('error', (error) => {
+                    if (!resolved) {
+                        resolved = true;
+                        console.error('[open-with] spawn error:', error);
+                        resolve({ ok: false, error: error.message });
                     }
                 });
+
+                child.on('exit', (code) => {
+                    if (!resolved) {
+                        resolved = true;
+                        if (code !== 0 && code !== null) {
+                            resolve({ ok: false, error: `Open With dialog failed (code ${code})` });
+                        } else {
+                            resolve({ ok: true, value: null });
+                        }
+                    }
+                });
+
+                // Blur the Electron window so the dialog gets foreground focus
+                setTimeout(() => {
+                    if (win && !win.isDestroyed()) win.blur();
+                }, 200);
             });
         } else {
             // For non-Windows, fall back to default app
@@ -2617,8 +2643,8 @@ ipcMain.handle('open-with', async (event, filePath) => {
             return { ok: true, value: null };
         }
     } catch (error) {
-        console.error('Error opening file with dialog:', error);
-        return { ok: false, error:error.message };
+        console.error('[open-with] Error:', error);
+        return { ok: false, error: error.message };
     }
 });
 

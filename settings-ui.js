@@ -843,9 +843,13 @@ useSystemTrashLabel.textContent = useSystemTrash ? 'On' : 'Off';
 if (useSystemTrash) window.electronAPI.setUseSystemTrash(true);
 
 // Card info toggles
-[cardInfoExtensionToggle, cardInfoResolutionToggle, cardInfoSizeToggle, cardInfoDateToggle, cardInfoDurationToggle, cardInfoStarsToggle, cardInfoAudioToggle, cardInfoFilenameToggle, cardInfoTagsToggle, cardInfoExtensionHoverToggle, cardInfoResolutionHoverToggle, cardInfoSizeHoverToggle, cardInfoDateHoverToggle, cardInfoStarsHoverToggle, cardInfoAudioHoverToggle, cardInfoFilenameHoverToggle, cardInfoTagsHoverToggle, cardInfoHoverTooltipToggle]
+[cardInfoExtensionToggle, cardInfoResolutionToggle, cardInfoSizeToggle, cardInfoDateToggle, cardInfoDurationToggle, cardInfoStarsToggle, cardInfoAudioToggle, cardInfoFilenameToggle, cardInfoTagsToggle, cardInfoExtensionHoverToggle, cardInfoResolutionHoverToggle, cardInfoSizeHoverToggle, cardInfoDateHoverToggle, cardInfoStarsHoverToggle, cardInfoAudioHoverToggle, cardInfoFilenameHoverToggle, cardInfoTagsHoverToggle, cardInfoHoverTooltipToggle, tooltipShowNameToggle, tooltipShowPathToggle, tooltipShowDimensionsToggle, tooltipShowFileSizeToggle, tooltipShowDurationToggle, tooltipShowDateToggle, tooltipShowRatingToggle, tooltipShowTagsToggle]
     .filter(Boolean)
     .forEach(el => el.addEventListener('change', () => onCardInfoSettingsChanged()));
+// Tooltip display option inputs (number + select)
+[tooltipDelayInput, tooltipMaxWidthInput].filter(Boolean)
+    .forEach(el => el.addEventListener('input', () => onCardInfoSettingsChanged()));
+if (tooltipPositionSelect) tooltipPositionSelect.addEventListener('change', () => onCardInfoSettingsChanged());
 
 // Pause on lightbox toggle
 pauseOnLightboxToggle.addEventListener('change', () => {

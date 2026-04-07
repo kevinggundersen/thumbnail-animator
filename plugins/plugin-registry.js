@@ -45,6 +45,8 @@ class PluginRegistry {
         this._settingsPanelsByPlugin = new Map();
         // Map<ext, {pluginId, rendererId, mode, mimeType}> — lightbox renderers
         this._lightboxRenderersByExt = new Map();
+        // Map<pluginId, Array<tooltipSection>> — tooltip sections
+        this._tooltipSectionsByPlugin = new Map();
         // Set of plugin IDs that came from builtin directories
         this._builtinPluginIds = new Set();
         // Global plugin ordering — controls execution priority
@@ -191,6 +193,11 @@ class PluginRegistry {
         // Index info sections (plugin-contributed file info panel sections)
         if (Array.isArray(capabilities.infoSections) && capabilities.infoSections.length > 0) {
             this._infoSectionsByPlugin.set(id, capabilities.infoSections);
+        }
+
+        // Index tooltip sections (plugin-contributed hover tooltip rows)
+        if (Array.isArray(capabilities.tooltipSections) && capabilities.tooltipSections.length > 0) {
+            this._tooltipSectionsByPlugin.set(id, capabilities.tooltipSections);
         }
 
         // Index thumbnail generators
@@ -392,6 +399,43 @@ class PluginRegistry {
         return callWithTimeout(() => instance[sectionDef.method](filePath, pluginMetadata));
     }
 
+    // --- Tooltip Sections ---
+
+    /**
+     * Returns all plugin-contributed tooltip sections as a flat array.
+     * Renderer uses these to append extra rows in the card hover tooltip.
+     */
+    getAllTooltipSections() {
+        const sections = [];
+        for (const [pluginId, tooltipSections] of this._tooltipSectionsByPlugin) {
+            if (this._disabledPlugins.has(pluginId)) continue;
+            for (const section of tooltipSections) {
+                sections.push({ ...section, pluginId });
+            }
+        }
+        return sections;
+    }
+
+    /**
+     * Execute a plugin tooltip section renderer method.
+     * Returns { html } or null. Uses a shorter 3s timeout since tooltips are latency-sensitive.
+     */
+    async renderTooltipSection(pluginId, sectionId, filePath, pluginMetadata) {
+        const manifest = this._manifests.get(pluginId);
+        if (!manifest) throw new Error(`Unknown plugin: ${pluginId}`);
+
+        const caps = manifest.capabilities || {};
+        const sectionDef = (caps.tooltipSections || []).find(s => s.id === sectionId);
+        if (!sectionDef) throw new Error(`Unknown tooltip section "${sectionId}" in plugin "${pluginId}"`);
+
+        const instance = await this._loadPlugin(pluginId);
+        if (typeof instance[sectionDef.method] !== 'function') {
+            throw new Error(`Plugin "${pluginId}" does not export method "${sectionDef.method}"`);
+        }
+
+        return callWithTimeout(() => instance[sectionDef.method](filePath, pluginMetadata), 3000);
+    }
+
     // --- Thumbnail Generators ---
 
     /**
@@ -591,6 +635,7 @@ class PluginRegistry {
         this._pluginOrder = this._pluginOrder.filter(id => id !== pluginId);
         this._contextMenuItemsByPlugin.delete(pluginId);
         this._infoSectionsByPlugin.delete(pluginId);
+        this._tooltipSectionsByPlugin.delete(pluginId);
         this._batchOpsByPlugin.delete(pluginId);
         this._settingsPanelsByPlugin.delete(pluginId);
 
@@ -692,6 +737,7 @@ class PluginRegistry {
         this._extraVideoExtensions.clear();
         this._extraImageExtensions.clear();
         this._infoSectionsByPlugin.clear();
+        this._tooltipSectionsByPlugin.clear();
         this._thumbGeneratorsByExt.clear();
         this._batchOpsByPlugin.clear();
         this._settingsPanelsByPlugin.clear();

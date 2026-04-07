@@ -100,6 +100,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getPluginInfoSections: () => ipcRenderer.invoke('get-plugin-info-sections'),
     renderPluginInfoSection: (pluginId, sectionId, filePath, pluginMetadata) =>
         ipcRenderer.invoke('render-plugin-info-section', pluginId, sectionId, filePath, pluginMetadata),
+    getPluginTooltipSections: () => ipcRenderer.invoke('get-plugin-tooltip-sections'),
+    renderPluginTooltipSection: (pluginId, sectionId, filePath, pluginMetadata) =>
+        ipcRenderer.invoke('render-plugin-tooltip-section', pluginId, sectionId, filePath, pluginMetadata),
     getPluginBatchOperations: () => ipcRenderer.invoke('get-plugin-batch-operations'),
     executePluginBatchOperation: (pluginId, operationId, filePaths, options) =>
         ipcRenderer.invoke('execute-plugin-batch-operation', pluginId, operationId, filePaths, options),

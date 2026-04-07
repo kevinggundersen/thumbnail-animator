@@ -2071,6 +2071,19 @@ const cardInfoTagsHoverLabel = document.getElementById('card-info-tags-hover-lab
 const cardInfoTagsHoverRow = document.getElementById('card-info-tags-hover-row');
 const cardInfoHoverTooltipToggle = document.getElementById('card-info-hover-tooltip-toggle');
 const cardInfoHoverTooltipLabel = document.getElementById('card-info-hover-tooltip-label');
+// Tooltip per-field toggles
+const tooltipShowNameToggle = document.getElementById('tooltip-show-name-toggle');
+const tooltipShowPathToggle = document.getElementById('tooltip-show-path-toggle');
+const tooltipShowDimensionsToggle = document.getElementById('tooltip-show-dimensions-toggle');
+const tooltipShowFileSizeToggle = document.getElementById('tooltip-show-file-size-toggle');
+const tooltipShowDurationToggle = document.getElementById('tooltip-show-duration-toggle');
+const tooltipShowDateToggle = document.getElementById('tooltip-show-date-toggle');
+const tooltipShowRatingToggle = document.getElementById('tooltip-show-rating-toggle');
+const tooltipShowTagsToggle = document.getElementById('tooltip-show-tags-toggle');
+// Tooltip display options
+const tooltipDelayInput = document.getElementById('tooltip-delay-input');
+const tooltipMaxWidthInput = document.getElementById('tooltip-max-width-input');
+const tooltipPositionSelect = document.getElementById('tooltip-position-select');
 const useSystemTrashToggle = document.getElementById('use-system-trash-toggle');
 const useSystemTrashLabel = document.getElementById('use-system-trash-label');
 let useSystemTrash = localStorage.getItem('useSystemTrash') === 'true';
@@ -2275,7 +2288,20 @@ const DEFAULT_CARD_INFO = Object.freeze({
     audioLabelOnlyOnHover: false,
     filenameOnlyOnHover: true,
     tagsOnlyOnHover: false,
-    hoverTooltip: true
+    hoverTooltip: true,
+    // Per-field tooltip visibility
+    tooltipShowName: true,
+    tooltipShowPath: true,
+    tooltipShowDimensions: true,
+    tooltipShowFileSize: true,
+    tooltipShowDuration: true,
+    tooltipShowDate: true,
+    tooltipShowRating: true,
+    tooltipShowTags: true,
+    // Tooltip display options
+    tooltipDelay: 500,
+    tooltipMaxWidth: 360,
+    tooltipPosition: 'auto'
 });
 let cardInfoSettings = { ...DEFAULT_CARD_INFO };
 
@@ -4652,6 +4678,9 @@ function syncCardInfoToggleLabels() {
     if (cardInfoTagsHoverLabel) cardInfoTagsHoverLabel.textContent = cardInfoSettings.tagsOnlyOnHover ? 'On' : 'Off';
     if (cardInfoTagsHoverRow) cardInfoTagsHoverRow.classList.toggle('hidden', !cardInfoSettings.tags);
     if (cardInfoHoverTooltipLabel) cardInfoHoverTooltipLabel.textContent = cardInfoSettings.hoverTooltip ? 'On' : 'Off';
+    // Show/hide tooltip sub-settings based on master toggle
+    const tooltipSubSection = document.getElementById('tooltip-sub-settings');
+    if (tooltipSubSection) tooltipSubSection.classList.toggle('hidden', !cardInfoSettings.hoverTooltip);
 }
 
 function syncCardInfoTogglesFromState() {
@@ -4673,6 +4702,19 @@ function syncCardInfoTogglesFromState() {
     if (cardInfoFilenameHoverToggle) cardInfoFilenameHoverToggle.checked = cardInfoSettings.filenameOnlyOnHover;
     if (cardInfoTagsHoverToggle) cardInfoTagsHoverToggle.checked = cardInfoSettings.tagsOnlyOnHover;
     if (cardInfoHoverTooltipToggle) cardInfoHoverTooltipToggle.checked = cardInfoSettings.hoverTooltip;
+    // Tooltip per-field toggles
+    if (tooltipShowNameToggle) tooltipShowNameToggle.checked = cardInfoSettings.tooltipShowName;
+    if (tooltipShowPathToggle) tooltipShowPathToggle.checked = cardInfoSettings.tooltipShowPath;
+    if (tooltipShowDimensionsToggle) tooltipShowDimensionsToggle.checked = cardInfoSettings.tooltipShowDimensions;
+    if (tooltipShowFileSizeToggle) tooltipShowFileSizeToggle.checked = cardInfoSettings.tooltipShowFileSize;
+    if (tooltipShowDurationToggle) tooltipShowDurationToggle.checked = cardInfoSettings.tooltipShowDuration;
+    if (tooltipShowDateToggle) tooltipShowDateToggle.checked = cardInfoSettings.tooltipShowDate;
+    if (tooltipShowRatingToggle) tooltipShowRatingToggle.checked = cardInfoSettings.tooltipShowRating;
+    if (tooltipShowTagsToggle) tooltipShowTagsToggle.checked = cardInfoSettings.tooltipShowTags;
+    // Tooltip display options
+    if (tooltipDelayInput) tooltipDelayInput.value = cardInfoSettings.tooltipDelay;
+    if (tooltipMaxWidthInput) tooltipMaxWidthInput.value = cardInfoSettings.tooltipMaxWidth;
+    if (tooltipPositionSelect) tooltipPositionSelect.value = cardInfoSettings.tooltipPosition;
     syncCardInfoToggleLabels();
 }
 
@@ -4682,13 +4724,19 @@ function hydrateCardInfoSettings() {
         if (raw) {
             const parsed = JSON.parse(raw);
             for (const key of Object.keys(DEFAULT_CARD_INFO)) {
-                if (typeof parsed[key] === 'boolean') {
+                if (typeof parsed[key] === typeof DEFAULT_CARD_INFO[key]) {
                     cardInfoSettings[key] = parsed[key];
                 }
             }
         }
     } catch {
         /* use defaults */
+    }
+    // Clamp numeric and enum options to sane ranges
+    cardInfoSettings.tooltipDelay = Math.max(0, Math.min(5000, cardInfoSettings.tooltipDelay || 500));
+    cardInfoSettings.tooltipMaxWidth = Math.max(200, Math.min(800, cardInfoSettings.tooltipMaxWidth || 360));
+    if (!['auto', 'above', 'below'].includes(cardInfoSettings.tooltipPosition)) {
+        cardInfoSettings.tooltipPosition = 'auto';
     }
     syncCardInfoTogglesFromState();
 }
@@ -4717,6 +4765,19 @@ function onCardInfoSettingsChanged() {
     cardInfoSettings.filenameOnlyOnHover = !!cardInfoFilenameHoverToggle?.checked;
     cardInfoSettings.tagsOnlyOnHover = !!cardInfoTagsHoverToggle?.checked;
     cardInfoSettings.hoverTooltip = !!cardInfoHoverTooltipToggle?.checked;
+    // Tooltip per-field toggles
+    cardInfoSettings.tooltipShowName = !!tooltipShowNameToggle?.checked;
+    cardInfoSettings.tooltipShowPath = !!tooltipShowPathToggle?.checked;
+    cardInfoSettings.tooltipShowDimensions = !!tooltipShowDimensionsToggle?.checked;
+    cardInfoSettings.tooltipShowFileSize = !!tooltipShowFileSizeToggle?.checked;
+    cardInfoSettings.tooltipShowDuration = !!tooltipShowDurationToggle?.checked;
+    cardInfoSettings.tooltipShowDate = !!tooltipShowDateToggle?.checked;
+    cardInfoSettings.tooltipShowRating = !!tooltipShowRatingToggle?.checked;
+    cardInfoSettings.tooltipShowTags = !!tooltipShowTagsToggle?.checked;
+    // Tooltip display options
+    cardInfoSettings.tooltipDelay = Math.max(0, Math.min(5000, parseInt(tooltipDelayInput?.value, 10) || 500));
+    cardInfoSettings.tooltipMaxWidth = Math.max(200, Math.min(800, parseInt(tooltipMaxWidthInput?.value, 10) || 360));
+    cardInfoSettings.tooltipPosition = tooltipPositionSelect?.value || 'auto';
     // Hide any existing tooltip immediately when setting is turned off
     if (!cardInfoSettings.hoverTooltip && typeof _hideCardTooltip === 'function') _hideCardTooltip();
     syncCardInfoToggleLabels();
@@ -7697,6 +7758,60 @@ function _ensureCardTooltipEl() {
     return _cardTooltipEl;
 }
 
+// --- Plugin tooltip sections ---
+let _pluginTooltipSectionsCache = null;
+
+async function _getPluginTooltipSections() {
+    if (Array.isArray(_pluginTooltipSectionsCache)) return _pluginTooltipSectionsCache;
+    try {
+        const res = await window.electronAPI.getPluginTooltipSections();
+        _pluginTooltipSectionsCache = res && res.ok ? (res.value || []) : [];
+    } catch {
+        _pluginTooltipSectionsCache = [];
+    }
+    return _pluginTooltipSectionsCache;
+}
+
+async function _appendPluginTooltipSections(tooltipEl, card) {
+    const filePath = card.dataset.path;
+    if (!filePath) return;
+
+    const sections = await _getPluginTooltipSections();
+    if (sections.length === 0) return;
+    if (_cardTooltipCurrentCard !== card) return; // stale
+
+    // Gather plugin metadata from vsState if available
+    let pluginMetadata = null;
+    if (typeof card._vsItemIndex === 'number' && vsState.sortedItems?.[card._vsItemIndex]) {
+        pluginMetadata = vsState.sortedItems[card._vsItemIndex].pluginMetadata || null;
+    }
+
+    for (const section of sections) {
+        // Check appliesTo filter
+        if (section.appliesTo?.hasMetadata && (!pluginMetadata || !pluginMetadata[section.appliesTo.hasMetadata])) {
+            continue;
+        }
+
+        try {
+            const res = await window.electronAPI.renderPluginTooltipSection(
+                section.pluginId, section.id, filePath, pluginMetadata
+            );
+            if (_cardTooltipCurrentCard !== card) return; // stale after await
+            if (!res || !res.ok || !res.value?.html) continue;
+
+            const wrapper = document.createElement('div');
+            wrapper.className = 'cht-plugin-section';
+            wrapper.innerHTML = res.value.html;
+            tooltipEl.appendChild(wrapper);
+
+            // Reposition after content change
+            _positionCardTooltip(tooltipEl, card);
+        } catch {
+            // Silently skip failed plugin sections in tooltip
+        }
+    }
+}
+
 function _buildCardTooltipHtml(card) {
     const path = card.dataset.path;
     if (!path) return null;
@@ -7716,24 +7831,28 @@ function _buildCardTooltipHtml(card) {
 
     const rows = [];
     // Filename as heading
-    rows.push(`<div class="cht-name">${escapeHtml(name)}</div>`);
+    if (cardInfoSettings.tooltipShowName) {
+        rows.push(`<div class="cht-name">${escapeHtml(name)}</div>`);
+    }
     // Truncated path
-    rows.push(`<div class="cht-path">${escapeHtml(path)}</div>`);
+    if (cardInfoSettings.tooltipShowPath) {
+        rows.push(`<div class="cht-path">${escapeHtml(path)}</div>`);
+    }
 
     const details = [];
-    if (width > 0 && height > 0) details.push(`${width}\u00d7${height}`);
-    if (size != null && size > 0) details.push(formatBytesForCardLabel(size));
-    if (duration != null && duration > 0) details.push(formatMediaDuration(duration));
-    if (mtime > 0) details.push(formatCardDate(mtime));
+    if (cardInfoSettings.tooltipShowDimensions && width > 0 && height > 0) details.push(`${width}\u00d7${height}`);
+    if (cardInfoSettings.tooltipShowFileSize && size != null && size > 0) details.push(formatBytesForCardLabel(size));
+    if (cardInfoSettings.tooltipShowDuration && duration != null && duration > 0) details.push(formatMediaDuration(duration));
+    if (cardInfoSettings.tooltipShowDate && mtime > 0) details.push(formatCardDate(mtime));
     if (details.length > 0) {
         rows.push(`<div class="cht-details">${details.map(d => escapeHtml(d)).join('  \u2022  ')}</div>`);
     }
 
-    if (rating > 0) {
+    if (cardInfoSettings.tooltipShowRating && rating > 0) {
         rows.push(`<div class="cht-rating">${'\u2605'.repeat(rating)}${'\u2606'.repeat(5 - rating)}</div>`);
     }
 
-    if (tags.length > 0) {
+    if (cardInfoSettings.tooltipShowTags && tags.length > 0) {
         const chips = tags.slice(0, 8).map(t => {
             const color = t.color ? ` style="background:${escapeHtml(t.color)}"` : '';
             return `<span class="cht-tag"${color}>${escapeHtml(t.name)}</span>`;
@@ -7742,6 +7861,7 @@ function _buildCardTooltipHtml(card) {
         rows.push(`<div class="cht-tags">${chips}${more}</div>`);
     }
 
+    if (rows.length === 0) return null;
     return rows.join('');
 }
 
@@ -7752,10 +7872,25 @@ function _positionCardTooltip(tooltip, card) {
     // Measure tooltip after content assigned
     const tw = tooltip.offsetWidth;
     const th = tooltip.offsetHeight;
-    // Prefer below-right of the card; flip if not enough room
+    const hasScrubUI = card._scrubbing || !!card.querySelector('.gif-progress-bar.show');
+    const posPref = cardInfoSettings.tooltipPosition || 'auto';
+
     let left = rect.left;
-    let top = rect.bottom + 8;
-    if (top + th > vh - 8) top = Math.max(8, rect.top - th - 8);
+    let top;
+
+    if (posPref === 'above' || (posPref === 'auto' && hasScrubUI)) {
+        // Prefer above the card (avoids overlapping scrub/GIF progress UI)
+        top = rect.top - th - 8;
+        if (top < 8) top = rect.bottom + (hasScrubUI ? 36 : 8); // extra offset to clear scrub controls
+    } else if (posPref === 'below') {
+        top = rect.bottom + 8;
+        if (top + th > vh - 8) top = Math.max(8, rect.top - th - 8);
+    } else {
+        // auto, no scrub UI: original logic — prefer below-right, flip if not enough room
+        top = rect.bottom + 8;
+        if (top + th > vh - 8) top = Math.max(8, rect.top - th - 8);
+    }
+
     if (left + tw > vw - 8) left = Math.max(8, vw - tw - 8);
     tooltip.style.left = `${Math.round(left)}px`;
     tooltip.style.top = `${Math.round(top)}px`;
@@ -7763,7 +7898,7 @@ function _positionCardTooltip(tooltip, card) {
 
 function _hideCardTooltip() {
     if (_cardTooltipShowTimer) { clearTimeout(_cardTooltipShowTimer); _cardTooltipShowTimer = null; }
-    if (_cardTooltipEl) _cardTooltipEl.classList.remove('visible');
+    if (_cardTooltipEl) _cardTooltipEl.classList.remove('visible', 'cht-scrub-mode');
     _cardTooltipCurrentCard = null;
 }
 
@@ -7775,15 +7910,17 @@ function _scheduleCardTooltip(card) {
     _cardTooltipShowTimer = setTimeout(() => {
         _cardTooltipShowTimer = null;
         if (_cardTooltipCurrentCard !== card) return;
-        // Don't show while scrubbing a video — the scrubber UI is more useful
-        if (card._scrubbing) return;
         const html = _buildCardTooltipHtml(card);
         if (!html) return;
         const el = _ensureCardTooltipEl();
         el.innerHTML = html;
+        el.style.maxWidth = `${cardInfoSettings.tooltipMaxWidth}px`;
+        el.classList.toggle('cht-scrub-mode', !!card._scrubbing);
         el.classList.add('visible');
         _positionCardTooltip(el, card);
-    }, 500);
+        // Append plugin sections asynchronously (core tooltip shows immediately)
+        _appendPluginTooltipSections(el, card);
+    }, cardInfoSettings.tooltipDelay);
 }
 
 gridContainer.addEventListener('mouseover', (e) => {
@@ -11555,6 +11692,7 @@ if (typeof CommandPalette !== 'undefined') {
                     if (typeof _pluginBatchOps !== 'undefined') _pluginBatchOps = null;
                     if (typeof _pluginInfoSections !== 'undefined') _pluginInfoSections = null;
                     if (typeof InspectorPanel !== 'undefined') InspectorPanel._pluginInfoSectionsCache = null;
+                    _pluginTooltipSectionsCache = null;
                 } else {
                     showToast(`Reload failed: ${result ? result.error : 'Unknown error'}`, 'error');
                 }

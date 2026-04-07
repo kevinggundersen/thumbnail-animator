@@ -5349,6 +5349,28 @@ ipcMain.handle('execute-plugin-action', async (event, pluginId, actionId, filePa
 
 wrapIpc('get-plugin-info-sections', () => pluginRegistry.getAllInfoSections());
 
+wrapIpc('get-plugin-tooltip-sections', () => pluginRegistry.getAllTooltipSections());
+
+ipcMain.handle('render-plugin-tooltip-section', async (event, pluginId, sectionId, filePath, pluginMetadata) => {
+    try {
+        // Auto-resolve metadata when caller passes null and section declares appliesTo.hasMetadata
+        let resolvedMetadata = pluginMetadata;
+        if (!resolvedMetadata) {
+            const manifest = pluginRegistry._manifests.get(pluginId);
+            const sectionDef = (manifest?.capabilities?.tooltipSections || []).find(s => s.id === sectionId);
+            if (sectionDef?.appliesTo?.hasMetadata) {
+                const ext = path.extname(filePath).toLowerCase();
+                resolvedMetadata = await pluginRegistry.extractMetadata(filePath, ext);
+            }
+        }
+        const result = await pluginRegistry.renderTooltipSection(pluginId, sectionId, filePath, resolvedMetadata);
+        return { ok: true, value: result };
+    } catch (err) {
+        console.warn(`[Plugin tooltip section] ${pluginId}\\${sectionId} failed:`, err.message);
+        return { ok: false, error: err.message };
+    }
+});
+
 wrapIpc('get-lightbox-renderers', () => pluginRegistry.getAllLightboxRenderers());
 
 wrapIpc('get-plugin-file-type-map', () => {

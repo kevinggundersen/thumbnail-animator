@@ -193,6 +193,7 @@ const ThemeManager = {
     _customThemes: [],
     _systemDarkQuery: null,
     _editingThemeId: null,
+    _themeTransitionTimer: null,
 
     init() {
         // Load custom themes
@@ -243,6 +244,9 @@ const ThemeManager = {
     _applyResolved(id) {
         const el = document.documentElement;
 
+        // Enable theme transitions only during the switch
+        document.body.classList.add('theme-transitioning');
+
         // Clear all theme overrides first
         for (const v of THEME_VARIABLES) {
             el.style.removeProperty(v);
@@ -259,6 +263,12 @@ const ThemeManager = {
         } else {
             el.classList.remove('light-theme');
         }
+
+        // Remove transitioning class after the transition completes (--duration-slow = 0.25s)
+        clearTimeout(this._themeTransitionTimer);
+        this._themeTransitionTimer = setTimeout(() => {
+            document.body.classList.remove('theme-transitioning');
+        }, 300);
 
         // Invalidate style caches if available (defined in renderer.js)
         if (typeof invalidateMasonryStyleCache === 'function') {

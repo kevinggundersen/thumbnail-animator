@@ -676,26 +676,51 @@ function defaultFavoritesStructure() {
     return { version: 2, groups: [{ id: 'uncategorized', name: 'Uncategorized', collapsed: false, items: [] }] };
 }
 
-async function loadFavorites() {
-    try {
-        const result = await window.electronAPI.dbGetFavorites();
-        if (result.ok && result.value && result.value.groups && result.value.groups.length > 0) {
-            favorites = result.value;
-            // Ensure each item has a 'name' derived from path (SQLite only stores path)
-            for (const group of favorites.groups) {
-                for (const item of group.items) {
-                    if (!item.name && item.path) {
-                        item.name = item.path.split(/[/\\]/).pop();
-                    }
+// Shared hydration helpers (used by both individual loaders and batched init)
+function hydrateFavorites(favData) {
+    if (favData && favData.groups && favData.groups.length > 0) {
+        favorites = favData;
+        for (const group of favorites.groups) {
+            for (const item of group.items) {
+                if (!item.name && item.path) {
+                    item.name = item.path.split(/[/\\]/).pop();
                 }
             }
-        } else {
-            favorites = defaultFavoritesStructure();
         }
-    } catch (e) {
+    } else {
         favorites = defaultFavoritesStructure();
     }
     renderFavorites();
+}
+
+const _RECENT_VIDEO_EXTS = new Set(['mp4', 'avi', 'mkv', 'mov', 'webm', 'wmv', 'flv', 'm4v']);
+const _RECENT_IMAGE_EXTS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'tiff', 'svg', 'ico']);
+
+function hydrateRecentFiles(rawEntries) {
+    if (rawEntries) {
+        recentFiles = rawEntries.map(r => {
+            const p = r.path;
+            const name = p.split(/[/\\]/).pop();
+            const ext = (name.split('.').pop() || '').toLowerCase();
+            let type = 'unknown';
+            if (_RECENT_VIDEO_EXTS.has(ext)) type = 'video';
+            else if (_RECENT_IMAGE_EXTS.has(ext)) type = 'image';
+            return { path: p, name, url: pathToFileUrl(p), type, timestamp: r.addedAt || Date.now() };
+        });
+    } else {
+        recentFiles = [];
+    }
+    renderRecentFiles();
+}
+
+async function loadFavorites() {
+    try {
+        const result = await window.electronAPI.dbGetFavorites();
+        hydrateFavorites(result.ok ? result.value : null);
+    } catch (e) {
+        favorites = defaultFavoritesStructure();
+        renderFavorites();
+    }
 }
 
 function saveFavorites() {
@@ -1071,32 +1096,11 @@ function promptFavGroupName(callback, defaultValue = '') {
 async function loadRecentFiles() {
     try {
         const result = await window.electronAPI.dbGetRecentFiles(recentFilesLimitSetting);
-        if (result.ok && result.value) {
-            // SQLite only stores {path, addedAt}. Derive name/type/url for rendering.
-            recentFiles = result.value.map(r => {
-                const p = r.path;
-                const name = p.split(/[/\\]/).pop();
-                const ext = (name.split('.').pop() || '').toLowerCase();
-                const videoExts = ['mp4', 'avi', 'mkv', 'mov', 'webm', 'wmv', 'flv', 'm4v'];
-                const imageExts = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'tiff', 'svg', 'ico'];
-                let type = 'unknown';
-                if (videoExts.includes(ext)) type = 'video';
-                else if (imageExts.includes(ext)) type = 'image';
-                return {
-                    path: p,
-                    name,
-                    url: pathToFileUrl(p),
-                    type,
-                    timestamp: r.addedAt || Date.now()
-                };
-            });
-        } else {
-            recentFiles = [];
-        }
+        hydrateRecentFiles(result.ok ? result.value : null);
     } catch (e) {
         recentFiles = [];
+        renderRecentFiles();
     }
-    renderRecentFiles();
 }
 
 function saveRecentFiles() {
@@ -2635,6 +2639,34 @@ async function loadPins() {
     }
 }
 
+// Batched init data loader — single IPC round-trip for ratings + pins + favorites + recent files.
+// Falls back to individual calls if the batched endpoint isn't available.
+async function loadInitDataBatched() {
+    try {
+        if (window.electronAPI.dbGetInitData) {
+            const result = await window.electronAPI.dbGetInitData(recentFilesLimitSetting);
+            if (result.ok && result.value) {
+                const { ratings, pinned, favorites: favData, recent } = result.value;
+
+                if (ratings) {
+                    fileRatings = ratings;
+                    if (typeof bumpFilterWorkerRatingsVersion === 'function') bumpFilterWorkerRatingsVersion();
+                }
+                if (pinned) {
+                    pinnedFiles = pinned;
+                    if (typeof bumpFilterWorkerPinsVersion === 'function') bumpFilterWorkerPinsVersion();
+                }
+                hydrateFavorites(favData);
+                hydrateRecentFiles(recent);
+                return;
+            }
+        }
+    } catch (e) {
+        console.warn('Batched init data failed, falling back to individual calls:', e);
+    }
+    await Promise.all([loadFavorites(), loadRecentFiles(), loadRatings(), loadPins()]);
+}
+
 function updateCardRating(filePath, rating) {
     // Normalize path for matching
     const normalizedPath = filePath.replace(/\\/g, '/');
@@ -4142,49 +4174,55 @@ async function initTabRestoration() {
 }
 
 // ── Main application init (called on DOMContentLoaded) ──
+// Parallelized startup: independent tasks run concurrently instead of waiting
+// for folder navigation to complete before initializing keyboard shortcuts,
+// theme, sidebar, ratings, etc.
 async function initApplication() {
-    // 1. Restore UI preferences
+    // 1. Restore UI preferences (sync, fast — must be first)
     initPreferences();
 
-    // 2. Check ffmpeg availability
-    try {
-        const ffStatus = await window.electronAPI.hasFfmpeg();
-        hasFfmpegAvailable = ffStatus && ffStatus.ok && ffStatus.value && ffStatus.value.ffmpeg;
-    } catch { /* ffmpeg not available */ }
-
-    // 3. Restore last folder if enabled
-    if (rememberLastFolder) {
-        const lastFolderPath = localStorage.getItem('lastFolderPath');
-        if (lastFolderPath) {
-            showLoadingIndicator();
-            try {
-                await navigateToFolder(lastFolderPath);
-            } catch (error) {
-                console.log('Last folder no longer exists:', lastFolderPath);
-                localStorage.removeItem('lastFolderPath');
-            } finally {
-                hideLoadingIndicator();
-            }
-        }
-    }
-
-    // 4. Window lifecycle handlers
+    // 2. Sync UI init (no IPC, no async — runs immediately)
     initWindowLifecycleHandlers();
-
-    // 5. Core feature init
     initKeyboardShortcuts();
     initTheme();
     initThumbnailQuality();
     initZoom();
 
-    // 6. SQLite migration
-    await initSQLiteMigration();
+    // 3. Fire-and-forget: ffmpeg check (result used lazily when needed)
+    const ffmpegPromise = window.electronAPI.hasFfmpeg().then(r => {
+        hasFfmpegAvailable = r && r.ok && r.value && r.value.ffmpeg;
+    }).catch(() => { /* ffmpeg not available */ });
 
-    // 7. Load persisted data
-    await Promise.all([loadFavorites(), loadRecentFiles(), loadRatings(), loadPins()]);
+    // 4. SQLite migration must complete before data loads, but can overlap with sidebar + folder nav.
+    //    Uses batched IPC (single round-trip) instead of four separate calls.
+    const dataPromise = (async () => {
+        await initSQLiteMigration();
+        await loadInitDataBatched();
+    })();
 
-    // 8. UI components (order matters: sidebar before tabs)
-    await initSidebar();
+    // 5. Sidebar init + folder navigation run concurrently with data loading
+    const sidebarPromise = initSidebar();
+
+    // 6. Restore last folder (can start rendering immediately, even before data loads —
+    //    ratings/pins sync lazily on next card recycle)
+    let folderPromise = Promise.resolve();
+    if (rememberLastFolder) {
+        const lastFolderPath = localStorage.getItem('lastFolderPath');
+        if (lastFolderPath) {
+            showLoadingIndicator();
+            folderPromise = navigateToFolder(lastFolderPath).catch(error => {
+                console.log('Last folder no longer exists:', lastFolderPath, error);
+                localStorage.removeItem('lastFolderPath');
+            }).finally(() => {
+                hideLoadingIndicator();
+            });
+        }
+    }
+
+    // 7. Wait for all concurrent init to complete
+    await Promise.all([ffmpegPromise, dataPromise, sidebarPromise, folderPromise]);
+
+    // 8. UI components that depend on data + sidebar being ready
     loadTabs();
     initVideoScrubber();
     initNewFeatures();

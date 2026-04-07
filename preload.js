@@ -155,6 +155,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Favorites
     dbGetFavorites: () => ipcRenderer.invoke('db-get-favorites'),
     dbSaveFavorites: (favObj) => ipcRenderer.invoke('db-save-favorites', favObj),
+    // Batched init data (single IPC round-trip for startup)
+    dbGetInitData: (recentLimit) => ipcRenderer.invoke('db-get-init-data', recentLimit),
     // Recent files
     dbGetRecentFiles: (limit) => ipcRenderer.invoke('db-get-recent-files', limit),
     dbAddRecentFile: (entry, limit) => ipcRenderer.invoke('db-add-recent-file', entry, limit),

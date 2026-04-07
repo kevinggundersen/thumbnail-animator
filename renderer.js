@@ -74,9 +74,9 @@ function getEffectiveLoadLimit() {
 // Cleanup & Performance Configuration
 const CLEANUP_COOLDOWN_MS = 5; // Cooldown between cleanup operations (ms)
 const CLEANUP_IDLE_INTERVAL_MS = 200; // Low-frequency safety cleanup while idle (ms)
-const VIEWPORT_CACHE_TTL = 100; // Cache viewport bounds for N ms
+const VIEWPORT_CACHE_TTL = 300; // Cache viewport bounds for N ms (invalidated on scroll/resize via generation counter)
 const MEDIA_COUNT_CACHE_TTL = 50; // Cache media counts for N ms
-const CARD_RECT_CACHE_TTL = 34; // Short-lived rect cache for hot scroll/cleanup paths
+const CARD_RECT_CACHE_TTL = 300; // Rect cache for scroll/cleanup paths (invalidated on scroll/resize via generation counter)
 let IMAGE_THUMBNAIL_MAX_EDGE = 768; // Cap cached image thumbs to a practical grid size
 const BACKGROUND_DIMENSION_SCAN_CHUNK_SIZE = 2000; // Larger chunks = fewer layout recalculations
 
@@ -281,6 +281,34 @@ function px(n) {
         if (_pxCache.size > PX_CACHE_MAX_SIZE) _pxCache.clear(); // bound memory
     }
     return s;
+}
+
+// Pre-built DOM templates for fast cloning during card recycling (avoids createElement + innerHTML per recycle)
+let _folderIconTemplate = null; // Cached folder icon node (built lazily)
+function _getFolderIconTemplate() {
+    if (!_folderIconTemplate) {
+        _folderIconTemplate = document.createElement('div');
+        _folderIconTemplate.className = 'folder-icon';
+        _folderIconTemplate.innerHTML = icon('folder', 48);
+    }
+    return _folderIconTemplate.cloneNode(true);
+}
+
+let _groupHeaderTemplate = null; // Cached group header structure (built lazily)
+function _getGroupHeaderTemplate() {
+    if (!_groupHeaderTemplate) {
+        _groupHeaderTemplate = document.createDocumentFragment();
+        const toggle = document.createElement('button');
+        toggle.className = 'dgh-toggle';
+        const label = document.createElement('span');
+        label.className = 'dgh-label';
+        const count = document.createElement('span');
+        count.className = 'dgh-count';
+        _groupHeaderTemplate.appendChild(toggle);
+        _groupHeaderTemplate.appendChild(label);
+        _groupHeaderTemplate.appendChild(count);
+    }
+    return _groupHeaderTemplate.cloneNode(true);
 }
 
 // Pre-built star rating templates for fast cloning (built lazily on first use)
@@ -660,8 +688,13 @@ function vsGetVisibleRange(scrollTop, viewportHeight) {
         return { startIndex: 0, endIndex: 0 };
     }
 
-    const visibleTop = scrollTop - VS_BUFFER_PX;
-    const visibleBottom = scrollTop + viewportHeight + VS_BUFFER_PX;
+    // Bias buffer 70/30 in scroll direction — pre-render more cards ahead of
+    // where the user is scrolling, fewer behind, reducing wasted recycling.
+    const scrollingDown = scrollTop >= _vsLastScrollTop;
+    const forwardBuffer = Math.round(VS_BUFFER_PX * 0.7);
+    const backwardBuffer = VS_BUFFER_PX - forwardBuffer;
+    const visibleTop = scrollTop - (scrollingDown ? backwardBuffer : forwardBuffer);
+    const visibleBottom = scrollTop + viewportHeight + (scrollingDown ? forwardBuffer : backwardBuffer);
 
     // Find startIndex: first item whose bottom edge (top + height) > visibleTop
     // Binary search for both start and end — O(log n) instead of O(n) per scroll frame
@@ -898,12 +931,37 @@ function vsResetCard(card) {
     const overlay = card.querySelector('.gif-static-overlay');
     if (overlay && overlay._blobUrl) URL.revokeObjectURL(overlay._blobUrl);
 
-    // Remove all children
-    while (card.firstChild) card.removeChild(card.firstChild);
+    card.textContent = '';
 
-    // Clear dataset
     const dataset = card.dataset;
-    for (const key in dataset) delete dataset[key];
+    delete dataset.src;
+    delete dataset.path;
+    delete dataset.name;
+    delete dataset.searchText;
+    delete dataset.mediaType;
+    delete dataset.mtime;
+    delete dataset.fileSize;
+    delete dataset.width;
+    delete dataset.height;
+    delete dataset.hasMedia;
+    delete dataset.hasAudio;
+    delete dataset.aspectRatio;
+    delete dataset.aspectRatioSource;
+    delete dataset.folderPath;
+    delete dataset.groupKey;
+    delete dataset.previewLoaded;
+    delete dataset.previewLoading;
+    delete dataset.sourceMode;
+    delete dataset.tagOverlapChecked;
+    delete dataset.gifDuration;
+    delete dataset.gifFrameCount;
+    delete dataset.gifLoadTime;
+    delete dataset.dimCached;
+    delete dataset.mediaDuration;
+    delete dataset.isStaticWebp;
+    delete dataset.idx;
+    delete dataset.animatedSrc;
+    delete dataset.hasOverlay;
 
     // Reset classes
     card.className = '';
@@ -926,18 +984,12 @@ function vsPopulateExistingCard(card, item) {
     if (item.type === 'group-header') {
         card.className = 'date-group-header';
         card.dataset.groupKey = item.groupKey;
-        const toggleEl = document.createElement('button');
-        toggleEl.className = 'dgh-toggle';
-        toggleEl.textContent = collapsedDateGroups.has(item.groupKey) ? '▶' : '▼';
-        const labelEl = document.createElement('span');
-        labelEl.className = 'dgh-label';
-        labelEl.textContent = item.label;
-        const countEl = document.createElement('span');
-        countEl.className = 'dgh-count';
-        countEl.textContent = String(item.count);
-        card.appendChild(toggleEl);
-        card.appendChild(labelEl);
-        card.appendChild(countEl);
+        // Clone cached template instead of creating 3 elements each time
+        const frag = _getGroupHeaderTemplate();
+        frag.firstChild.textContent = collapsedDateGroups.has(item.groupKey) ? '▶' : '▼';
+        frag.childNodes[1].textContent = item.label;
+        frag.lastChild.textContent = String(item.count);
+        card.appendChild(frag);
         // Click handled by gridContainer delegation (see below)
         return { card, isMedia: false };
     }
@@ -949,9 +1001,8 @@ function vsPopulateExistingCard(card, item) {
         card.setAttribute('aria-label', `Folder: ${item.name}`);
         card.setAttribute('tabindex', '-1');
 
-        const folderIcon = document.createElement('div');
-        folderIcon.className = 'folder-icon';
-        folderIcon.innerHTML = icon('folder', 48);
+        // Clone cached folder icon template (avoids innerHTML SVG parsing per recycle)
+        const folderIcon = _getFolderIconTemplate();
 
         const info = document.createElement('div');
         info.className = 'folder-info';
@@ -3243,10 +3294,17 @@ function updateInMemoryFolderCaches(folderPath, items) {
         });
     }
 
+    // LRU promote: delete and re-insert to move to end of Map insertion order
+    folderCache.delete(normalizedPath);
     folderCache.set(normalizedPath, {
         items,
         timestamp
     });
+    // Evict oldest entry (first key in insertion order) instead of cliff-clearing
+    if (folderCache.size > 50) {
+        const oldest = folderCache.keys().next().value;
+        folderCache.delete(oldest);
+    }
 }
 
 function scheduleVsRecalculateForDimensions() {
@@ -5711,10 +5769,8 @@ function createCardFromItem(item, skipAnimation = false) {
         card.dataset.folderPath = item.path;
         card.dataset.searchText = item.name.toLowerCase();
 
-        // Create folder icon (use textContent instead of innerHTML for better performance)
-        const folderIcon = document.createElement('div');
-        folderIcon.className = 'folder-icon';
-        folderIcon.innerHTML = icon('folder', 48);
+        // Clone cached folder icon template (avoids innerHTML SVG parsing per card)
+        const folderIcon = _getFolderIconTemplate();
         
         const info = document.createElement('div');
         info.className = 'folder-info';
@@ -5850,22 +5906,20 @@ function renderItemsProgressive(items) {
         gridContainer.classList.remove('masonry');
     }
     
-    // Batch observer registration for initial chunk AFTER layout is ready
+    // Batch observer registration for initial chunk AFTER layout is ready (single RAF)
     // In masonry mode, defer layout until ALL cards are in the DOM (single pass)
     requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-            cardsToObserve.forEach(card => {
-                observer.observe(card);
-            });
+        for (let i = 0; i < cardsToObserve.length; i++) {
+            observer.observe(cardsToObserve[i]);
+        }
 
-            // Only trigger masonry layout here for small lists that won't have more chunks
-            if (layoutMode === 'masonry' && currentIndex >= items.length) {
-                scheduleMasonryLayout();
-            }
+        // Only trigger masonry layout here for small lists that won't have more chunks
+        if (layoutMode === 'masonry' && currentIndex >= items.length) {
+            scheduleMasonryLayout();
+        }
 
-            // Start proactive loading for initial chunk
-            scheduleProactiveLoadForChunk();
-        });
+        // Start proactive loading for initial chunk
+        scheduleProactiveLoadForChunk();
     });
     
     // Continue rendering remaining items in chunks
@@ -6753,23 +6807,34 @@ function processEntries(entries) {
     // Sort by distance from viewport center (closest first)
     cardsToLoad.sort((a, b) => a.distance - b.distance);
     
-    // Load media for all intersecting cards immediately.
-    // createMediaForCard is lightweight (DOM element + async IPC batch), so no need
-    // to defer via RAF. Deferring caused a race: if vsUpdateDOM recycled a card before
-    // the RAF fired, the closure's stale mediaUrl would load the wrong thumbnail.
+    // Load media for intersecting cards, staggered to avoid IPC thundering herd.
+    // createMediaForCard is lightweight (DOM element + async IPC batch), but queueing
+    // dozens of cards at once overwhelms the thumbnail batch pipeline. Load up to
+    // the effective load limit per processEntries call; excess cards get picked up
+    // by the next cleanup/proactive cycle immediately (nextRetryTime = now).
     let currentTotal = activeVideoCount + activeImageCount;
-    cardsToLoad.forEach(({ card, mediaUrl }) => {
+    const maxThisBatch = getEffectiveLoadLimit();
+    let loadedThisBatch = 0;
+    for (let i = 0; i < cardsToLoad.length; i++) {
+        const { card, mediaUrl } = cardsToLoad[i];
         if (currentTotal >= MAX_TOTAL_MEDIA) {
             if (!isCardInPreloadZone(card)) {
                 if (!mediaToRetry.has(card)) {
                     mediaToRetry.set(card, { url: mediaUrl, attempts: 0, nextRetryTime: Date.now(), reason: 'capacity' });
                 }
-                return;
+                continue;
             }
+        }
+        if (loadedThisBatch >= maxThisBatch) {
+            if (!mediaToRetry.has(card)) {
+                mediaToRetry.set(card, { url: mediaUrl, attempts: 0, nextRetryTime: Date.now(), reason: 'staggered' });
+            }
+            continue;
         }
         createMediaForCard(card, mediaUrl);
         currentTotal++;
-    });
+        loadedThisBatch++;
+    }
 
     if (changed) {
         scheduleGC();
@@ -6806,15 +6871,43 @@ function proactiveLoadMedia() {
     // Check which cards are in the preload zone
     const bounds = getViewportBounds();
     const cardsToLoad = [];
-    
-    cardsNeedingMedia.forEach(card => {
-        if (isCardInPreloadZone(card)) {
+
+    const useVsPositions = vsState.enabled && vsState.positions && vsState.positions.length > 0;
+    let containerOffsetTop = 0, containerOffsetLeft = 0;
+    if (useVsPositions && gridContainer) {
+        const cr = gridContainer.getBoundingClientRect();
+        containerOffsetTop = cr.top - gridContainer.scrollTop;
+        containerOffsetLeft = cr.left - (gridContainer.scrollLeft || 0);
+    }
+
+    for (let i = 0; i < cardsNeedingMedia.length; i++) {
+        const card = cardsNeedingMedia[i];
+        let cardTop, cardLeft, cardWidth, cardHeight;
+
+        if (useVsPositions && card._vsItemIndex != null) {
+            const idx = card._vsItemIndex * 4;
+            cardLeft = vsState.positions[idx] + containerOffsetLeft;
+            cardTop = vsState.positions[idx + 1] + containerOffsetTop;
+            cardWidth = vsState.positions[idx + 2];
+            cardHeight = vsState.positions[idx + 3];
+        } else {
             const cardRect = getCachedCardRect(card);
-            const cardCenterY = cardRect.top + (cardRect.height / 2);
+            cardTop = cardRect.top;
+            cardLeft = cardRect.left;
+            cardWidth = cardRect.width;
+            cardHeight = cardRect.height;
+        }
+
+        // Inline preload zone check (avoids second getCachedCardRect + getViewportBounds call)
+        const cardBottom = cardTop + cardHeight;
+        const cardRight = cardLeft + cardWidth;
+        if (cardTop < bounds.bottom && cardBottom > bounds.top &&
+            cardLeft < bounds.right && cardRight > bounds.left) {
+            const cardCenterY = cardTop + (cardHeight / 2);
             const distance = Math.abs(cardCenterY - bounds.centerY);
             cardsToLoad.push({ card, mediaUrl: card.dataset.src, distance });
         }
-    });
+    }
     
     if (cardsToLoad.length === 0) return;
     
@@ -10894,13 +10987,7 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
             }));
             if (dimensionEntries.length > 0) cacheDimensions(dimensionEntries).catch(() => {});
             
-            // Clean up old cache entries (keep cache size reasonable)
-            if (folderCache.size > 50) {
-                const entries = Array.from(folderCache.entries());
-                entries.sort((a, b) => b[1].timestamp - a[1].timestamp);
-                folderCache.clear();
-                entries.slice(0, 25).forEach(([path, data]) => folderCache.set(path, data));
-            }
+            // Folder cache LRU eviction is now handled per-insert in updateInMemoryFolderCaches
             
             // Periodically clean up IndexedDB cache (every 10 folder loads)
             if (Math.random() < 0.1) {

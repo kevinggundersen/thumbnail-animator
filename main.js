@@ -231,7 +231,8 @@ function _dispatchRequest(type, payload, transferList) {
         _clipInferenceReqs.set(id, {
             resolve, reject,
             workerIndex: slot.index,
-            type, payload, transferList: null // transferList is consumed on first send
+            type, payload, transferList: null, // transferList is consumed on first send
+            _createdAt: Date.now()
         });
         _sendToWorker(slot, type, id, payload, transferList);
     });
@@ -394,6 +395,32 @@ let videoThumbDir = null;
 let imageThumbDir = null;
 const pendingVideoThumbnailJobs = new Map();
 const pendingImageThumbnailJobs = new Map();
+
+// Periodic stale-request reaper for long-lived Maps that track in-flight async work.
+// Prevents slow memory leaks from orphaned entries when workers crash or IPC hangs.
+// Note: pendingVideoThumbnailJobs and pendingImageThumbnailJobs are self-cleaning
+// (try/finally deletes), so they are not reaped here.
+const _STALE_REQUEST_TIMEOUT_MS = 120000; // 2 minutes
+setInterval(() => {
+    const now = Date.now();
+
+    // Reap stale CLIP inference requests
+    for (const [id, req] of _clipInferenceReqs) {
+        if (req._createdAt && now - req._createdAt > _STALE_REQUEST_TIMEOUT_MS) {
+            req.reject(new Error('clip inference request timed out (stale reaper)'));
+            _clipInferenceReqs.delete(id);
+        }
+    }
+
+    // Reap stale WebGPU hamming requests
+    for (const [id, req] of _webgpuPending) {
+        if (req._createdAt && now - req._createdAt > _STALE_REQUEST_TIMEOUT_MS) {
+            if (req.timeoutId) clearTimeout(req.timeoutId);
+            req.reject(new Error('webgpu hamming request timed out (stale reaper)'));
+            _webgpuPending.delete(id);
+        }
+    }
+}, 60000); // Run every 60 seconds
 
 // createThumbCacheKey — imported from main-utils.js
 
@@ -711,17 +738,18 @@ let folderPreviewDir = path.join(userDataPath, 'folder-previews');
 let VIDEO_CACHE_MAX_BYTES = 500 * 1024 * 1024;  // default 500 MB
 let IMAGE_CACHE_MAX_BYTES = 1000 * 1024 * 1024;  // default 1 GB
 
-// Load saved cache limits from config file
+// Load saved cache limits from config file (async to avoid blocking startup)
 const cacheLimitsFile = path.join(userDataPath, 'cache-limits.json');
-try {
-    const saved = JSON.parse(fs.readFileSync(cacheLimitsFile, 'utf8'));
+const _cacheLimitsReady = fs.promises.readFile(cacheLimitsFile, 'utf8').then(data => {
+    const saved = JSON.parse(data);
     if (typeof saved.videoCacheMB === 'number') VIDEO_CACHE_MAX_BYTES = saved.videoCacheMB * 1024 * 1024;
     if (typeof saved.imageCacheMB === 'number') IMAGE_CACHE_MAX_BYTES = saved.imageCacheMB * 1024 * 1024;
-} catch { /* no saved limits, use defaults */ }
+}).catch(() => { /* no saved limits, use defaults */ });
 
-// Run cache eviction on startup (non-blocking)
+// Run cache eviction on startup (non-blocking, waits for async cache limits)
 if (nativeScanner && nativeScanner.planCacheEviction) {
-    setTimeout(() => {
+    setTimeout(async () => {
+        await _cacheLimitsReady; // Ensure user-configured limits are loaded before evicting
         for (const [dir, maxBytes, label] of [
             [videoThumbDir, VIDEO_CACHE_MAX_BYTES, 'video'],
             [imageThumbDir, IMAGE_CACHE_MAX_BYTES, 'image'],
@@ -813,57 +841,56 @@ let mainWindow = null;
 const windowStateFile = path.join(userDataPath, 'window-state.json');
 console.log('Window state file path:', windowStateFile);
 
-function loadWindowState() {
-    try {
-        if (fs.existsSync(windowStateFile)) {
-            const data = fs.readFileSync(windowStateFile, 'utf8');
-            const state = JSON.parse(data);
-            console.log('Loaded window state:', state);
-            
-            // Validate that the saved position is still valid (within screen bounds)
-            if (state.x !== undefined && state.y !== undefined && 
-                state.width !== undefined && state.height !== undefined &&
-                typeof state.x === 'number' && typeof state.y === 'number' &&
-                typeof state.width === 'number' && typeof state.height === 'number') {
-                
-                // Check if window center is within any display bounds
-                const displays = screen.getAllDisplays();
-                let isValidPosition = false;
-                const centerX = state.x + state.width / 2;
-                const centerY = state.y + state.height / 2;
+// Pre-read window state asynchronously at module load to avoid blocking createWindow
+const _windowStateReadPromise = fs.promises.readFile(windowStateFile, 'utf8').catch(() => null);
 
-                for (const display of displays) {
-                    const { x, y, width: dWidth, height: dHeight } = display.bounds;
-                    if (centerX >= x && centerX < x + dWidth &&
-                        centerY >= y && centerY < y + dHeight) {
-                        isValidPosition = true;
-                        break;
-                    }
-                }
-                
-                if (isValidPosition) {
-                    console.log('Using saved window state');
-                    return state;
-                } else {
-                    console.log('Saved window state is not valid for current displays');
+const _defaultWindowState = { width: 1200, height: 800, x: undefined, y: undefined, isMaximized: false };
+
+async function loadWindowState() {
+    try {
+        const data = await _windowStateReadPromise;
+        if (!data) {
+            console.log('No saved window state file found');
+            return _defaultWindowState;
+        }
+        const state = JSON.parse(data);
+        console.log('Loaded window state:', state);
+
+        // Validate that the saved position is still valid (within screen bounds)
+        if (state.x !== undefined && state.y !== undefined &&
+            state.width !== undefined && state.height !== undefined &&
+            typeof state.x === 'number' && typeof state.y === 'number' &&
+            typeof state.width === 'number' && typeof state.height === 'number') {
+
+            // Check if window center is within any display bounds
+            const displays = screen.getAllDisplays();
+            let isValidPosition = false;
+            const centerX = state.x + state.width / 2;
+            const centerY = state.y + state.height / 2;
+
+            for (const display of displays) {
+                const { x, y, width: dWidth, height: dHeight } = display.bounds;
+                if (centerX >= x && centerX < x + dWidth &&
+                    centerY >= y && centerY < y + dHeight) {
+                    isValidPosition = true;
+                    break;
                 }
             }
-        } else {
-            console.log('No saved window state file found');
+
+            if (isValidPosition) {
+                console.log('Using saved window state');
+                return state;
+            } else {
+                console.log('Saved window state is not valid for current displays');
+            }
         }
     } catch (error) {
         console.error('Error loading window state:', error);
     }
-    
+
     // Return default values if loading fails
     console.log('Using default window state');
-    return {
-        width: 1200,
-        height: 800,
-        x: undefined,
-        y: undefined,
-        isMaximized: false
-    };
+    return _defaultWindowState;
 }
 
 function saveWindowState(win, { sync = false } = {}) {
@@ -904,8 +931,8 @@ function saveWindowState(win, { sync = false } = {}) {
     }
 }
 
-function createWindow() {
-    const windowState = loadWindowState();
+async function createWindow() {
+    const windowState = await loadWindowState();
     
     // Build window options object
     const windowOptions = {
@@ -1037,9 +1064,9 @@ pluginRegistry.discover(path.join(__dirname, 'plugins', 'builtin'), { builtin: t
 pluginRegistry.discover(path.join(app.getPath('userData'), 'plugins'));
 markStartup('plugins-loaded');
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
     markStartup('app-ready');
-    const win = createWindow();
+    const win = await createWindow();
     markStartup('window-created');
 
     // --- Application Menu ---
@@ -1100,47 +1127,51 @@ app.whenReady().then(() => {
     ];
     Menu.setApplicationMenu(Menu.buildFromTemplate(menuTemplate));
 
-    // --- Auto-updater (lazy-loaded, notify only) ---
-    autoUpdater = require('electron-updater').autoUpdater;
-    autoUpdater.autoDownload = false;
-    autoUpdater.autoInstallOnAppQuit = false;
-
-    autoUpdater.on('update-available', (info) => {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('update-available', {
-                version: info.version,
-                releaseNotes: info.releaseNotes || ''
-            });
-        }
-    });
-
-    autoUpdater.on('download-progress', (progress) => {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('update-download-progress', {
-                percent: Math.round(progress.percent)
-            });
-        }
-    });
-
-    autoUpdater.on('update-downloaded', () => {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('update-downloaded');
-        }
-    });
-
-    autoUpdater.on('error', (err) => {
-        console.error('Auto-updater error:', err.message);
-        if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('update-error', err.message);
-        }
-    });
-
-    // Check for updates after a short delay to not slow down startup
+    // --- Auto-updater (deferred to avoid blocking startup with ~20ms require) ---
     setTimeout(() => {
-        autoUpdater.checkForUpdates().catch((err) => {
-            console.error('Update check failed:', err.message);
-        });
-    }, 5000);
+        try {
+            autoUpdater = require('electron-updater').autoUpdater;
+            autoUpdater.autoDownload = false;
+            autoUpdater.autoInstallOnAppQuit = false;
+
+            autoUpdater.on('update-available', (info) => {
+                if (mainWindow && !mainWindow.isDestroyed()) {
+                    mainWindow.webContents.send('update-available', {
+                        version: info.version,
+                        releaseNotes: info.releaseNotes || ''
+                    });
+                }
+            });
+
+            autoUpdater.on('download-progress', (progress) => {
+                if (mainWindow && !mainWindow.isDestroyed()) {
+                    mainWindow.webContents.send('update-download-progress', {
+                        percent: Math.round(progress.percent)
+                    });
+                }
+            });
+
+            autoUpdater.on('update-downloaded', () => {
+                if (mainWindow && !mainWindow.isDestroyed()) {
+                    mainWindow.webContents.send('update-downloaded');
+                }
+            });
+
+            autoUpdater.on('error', (err) => {
+                console.error('Auto-updater error:', err.message);
+                if (mainWindow && !mainWindow.isDestroyed()) {
+                    mainWindow.webContents.send('update-error', err.message);
+                }
+            });
+
+            // Check for updates once loaded
+            autoUpdater.checkForUpdates().catch((err) => {
+                console.error('Update check failed:', err.message);
+            });
+        } catch (err) {
+            console.error('Auto-updater init failed:', err.message);
+        }
+    }, 3000);
 
     ipcMain.handle('download-update', async () => {
         try {
@@ -3497,9 +3528,9 @@ ipcMain.handle('generate-thumbnails-batch', async (event, items) => {
             }
         }
 
-        // Process plugin-handled thumbnails in parallel
+        // Process plugin-handled thumbnails with concurrency limit (avoids spawning unbounded processes)
         if (pluginBatch.length > 0) {
-            await Promise.all(pluginBatch.map(async (item) => {
+            await asyncPool(4, pluginBatch, async (item) => {
                 try {
                     const ext = path.extname(item.filePath).toLowerCase();
                     const dataUrl = await pluginRegistry.generateThumbnail(item.filePath, ext);
@@ -3516,7 +3547,7 @@ ipcMain.handle('generate-thumbnails-batch', async (event, items) => {
                 } catch (err) {
                     console.warn(`[Plugin thumbnail] ${path.basename(item.filePath)} failed:`, err.message);
                 }
-            }));
+            });
         }
 
         let nativeFailures = [];
@@ -3689,7 +3720,7 @@ function computeHammingPairsViaRenderer(hashBytes, threshold, timeoutMs = 30000)
             _webgpuPending.delete(id);
             reject(new Error('webgpu request timed out'));
         }, timeoutMs);
-        _webgpuPending.set(id, { resolve, reject, timeoutId });
+        _webgpuPending.set(id, { resolve, reject, timeoutId, _createdAt: Date.now() });
         mainWindow.webContents.send('webgpu-hamming-request', { id, hashBytes, threshold });
     });
 }
@@ -5918,6 +5949,24 @@ wrapIpc('db-save-favorites', (favObj) => appDb.saveFavorites(favObj));
 wrapIpc('db-get-recent-files', (limit) => appDb.getRecentFiles(limit || 50));
 wrapIpc('db-add-recent-file', (entry, limit) => appDb.addRecentFile(entry, limit || 50));
 wrapIpc('db-clear-recent-files', () => appDb.clearRecentFiles());
+
+// Batched init data — single IPC round-trip for ratings + pins + favorites + recent files
+ipcMain.handle('db-get-init-data', async (event, recentLimit) => {
+    try {
+        const [ratings, pinned, favorites, recent] = await Promise.all([
+            _ipcCache.ratings ? _ipcCache.ratings.value : appDb.getAllRatings(),
+            _ipcCache.pinned ? _ipcCache.pinned.value : appDb.getAllPinned(),
+            appDb.getFavorites(),
+            appDb.getRecentFiles(recentLimit || 50),
+        ]);
+        // Populate caches so individual calls benefit too
+        if (!_ipcCache.ratings) _ipcCache.ratings = { ok: true, value: ratings };
+        if (!_ipcCache.pinned) _ipcCache.pinned = { ok: true, value: pinned };
+        return { ok: true, value: { ratings, pinned, favorites, recent } };
+    } catch (e) {
+        return { ok: false, error: e.message };
+    }
+});
 
 // Collections
 ipcMain.handle('db-get-all-collections', async () => {

@@ -1500,6 +1500,13 @@ header {
     overflow-y: hidden;
     -webkit-app-region: no-drag;
     scrollbar-width: none;
+    margin-right: var(--space-4);
+}
+
+.titlebar-drag-spacer {
+    flex: 1 0 var(--space-4);
+    height: 100%;
+    -webkit-app-region: drag;
 }
 
 .tabs-container::-webkit-scrollbar {

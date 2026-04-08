@@ -533,6 +533,45 @@ button:active:not(:disabled):not(.lightbox-nav-btn):not(.lb-inspector-toggle) {
     color: var(--text-primary);
 }
 
+.sidebar-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+}
+
+.sidebar-header-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-tertiary);
+    width: 24px;
+    height: 24px;
+    border-radius: var(--radius-sm);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    padding: 0;
+    transition: background-color var(--duration-normal), color var(--duration-normal);
+}
+
+.sidebar-header-btn:hover {
+    background-color: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.sidebar-header-btn.active {
+    color: var(--accent);
+    background-color: var(--accent-muted);
+}
+
+.tree-empty-message {
+    padding: var(--space-3);
+    color: var(--text-tertiary);
+    font-size: 12px;
+    text-align: center;
+    font-style: italic;
+}
+
 .sidebar-tree {
     flex: 1;
     overflow-y: auto;

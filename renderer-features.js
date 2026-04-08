@@ -478,6 +478,13 @@ function initKeyboardShortcuts() {
             return;
         }
 
+        // Filter sidebar to tab folders
+        if (matchesShortcut(e, 'sidebarTabFilter')) {
+            e.preventDefault();
+            toggleSidebarTabFilter();
+            return;
+        }
+
         // New tab group from active tab
         if (matchesShortcut(e, 'newTabGroup')) {
             e.preventDefault();
@@ -1417,6 +1424,7 @@ function createTab(path, name, collectionId = null, groupId = null) {
             });
         }, 0);
     }
+    onTabsChanged();
     return tab.id;
 }
 
@@ -1440,6 +1448,7 @@ function closeTab(tabId) {
         saveTabs();
         renderTabs();
     }
+    onTabsChanged();
 }
 
 function switchToTab(tabId) {
@@ -1563,6 +1572,7 @@ function updateCurrentTab(path, name) {
         tab.sortOrder = tab.sortOrder || sortOrder;
         saveTabs();
         renderTabs();
+        onTabsChanged();
     }
 }
 
@@ -1935,6 +1945,7 @@ function closeTabGroup(groupId) {
         saveTabs();
         renderTabs();
     }
+    onTabsChanged();
 }
 
 function _snapshotTabsForSave(tabList) {
@@ -2022,6 +2033,7 @@ async function restoreSavedTabGroup(savedGroupId) {
     saveTabs();
     renderTabs();
     if (firstTabId != null) switchToTab(firstTabId);
+    onTabsChanged();
     showToast(`Restored tab group "${saved.name}"`);
 }
 
@@ -2181,6 +2193,7 @@ function showTabContextMenu(e, tab) {
             tabGroups = tabGroups.filter(g => tabs.some(t => t.groupId === g.id));
             activeTabId = tab.id;
             switchToTab(activeTabId);
+            onTabsChanged();
         });
         menu.appendChild(closeOthers);
     }
@@ -2198,6 +2211,7 @@ function showTabContextMenu(e, tab) {
             tabGroups = tabGroups.filter(g => tabs.some(t => t.groupId === g.id));
             if (!tabs.find(t => t.id === activeTabId)) activeTabId = tab.id;
             switchToTab(activeTabId);
+            onTabsChanged();
         });
         menu.appendChild(closeRight);
     }

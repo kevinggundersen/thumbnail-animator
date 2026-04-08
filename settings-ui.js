@@ -1481,6 +1481,7 @@ const DEFAULT_SHORTCUTS = {
     dialogConfirm:  { key: 'Enter', label: 'Confirm dialog', category: 'Dialogs' },
     dialogCancel:   { key: 'Escape', label: 'Cancel dialog', category: 'Dialogs' },
     newTabGroup:    { key: 'g', ctrl: true, shift: true, label: 'New tab group', category: 'Tabs' },
+    sidebarTabFilter: { key: 'e', alt: true, label: 'Filter sidebar to tabs', category: 'View' },
 };
 
 // Merge user overrides over defaults

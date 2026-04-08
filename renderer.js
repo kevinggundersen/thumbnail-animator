@@ -11955,6 +11955,7 @@ if (typeof CommandPalette !== 'undefined') {
         { id: 'nav.go-forward', label: 'Go Forward', category: 'Navigation', shortcut: 'Ctrl+Shift+B', keywords: ['forward', 'next', 'history'], action: () => goForward() },
         { id: 'nav.open-folder', label: 'Open Folder', category: 'Navigation', shortcut: 'Ctrl+O', keywords: ['browse', 'directory', 'folder'], action: () => selectFolderBtn.click() },
         { id: 'nav.toggle-sidebar', label: 'Toggle Sidebar', category: 'Navigation', shortcut: 'S', keywords: ['sidebar', 'panel', 'explorer'], action: () => setSidebarCollapsed(!sidebarCollapsed) },
+        { id: 'nav.sidebar-tab-filter', label: 'Toggle Sidebar: Show Only Tab Folders', category: 'Navigation', shortcut: 'Alt+E', keywords: ['sidebar', 'filter', 'tabs', 'open', 'folders', 'tree'], action: () => toggleSidebarTabFilter() },
         { id: 'nav.focus-search', label: 'Focus Search', category: 'Navigation', shortcut: 'Ctrl+F', keywords: ['search', 'find', 'filter'], action: () => { searchBox.focus(); searchBox.select(); } },
         { id: 'nav.advanced-search', label: 'Advanced Search', category: 'Navigation', keywords: ['search', 'filter', 'size', 'date', 'dimension'], action: () => document.getElementById('advanced-search-btn').click() },
 

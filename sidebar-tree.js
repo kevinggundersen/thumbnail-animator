@@ -9,6 +9,8 @@
 
 let sidebarWidth = parseInt(localStorage.getItem('sidebarWidth')) || 260;
 let sidebarCollapsed = localStorage.getItem('sidebarCollapsed') === 'true';
+let sidebarTabFilterActive = localStorage.getItem('sidebarTabFilterActive') === 'true';
+let sidebarTabFilterBtn = null;
 let sidebarLayoutSyncTimeout = null;
 let sidebarTransitionEndHandler = null;
 let sidebarExpandedNodes;
@@ -231,6 +233,7 @@ window.sidebarParentDirPath = sidebarParentDirPath;
  */
 async function refreshSidebarTreeBranchForParentPath(parentPath) {
     if (!parentPath || !sidebarTree) return;
+    if (sidebarTabFilterActive) return; // Filesystem changes don't affect filtered view
     const target = sidebarNormalize(parentPath);
 
     for (const node of sidebarTree.querySelectorAll('.tree-node')) {
@@ -280,6 +283,12 @@ function sidebarHighlightActive(folderPath) {
 
 async function sidebarExpandToPath(folderPath) {
     if (!folderPath || !sidebarTree) return;
+
+    // In tab-filter mode the tree already shows all tab paths expanded
+    if (sidebarTabFilterActive) {
+        sidebarHighlightActive(folderPath);
+        return;
+    }
 
     // Detect Windows vs Unix path style
     const isWinPath = folderPath.includes('\\') || (folderPath.length > 1 && folderPath[1] === ':');
@@ -461,32 +470,165 @@ function setSidebarCollapsed(collapsed) {
     scheduleSidebarLayoutSync(230);
 }
 
-async function initSidebar() {
-    if (!folderSidebar || !sidebarTree) return;
+// ── Tab-filter helpers ──
 
-    // Don't restore previous expanded state — start fresh, only the active folder will be expanded
-    sidebarExpandedNodes.clear();
-    saveSidebarExpandedNodes();
+/** Collect unique non-null folder paths from all open tabs. */
+function getTabFolderPaths() {
+    const paths = new Map(); // normalizedPath -> originalPath
+    for (const tab of tabs) {
+        if (tab.path) paths.set(sidebarNormalize(tab.path), tab.path);
+    }
+    return paths;
+}
 
-    // Restore width and collapsed state
-    folderSidebar.style.width = sidebarWidth + 'px';
-    if (sidebarCollapsed) {
-        folderSidebar.classList.add('collapsed');
-        if (sidebarToggleBtn) sidebarToggleBtn.classList.add('sidebar-is-collapsed');
+/** For each tab path, walk up to the drive root and collect every ancestor. */
+function buildPathAncestry(tabPathMap) {
+    const allPaths = new Map(tabPathMap); // normalized -> original
+    for (const [norm] of tabPathMap) {
+        let current = norm;
+        while (true) {
+            const parent = sidebarParentDirPath(current);
+            if (!parent) break;
+            const normParent = sidebarNormalize(parent);
+            if (allPaths.has(normParent)) break; // already traced
+            allPaths.set(normParent, parent);
+            current = normParent;
+        }
+    }
+    return allPaths;
+}
+
+/** From a flat set of paths, compute root nodes and a parent→children map. */
+function buildFilteredTreeStructure(allNormPaths) {
+    const roots = [];
+    const childrenMap = new Map(); // normalized_parent -> [normalized_child, ...]
+
+    for (const np of allNormPaths.keys()) {
+        const parent = sidebarParentDirPath(np);
+        const normParent = parent ? sidebarNormalize(parent) : null;
+        if (!normParent || !allNormPaths.has(normParent)) {
+            roots.push(np);
+        } else {
+            if (!childrenMap.has(normParent)) childrenMap.set(normParent, []);
+            childrenMap.get(normParent).push(np);
+        }
     }
 
-    // Toggle buttons
-    if (sidebarToggleBtn) {
-        sidebarToggleBtn.addEventListener('click', () => setSidebarCollapsed(!sidebarCollapsed));
+    // Sort for consistent display
+    roots.sort();
+    for (const [, children] of childrenMap) children.sort();
+
+    return { roots, childrenMap };
+}
+
+/** Recursively create child nodes from the pre-computed path structure. */
+function renderFilteredChildren(parentNode, parentNormPath, depth, childrenMap, allPaths) {
+    const children = childrenMap.get(parentNormPath);
+    if (!children || children.length === 0) return;
+
+    const childContainer = parentNode.querySelector('.tree-children');
+    childContainer.dataset.loaded = '1'; // prevent lazy-load IPC
+    childContainer.classList.add('expanded');
+    const toggle = parentNode.querySelector('.tree-toggle');
+    toggle.classList.add('expanded');
+
+    for (const childNorm of children) {
+        const originalPath = allPaths.get(childNorm) || childNorm;
+        const name = originalPath.replace(/\\/g, '/').replace(/\/+$/, '').split('/').filter(Boolean).pop() || originalPath;
+        const hasChildren = childrenMap.has(childNorm);
+        const childNode = createTreeNode(
+            { name, path: originalPath, hasChildren },
+            depth + 1
+        );
+        childContainer.appendChild(childNode);
+        renderFilteredChildren(childNode, childNorm, depth + 1, childrenMap, allPaths);
     }
-    if (sidebarCollapseBtn) {
-        sidebarCollapseBtn.addEventListener('click', () => setSidebarCollapsed(true));
+}
+
+/** Render the sidebar tree showing only folders for open tabs. */
+function renderTabFilteredTree() {
+    if (!sidebarTree) return;
+    sidebarTree.innerHTML = '';
+
+    const tabPaths = getTabFolderPaths();
+    if (tabPaths.size === 0) {
+        const msg = document.createElement('div');
+        msg.className = 'tree-empty-message';
+        msg.textContent = 'No open tab folders';
+        sidebarTree.appendChild(msg);
+        return;
     }
 
-    // Resize handle
-    initSidebarResize();
+    const allPaths = buildPathAncestry(tabPaths);
+    const { roots, childrenMap } = buildFilteredTreeStructure(allPaths);
 
-    // Load drive nodes
+    for (const rootNorm of roots) {
+        const originalPath = allPaths.get(rootNorm) || rootNorm;
+        // Detect if this is a drive root (e.g. "C:/" or "/")
+        const isDrive = /^[a-z]:\/$/i.test(originalPath.replace(/\\/g, '/')) || originalPath === '/' || originalPath === '\\';
+        const name = isDrive
+            ? originalPath.replace(/\\/g, '/').replace(/\/+$/, '') || '/'
+            : originalPath.replace(/\\/g, '/').replace(/\/+$/, '').split('/').filter(Boolean).pop() || originalPath;
+
+        const node = createTreeNode(
+            { name, path: originalPath, hasChildren: childrenMap.has(rootNorm) },
+            0,
+            isDrive
+        );
+        sidebarTree.appendChild(node);
+        renderFilteredChildren(node, rootNorm, 0, childrenMap, allPaths);
+    }
+
+    // Highlight the active tab's folder
+    const activeTab = tabs.find(t => t.id === activeTabId);
+    if (activeTab && activeTab.path) {
+        sidebarHighlightActive(activeTab.path);
+    }
+}
+
+/** Toggle the sidebar tab-filter mode. */
+async function toggleSidebarTabFilter(force) {
+    sidebarTabFilterActive = force !== undefined ? force : !sidebarTabFilterActive;
+    localStorage.setItem('sidebarTabFilterActive', sidebarTabFilterActive.toString());
+
+    if (sidebarTabFilterBtn) {
+        sidebarTabFilterBtn.classList.toggle('active', sidebarTabFilterActive);
+        sidebarTabFilterBtn.title = sidebarTabFilterActive
+            ? 'Show all folders'
+            : 'Show only tab folders';
+    }
+
+    if (sidebarTabFilterActive) {
+        renderTabFilteredTree();
+    } else {
+        // Rebuild full tree
+        sidebarExpandedNodes.clear();
+        saveSidebarExpandedNodes();
+        sidebarTree.innerHTML = '';
+        await initSidebarDrives();
+        // Re-expand to active tab's path
+        const activeTab = tabs.find(t => t.id === activeTabId);
+        if (activeTab && activeTab.path) {
+            sidebarExpandToPath(activeTab.path);
+        }
+    }
+}
+
+/** Reactive update: rebuild filtered tree when tabs change (debounced). */
+let _tabsChangedRaf = null;
+function onTabsChanged() {
+    if (!sidebarTabFilterActive) return;
+    if (_tabsChangedRaf) return;
+    _tabsChangedRaf = requestAnimationFrame(() => {
+        _tabsChangedRaf = null;
+        if (sidebarTabFilterActive) renderTabFilteredTree();
+    });
+}
+
+// ── Sidebar initialization ──
+
+/** Load drive root nodes into the sidebar tree (extracted for reuse). */
+async function initSidebarDrives() {
     try {
         const _drvRes = await window.electronAPI.getDrives();
         const drives = _drvRes && _drvRes.ok ? (_drvRes.value || []) : [];
@@ -517,5 +659,48 @@ async function initSidebar() {
         }
     } catch (err) {
         console.error('Failed to load drives for sidebar:', err);
+    }
+}
+
+async function initSidebar() {
+    if (!folderSidebar || !sidebarTree) return;
+
+    // Don't restore previous expanded state — start fresh, only the active folder will be expanded
+    sidebarExpandedNodes.clear();
+    saveSidebarExpandedNodes();
+
+    // Restore width and collapsed state
+    folderSidebar.style.width = sidebarWidth + 'px';
+    if (sidebarCollapsed) {
+        folderSidebar.classList.add('collapsed');
+        if (sidebarToggleBtn) sidebarToggleBtn.classList.add('sidebar-is-collapsed');
+    }
+
+    // Toggle buttons
+    if (sidebarToggleBtn) {
+        sidebarToggleBtn.addEventListener('click', () => setSidebarCollapsed(!sidebarCollapsed));
+    }
+    if (sidebarCollapseBtn) {
+        sidebarCollapseBtn.addEventListener('click', () => setSidebarCollapsed(true));
+    }
+
+    // Tab-filter toggle button
+    sidebarTabFilterBtn = document.getElementById('sidebar-tab-filter-btn');
+    if (sidebarTabFilterBtn) {
+        sidebarTabFilterBtn.addEventListener('click', () => toggleSidebarTabFilter());
+        if (sidebarTabFilterActive) {
+            sidebarTabFilterBtn.classList.add('active');
+            sidebarTabFilterBtn.title = 'Show all folders';
+        }
+    }
+
+    // Resize handle
+    initSidebarResize();
+
+    // Load tree — either filtered or full drives
+    if (sidebarTabFilterActive) {
+        renderTabFilteredTree();
+    } else {
+        await initSidebarDrives();
     }
 }

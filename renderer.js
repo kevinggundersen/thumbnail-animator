@@ -1869,9 +1869,9 @@ window.electronAPI.onMenuCommand((command) => {
         case 'redo': document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Z', ctrlKey: true, shiftKey: true, bubbles: true })); break;
         case 'toggle-sidebar': setSidebarCollapsed(!sidebarCollapsed); break;
         case 'toggle-layout': layoutModeToggle.checked = !layoutModeToggle.checked; switchLayoutMode(); break;
-        case 'zoom-in': { const z = Math.min(200, zoomLevel + 10); zoomSlider.value = z; zoomLevel = z; applyZoom(); deferLocalStorageWrite('zoomLevel', z.toString()); updateStatusBar(); break; }
-        case 'zoom-out': { const z = Math.max(50, zoomLevel - 10); zoomSlider.value = z; zoomLevel = z; applyZoom(); deferLocalStorageWrite('zoomLevel', z.toString()); updateStatusBar(); break; }
-        case 'zoom-reset': { zoomSlider.value = 100; zoomLevel = 100; applyZoom(); deferLocalStorageWrite('zoomLevel', '100'); updateStatusBar(); break; }
+        case 'zoom-in': { const z = Math.min(200, zoomLevel + 10); zoomSlider.value = z; zoomLevel = z; applyZoom(); saveZoomLevel(); updateStatusBar(); break; }
+        case 'zoom-out': { const z = Math.max(50, zoomLevel - 10); zoomSlider.value = z; zoomLevel = z; applyZoom(); saveZoomLevel(); updateStatusBar(); break; }
+        case 'zoom-reset': { zoomSlider.value = 100; zoomLevel = 100; applyZoom(); saveZoomLevel(); updateStatusBar(); break; }
         case 'show-shortcuts': toggleShortcutsOverlay(); break;
         case 'open-settings': toggleSettingsModal(); break;
         case 'about': showAboutDialog(); break;
@@ -2546,6 +2546,68 @@ let hasFfmpegAvailable = false;
 
 // Track zoom level
 let zoomLevel = 100; // Percentage
+
+// Per-folder zoom: globalZoomLevel is the shared default; decoupled folders override it
+let globalZoomLevel = 100;
+
+const MAX_FOLDER_ZOOM_PREFS = 500;
+let folderZoomPrefs = {};
+try {
+    const raw = localStorage.getItem('folderZoomPrefs');
+    if (raw) folderZoomPrefs = JSON.parse(raw);
+} catch { folderZoomPrefs = {}; }
+
+function isCurrentFolderDecoupled() {
+    return currentFolderPath && folderZoomPrefs[currentFolderPath] !== undefined;
+}
+
+function saveZoomLevel() {
+    if (isCurrentFolderDecoupled()) {
+        folderZoomPrefs[currentFolderPath] = zoomLevel;
+        _saveFolderZoomPrefs();
+    } else {
+        globalZoomLevel = zoomLevel;
+        deferLocalStorageWrite('zoomLevel', globalZoomLevel.toString());
+    }
+}
+
+function _saveFolderZoomPrefs() {
+    const keys = Object.keys(folderZoomPrefs);
+    if (keys.length > MAX_FOLDER_ZOOM_PREFS) {
+        const toRemove = keys.length - MAX_FOLDER_ZOOM_PREFS;
+        for (let i = 0; i < toRemove; i++) delete folderZoomPrefs[keys[i]];
+    }
+    deferLocalStorageWrite('folderZoomPrefs', JSON.stringify(folderZoomPrefs));
+}
+
+function toggleFolderZoomDecouple() {
+    if (!currentFolderPath) return;
+    if (isCurrentFolderDecoupled()) {
+        // Re-couple: remove entry, revert to global
+        delete folderZoomPrefs[currentFolderPath];
+        _saveFolderZoomPrefs();
+        zoomLevel = globalZoomLevel;
+        zoomSlider.value = zoomLevel;
+        zoomValue.textContent = `${zoomLevel}%`;
+        applyZoom();
+    } else {
+        // Decouple: pin current zoom to this folder
+        folderZoomPrefs[currentFolderPath] = zoomLevel;
+        _saveFolderZoomPrefs();
+    }
+    updatePerFolderZoomButton();
+    updateStatusBar();
+}
+
+function updatePerFolderZoomButton() {
+    const btn = document.getElementById('zoom-decouple-btn');
+    if (!btn) return;
+    const decoupled = isCurrentFolderDecoupled();
+    btn.classList.toggle('active', decoupled);
+    btn.title = decoupled
+        ? 'This folder has independent zoom (click to use global zoom)'
+        : 'Using global zoom (click to pin zoom for this folder)';
+}
 
 // --- Card info (metadata chips on grid cards) ---
 const DEFAULT_CARD_INFO = Object.freeze({
@@ -9443,6 +9505,20 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
             }
         }
 
+        // Restore zoom: decoupled folders get their own zoom, others get global
+        {
+            const folderZoom = folderZoomPrefs[folderPath];
+            if (folderZoom !== undefined) {
+                zoomLevel = folderZoom;
+            } else {
+                zoomLevel = globalZoomLevel;
+            }
+            zoomSlider.value = zoomLevel;
+            if (zoomValue) zoomValue.textContent = `${zoomLevel}%`;
+            applyZoom();
+            updatePerFolderZoomButton();
+        }
+
         const normalizedTargetPath = normalizePath(folderPath);
         const isSameFolder = previousFolderPath && normalizePath(previousFolderPath) === normalizedTargetPath;
         let preservedScrollTop = isSameFolder ? previousScrollTop : null;
@@ -9885,7 +9961,7 @@ zoomSlider.addEventListener('input', (e) => {
         // Clear cached tag overlap checks since card sizes changed (moved inside debounce)
         gridContainer.querySelectorAll('.video-card[data-tag-overlap-checked]').forEach(c => delete c.dataset.tagOverlapChecked);
         applyZoom();
-        deferLocalStorageWrite('zoomLevel', zoomLevel.toString());
+        saveZoomLevel();
         updateStatusBar();
     }, 150);
 });
@@ -12303,9 +12379,10 @@ if (typeof CommandPalette !== 'undefined') {
         { id: 'view.filter-all', label: 'Show All Files', category: 'View', shortcut: '1', keywords: ['filter', 'all', 'everything'], action: () => switchFilter('all') },
         { id: 'view.filter-videos', label: 'Show Videos Only', category: 'View', shortcut: '2', keywords: ['filter', 'video', 'mp4'], action: () => switchFilter('video') },
         { id: 'view.filter-images', label: 'Show Images Only', category: 'View', shortcut: '3', keywords: ['filter', 'image', 'png', 'jpg'], action: () => switchFilter('image') },
-        { id: 'view.zoom-in', label: 'Zoom In', category: 'View', shortcut: '+', keywords: ['zoom', 'bigger', 'larger'], action: () => { const z = Math.min(200, zoomLevel + 10); zoomSlider.value = z; zoomLevel = z; applyZoom(); deferLocalStorageWrite('zoomLevel', z.toString()); updateStatusBar(); } },
-        { id: 'view.zoom-out', label: 'Zoom Out', category: 'View', shortcut: '-', keywords: ['zoom', 'smaller'], action: () => { const z = Math.max(50, zoomLevel - 10); zoomSlider.value = z; zoomLevel = z; applyZoom(); deferLocalStorageWrite('zoomLevel', z.toString()); updateStatusBar(); } },
-        { id: 'view.zoom-reset', label: 'Reset Zoom', category: 'View', shortcut: '0', keywords: ['zoom', 'reset', '100'], action: () => { zoomSlider.value = 100; zoomLevel = 100; applyZoom(); deferLocalStorageWrite('zoomLevel', '100'); updateStatusBar(); } },
+        { id: 'view.zoom-in', label: 'Zoom In', category: 'View', shortcut: '+', keywords: ['zoom', 'bigger', 'larger'], action: () => { const z = Math.min(200, zoomLevel + 10); zoomSlider.value = z; zoomLevel = z; applyZoom(); saveZoomLevel(); updateStatusBar(); } },
+        { id: 'view.zoom-out', label: 'Zoom Out', category: 'View', shortcut: '-', keywords: ['zoom', 'smaller'], action: () => { const z = Math.max(50, zoomLevel - 10); zoomSlider.value = z; zoomLevel = z; applyZoom(); saveZoomLevel(); updateStatusBar(); } },
+        { id: 'view.zoom-reset', label: 'Reset Zoom', category: 'View', shortcut: '0', keywords: ['zoom', 'reset', '100'], action: () => { zoomSlider.value = 100; zoomLevel = 100; applyZoom(); saveZoomLevel(); updateStatusBar(); } },
+        { id: 'view.zoom-decouple', label: 'Toggle Per-Folder Zoom', category: 'View', keywords: ['zoom', 'folder', 'decouple', 'pin', 'independent', 'per-folder', 'lock'], when: () => !!currentFolderPath, action: () => toggleFolderZoomDecouple() },
 
         // File Actions (require focused card -- dispatch keyboard events to reuse existing handlers)
         { id: 'file.rename', label: 'Rename File', category: 'File', shortcut: 'F2', keywords: ['rename', 'name'], when: () => focusedCardIndex >= 0, action: () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'F2', bubbles: true })) },

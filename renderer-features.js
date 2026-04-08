@@ -530,7 +530,7 @@ function initKeyboardShortcuts() {
             zoomLevel = newZoom;
             if (zoomValue) zoomValue.textContent = `${newZoom}%`;
             applyZoom();
-            deferLocalStorageWrite('zoomLevel', zoomLevel.toString());
+            saveZoomLevel();
             updateStatusBar();
             return;
         }
@@ -543,7 +543,7 @@ function initKeyboardShortcuts() {
             zoomLevel = newZoom;
             if (zoomValue) zoomValue.textContent = `${newZoom}%`;
             applyZoom();
-            deferLocalStorageWrite('zoomLevel', zoomLevel.toString());
+            saveZoomLevel();
             updateStatusBar();
             return;
         }
@@ -555,7 +555,7 @@ function initKeyboardShortcuts() {
             zoomLevel = 100;
             if (zoomValue) zoomValue.textContent = `100%`;
             applyZoom();
-            deferLocalStorageWrite('zoomLevel', '100');
+            saveZoomLevel();
             updateStatusBar();
             return;
         }
@@ -598,7 +598,7 @@ function initKeyboardShortcuts() {
             if (zoomSlider) zoomSlider.value = newZoom;
             if (zoomValue) zoomValue.textContent = `${newZoom}%`;
             applyZoom();
-            deferLocalStorageWrite('zoomLevel', zoomLevel.toString());
+            saveZoomLevel();
             updateStatusBar();
             showZoomPill(newZoom);
         }, { passive: false });
@@ -2791,11 +2791,22 @@ function stopLightboxGifProgress() {
 function initZoom() {
     const savedZoom = localStorage.getItem('zoomLevel');
     if (savedZoom) {
-        zoomLevel = parseInt(savedZoom, 10);
-        zoomSlider.value = zoomLevel;
-        zoomValue.textContent = `${zoomLevel}%`;
+        globalZoomLevel = parseInt(savedZoom, 10);
     }
+    zoomLevel = globalZoomLevel;
+    zoomSlider.value = zoomLevel;
+    zoomValue.textContent = `${zoomLevel}%`;
     applyZoom();
+
+    // Wire decouple button
+    const btn = document.getElementById('zoom-decouple-btn');
+    if (btn) {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleFolderZoomDecouple();
+        });
+    }
+    updatePerFolderZoomButton();
 }
 
 function applyZoom() {

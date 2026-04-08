@@ -2186,6 +2186,16 @@ header {
     height: 10px;
 }
 
+.zoom-decouple-btn {
+    padding: 2px 4px;
+    flex-shrink: 0;
+}
+
+.status-bar .zoom-decouple-btn svg {
+    width: 12px;
+    height: 12px;
+}
+
 .status-bar .filter-stars-group {
     margin-left: 2px;
     padding-left: 2px;

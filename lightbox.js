@@ -192,6 +192,9 @@ function _showStaticImage(mediaUrl, lightboxImage, lightboxGifCanvas, lightbox, 
 
     const handleImageLoad = () => {
         requestAnimationFrame(() => {
+            // Guard: if src changed since this rAF was scheduled, bail out —
+            // another handleImageLoad will fire for the correct image.
+            if (lightboxImage.src !== mediaUrl && lightboxImage.dataset.src !== mediaUrl) return;
             const baseRect = getDisplayedUnrotatedMediaRect(lightboxImage);
             if (baseRect) {
                 lightboxImage.dataset.baseWidth = baseRect.width.toString();
@@ -208,14 +211,17 @@ function _showStaticImage(mediaUrl, lightboxImage, lightboxGifCanvas, lightbox, 
         lightboxImage.removeEventListener('load', handleImageLoad);
     };
 
+    // Set src BEFORE the complete check — otherwise `complete` reflects the
+    // OLD image and handleImageLoad would run with stale naturalWidth/rect,
+    // producing a wrong zoom level for the new image.
+    lightboxImage.src = mediaUrl;
+    lightboxImage.dataset.src = mediaUrl;
+
     if (lightboxImage.complete && lightboxImage.naturalWidth > 0) {
         handleImageLoad();
     } else {
         lightboxImage.addEventListener('load', handleImageLoad);
     }
-
-    lightboxImage.src = mediaUrl;
-    lightboxImage.dataset.src = mediaUrl;
 
     // Static image: hide controls
     if (mediaControlBarInstance) mediaControlBarInstance.hide();
@@ -1031,13 +1037,27 @@ function applyLightboxZoom(zoomLevel, mouseX = null, mouseY = null) {
             zoomableImageEl.style.height = `${baseHeight}px`;
             zoomableImageEl.style.maxWidth = 'none';
             zoomableImageEl.style.maxHeight = 'none';
+        } else if (isImageVisible || isCanvasVisible) {
+            // Fallback: compute base dimensions from natural size constrained to
+            // the 90vw/90vh viewport box so we don't jump to full natural size.
+            const natW = isImageVisible ? lightboxImage.naturalWidth : (activePlaybackController?.gifWidth || 0);
+            const natH = isImageVisible ? lightboxImage.naturalHeight : (activePlaybackController?.gifHeight || 0);
+            if (natW > 0 && natH > 0) {
+                const maxW = window.innerWidth * 0.9;
+                const maxH = window.innerHeight * 0.9;
+                const fitScale = Math.min(1, maxW / natW, maxH / natH);
+                const bw = natW * fitScale;
+                const bh = natH * fitScale;
+                zoomableImageEl.dataset.baseWidth = bw.toString();
+                zoomableImageEl.dataset.baseHeight = bh.toString();
+                zoomableImageEl.style.width = `${bw}px`;
+                zoomableImageEl.style.height = `${bh}px`;
+            }
+            zoomableImageEl.style.maxWidth = 'none';
+            zoomableImageEl.style.maxHeight = 'none';
         } else {
-            lightboxImage.style.maxWidth = 'none';
-            lightboxImage.style.maxHeight = 'none';
             lightboxVideo.style.maxWidth = 'none';
             lightboxVideo.style.maxHeight = 'none';
-            lightboxGifCanvas.style.maxWidth = 'none';
-            lightboxGifCanvas.style.maxHeight = 'none';
         }
     } else {
         lightboxImage.classList.remove('zoomed');

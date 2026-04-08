@@ -757,8 +757,9 @@ async function backgroundScanSmartCollection(collectionId) {
                     if (badge) badge.textContent = items.length;
 
                     if (currentCollectionId === collectionId) {
+                        const scrollBefore = gridContainer.scrollTop;
                         currentItems = items;
-                        renderItems(sortItems(filterItems(items)), null);
+                        renderItems(sortItems(filterItems(items)), scrollBefore);
                         updateBreadcrumbForCollection(collection);
                     }
 
@@ -812,8 +813,9 @@ async function backgroundScanSmartCollection(collectionId) {
                                 if (badge2) badge2.textContent = items.length;
 
                                 if (currentCollectionId === collectionId) {
+                                    const scrollBefore = gridContainer.scrollTop;
                                     currentItems = items;
-                                    renderItems(sortItems(filterItems(items)), null);
+                                    renderItems(sortItems(filterItems(items)), scrollBefore);
                                 }
                                 newMatches = false;
                             }
@@ -853,10 +855,11 @@ async function backgroundScanSmartCollection(collectionId) {
 
         // If user navigated to this collection during the scan, render results
         if (currentCollectionId === collectionId) {
+            const scrollBefore = gridContainer.scrollTop;
             currentItems = items;
             const filtered = filterItems(items);
             const sorted = sortItems(filtered);
-            renderItems(sorted, null);
+            renderItems(sorted, scrollBefore);
             updateBreadcrumbForCollection(collection);
         }
     } finally {

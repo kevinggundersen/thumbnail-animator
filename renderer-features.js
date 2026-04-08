@@ -1807,7 +1807,7 @@ function _createTabElement(tab, groupColorValue, isGroupCollapsed) {
 }
 
 function initTabDragReorder(e, dragEl) {
-    const allTabs = Array.from(tabsContainer.querySelectorAll('.tab'));
+    const allTabs = Array.from(tabsContainer.querySelectorAll('.tab:not(.tab-group-collapsed)'));
     const originalIndex = allTabs.indexOf(dragEl);
     if (originalIndex === -1) return;
 
@@ -1941,8 +1941,20 @@ function initTabDragReorder(e, dragEl) {
 
         // Commit the reorder if position changed
         if (currentSlot !== originalIndex) {
-            const [moved] = tabs.splice(originalIndex, 1);
-            tabs.splice(currentSlot, 0, moved);
+            // Map DOM visual order → tab IDs, apply reorder, then sync backing array.
+            // Direct index-based splice was wrong because renderTabs() renders grouped
+            // tabs first (by group order) then ungrouped — so DOM indices ≠ tabs-array indices.
+            const visualTabIds = allTabs.map(t => parseInt(t.dataset.tabId, 10));
+            const [movedId] = visualTabIds.splice(originalIndex, 1);
+            visualTabIds.splice(currentSlot, 0, movedId);
+            const tabById = new Map(tabs.map(t => [t.id, t]));
+            const reordered = visualTabIds.map(id => tabById.get(id)).filter(Boolean);
+            // Preserve any non-visible tabs (e.g. inside collapsed groups) in their original order
+            for (const t of tabs) {
+                if (!reordered.includes(t)) reordered.push(t);
+            }
+            tabs.length = 0;
+            tabs.push(...reordered);
         }
 
         // Group-aware drop: if dropped on a group label, assign to that group

@@ -157,8 +157,10 @@ function initKeyboardShortcuts() {
                 const p = window.currentLightboxFilePath;
                 if (p) openConvertDialog([p], { fromLightbox: true });
             } else {
-                const paths = Array.from(document.querySelectorAll('.video-card.selected'))
-                    .map(c => c.dataset.path).filter(Boolean);
+                const paths = (window.CG && window.CG.isEnabled())
+                    ? Array.from(selectedCardPaths).filter(Boolean)
+                    : Array.from(document.querySelectorAll('.video-card.selected'))
+                        .map(c => c.dataset.path).filter(Boolean);
                 if (paths.length) openConvertDialog(paths, { fromLightbox: false });
                 else showToast('Select one or more files to convert', 'info');
             }
@@ -315,7 +317,8 @@ function initKeyboardShortcuts() {
         // Ctrl+Shift+C: Copy file path of hovered > first-selected > focused card
         if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'c') {
             let targetPath = null;
-            const hoveredCard = document.querySelector('.video-card:hover, .folder-card:hover');
+            const hoveredCard = document.querySelector('.video-card:hover, .folder-card:hover')
+                || (window.CG && window.CG.isEnabled() && window.CG.getHoveredDescriptor());
             if (hoveredCard && hoveredCard.dataset.path) {
                 targetPath = hoveredCard.dataset.path;
             } else if (typeof selectedCardPaths !== 'undefined' && selectedCardPaths.size > 0) {
@@ -339,7 +342,8 @@ function initKeyboardShortcuts() {
         // Target priority matches rating shortcuts so no click is required.
         if (matchesShortcut(e, 'tagPicker')) {
             let tagPaths = [];
-            const hoveredCard = document.querySelector('.video-card:hover');
+            const hoveredCard = document.querySelector('.video-card:hover')
+                || (window.CG && window.CG.isEnabled() && window.CG.getHoveredDescriptor());
             if (hoveredCard && hoveredCard.dataset.path) {
                 tagPaths = [hoveredCard.dataset.path];
             } else if (typeof selectedCardPaths !== 'undefined' && selectedCardPaths.size > 0) {
@@ -416,7 +420,8 @@ function initKeyboardShortcuts() {
                 // Target priority: hovered card > selection > focused card.
                 // Hovered-first means shortcuts work without clicking first.
                 let targets = [];
-                const hoveredCard = document.querySelector('.video-card:hover');
+                const hoveredCard = document.querySelector('.video-card:hover')
+                    || (window.CG && window.CG.isEnabled() && window.CG.getHoveredDescriptor());
                 if (hoveredCard && hoveredCard.dataset.path) {
                     targets = [hoveredCard.dataset.path];
                 } else if (typeof selectedCardPaths !== 'undefined' && selectedCardPaths.size > 0) {
@@ -613,9 +618,10 @@ function showZoomPill(pct) {
 }
 
 function navigateCards(direction) {
+    if (window.CG && window.CG.isEnabled()) return; // canvas-grid has its own arrow-key handler
     const cards = Array.from(gridContainer.querySelectorAll('.video-card, .folder-card'))
         .filter(card => card.style.display !== 'none');
-    
+
     if (cards.length === 0) return;
 
     visibleCards = cards;
@@ -3389,9 +3395,11 @@ async function loadInitDataBatched() {
 }
 
 function updateCardRating(filePath, rating) {
+    // Canvas grid: no DOM cards to update; CG.scheduleRender() is called by the rating setter
+    if (window.CG && window.CG.isEnabled()) return;
     // Normalize path for matching
     const normalizedPath = filePath.replace(/\\/g, '/');
-    
+
     // Find all cards - try multiple selectors and path formats
     const allCards = gridContainer.querySelectorAll('.video-card:not(.folder-card)');
     allCards.forEach(card => {

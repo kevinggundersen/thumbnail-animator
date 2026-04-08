@@ -1483,6 +1483,7 @@ const DEFAULT_SHORTCUTS = {
     newTabGroup:    { key: 'g', ctrl: true, shift: true, label: 'New tab group', category: 'Tabs' },
     sidebarTabFilter: { key: 'e', alt: true, label: 'Filter sidebar to tabs', category: 'View' },
     sidebarTabFlat:   { key: 'e', alt: true, shift: true, label: 'Flat tab folder list', category: 'View' },
+    toggleCanvasGrid: { key: 'g', ctrl: true, shift: true, alt: true, label: 'Toggle canvas grid', category: 'View' },
 };
 
 // Merge user overrides over defaults

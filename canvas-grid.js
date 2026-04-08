@@ -70,12 +70,26 @@ let cgHoverMediaItemPath = null; // what path the current media represents
 let cgDragProxy = null;       // draggable=true, positioned over hovered card
 let cgDragProxyItemIndex = -1;
 
+// Folder prefetch timer (debounced)
+let cgFolderPrefetchTimer = null;
+
+// Folder preview bitmap cache: folderPath -> { bitmaps: ImageBitmap[], urls: string[] }
+const cgFolderPreviewCache = new Map();
+const cgFolderPreviewRequested = new Set();
+
+// Video media pool: auto-play videos for visible cards on the canvas
+// Maps item.path -> { video: HTMLVideoElement, itemIndex: number, playing: boolean }
+const cgVideoPool = new Map();
+const CG_MAX_VIDEOS = 12; // Max simultaneous canvas video elements
+let cgVideoRafId = null;   // Continuous RAF for drawing video frames
+
 let cgResizeObserver = null;
 let cgScrollListenerAttached = false;
 let cgInteractionListenersAttached = false;
 
 // Style constants (match current DOM card look & feel)
 const CG_STYLE = {
+    gridBg: null,                // resolved lazily from CSS var(--bg-primary)
     cardBg: 'rgba(28,28,30,1)',
     cardBorder: 'rgba(255,255,255,0.08)',
     thumbBg: 'rgba(12,12,14,1)',
@@ -142,7 +156,7 @@ function cgInit(container) {
     gridContainer.appendChild(cgOverlayLayer);
     gridContainer.appendChild(cgA11yLive);
 
-    cgCtx = cgCanvas.getContext('2d', { alpha: true });
+    cgCtx = cgCanvas.getContext('2d', { alpha: false });
 
     cgResizeObserver = new ResizeObserver(() => { if (cgEnabled) cgOnResize(); });
     cgResizeObserver.observe(gridContainer);
@@ -180,11 +194,23 @@ function cgSetEnabled(enabled) {
         cgScheduleRender();
     } else if (!cgEnabled && prev) {
         cgTeardownHoverMedia();
+        cgTeardownVideoPool();
         cgHoveredIndex = -1;
+        // Force DOM cards to rebuild when switching back to DOM mode
+        if (host && host.triggerDomRerender) host.triggerDomRerender();
     }
 }
 
 function cgIsEnabled() { return cgEnabled; }
+
+function cgGetGridBg() {
+    if (!CG_STYLE.gridBg) {
+        // Resolve from CSS custom property; fall back to dark bg
+        const s = getComputedStyle(document.documentElement);
+        CG_STYLE.gridBg = s.getPropertyValue('--bg-primary').trim() || '#0d0d0f';
+    }
+    return CG_STYLE.gridBg;
+}
 
 function cgSyncSizerHeight() {
     if (!host) return;
@@ -288,7 +314,10 @@ function cgAttachInteractionListeners() {
         const hit = cgHitTest(e.clientX, e.clientY);
         if (hit.itemIndex < 0) return;
         const vcard = cgResolveCardDescriptor(hit.itemIndex, hit.zone);
-        if (vcard) host.showContextMenu(e, vcard);
+        if (vcard) {
+            e.stopPropagation(); // prevent document-level handler from double-firing
+            host.showContextMenu(e, vcard);
+        }
     });
 
     // Keyboard navigation: arrow keys move focus, Enter activates
@@ -381,6 +410,7 @@ function cgInvalidateData() {
     cgDataEpoch++;
     cgSyncSizerHeight();
     cgPrefetchSeen.clear();
+    cgTeardownVideoPool(); // Items reordered/filtered — rebuild pool on next render
     // Items may have been reordered/filtered — hovered index is stale
     cgHoveredIndex = -1;
     cgTeardownHoverMedia();
@@ -392,7 +422,7 @@ function cgInvalidateSelection() {
 }
 function cgInvalidateSettings() {
     if (!cgEnabled) return;
-    cgSettingsEpoch++; cgLastSig = null; cgScheduleRender();
+    cgSettingsEpoch++; CG_STYLE.gridBg = null; cgLastSig = null; cgScheduleRender();
 }
 function cgInvalidateHover(newIndex) {
     if (!cgEnabled) return;
@@ -420,7 +450,8 @@ function cgRender() {
     const positions = host.positions;
     const visibleRangeFn = host.visibleRange;
     if (!items || !positions || !visibleRangeFn) {
-        cgCtx.clearRect(0, 0, cgViewportW, cgViewportH);
+        cgCtx.fillStyle = cgGetGridBg();
+        cgCtx.fillRect(0, 0, cgViewportW, cgViewportH);
         if (!window._cgLoggedNoData) {
             cgDebugLog('[cg-render] no data:', { items: !!items, positions: !!positions, visibleRangeFn: !!visibleRangeFn });
             window._cgLoggedNoData = true;
@@ -432,7 +463,8 @@ function cgRender() {
     if (sig === cgLastSig) return;
     cgLastSig = sig;
 
-    cgCtx.clearRect(0, 0, cgViewportW, cgViewportH);
+    cgCtx.fillStyle = CG_STYLE.gridBg;
+    cgCtx.fillRect(0, 0, cgViewportW, cgViewportH);
 
     const { startIndex, endIndex } = visibleRangeFn(scrollTop, cgViewportH);
     if (!window._cgLoggedFirst) {
@@ -485,6 +517,11 @@ function cgRender() {
             cgCtx.restore();
         }
     }
+
+    // Sync video pool: create/remove hidden video elements for visible video cards
+    try { cgSyncVideoPool(startIndex, endIndex); } catch (err) {
+        if (CG_DEBUG) console.warn('[cg] video pool sync error:', err);
+    }
 }
 
 // ── Painters ───────────────────────────────────────────────────────────
@@ -533,8 +570,23 @@ function cgPaintMediaCard(item, x, y, w, h, itemIndex, isHovered, isSelected) {
         ctx.fill();
     }
 
-    // Thumbnail bitmap, clipped to card rect
-    if (item.path) {
+    // Thumbnail: draw video frame (from pool) or static bitmap
+    let drewVideoFrame = false;
+    if (item.path && item.type === 'video' && !isHovered) {
+        // For non-hovered video cards, try drawing the live video frame from the pool
+        const pooledVideo = cgGetPooledVideo(item.path);
+        if (pooledVideo && pooledVideo.videoWidth > 0) {
+            ctx.save();
+            cgRoundRectPath(ctx, x, y, w, h, r);
+            ctx.clip();
+            try {
+                cgDrawBitmapCover(ctx, pooledVideo, pooledVideo.videoWidth, pooledVideo.videoHeight, x, y, w, h);
+                drewVideoFrame = true;
+            } catch { /* ignore */ }
+            ctx.restore();
+        }
+    }
+    if (!drewVideoFrame && item.path) {
         const thumbUrl = cgResolveThumbUrl(item, Math.round(w * 2));
         if (thumbUrl) {
             const cached = host.getCachedBitmap(thumbUrl);
@@ -811,13 +863,45 @@ function cgPaintFolderCard(item, x, y, w, h, isHovered, isSelected, isDragOver) 
     ctx.clip();
     ctx.fillStyle = CG_STYLE.folderTint;
     ctx.fillRect(x, y, w, h);
-    ctx.restore();
 
-    // Folder icon (stylized rectangle with tab)
-    const iconSize = Math.min(48, w * 0.4, h * 0.5);
-    const ix = x + (w - iconSize) / 2;
-    const iy = y + h * 0.3 - iconSize / 2;
-    cgDrawFolderIcon(ctx, ix, iy, iconSize);
+    // Folder preview thumbnails (drawn as a grid inside the card)
+    const folderPath = item.path || item.folderPath;
+    const previews = folderPath ? cgGetFolderPreviews(folderPath) : null;
+    if (previews && previews.length > 0) {
+        // Draw preview grid covering the card area (above tint, below label)
+        const labelH = 28; // reserve space for folder name at bottom
+        const previewH = h - labelH;
+        const cols = Math.ceil(Math.sqrt(previews.length));
+        const rows = Math.ceil(previews.length / cols);
+        const cellW = w / cols;
+        const cellH = previewH / rows;
+        for (let pi = 0; pi < previews.length; pi++) {
+            const col = pi % cols;
+            const row = Math.floor(pi / cols);
+            const cx = x + col * cellW;
+            const cy = y + row * cellH;
+            try {
+                cgDrawBitmapCover(ctx, previews[pi], previews[pi].width, previews[pi].height,
+                    cx, cy, cellW, cellH);
+            } catch { /* bitmap may be detached */ }
+        }
+        // Semi-transparent overlay on preview area for text legibility
+        const grad = ctx.createLinearGradient(0, y + previewH - 24, 0, y + h);
+        grad.addColorStop(0, 'rgba(0,0,0,0)');
+        grad.addColorStop(0.5, 'rgba(0,0,0,0.6)');
+        grad.addColorStop(1, 'rgba(0,0,0,0.85)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(x, y + previewH - 24, w, labelH + 24);
+    } else {
+        // No previews available — show folder icon
+        const iconSize = Math.min(48, w * 0.4, h * 0.5);
+        const ix = x + (w - iconSize) / 2;
+        const iy = y + h * 0.3 - iconSize / 2;
+        cgDrawFolderIcon(ctx, ix, iy, iconSize);
+        // Request previews if not yet fetched
+        if (folderPath) cgRequestFolderPreviews(folderPath);
+    }
+    ctx.restore(); // unclip from folder tint
 
     // Folder name
     ctx.fillStyle = CG_STYLE.textFg;
@@ -825,7 +909,7 @@ function cgPaintFolderCard(item, x, y, w, h, isHovered, isSelected, isDragOver) 
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'center';
     const label = cgEllipsize(ctx, item.name || '', w - 16);
-    ctx.fillText(label, x + w / 2, y + h * 0.75);
+    ctx.fillText(label, x + w / 2, y + h - 14);
     ctx.textAlign = 'left';
 
     // Selection / hover / drag-over border
@@ -907,6 +991,35 @@ function cgDrawFolderIcon(ctx, x, y, size) {
     ctx.restore();
 }
 
+/** Get cached folder preview bitmaps, or null if not yet available. */
+function cgGetFolderPreviews(folderPath) {
+    const cached = cgFolderPreviewCache.get(folderPath);
+    return cached ? cached.bitmaps : null;
+}
+
+/** Request folder preview images and decode them into ImageBitmaps for canvas drawing. */
+function cgRequestFolderPreviews(folderPath) {
+    if (cgFolderPreviewRequested.has(folderPath) || !host || !host.requestFolderPreview) return;
+    cgFolderPreviewRequested.add(folderPath);
+    host.requestFolderPreview(folderPath).then(urls => {
+        if (!urls || urls.length === 0) return;
+        // Decode each URL into an ImageBitmap for fast canvas drawing
+        const promises = urls.slice(0, 4).map(url => {
+            return fetch(url)
+                .then(r => r.blob())
+                .then(blob => createImageBitmap(blob, { resizeWidth: 256, resizeQuality: 'low' }))
+                .catch(() => null);
+        });
+        Promise.all(promises).then(bitmaps => {
+            const valid = bitmaps.filter(Boolean);
+            if (valid.length > 0) {
+                cgFolderPreviewCache.set(folderPath, { bitmaps: valid, urls });
+                cgScheduleRender();
+            }
+        });
+    }).catch(() => { /* ignore preview errors */ });
+}
+
 function cgDrawBitmapCover(ctx, bitmap, bw, bh, x, y, w, h) {
     // Object-fit: cover semantics
     const scale = Math.max(w / bw, h / bh);
@@ -963,13 +1076,23 @@ function cgTeardownHoverMedia() {
 }
 
 function cgUpdateHoverOverlay(itemIndex) {
-    if (!cgEnabled || !host) { cgTeardownHoverMedia(); return; }
+    if (!cgEnabled || !host) { cgTeardownHoverMedia(); clearTimeout(cgFolderPrefetchTimer); return; }
 
     if (itemIndex < 0) {
         cgTeardownHoverMedia();
+        clearTimeout(cgFolderPrefetchTimer);
         return;
     }
     const item = host.items[itemIndex];
+
+    // Folder prefetch on hover (debounced 200ms, matches DOM grid behavior)
+    clearTimeout(cgFolderPrefetchTimer);
+    if (item && item.type === 'folder' && host.prefetchFolder) {
+        cgFolderPrefetchTimer = setTimeout(() => {
+            host.prefetchFolder(item.path || item.folderPath);
+        }, 200);
+    }
+
     if (!item || item.type === 'folder' || item.type === 'group-header' || item.missing) {
         cgTeardownHoverMedia();
         return;
@@ -1029,6 +1152,141 @@ function cgPositionHoverMediaHost(itemIndex) {
     cgHoverMediaHost.style.width = w + 'px';
     cgHoverMediaHost.style.height = h + 'px';
     cgHoverMediaHost.style.transform = `translate(${x}px, ${y}px)`;
+}
+
+// ── Video media pool (auto-play visible videos) ──────────────────────────
+// Hidden DOM <video> elements for visible video cards. Their current frame
+// is drawn onto the canvas via ctx.drawImage() in the render loop.
+
+function cgSyncVideoPool(startIndex, endIndex) {
+    if (!host) return;
+    const items = host.items;
+    const positions = host.positions;
+    if (!items || !positions) return;
+    const scrollTop = gridContainer.scrollTop;
+
+    // Don't autoplay when conditions say to pause
+    const shouldPause = (host.isLightboxOpen && host.pauseOnLightbox) ||
+                        (host.isWindowBlurred && host.pauseOnBlur);
+
+    // Gather visible video items (limit to CG_MAX_VIDEOS)
+    const visibleVideos = [];
+    for (let i = startIndex; i < endIndex && visibleVideos.length < CG_MAX_VIDEOS; i++) {
+        const item = items[i];
+        if (!item || item.type !== 'video' || !item.url) continue;
+        // Only include items actually in the viewport (not just in the buffer zone)
+        const iy = positions[i * 4 + 1] - scrollTop;
+        const ih = positions[i * 4 + 3];
+        if (iy + ih < 0 || iy > cgViewportH) continue;
+        visibleVideos.push({ index: i, path: item.path, url: item.url });
+    }
+
+    const visiblePaths = new Set(visibleVideos.map(v => v.path));
+
+    // Remove videos no longer visible
+    for (const [path, entry] of cgVideoPool) {
+        if (!visiblePaths.has(path)) {
+            try {
+                entry.video.pause();
+                entry.video.src = '';
+                entry.video.load();
+            } catch {}
+            if (entry.video.parentNode) entry.video.parentNode.removeChild(entry.video);
+            cgVideoPool.delete(path);
+        }
+    }
+
+    // Add/update videos for visible items
+    for (const { path, url } of visibleVideos) {
+        if (cgVideoPool.has(path)) {
+            // Already have this video — resume or pause
+            const entry = cgVideoPool.get(path);
+            if (shouldPause && !entry.video.paused) {
+                entry.video.pause();
+            } else if (!shouldPause && entry.video.paused && entry.video.readyState >= 2) {
+                entry.video.play().catch(() => {});
+            }
+            continue;
+        }
+        // Create new hidden video
+        const v = document.createElement('video');
+        v.style.cssText = 'position:absolute;top:-9999px;left:-9999px;width:1px;height:1px;pointer-events:none;opacity:0;';
+        v.muted = true;
+        v.loop = true;
+        v.playsInline = true;
+        v.preload = 'auto';
+        v.src = url;
+        // Start playing once enough data is loaded
+        v.addEventListener('canplay', () => {
+            if (!shouldPause) {
+                v.play().catch(() => {});
+            }
+            cgScheduleRender(); // redraw with video frame
+        }, { once: true });
+        // Schedule redraws while playing
+        v.addEventListener('timeupdate', () => {
+            cgScheduleVideoRender();
+        });
+        document.body.appendChild(v);
+        cgVideoPool.set(path, { video: v, playing: false });
+    }
+
+    // Start/stop the continuous render loop based on playing videos
+    cgUpdateVideoRafLoop();
+}
+
+function cgTeardownVideoPool() {
+    for (const [, entry] of cgVideoPool) {
+        try {
+            entry.video.pause();
+            entry.video.src = '';
+            entry.video.load();
+        } catch {}
+        if (entry.video.parentNode) entry.video.parentNode.removeChild(entry.video);
+    }
+    cgVideoPool.clear();
+    if (cgVideoRafId) { cancelAnimationFrame(cgVideoRafId); cgVideoRafId = null; }
+}
+
+/** Get a playing video element for a given item path, or null. */
+function cgGetPooledVideo(path) {
+    const entry = cgVideoPool.get(path);
+    if (!entry || !entry.video || entry.video.readyState < 2) return null;
+    return entry.video;
+}
+
+/** Schedule a render specifically for video frame updates. */
+function cgScheduleVideoRender() {
+    cgLastSig = null; // Invalidate signature so render loop doesn't skip
+    cgScheduleRender();
+}
+
+/** Start or stop the continuous RAF loop for video frames. */
+function cgUpdateVideoRafLoop() {
+    let anyPlaying = false;
+    for (const [, entry] of cgVideoPool) {
+        if (!entry.video.paused && entry.video.readyState >= 2) {
+            anyPlaying = true;
+            break;
+        }
+    }
+    if (anyPlaying && !cgVideoRafId) {
+        const tick = () => {
+            cgVideoRafId = null;
+            if (!cgEnabled) return;
+            // Check if still any playing
+            let stillPlaying = false;
+            for (const [, entry] of cgVideoPool) {
+                if (!entry.video.paused) { stillPlaying = true; break; }
+            }
+            if (stillPlaying) {
+                cgLastSig = null; // force redraw
+                cgScheduleRender();
+                cgVideoRafId = requestAnimationFrame(tick);
+            }
+        };
+        cgVideoRafId = requestAnimationFrame(tick);
+    }
 }
 
 // ── Drag proxy (Phase 4) ───────────────────────────────────────────────
@@ -1247,11 +1505,21 @@ function cgResolveThumbUrl(item /*, targetSize */) {
         return null; // while pending
     }
 
-    // Videos: can't decode video file via createImageBitmap. Skip thumbnail
-    // rendering and show placeholder; the hover overlay will play the video.
-    if (item.type === 'video') {
-        cgThumbUrlCache.set(item.path, null);
-        return null;
+    // Videos: request a poster frame from the ffmpeg thumbnail pipeline
+    if (item.type === 'video' && host.requestVideoPosterUrl) {
+        cgThumbRequested.add(item.path);
+        const p = host.requestVideoPosterUrl(item.path);
+        if (p && p.then) {
+            p.then((posterUrl) => {
+                cgThumbUrlCache.set(item.path, posterUrl || null);
+                cgScheduleRender();
+            }).catch(() => {
+                cgThumbUrlCache.set(item.path, null);
+            });
+        } else {
+            cgThumbUrlCache.set(item.path, null);
+        }
+        return null; // pending
     }
 
     // Unknown type: fall back to item.url (best effort)
@@ -1403,7 +1671,11 @@ function cgTargetFromEvent(e) {
 function cgInstallKeyboardToggle() {
     document.addEventListener('keydown', (e) => {
         if (!cgInitialized) return;
-        if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'G' || e.key === 'g')) {
+        // Use the customizable shortcut system when available, fall back to hardcoded combo
+        const matched = (typeof matchesShortcut === 'function')
+            ? matchesShortcut(e, 'toggleCanvasGrid')
+            : ((e.ctrlKey || e.metaKey) && e.shiftKey && e.altKey && (e.key === 'G' || e.key === 'g'));
+        if (matched) {
             e.preventDefault();
             cgSetEnabled(!cgEnabled);
             cgDebugLog('[canvas-grid] toggled:', cgEnabled ? 'ON' : 'OFF');
@@ -1464,6 +1736,7 @@ window.CG = {
     queryVisibleCards: cgQueryVisibleCards,
     syncSizerHeight: cgSyncSizerHeight,
     onResize: cgOnResize,
+    getHoveredDescriptor: () => cgHoveredIndex >= 0 ? cgResolveCardDescriptor(cgHoveredIndex, 'card') : null,
     _getHoveredIndex: () => cgHoveredIndex,
     _getFocusedIndex: () => cgFocusedIndex,
     _getDragOverIndex: () => cgDragOverIndex

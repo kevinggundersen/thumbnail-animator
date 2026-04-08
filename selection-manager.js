@@ -59,7 +59,10 @@ class SelectionManager {
         if (this._paths.size === 0) return;
         this._paths.clear();
         this._lastIndex = -1;
-        document.querySelectorAll('.video-card.selected').forEach(c => c.classList.remove('selected'));
+        // Skip DOM query when canvas grid is active (no DOM cards exist)
+        if (!(window.CG && window.CG.isEnabled())) {
+            document.querySelectorAll('.video-card.selected').forEach(c => c.classList.remove('selected'));
+        }
         this._updateStatusBar();
         this._onSelectionChange();
     }

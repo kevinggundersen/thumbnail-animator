@@ -6,6 +6,15 @@
 // --- Context Menu Functionality ---
 const folderContextMenu = document.getElementById('folder-context-menu');
 
+/** Helper: get selected file paths, works in both DOM and canvas-grid modes. */
+function _getSelectedPaths() {
+    if (window.CG && window.CG.isEnabled()) {
+        return Array.from(selectedCardPaths).filter(Boolean);
+    }
+    return Array.from(document.querySelectorAll('.video-card.selected'))
+        .map(c => c.dataset.path).filter(Boolean);
+}
+
 function showLightboxContextMenu(event) {
     event.preventDefault();
     event.stopPropagation();
@@ -191,8 +200,7 @@ function showContextMenu(event, card) {
 
     // Show/hide batch rename + compare based on multi-select
     if (!isFolder) {
-        const selectedCards = document.querySelectorAll('.video-card.selected');
-        const selCount = selectedCards.length;
+        const selCount = selectedCardPaths.size;
         const batchRenameItem = menu.querySelector('[data-action="batch-rename"]');
         if (batchRenameItem) batchRenameItem.style.display = selCount > 1 ? '' : 'none';
         const compareItem = menu.querySelector('[data-action="compare"]');
@@ -332,7 +340,7 @@ contextMenu.addEventListener('click', async (e) => {
 
     // Store the file name before hiding the menu (since we clear contextMenuTargetCard)
     const fileNameElement = contextMenuTargetCard.querySelector('.video-info');
-    const fileName = fileNameElement ? fileNameElement.textContent : '';
+    const fileName = fileNameElement ? fileNameElement.textContent : (contextMenuTargetCard.dataset.name || '');
 
     hideContextMenu();
 
@@ -362,10 +370,8 @@ contextMenu.addEventListener('click', async (e) => {
             break;
 
         case 'batch-rename': {
-            const selectedCards = document.querySelectorAll('.video-card.selected');
-            const renamePaths = selectedCards.length > 1
-                ? Array.from(selectedCards).map(c => c.dataset.path).filter(Boolean)
-                : [filePath];
+            const selPaths = _getSelectedPaths();
+            const renamePaths = selPaths.length > 1 ? selPaths : [filePath];
             if (renamePaths.length < 2) {
                 showToast('Select 2 or more files for batch rename', 'info');
             } else {
@@ -493,28 +499,22 @@ contextMenu.addEventListener('click', async (e) => {
 
         case 'add-to-collection': {
             // Gather selected files (multi-select support)
-            const selectedCards = document.querySelectorAll('.video-card.selected');
-            const paths = selectedCards.length > 1
-                ? Array.from(selectedCards).map(c => c.dataset.path).filter(Boolean)
-                : [filePath];
+            const selPathsCol = _getSelectedPaths();
+            const paths = selPathsCol.length > 1 ? selPathsCol : [filePath];
             showAddToCollectionSubmenu(paths, e.clientX || e.pageX || 200, e.clientY || e.pageY || 200);
             break;
         }
 
         case 'tag-file': {
-            const selectedCards = document.querySelectorAll('.video-card.selected');
-            const tagPaths = selectedCards.length > 1
-                ? Array.from(selectedCards).map(c => c.dataset.path).filter(Boolean)
-                : [filePath];
+            const selPathsTag = _getSelectedPaths();
+            const tagPaths = selPathsTag.length > 1 ? selPathsTag : [filePath];
             openTagPicker(tagPaths);
             break;
         }
 
         case 'auto-tag': {
-            const selectedCards = document.querySelectorAll('.video-card.selected');
-            const autoTagPaths = selectedCards.length > 1
-                ? Array.from(selectedCards).map(c => c.dataset.path).filter(Boolean)
-                : [filePath];
+            const selPathsAuto = _getSelectedPaths();
+            const autoTagPaths = selPathsAuto.length > 1 ? selPathsAuto : [filePath];
             const supportedPaths = autoTagPaths.filter(p => {
                 const ext = p.split('.').pop().toLowerCase();
                 return ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif', 'mp4', 'webm', 'mov', 'avi', 'mkv', 'm4v', 'ogg'].includes(ext);
@@ -553,10 +553,8 @@ contextMenu.addEventListener('click', async (e) => {
         }
 
         case 'compare': {
-            const selCards = document.querySelectorAll('.video-card.selected');
-            const paths = selCards.length >= 2
-                ? Array.from(selCards).map(c => c.dataset.path).filter(Boolean)
-                : [filePath];
+            const selPathsCmp = _getSelectedPaths();
+            const paths = selPathsCmp.length >= 2 ? selPathsCmp : [filePath];
             openCompareMode(paths);
             break;
         }
@@ -582,9 +580,7 @@ contextMenu.addEventListener('click', async (e) => {
             if (contextMenuSource === 'lightbox') {
                 paths = [filePath];
             } else {
-                paths = Array.from(document.querySelectorAll('.video-card.selected'))
-                    .map(c => c.dataset.path)
-                    .filter(Boolean);
+                paths = _getSelectedPaths();
                 if (!paths.length) paths = [filePath];
             }
             openConvertDialog(paths, { fromLightbox: contextMenuSource === 'lightbox' });
@@ -657,7 +653,11 @@ document.addEventListener('contextmenu', (e) => {
         return;
     }
 
-    const card = e.target.closest('.video-card') || e.target.closest('.folder-card');
+    let card = e.target.closest('.video-card') || e.target.closest('.folder-card');
+    // Canvas grid: resolve card via hit-test when no DOM card is found
+    if (!card && window.CG && window.CG.isEnabled()) {
+        card = window.CG.targetFromEvent(e);
+    }
     if (card) {
         showContextMenu(e, card);
     }

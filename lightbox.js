@@ -40,6 +40,7 @@ const lightboxCropCancelBtn = document.getElementById('lightbox-crop-cancel');
 // Lightbox zoom state
 let currentZoomLevel = 100;
 let cachedZoomValue = 1.0; // Cache zoom value to avoid recalculation during panning
+let cachedImgRemainingScale = null; // When non-null, <img> uses this scale instead of cachedZoomValue (hi-res zoom)
 let isDragging = false;
 let dragStartX = 0;
 let dragStartY = 0;
@@ -101,6 +102,27 @@ function calculateFitZoomLevel(naturalWidth, naturalHeight) {
     const zoomLevel = 100 + 5 * Math.log(fitScale) / Math.log(1.06);
     // Snap to nearest step of 5, cap at slider max
     return Math.min(Math.round(zoomLevel / 5) * 5, lightboxMaxZoomSetting);
+}
+
+/**
+ * Compute optimal layout dimensions for zoomed <img> elements.
+ * Instead of locking the element to its fitted size and using scale() to magnify
+ * (which causes blurry upscaling), we increase the layout size up to the image's
+ * natural dimensions so the browser rasterizes at higher fidelity.
+ */
+function computeZoomLayoutDimensions(baseW, baseH, natW, natH, zoomValue) {
+    const desiredW = baseW * zoomValue;
+    const desiredH = baseH * zoomValue;
+    // Cap layout at natural dimensions and 4x viewport to limit VRAM
+    const maxW = Math.min(natW, window.innerWidth * 4);
+    const maxH = Math.min(natH, window.innerHeight * 4);
+    // Uniform scale cap to preserve aspect ratio
+    const cap = Math.min(1, maxW / desiredW, maxH / desiredH);
+    return {
+        layoutWidth: desiredW * cap,
+        layoutHeight: desiredH * cap,
+        remainingScale: 1 / cap
+    };
 }
 
 function normalizeLightboxRotation(degrees) {
@@ -185,8 +207,8 @@ function _showStaticImage(mediaUrl, lightboxImage, lightboxGifCanvas, lightbox, 
 
     lightbox.classList.remove('hidden');
     lightboxImage.style.transform = getLightboxRotationString();
-    lightboxImage.style.maxWidth = '90vw';
-    lightboxImage.style.maxHeight = '90vh';
+    lightboxImage.style.maxWidth = `${lightboxViewportSetting}vw`;
+    lightboxImage.style.maxHeight = `${lightboxViewportSetting}vh`;
     lightboxImage.style.width = 'auto';
     lightboxImage.style.height = 'auto';
 
@@ -737,8 +759,8 @@ function openLightbox(mediaUrl, filePath, fileName) {
             lightboxGifCanvas.style.display = 'none';
             lightboxImage.style.display = 'block';
             lightboxImage.style.transform = getLightboxRotationString();
-            lightboxImage.style.maxWidth = '90vw';
-            lightboxImage.style.maxHeight = '90vh';
+            lightboxImage.style.maxWidth = `${lightboxViewportSetting}vw`;
+            lightboxImage.style.maxHeight = `${lightboxViewportSetting}vh`;
             lightboxImage.style.width = 'auto';
             lightboxImage.style.height = 'auto';
             lightboxImage.dataset.src = mediaUrl;
@@ -773,8 +795,8 @@ function openLightbox(mediaUrl, filePath, fileName) {
                 lightboxImage.style.display = 'none';
                 lightboxGifCanvas.style.display = 'block';
                 lightboxGifCanvas.style.transform = getLightboxRotationString();
-                lightboxGifCanvas.style.maxWidth = '90vw';
-                lightboxGifCanvas.style.maxHeight = '90vh';
+                lightboxGifCanvas.style.maxWidth = `${lightboxViewportSetting}vw`;
+                lightboxGifCanvas.style.maxHeight = `${lightboxViewportSetting}vh`;
                 activePlaybackController = controller;
 
                 // Bind control bar
@@ -859,8 +881,8 @@ function openLightbox(mediaUrl, filePath, fileName) {
         lightboxVideo.dataset.src = mediaUrl;
         lightbox.classList.remove('hidden');
         lightboxVideo.style.transform = getLightboxRotationString();
-        lightboxVideo.style.maxWidth = '90vw';
-        lightboxVideo.style.maxHeight = '90vh';
+        lightboxVideo.style.maxWidth = `${lightboxViewportSetting}vw`;
+        lightboxVideo.style.maxHeight = `${lightboxViewportSetting}vh`;
 
         // Create video playback controller
         const controller = new VideoPlaybackController(lightboxVideo);
@@ -961,7 +983,7 @@ function applyLightboxZoom(zoomLevel, mouseX = null, mouseY = null) {
     
     // Cache the zoom value for efficient panning
     cachedZoomValue = zoomValue;
-    
+
     // Check which media is currently visible
     const imageInlineDisplay = lightboxImage.style.display;
     const videoInlineDisplay = lightboxVideo.style.display;
@@ -985,14 +1007,14 @@ function applyLightboxZoom(zoomLevel, mouseX = null, mouseY = null) {
             // Get the viewport center (where the element is naturally centered)
             const viewportCenterX = window.innerWidth / 2;
             const viewportCenterY = window.innerHeight / 2;
-            
+
             // Calculate mouse position relative to viewport center
             const mouseOffsetX = mouseX - viewportCenterX;
             const mouseOffsetY = mouseY - viewportCenterY;
-            
+
             // Calculate zoom ratio (new zoom / old zoom)
             const zoomRatio = zoomValue / previousZoomValue;
-            
+
             // Adjust translate to keep the point under cursor fixed
             // Formula derived: tx_new = (1 - zoomRatio) * mouseOffset + zoomRatio * tx_old
             // This keeps the point under the cursor stationary during zoom
@@ -1000,7 +1022,7 @@ function applyLightboxZoom(zoomLevel, mouseX = null, mouseY = null) {
             currentTranslateY = (1 - zoomRatio) * mouseOffsetY + zoomRatio * currentTranslateY;
         }
     }
-    
+
     // Special handling for the transition from 100% to >100% on images/canvas
     // Capture the current displayed size before removing constraints
     const zoomableImageEl = isCanvasVisible ? lightboxGifCanvas : lightboxImage;
@@ -1012,25 +1034,65 @@ function applyLightboxZoom(zoomLevel, mouseX = null, mouseY = null) {
         }
     }
 
-    // Build transform string
-    let transformString;
+    // ── Hi-res zoom: compute layout partition for <img> elements ──
+    // Instead of locking the <img> to its fitted size and using scale() to magnify
+    // (which causes blurry GPU upscaling), we increase the layout dimensions up to
+    // the image's natural resolution so the browser rasterizes at full fidelity.
+    let imgLayoutWidth = null, imgLayoutHeight = null, imgRemainingScale = null;
+    if (isImageVisible && zoomLevel > 100) {
+        const bw = parseFloat(zoomableImageEl.dataset.baseWidth || '0');
+        const bh = parseFloat(zoomableImageEl.dataset.baseHeight || '0');
+        const nw = lightboxImage.naturalWidth;
+        const nh = lightboxImage.naturalHeight;
+        if (bw > 0 && bh > 0 && nw > 0 && nh > 0) {
+            const result = computeZoomLayoutDimensions(bw, bh, nw, nh, zoomValue);
+            imgLayoutWidth = result.layoutWidth;
+            imgLayoutHeight = result.layoutHeight;
+            imgRemainingScale = result.remainingScale;
+        }
+    }
+    cachedImgRemainingScale = imgRemainingScale;
+
+    // Build transform strings — <img> may use a reduced scale (layout handles the rest)
+    const rotation = getLightboxRotationString();
+    let baseTransformString; // For video, canvas
+    let imgTransformString;  // For <img> (may use reduced scale for hi-res rendering)
+
     if (zoomLevel <= 100) {
-        transformString = `${getLightboxRotationString()} scale(${zoomValue})`;
+        baseTransformString = `${rotation} scale(${zoomValue})`;
+        imgTransformString = baseTransformString;
     } else {
-        transformString = `translate(${currentTranslateX}px, ${currentTranslateY}px) ${getLightboxRotationString()} scale(${zoomValue})`;
+        baseTransformString = `translate(${currentTranslateX}px, ${currentTranslateY}px) ${rotation} scale(${zoomValue})`;
+        if (imgRemainingScale !== null) {
+            imgTransformString = `translate(${currentTranslateX}px, ${currentTranslateY}px) ${rotation} scale(${imgRemainingScale})`;
+        } else {
+            imgTransformString = baseTransformString;
+        }
     }
 
-    // Apply to all media elements
-    lightboxImage.style.transform = transformString;
-    lightboxVideo.style.transform = transformString;
-    lightboxGifCanvas.style.transform = transformString;
+    // Apply transforms — <img> gets its own for hi-res zoom
+    lightboxImage.style.transform = imgTransformString;
+    lightboxVideo.style.transform = baseTransformString;
+    lightboxGifCanvas.style.transform = baseTransformString;
 
     if (zoomLevel > 100) {
         lightboxImage.classList.add('zoomed');
         lightboxVideo.classList.add('zoomed');
         lightboxGifCanvas.classList.add('zoomed');
 
-        if ((isImageVisible || isCanvasVisible) && zoomableImageEl.dataset.baseWidth) {
+        if (isImageVisible && imgLayoutWidth !== null) {
+            // Hi-res zoom: set layout dimensions larger than fitted size
+            lightboxImage.style.width = `${imgLayoutWidth}px`;
+            lightboxImage.style.height = `${imgLayoutHeight}px`;
+            lightboxImage.style.maxWidth = 'none';
+            lightboxImage.style.maxHeight = 'none';
+            // Manage will-change to limit VRAM for very large layouts
+            if (imgLayoutWidth > window.innerWidth * 2 || imgLayoutHeight > window.innerHeight * 2) {
+                lightboxImage.style.willChange = 'auto';
+            } else {
+                lightboxImage.style.willChange = '';
+            }
+        } else if ((isImageVisible || isCanvasVisible) && zoomableImageEl.dataset.baseWidth) {
             const baseWidth = parseFloat(zoomableImageEl.dataset.baseWidth);
             const baseHeight = parseFloat(zoomableImageEl.dataset.baseHeight);
             zoomableImageEl.style.width = `${baseWidth}px`;
@@ -1039,19 +1101,30 @@ function applyLightboxZoom(zoomLevel, mouseX = null, mouseY = null) {
             zoomableImageEl.style.maxHeight = 'none';
         } else if (isImageVisible || isCanvasVisible) {
             // Fallback: compute base dimensions from natural size constrained to
-            // the 90vw/90vh viewport box so we don't jump to full natural size.
+            // the viewport box so we don't jump to full natural size.
             const natW = isImageVisible ? lightboxImage.naturalWidth : (activePlaybackController?.gifWidth || 0);
             const natH = isImageVisible ? lightboxImage.naturalHeight : (activePlaybackController?.gifHeight || 0);
             if (natW > 0 && natH > 0) {
-                const maxW = window.innerWidth * 0.9;
-                const maxH = window.innerHeight * 0.9;
+                const vpFrac = lightboxViewportSetting / 100;
+                const maxW = window.innerWidth * vpFrac;
+                const maxH = window.innerHeight * vpFrac;
                 const fitScale = Math.min(1, maxW / natW, maxH / natH);
                 const bw = natW * fitScale;
                 const bh = natH * fitScale;
                 zoomableImageEl.dataset.baseWidth = bw.toString();
                 zoomableImageEl.dataset.baseHeight = bh.toString();
-                zoomableImageEl.style.width = `${bw}px`;
-                zoomableImageEl.style.height = `${bh}px`;
+                if (isImageVisible) {
+                    // Apply hi-res layout partition for <img>
+                    const result = computeZoomLayoutDimensions(bw, bh, natW, natH, zoomValue);
+                    lightboxImage.style.width = `${result.layoutWidth}px`;
+                    lightboxImage.style.height = `${result.layoutHeight}px`;
+                    cachedImgRemainingScale = result.remainingScale;
+                    imgTransformString = `translate(${currentTranslateX}px, ${currentTranslateY}px) ${rotation} scale(${result.remainingScale})`;
+                    lightboxImage.style.transform = imgTransformString;
+                } else {
+                    zoomableImageEl.style.width = `${bw}px`;
+                    zoomableImageEl.style.height = `${bh}px`;
+                }
             }
             zoomableImageEl.style.maxWidth = 'none';
             zoomableImageEl.style.maxHeight = 'none';
@@ -1063,16 +1136,18 @@ function applyLightboxZoom(zoomLevel, mouseX = null, mouseY = null) {
         lightboxImage.classList.remove('zoomed');
         lightboxVideo.classList.remove('zoomed');
         lightboxGifCanvas.classList.remove('zoomed');
-        lightboxImage.style.maxWidth = '90vw';
-        lightboxImage.style.maxHeight = '90vh';
+        cachedImgRemainingScale = null;
+        lightboxImage.style.willChange = '';
+        lightboxImage.style.maxWidth = `${lightboxViewportSetting}vw`;
+        lightboxImage.style.maxHeight = `${lightboxViewportSetting}vh`;
         lightboxImage.style.width = 'auto';
         lightboxImage.style.height = 'auto';
         delete lightboxImage.dataset.baseWidth;
         delete lightboxImage.dataset.baseHeight;
-        lightboxVideo.style.maxWidth = '90vw';
-        lightboxVideo.style.maxHeight = '90vh';
-        lightboxGifCanvas.style.maxWidth = '90vw';
-        lightboxGifCanvas.style.maxHeight = '90vh';
+        lightboxVideo.style.maxWidth = `${lightboxViewportSetting}vw`;
+        lightboxVideo.style.maxHeight = `${lightboxViewportSetting}vh`;
+        lightboxGifCanvas.style.maxWidth = `${lightboxViewportSetting}vw`;
+        lightboxGifCanvas.style.maxHeight = `${lightboxViewportSetting}vh`;
         lightboxGifCanvas.style.width = '';
         lightboxGifCanvas.style.height = '';
         delete lightboxGifCanvas.dataset.baseWidth;
@@ -1095,9 +1170,17 @@ function applyLightboxZoom(zoomLevel, mouseX = null, mouseY = null) {
 
 function applyCurrentLightboxTransform() {
     const zoomValue = cachedZoomValue;
-    const transformString = currentZoomLevel <= 100
-        ? `${getLightboxRotationString()} scale(${zoomValue})`
-        : `translate(${currentTranslateX}px, ${currentTranslateY}px) ${getLightboxRotationString()} scale(${zoomValue})`;
+    const rotation = getLightboxRotationString();
+
+    const baseTransform = currentZoomLevel <= 100
+        ? `${rotation} scale(${zoomValue})`
+        : `translate(${currentTranslateX}px, ${currentTranslateY}px) ${rotation} scale(${zoomValue})`;
+
+    // For <img> hi-res zoom, use the reduced scale (layout handles the rest)
+    let imgTransform = baseTransform;
+    if (currentZoomLevel > 100 && cachedImgRemainingScale !== null) {
+        imgTransform = `translate(${currentTranslateX}px, ${currentTranslateY}px) ${rotation} scale(${cachedImgRemainingScale})`;
+    }
 
     const imageDisplay = lightboxImage.style.display;
     const videoDisplay = lightboxVideo.style.display;
@@ -1109,9 +1192,9 @@ function applyCurrentLightboxTransform() {
     const isCanvasVisible = canvasDisplay === 'block' ||
                           (canvasDisplay === '' && window.getComputedStyle(lightboxGifCanvas).display !== 'none');
 
-    if (isImageVisible) lightboxImage.style.transform = transformString;
-    if (isVideoVisible) lightboxVideo.style.transform = transformString;
-    if (isCanvasVisible) lightboxGifCanvas.style.transform = transformString;
+    if (isImageVisible) lightboxImage.style.transform = imgTransform;
+    if (isVideoVisible) lightboxVideo.style.transform = baseTransform;
+    if (isCanvasVisible) lightboxGifCanvas.style.transform = baseTransform;
 
     if (lightboxCropState.active) {
         syncLightboxCropToViewport();
@@ -1129,6 +1212,7 @@ function applyPan(deltaX, deltaY) {
 function resetZoom() {
     currentZoomLevel = 100;
     cachedZoomValue = 1;
+    cachedImgRemainingScale = null;
     currentTranslateX = 0;
     currentTranslateY = 0;
     const baseTransform = `${getLightboxRotationString()} scale(1)`;
@@ -1138,15 +1222,16 @@ function resetZoom() {
     lightboxImage.classList.remove('zoomed');
     lightboxVideo.classList.remove('zoomed');
     lightboxGifCanvas.classList.remove('zoomed');
-    // Reset max constraints and explicit dimensions
-    lightboxImage.style.maxWidth = '90vw';
-    lightboxImage.style.maxHeight = '90vh';
+    // Reset max constraints and explicit dimensions (use viewport setting, not hardcoded 90)
+    lightboxImage.style.willChange = '';
+    lightboxImage.style.maxWidth = `${lightboxViewportSetting}vw`;
+    lightboxImage.style.maxHeight = `${lightboxViewportSetting}vh`;
     lightboxImage.style.width = 'auto';
     lightboxImage.style.height = 'auto';
-    lightboxVideo.style.maxWidth = '90vw';
-    lightboxVideo.style.maxHeight = '90vh';
-    lightboxGifCanvas.style.maxWidth = '90vw';
-    lightboxGifCanvas.style.maxHeight = '90vh';
+    lightboxVideo.style.maxWidth = `${lightboxViewportSetting}vw`;
+    lightboxVideo.style.maxHeight = `${lightboxViewportSetting}vh`;
+    lightboxGifCanvas.style.maxWidth = `${lightboxViewportSetting}vw`;
+    lightboxGifCanvas.style.maxHeight = `${lightboxViewportSetting}vh`;
     lightboxGifCanvas.style.width = '';
     lightboxGifCanvas.style.height = '';
     // Clear stored base dimensions
@@ -1449,11 +1534,18 @@ function applyPanTransform() {
         panState.pendingUpdate = false;
         return;
     }
-    
+
     // Apply transform with translate first (applied last, so in screen space)
     const zoomValue = cachedZoomValue;
-    const transformString = `translate(${currentTranslateX}px, ${currentTranslateY}px) ${getLightboxRotationString()} scale(${zoomValue})`;
-    
+    const rotation = getLightboxRotationString();
+    const baseTransform = `translate(${currentTranslateX}px, ${currentTranslateY}px) ${rotation} scale(${zoomValue})`;
+
+    // For <img> hi-res zoom, use the reduced scale (layout handles the rest)
+    let imgTransform = baseTransform;
+    if (cachedImgRemainingScale !== null) {
+        imgTransform = `translate(${currentTranslateX}px, ${currentTranslateY}px) ${rotation} scale(${cachedImgRemainingScale})`;
+    }
+
     const imageDisplay = lightboxImage.style.display;
     const videoDisplay = lightboxVideo.style.display;
     const canvasDisplay = lightboxGifCanvas.style.display;
@@ -1464,9 +1556,9 @@ function applyPanTransform() {
     const isCanvasVisible = canvasDisplay === 'block' ||
                           (canvasDisplay === '' && window.getComputedStyle(lightboxGifCanvas).display !== 'none');
 
-    if (isImageVisible) lightboxImage.style.transform = transformString;
-    if (isVideoVisible) lightboxVideo.style.transform = transformString;
-    if (isCanvasVisible) lightboxGifCanvas.style.transform = transformString;
+    if (isImageVisible) lightboxImage.style.transform = imgTransform;
+    if (isVideoVisible) lightboxVideo.style.transform = baseTransform;
+    if (isCanvasVisible) lightboxGifCanvas.style.transform = baseTransform;
     
     if (lightboxCropState.active) {
         syncLightboxCropToViewport();

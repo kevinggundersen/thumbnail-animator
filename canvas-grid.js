@@ -61,7 +61,7 @@ let cgDragOverIndex = -1;
 const cgPrefetchSeen = new Set();
 
 // Hover media overlay: a single DOM element pooled in #cg-overlay-layer
-// that plays the currently hovered video/gif/webp.
+// that shows the full-res media for the currently hovered card.
 let cgHoverMediaHost = null;  // wrapper div positioned over the hovered card
 let cgHoverMediaEl = null;    // the actual <video> or <img> inside the host
 let cgHoverMediaItemPath = null; // what path the current media represents
@@ -77,11 +77,20 @@ let cgFolderPrefetchTimer = null;
 const cgFolderPreviewCache = new Map();
 const cgFolderPreviewRequested = new Set();
 
-// Video media pool: auto-play videos for visible cards on the canvas
-// Maps item.path -> { video: HTMLVideoElement, itemIndex: number, playing: boolean }
+// Video media pool: auto-play videos for visible cards on the canvas.
+// Maps item.path -> { el: HTMLVideoElement }
 const cgVideoPool = new Map();
-const CG_MAX_VIDEOS = 12; // Max simultaneous canvas video elements
-let cgVideoRafId = null;   // Continuous RAF for drawing video frames
+let cgVideoRafId = null;   // Continuous RAF for drawing video/animated-image frames
+
+// Animated image overlay pool: visible <img> elements in #cg-overlay-layer for
+// GIF/WebP cards. The browser animates them natively; the canvas clears those
+// card areas to transparent so the DOM images show through (same technique as
+// the hover overlay). Maps item.path -> { el: HTMLImageElement, wrapper: HTMLDivElement }
+const cgAnimatedPool = new Map();
+
+function cgMaxVideos() {
+    return (host && host.maxVideos) || 120;
+}
 
 let cgResizeObserver = null;
 let cgScrollListenerAttached = false;
@@ -139,11 +148,14 @@ function cgInit(container) {
     cgCanvas.id = 'cg-canvas';
     // position:absolute + JS-tracked top via transform on scroll.
     // (sticky can fail under contain:layout on the parent.)
-    cgCanvas.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;display:none;z-index:1;will-change:transform;';
+    cgCanvas.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;display:none;z-index:2;will-change:transform;';
 
     cgOverlayLayer = document.createElement('div');
     cgOverlayLayer.id = 'cg-overlay-layer';
-    cgOverlayLayer.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:0;pointer-events:none;display:none;';
+    // z-index:1 matches canvas — DOM order (overlay after canvas) puts it on top.
+    // height:0 + overflow:visible so it doesn't interfere with scroll height;
+    // children use absolute positioning in content coordinates.
+    cgOverlayLayer.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:0;overflow:visible;pointer-events:none;display:none;z-index:1;';
 
     cgA11yLive = document.createElement('div');
     cgA11yLive.id = 'cg-a11y-live';
@@ -156,7 +168,7 @@ function cgInit(container) {
     gridContainer.appendChild(cgOverlayLayer);
     gridContainer.appendChild(cgA11yLive);
 
-    cgCtx = cgCanvas.getContext('2d', { alpha: false });
+    cgCtx = cgCanvas.getContext('2d', { alpha: true });
 
     cgResizeObserver = new ResizeObserver(() => { if (cgEnabled) cgOnResize(); });
     cgResizeObserver.observe(gridContainer);
@@ -257,16 +269,36 @@ function cgAttachInteractionListeners() {
         const hit = cgHitTest(e.clientX, e.clientY);
         const newIdx = hit.itemIndex;
         if (newIdx !== cgHoveredIndex) {
+            // Resume any video that was paused for scrubbing on the previous card
+            cgResumeScrubbedVideo(cgHoveredIndex);
             cgHoveredIndex = newIdx;
             cgUpdateHoverOverlay(newIdx);
             cgUpdateDragProxy(newIdx);
             cgScheduleRender();
+        }
+        // Video scrub: seek the hover overlay video based on mouse X within the card.
+        // The overlay is the visible DOM element; the canvas draws static poster underneath.
+        if (newIdx >= 0 && host && cgHoverMediaEl && cgHoverMediaEl.tagName === 'VIDEO') {
+            const item = host.items[newIdx];
+            if (item && item.type === 'video' && cgHoverMediaEl.duration > 0) {
+                const positions = host.positions;
+                const rect = gridContainer.getBoundingClientRect();
+                const cardX = positions[newIdx * 4];
+                const cardW = positions[newIdx * 4 + 2];
+                const mouseContentX = e.clientX - rect.left;
+                const pct = Math.max(0, Math.min(1, (mouseContentX - cardX) / cardW));
+                cgHoverMediaEl.currentTime = pct * cgHoverMediaEl.duration;
+                if (!cgHoverMediaEl.paused) cgHoverMediaEl.pause();
+                cgScheduleVideoRender(); // update progress bar on canvas
+            }
         }
     }, { passive: true });
 
     gridContainer.addEventListener('mouseleave', () => {
         if (!cgEnabled) return;
         if (cgHoveredIndex !== -1) {
+            // Resume any video that was paused for scrubbing
+            cgResumeScrubbedVideo(cgHoveredIndex);
             cgHoveredIndex = -1;
             cgUpdateHoverOverlay(-1);
             cgUpdateDragProxy(-1);
@@ -311,6 +343,13 @@ function cgAttachInteractionListeners() {
 
     gridContainer.addEventListener('contextmenu', (e) => {
         if (!cgEnabled || !host) return;
+        // Suppress context menu when blow-up hold is active (matches document-level handler)
+        if (typeof blowUpSuppressContextMenu !== 'undefined' && blowUpSuppressContextMenu) {
+            e.preventDefault();
+            e.stopPropagation();
+            blowUpSuppressContextMenu = false;
+            return;
+        }
         const hit = cgHitTest(e.clientX, e.clientY);
         if (hit.itemIndex < 0) return;
         const vcard = cgResolveCardDescriptor(hit.itemIndex, hit.zone);
@@ -463,7 +502,7 @@ function cgRender() {
     if (sig === cgLastSig) return;
     cgLastSig = sig;
 
-    cgCtx.fillStyle = CG_STYLE.gridBg;
+    cgCtx.fillStyle = cgGetGridBg();
     cgCtx.fillRect(0, 0, cgViewportW, cgViewportH);
 
     const { startIndex, endIndex } = visibleRangeFn(scrollTop, cgViewportH);
@@ -518,9 +557,12 @@ function cgRender() {
         }
     }
 
-    // Sync video pool: create/remove hidden video elements for visible video cards
+    // Sync media pools: create/remove hidden elements for visible video + animated image cards
     try { cgSyncVideoPool(startIndex, endIndex); } catch (err) {
         if (CG_DEBUG) console.warn('[cg] video pool sync error:', err);
+    }
+    try { cgSyncAnimatedPool(startIndex, endIndex); } catch (err) {
+        if (CG_DEBUG) console.warn('[cg] animated pool sync error:', err);
     }
 }
 
@@ -554,39 +596,45 @@ function cgPaintMediaCard(item, x, y, w, h, itemIndex, isHovered, isSelected) {
     const isPinned = item.path && host.isFilePinned(item.path);
     const rating = item.path ? host.getFileRating(item.path) : 0;
 
-    // Background rect (with optional hover shadow)
-    if (isHovered) {
+    // Hovered cards and animated images: clear to transparent so the DOM overlay
+    // element shows through, then draw chrome (gradient, labels, stars) on top.
+    const isAnimated = cgIsAnimatedImage(item);
+    const useOverlay = isHovered || isAnimated;
+    if (useOverlay) {
         ctx.save();
-        ctx.shadowColor = CG_STYLE.hoverShadow;
-        ctx.shadowBlur = 12;
-        ctx.shadowOffsetY = 3;
-        ctx.fillStyle = CG_STYLE.thumbBg;
         cgRoundRectPath(ctx, x, y, w, h, r);
-        ctx.fill();
+        ctx.clip();
+        ctx.clearRect(x, y, w, h); // transparent — overlay shows through
         ctx.restore();
     } else {
+        // Non-hovered, non-animated: opaque background
         ctx.fillStyle = CG_STYLE.thumbBg;
         cgRoundRectPath(ctx, x, y, w, h, r);
         ctx.fill();
     }
 
-    // Thumbnail: draw video frame (from pool) or static bitmap
-    let drewVideoFrame = false;
-    if (item.path && item.type === 'video' && !isHovered) {
-        // For non-hovered video cards, try drawing the live video frame from the pool
-        const pooledVideo = cgGetPooledVideo(item.path);
-        if (pooledVideo && pooledVideo.videoWidth > 0) {
+    // Thumbnail: draw live video frame (from pool, non-hovered only) or static bitmap.
+    // Hovered / animated cards show the overlay DOM element through the transparent area.
+    let drewLiveFrame = false;
+    if (item.path && !isHovered && item.type === 'video') {
+        const pooledEl = cgGetPooledMedia(item.path);
+        if (pooledEl && pooledEl.videoWidth > 0) {
+            // Use item dimensions for aspect ratio (handles rotation metadata)
+            const srcW = item.width || pooledEl.videoWidth;
+            const srcH = item.height || pooledEl.videoHeight;
             ctx.save();
             cgRoundRectPath(ctx, x, y, w, h, r);
             ctx.clip();
             try {
-                cgDrawBitmapCover(ctx, pooledVideo, pooledVideo.videoWidth, pooledVideo.videoHeight, x, y, w, h);
-                drewVideoFrame = true;
-            } catch { /* ignore */ }
+                cgDrawBitmapCover(ctx, pooledEl, srcW, srcH, x, y, w, h);
+                drewLiveFrame = true;
+            } catch { /* ignore — element may not be ready */ }
             ctx.restore();
         }
     }
-    if (!drewVideoFrame && item.path) {
+    // Animated images use DOM overlay — skip bitmap drawing (drewLiveFrame stays false,
+    // but useOverlay prevents the bitmap fallback below from covering the transparent area).
+    if (!drewLiveFrame && item.path && !useOverlay) {
         const thumbUrl = cgResolveThumbUrl(item, Math.round(w * 2));
         if (thumbUrl) {
             const cached = host.getCachedBitmap(thumbUrl);
@@ -737,6 +785,11 @@ function cgPaintMediaCard(item, x, y, w, h, itemIndex, isHovered, isSelected) {
         cgRoundRectPath(ctx, x + 0.5, y + 0.5, w - 1, h - 1, r);
         ctx.stroke();
         ctx.restore();
+    }
+
+    // Progress bar + time label (hover only, videos only — GIFs handled by hover overlay)
+    if (isHovered && item.path && item.type === 'video') {
+        cgDrawMediaProgress(ctx, item, x, y, w, h, isHovered);
     }
 }
 
@@ -1154,9 +1207,9 @@ function cgPositionHoverMediaHost(itemIndex) {
     cgHoverMediaHost.style.transform = `translate(${x}px, ${y}px)`;
 }
 
-// ── Video media pool (auto-play visible videos) ──────────────────────────
-// Hidden DOM <video> elements for visible video cards. Their current frame
-// is drawn onto the canvas via ctx.drawImage() in the render loop.
+// ── Media pool (auto-play visible videos & animated images) ───────────────
+// Hidden DOM elements for visible media cards. Video frames and animated
+// images are drawn onto the canvas via ctx.drawImage() each render frame.
 
 function cgSyncVideoPool(startIndex, endIndex) {
     if (!host) return;
@@ -1164,21 +1217,20 @@ function cgSyncVideoPool(startIndex, endIndex) {
     const positions = host.positions;
     if (!items || !positions) return;
     const scrollTop = gridContainer.scrollTop;
+    const maxPool = cgMaxVideos();
 
-    // Don't autoplay when conditions say to pause
     const shouldPause = (host.isLightboxOpen && host.pauseOnLightbox) ||
                         (host.isWindowBlurred && host.pauseOnBlur);
 
-    // Gather visible video items (limit to CG_MAX_VIDEOS)
+    // Gather visible video items only (GIFs/WebPs are static on canvas, animated via hover overlay)
     const visibleVideos = [];
-    for (let i = startIndex; i < endIndex && visibleVideos.length < CG_MAX_VIDEOS; i++) {
+    for (let i = startIndex; i < endIndex && visibleVideos.length < maxPool; i++) {
         const item = items[i];
         if (!item || item.type !== 'video' || !item.url) continue;
-        // Only include items actually in the viewport (not just in the buffer zone)
         const iy = positions[i * 4 + 1] - scrollTop;
         const ih = positions[i * 4 + 3];
         if (iy + ih < 0 || iy > cgViewportH) continue;
-        visibleVideos.push({ index: i, path: item.path, url: item.url });
+        visibleVideos.push({ path: item.path, url: item.url });
     }
 
     const visiblePaths = new Set(visibleVideos.map(v => v.path));
@@ -1186,29 +1238,22 @@ function cgSyncVideoPool(startIndex, endIndex) {
     // Remove videos no longer visible
     for (const [path, entry] of cgVideoPool) {
         if (!visiblePaths.has(path)) {
-            try {
-                entry.video.pause();
-                entry.video.src = '';
-                entry.video.load();
-            } catch {}
-            if (entry.video.parentNode) entry.video.parentNode.removeChild(entry.video);
+            cgDestroyPoolEntry(entry);
             cgVideoPool.delete(path);
         }
     }
 
-    // Add/update videos for visible items
+    // Add/update videos
     for (const { path, url } of visibleVideos) {
         if (cgVideoPool.has(path)) {
-            // Already have this video — resume or pause
             const entry = cgVideoPool.get(path);
-            if (shouldPause && !entry.video.paused) {
-                entry.video.pause();
-            } else if (!shouldPause && entry.video.paused && entry.video.readyState >= 2) {
-                entry.video.play().catch(() => {});
+            if (shouldPause && !entry.el.paused) {
+                entry.el.pause();
+            } else if (!shouldPause && entry.el.paused && entry.el.readyState >= 2) {
+                entry.el.play().catch(() => {});
             }
             continue;
         }
-        // Create new hidden video
         const v = document.createElement('video');
         v.style.cssText = 'position:absolute;top:-9999px;left:-9999px;width:1px;height:1px;pointer-events:none;opacity:0;';
         v.muted = true;
@@ -1216,48 +1261,130 @@ function cgSyncVideoPool(startIndex, endIndex) {
         v.playsInline = true;
         v.preload = 'auto';
         v.src = url;
-        // Start playing once enough data is loaded
         v.addEventListener('canplay', () => {
-            if (!shouldPause) {
-                v.play().catch(() => {});
-            }
-            cgScheduleRender(); // redraw with video frame
+            if (!shouldPause) v.play().catch(() => {});
+            cgScheduleRender();
         }, { once: true });
-        // Schedule redraws while playing
-        v.addEventListener('timeupdate', () => {
-            cgScheduleVideoRender();
-        });
+        v.addEventListener('timeupdate', () => { cgScheduleVideoRender(); });
         document.body.appendChild(v);
-        cgVideoPool.set(path, { video: v, playing: false });
+        cgVideoPool.set(path, { el: v });
     }
 
-    // Start/stop the continuous render loop based on playing videos
     cgUpdateVideoRafLoop();
 }
 
+function cgDestroyPoolEntry(entry) {
+    try { entry.el.pause(); entry.el.src = ''; entry.el.load(); } catch {}
+    if (entry.el.parentNode) entry.el.parentNode.removeChild(entry.el);
+}
+
 function cgTeardownVideoPool() {
-    for (const [, entry] of cgVideoPool) {
-        try {
-            entry.video.pause();
-            entry.video.src = '';
-            entry.video.load();
-        } catch {}
-        if (entry.video.parentNode) entry.video.parentNode.removeChild(entry.video);
-    }
+    for (const [, entry] of cgVideoPool) cgDestroyPoolEntry(entry);
     cgVideoPool.clear();
+    cgTeardownAnimatedPool();
     if (cgVideoRafId) { cancelAnimationFrame(cgVideoRafId); cgVideoRafId = null; }
 }
 
 /** Get a playing video element for a given item path, or null. */
-function cgGetPooledVideo(path) {
+function cgGetPooledMedia(path) {
     const entry = cgVideoPool.get(path);
-    if (!entry || !entry.video || entry.video.readyState < 2) return null;
-    return entry.video;
+    return (entry && entry.el.readyState >= 2) ? entry.el : null;
 }
 
-/** Schedule a render specifically for video frame updates. */
+// ── Animated image overlay pool (GIF / animated WebP) ─────────────────────
+
+/** Check whether an item is an animated image (GIF, or WebP flagged as animated). */
+function cgIsAnimatedImage(item) {
+    if (!item || item.type !== 'image') return false;
+    if (item.animated) return true;
+    const n = (item.name || '').toLowerCase();
+    return n.endsWith('.gif');
+}
+
+/**
+ * Sync the animated-image overlay pool for visible cards.
+ * Each animated image gets a real <img> element positioned in #cg-overlay-layer
+ * so the browser animates it natively. The canvas clears those card areas to
+ * transparent (see cgPaintMediaCard) so the DOM image shows through.
+ */
+function cgSyncAnimatedPool(startIndex, endIndex) {
+    if (!host || !cgOverlayLayer) return;
+    const items = host.items;
+    const positions = host.positions;
+    if (!items || !positions) return;
+    const maxPool = cgMaxVideos();
+
+    // Gather visible animated image items (with their index for positioning)
+    const visibleAnimated = [];
+    for (let i = startIndex; i < endIndex && visibleAnimated.length < maxPool; i++) {
+        const item = items[i];
+        if (!cgIsAnimatedImage(item) || !item.url) continue;
+        visibleAnimated.push({ index: i, path: item.path, url: item.url });
+    }
+
+    const visiblePaths = new Set(visibleAnimated.map(v => v.path));
+
+    // Remove images no longer visible
+    for (const [path, entry] of cgAnimatedPool) {
+        if (!visiblePaths.has(path)) {
+            if (entry.wrapper.parentNode) entry.wrapper.parentNode.removeChild(entry.wrapper);
+            cgAnimatedPool.delete(path);
+        }
+    }
+
+    // Add or reposition animated images
+    for (const { index, path, url } of visibleAnimated) {
+        const idx = index * 4;
+        const cx = positions[idx];
+        const cy = positions[idx + 1];
+        const cw = positions[idx + 2];
+        const ch = positions[idx + 3];
+
+        let entry = cgAnimatedPool.get(path);
+        if (entry) {
+            // Reposition existing entry
+            const wr = entry.wrapper;
+            wr.style.width = cw + 'px';
+            wr.style.height = ch + 'px';
+            wr.style.transform = `translate(${cx}px, ${cy}px)`;
+            continue;
+        }
+
+        // Create new overlay wrapper + img
+        const wrapper = document.createElement('div');
+        wrapper.style.cssText = `position:absolute;top:0;left:0;overflow:hidden;pointer-events:none;border-radius:${CG_STYLE.cardRadius}px;will-change:transform;`;
+        wrapper.style.width = cw + 'px';
+        wrapper.style.height = ch + 'px';
+        wrapper.style.transform = `translate(${cx}px, ${cy}px)`;
+
+        const img = document.createElement('img');
+        img.style.cssText = 'width:100%;height:100%;object-fit:cover;display:block;pointer-events:none;';
+        img.decoding = 'async';
+        img.src = url;
+        wrapper.appendChild(img);
+        cgOverlayLayer.appendChild(wrapper);
+        cgAnimatedPool.set(path, { el: img, wrapper });
+    }
+}
+
+function cgTeardownAnimatedPool() {
+    for (const [, entry] of cgAnimatedPool) {
+        if (entry.wrapper.parentNode) entry.wrapper.parentNode.removeChild(entry.wrapper);
+    }
+    cgAnimatedPool.clear();
+}
+
+/** Resume the hover overlay video that was paused during scrub. */
+function cgResumeScrubbedVideo(itemIndex) {
+    if (!cgHoverMediaEl || cgHoverMediaEl.tagName !== 'VIDEO' || !cgHoverMediaEl.paused) return;
+    const shouldPause = (host && host.isLightboxOpen && host.pauseOnLightbox) ||
+                        (host && host.isWindowBlurred && host.pauseOnBlur);
+    if (!shouldPause) cgHoverMediaEl.play().catch(() => {});
+}
+
+/** Schedule a render specifically for video/gif frame updates. */
 function cgScheduleVideoRender() {
-    cgLastSig = null; // Invalidate signature so render loop doesn't skip
+    cgLastSig = null;
     cgScheduleRender();
 }
 
@@ -1265,27 +1392,91 @@ function cgScheduleVideoRender() {
 function cgUpdateVideoRafLoop() {
     let anyPlaying = false;
     for (const [, entry] of cgVideoPool) {
-        if (!entry.video.paused && entry.video.readyState >= 2) {
-            anyPlaying = true;
-            break;
+        if (!entry.el.paused && entry.el.readyState >= 2) {
+            anyPlaying = true; break;
         }
     }
     if (anyPlaying && !cgVideoRafId) {
         const tick = () => {
             cgVideoRafId = null;
             if (!cgEnabled) return;
-            // Check if still any playing
             let stillPlaying = false;
             for (const [, entry] of cgVideoPool) {
-                if (!entry.video.paused) { stillPlaying = true; break; }
+                if (!entry.el.paused) { stillPlaying = true; break; }
             }
             if (stillPlaying) {
-                cgLastSig = null; // force redraw
+                cgLastSig = null;
                 cgScheduleRender();
                 cgVideoRafId = requestAnimationFrame(tick);
             }
         };
         cgVideoRafId = requestAnimationFrame(tick);
+    }
+}
+
+// ── Scrubber / progress drawing on canvas ─────────────────────────────────
+
+function cgFormatTime(seconds) {
+    if (!seconds || isNaN(seconds)) return '00:00';
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
+/** Draw a progress bar + time label on a hovered media card. */
+function cgDrawMediaProgress(ctx, item, x, y, w, h, isHovered) {
+    let currentTime = 0, duration = 0;
+
+    if (item.type === 'video') {
+        // Prefer the hover overlay video (it's what the user sees & scrubs)
+        if (isHovered && cgHoverMediaEl && cgHoverMediaEl.tagName === 'VIDEO' &&
+            cgHoverMediaEl.duration > 0 && !isNaN(cgHoverMediaEl.duration)) {
+            currentTime = cgHoverMediaEl.currentTime || 0;
+            duration = cgHoverMediaEl.duration;
+        } else {
+            // Fall back to pool video
+            const entry = cgVideoPool.get(item.path);
+            if (entry && entry.el.duration > 0 && !isNaN(entry.el.duration)) {
+                currentTime = entry.el.currentTime || 0;
+                duration = entry.el.duration;
+            }
+        }
+    }
+    // GIF/WebP: duration isn't available on canvas (no pool entry). Skip progress.
+    if (duration <= 0) return;
+
+    const progress = Math.min(1, currentTime / duration);
+    const barH = 3;
+    const barY = y + h - barH;
+    const r = CG_STYLE.cardRadius;
+
+    // Progress bar background
+    ctx.save();
+    cgRoundRectPath(ctx, x, y, w, h, r);
+    ctx.clip();
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    ctx.fillRect(x, barY, w, barH);
+    // Progress bar fill
+    ctx.fillStyle = 'rgba(100,180,255,1)';
+    ctx.fillRect(x, barY, w * progress, barH);
+    ctx.restore();
+
+    // Time label (only on hover)
+    if (isHovered) {
+        const label = `${cgFormatTime(currentTime)} / ${cgFormatTime(duration)}`;
+        ctx.save();
+        ctx.font = '11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+        const tw = ctx.measureText(label).width;
+        const padX = 6, padY = 3;
+        const lx = x + 8;
+        const ly = y + h - barH - 22;
+        ctx.fillStyle = 'rgba(0,0,0,0.7)';
+        cgRoundRectPath(ctx, lx, ly, tw + padX * 2, 18, 4);
+        ctx.fill();
+        ctx.fillStyle = 'rgba(255,255,255,0.95)';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(label, lx + padX, ly + 9);
+        ctx.restore();
     }
 }
 

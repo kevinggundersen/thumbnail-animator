@@ -9724,7 +9724,7 @@ function getBlowUpOverlay() {
 }
 
 function showBlowUp(card) {
-    if (!card || !card.isConnected) return;
+    if (!card || (!card._isVirtual && !card.isConnected)) return;
     blowUpActive = true;
     blowUpTargetCard = card;
 
@@ -9811,10 +9811,14 @@ let blowUpSuppressContextMenu = false;
 
 document.addEventListener('mousedown', (e) => {
     if (e.button !== 2) return;
-    const card =
+    let card =
         e.target.closest('.video-card') ||
         e.target.closest('.duplicate-item') ||
         e.target.closest('.lb-insp-similar-card');
+    // Canvas grid: resolve card via hit-test
+    if (!card && window.CG && window.CG.isEnabled()) {
+        card = window.CG.targetFromEvent(e);
+    }
     if (!card) return;
 
     // Suppress ALL context menus while we're detecting hold vs quick click
@@ -14157,6 +14161,7 @@ window.__cgHost = {
         // Force a full re-render of DOM cards when switching back from canvas mode
         if (typeof vsRecalculate === 'function') vsRecalculate();
     },
+    get maxVideos() { return typeof MAX_VIDEOS !== 'undefined' ? MAX_VIDEOS : 120; },
     get isLightboxOpen() { return typeof isLightboxOpen !== 'undefined' ? isLightboxOpen : false; },
     get pauseOnLightbox() { return typeof pauseOnLightbox !== 'undefined' ? pauseOnLightbox : false; },
     get isWindowBlurred() { return typeof isWindowBlurred !== 'undefined' ? isWindowBlurred : false; },

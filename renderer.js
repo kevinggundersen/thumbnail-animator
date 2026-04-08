@@ -8036,8 +8036,10 @@ gridContainer.addEventListener('mouseover', (e) => {
             if (gifHoverScrubEnabled) {
                 initGifScrub(card);
             }
-        } else if (gifHoverScrubEnabled && !(Number(card.dataset.gifDuration) > 0) && card.dataset.src) {
+        } else if (gifHoverScrubEnabled && !(Number(card.dataset.gifDuration) > 0)
+                   && card.dataset.isStaticWebp !== 'true' && card.dataset.src) {
             // gifDuration not yet resolved or parser returned 0 — try scrub by extension
+            // Skip files already identified as static WebP by resolveGifDuration
             const srcLower = card.dataset.src.toLowerCase();
             if (srcLower.endsWith('.gif') || srcLower.endsWith('.webp')) {
                 currentHoveredCard = card;
@@ -8106,9 +8108,8 @@ async function initGifScrub(card) {
             return;
         }
 
-        // Verify frames were decoded (WASM/decode failures leave frameCount at 0)
-        if (controller.frameCount === 0 || controller.duration === 0) {
-            console.warn('[GIF Scrub] Decode produced 0 frames for', mediaUrl);
+        // Verify frames were decoded — need at least 2 frames to scrub
+        if (controller.frameCount <= 1 || controller.duration === 0) {
             controller.destroy();
             delete card._gifScrubPending;
             return; // Fall back to passive progress bar

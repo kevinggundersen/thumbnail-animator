@@ -58,7 +58,7 @@
     "publish": {
       "provider": "github",
       "owner": "kevinggundersen",
-      "repo": "thumnail-animator"
+      "repo": "thumbnail-animator"
     },
     "asarUnpack": [
       "node_modules/better-sqlite3/**",

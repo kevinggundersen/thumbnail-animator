@@ -3234,8 +3234,12 @@ function setFileRating(filePath, rating) {
         fileRatings[normalizedPath] = rating;
     }
     if (typeof bumpFilterWorkerRatingsVersion === 'function') bumpFilterWorkerRatingsVersion();
-    // Persist to SQLite (fire-and-forget, in-memory is already updated)
-    window.electronAPI.dbSetRating(normalizedPath, rating);
+    // Persist to SQLite — in-memory is already updated; surface errors via toast
+    window.electronAPI.dbSetRating(normalizedPath, rating).then(r => {
+        if (r && !r.ok) showToast(`Could not save rating: ${friendlyError(r.error)}`, 'error');
+    }).catch(err => {
+        showToast(`Could not save rating: ${friendlyError(err)}`, 'error');
+    });
 
     // Update all cards with the same path immediately - use updateCardRating which calls updateCardStars
     updateCardRating(filePath, rating);
@@ -4020,16 +4024,32 @@ function initNewFeatures() {
     }
     
     if (organizeByDateBtn) {
-        organizeByDateBtn.addEventListener('click', () => {
-            organizeByDate();
+        organizeByDateBtn.addEventListener('click', async () => {
+            const count = currentItems.filter(i => i.type !== 'folder').length;
+            if (!count) return;
+            const confirmed = await showConfirm(
+                'Organize by Date',
+                `Move ${count} file${count === 1 ? '' : 's'} into date-based folders?`,
+                { confirmLabel: 'Organize' }
+            );
+            if (!confirmed) return;
             if (organizeDialog) organizeDialog.classList.add('hidden');
+            organizeByDate();
         });
     }
-    
+
     if (organizeByTypeBtn) {
-        organizeByTypeBtn.addEventListener('click', () => {
-            organizeByType();
+        organizeByTypeBtn.addEventListener('click', async () => {
+            const count = currentItems.filter(i => i.type !== 'folder').length;
+            if (!count) return;
+            const confirmed = await showConfirm(
+                'Organize by Type',
+                `Move ${count} file${count === 1 ? '' : 's'} into type-based folders?`,
+                { confirmLabel: 'Organize' }
+            );
+            if (!confirmed) return;
             if (organizeDialog) organizeDialog.classList.add('hidden');
+            organizeByType();
         });
     }
     

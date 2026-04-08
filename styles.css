@@ -177,6 +177,14 @@ body {
     outline-offset: 2px;
 }
 
+/* Override accent outline on accent/danger backgrounds for contrast */
+.filter-btn.active:focus-visible,
+.organize-confirm-btn:focus-visible,
+#confirm-dialog-ok.confirm-danger:focus-visible,
+.collection-dialog-save:focus-visible {
+    outline-color: #fff;
+}
+
 /* ===== Button Press Feedback ===== */
 button:active:not(:disabled):not(.lightbox-nav-btn):not(.lb-inspector-toggle) {
     transform: scale(0.97);
@@ -2862,6 +2870,7 @@ button:hover {
     flex: 1;
     overflow-y: auto;
     overflow-x: hidden;
+    scrollbar-gutter: stable;
     padding: var(--gap);
     position: relative;
     min-height: 0; /* Important for flex children to allow scrolling */
@@ -5951,6 +5960,14 @@ video.blow-up-media {
     background-color: transparent;
     color: var(--text-primary);
     border: 1px solid var(--border-default);
+}
+
+.organize-confirm-btn:hover {
+    background-color: var(--accent-hover);
+}
+
+.organize-cancel-btn:hover {
+    background-color: var(--bg-hover);
 }
 
 .organize-close-btn {

@@ -1920,6 +1920,7 @@ const confirmDialogMessage = document.getElementById('confirm-dialog-message');
 const confirmDialogOk = document.getElementById('confirm-dialog-ok');
 const confirmDialogCancel = document.getElementById('confirm-dialog-cancel');
 let _confirmResolve = null;
+const _modalTriggerMap = new Map();
 
 /**
  * Show a styled confirmation dialog (replaces native confirm()).
@@ -1933,6 +1934,7 @@ let _confirmResolve = null;
  */
 function showConfirm(title, message, options = {}) {
     const { confirmLabel = 'OK', cancelLabel = 'Cancel', danger = false } = options;
+    _modalTriggerMap.set(confirmDialog, document.activeElement);
     confirmDialogTitle.textContent = title;
     confirmDialogMessage.textContent = message;
     confirmDialogOk.textContent = confirmLabel;
@@ -1950,10 +1952,15 @@ function showConfirm(title, message, options = {}) {
 
 function _closeConfirmDialog(result) {
     confirmDialog.classList.add('hidden');
+    const _trigger = _modalTriggerMap.get(confirmDialog);
+    _modalTriggerMap.delete(confirmDialog);
     if (_confirmResolve) {
         const resolve = _confirmResolve;
         _confirmResolve = null;
         resolve(result);
+    }
+    if (_trigger && document.body.contains(_trigger)) {
+        requestAnimationFrame(() => _trigger.focus());
     }
 }
 
@@ -2074,6 +2081,7 @@ let _conflictResolve = null;
  * @returns {Promise<{resolution: 'replace'|'keep-both'|'skip', applyToAll: boolean}>}
  */
 function showFileConflictDialog(fileName, sourcePath, destPath, showRemember = false) {
+    _modalTriggerMap.set(fileConflictDialog, document.activeElement);
     fileConflictMessage.textContent = `"${fileName}" already exists in this location.`;
     fileConflictRemember.checked = false;
     fileConflictRememberLabel.classList.toggle('hidden', !showRemember);
@@ -2191,6 +2199,11 @@ function _closeConflictDialog(resolution) {
         const resolve = _conflictResolve;
         _conflictResolve = null;
         resolve({ resolution, applyToAll: fileConflictRemember.checked });
+    }
+    const _trigger = _modalTriggerMap.get(fileConflictDialog);
+    _modalTriggerMap.delete(fileConflictDialog);
+    if (_trigger && document.body.contains(_trigger)) {
+        requestAnimationFrame(() => _trigger.focus());
     }
 }
 
@@ -9631,8 +9644,13 @@ newFavGroupBtn.addEventListener('click', () => {
 });
 
 // Clear recent files button event listener
-clearRecentBtn.addEventListener('click', () => {
-    clearRecentFiles();
+clearRecentBtn.addEventListener('click', async () => {
+    const confirmed = await showConfirm(
+        'Clear Recent Files',
+        'Clear your recent files history?',
+        { confirmLabel: 'Clear', danger: true }
+    );
+    if (confirmed) clearRecentFiles();
 });
 
 // Close tools menu when clicking outside
@@ -9800,6 +9818,7 @@ const batchRenameApply = document.getElementById('batch-rename-apply');
 let batchRenameFilePaths = [];
 
 function openBatchRename(filePaths) {
+    _modalTriggerMap.set(batchRenameOverlay, document.activeElement);
     batchRenameFilePaths = filePaths;
     document.getElementById('batch-rename-count').textContent = `(${filePaths.length} files)`;
     batchRenameOverlay.classList.remove('hidden');
@@ -9812,6 +9831,11 @@ function closeBatchRename() {
     batchRenameOverlay.classList.add('hidden');
     batchRenameFilePaths = [];
     batchRenameError.classList.add('hidden');
+    const _trigger = _modalTriggerMap.get(batchRenameOverlay);
+    _modalTriggerMap.delete(batchRenameOverlay);
+    if (_trigger && document.body.contains(_trigger)) {
+        requestAnimationFrame(() => _trigger.focus());
+    }
 }
 
 function renderBatchRenameOptions() {
@@ -10066,6 +10090,8 @@ const autoTagState = {
 
 function closeAutoTag() {
     autoTagOverlay.classList.add('hidden');
+    const _trigger = _modalTriggerMap.get(autoTagOverlay);
+    _modalTriggerMap.delete(autoTagOverlay);
     autoTagState.filePaths = [];
     autoTagState.data = [];
     autoTagState.selection.clear();
@@ -10079,6 +10105,9 @@ function closeAutoTag() {
     autoTagViewTagEl.innerHTML = '';
     autoTagStatus.textContent = '';
     autoTagUpdateCounter();
+    if (_trigger && document.body.contains(_trigger)) {
+        requestAnimationFrame(() => _trigger.focus());
+    }
 }
 
 async function embedTagLabels() {
@@ -10104,6 +10133,7 @@ async function embedTagLabels() {
 }
 
 async function openAutoTag(filePaths) {
+    _modalTriggerMap.set(autoTagOverlay, document.activeElement);
     autoTagState.filePaths = filePaths;
     autoTagOverlay.classList.remove('hidden');
     autoTagState.data = [];
@@ -11575,7 +11605,12 @@ function showCollectionContextMenu(e, collection) {
                 else backgroundScanSmartCollection(collection.id);
                 break;
             case 'delete-collection': {
-                if (confirm(`Delete collection "${collection.name}"?`)) {
+                const confirmed = await showConfirm(
+                    'Delete Collection',
+                    `Delete collection "${collection.name}"? This cannot be undone.`,
+                    { confirmLabel: 'Delete', danger: true }
+                );
+                if (confirmed) {
                     await deleteCollection(collection.id);
                     if (currentCollectionId === collection.id) {
                         currentCollectionId = null;
@@ -12145,6 +12180,7 @@ let tagPickerFilePaths = [];
 async function openTagPicker(filePaths) {
     tagPickerFilePaths = filePaths;
     const dialog = document.getElementById('tag-picker-dialog');
+    _modalTriggerMap.set(dialog, document.activeElement);
     const searchInput = document.getElementById('tag-picker-search');
     dialog.classList.remove('hidden');
     searchInput.value = '';
@@ -12159,11 +12195,17 @@ async function openTagPicker(filePaths) {
 }
 
 function closeTagPicker() {
-    document.getElementById('tag-picker-dialog').classList.add('hidden');
+    const dialog = document.getElementById('tag-picker-dialog');
+    dialog.classList.add('hidden');
+    const _trigger = _modalTriggerMap.get(dialog);
+    _modalTriggerMap.delete(dialog);
     tagPickerFilePaths = [];
     // Refresh inspector tags if lightbox is open
     if (inspectorPanelInstance && inspectorPanelInstance._currentPath) {
         inspectorPanelInstance._renderTags();
+    }
+    if (_trigger && document.body.contains(_trigger)) {
+        requestAnimationFrame(() => _trigger.focus());
     }
 }
 
@@ -12579,7 +12621,12 @@ async function renderTagsManagement() {
             });
         });
         item.querySelector('.delete-tag-btn').addEventListener('click', async () => {
-            if (confirm(`Delete tag "${tag.name}"? This will remove it from all files.`)) {
+            const confirmed = await showConfirm(
+                'Delete Tag',
+                `Delete tag "${tag.name}"? This will remove it from all files.`,
+                { confirmLabel: 'Delete', danger: true }
+            );
+            if (confirmed) {
                 await window.electronAPI.dbDeleteTag(tag.id);
                 renderTagsManagement();
             }
@@ -12851,6 +12898,7 @@ function openCompareMode(paths) {
     const overlay = document.getElementById('compare-mode-overlay');
     const container = document.getElementById('cmo-panels-container');
     if (!overlay || !container) return;
+    _modalTriggerMap.set(overlay, document.activeElement);
 
     cmoZoomState = { scale: 1, panX: 0, panY: 0 };
     cmoPanelStates = paths.map(() => ({ scale: 1, panX: 0, panY: 0 }));
@@ -12969,6 +13017,11 @@ function closeCompareMode() {
     if (container) {
         container.querySelectorAll('video').forEach(v => { v.pause(); v.src = ''; });
         container.innerHTML = '';
+    }
+    const _trigger = _modalTriggerMap.get(overlay);
+    _modalTriggerMap.delete(overlay);
+    if (_trigger && document.body.contains(_trigger)) {
+        requestAnimationFrame(() => _trigger.focus());
     }
 }
 

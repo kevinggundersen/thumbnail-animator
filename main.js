@@ -1761,6 +1761,24 @@ async function scanFolderInternal(folderPath, options = {}) {
         }
     }
 
+    // Detect animated GIF/WebP.
+    // GIFs are treated as animated unconditionally (static GIFs are rare).
+    // WebP requires a header check to distinguish static from animated.
+    const webpCandidates = [];
+    for (const f of fileObjs) {
+        const ext = path.extname(f.name).toLowerCase();
+        if (ext === '.gif') {
+            f.animated = true;
+        } else if (ext === '.webp') {
+            webpCandidates.push(f);
+        }
+    }
+    if (webpCandidates.length > 0) {
+        await asyncPool(IO_CONCURRENCY_LIMIT, webpCandidates, async (f) => {
+            f.animated = await isAnimatedWebp(f.path);
+        });
+    }
+
     // Clean up internal field before sending to renderer
     const mediaFiles = fileObjs.map(({ isImage, ...rest }) => rest);
 
@@ -2081,6 +2099,20 @@ ipcMain.handle('resolve-file-paths', async (event, filePaths, options = {}) => {
                 }
             }
         }
+    }
+
+    // Detect animated GIF/WebP
+    const animCandidates = fileObjs.filter(f => {
+        const ext = path.extname(f.name).toLowerCase();
+        return ext === '.gif' || ext === '.webp';
+    });
+    if (animCandidates.length > 0) {
+        await asyncPool(IO_CONCURRENCY_LIMIT, animCandidates, async (f) => {
+            const ext = path.extname(f.name).toLowerCase();
+            f.animated = ext === '.webp'
+                ? await isAnimatedWebp(f.path)
+                : await isAnimatedGif(f.path);
+        });
     }
 
     // Clean up internal field

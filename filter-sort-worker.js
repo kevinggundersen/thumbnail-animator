@@ -295,17 +295,18 @@ function runFilterPipeline(state) {
 
         // Type filter
         if (currentFilter === 'video') {
-            const isGifOrWebp = fileName.endsWith('.gif') || fileName.endsWith('.webp');
+            const isMoving = item.animated || fileName.endsWith('.gif');
             if (item.type === 'video') {
                 // keep
-            } else if (includeMovingImages && item.type === 'image' && isGifOrWebp) {
-                // keep: moving images treated as videos
+            } else if (includeMovingImages && item.type === 'image' && isMoving) {
+                // keep: animated images treated as videos
             } else {
                 continue;
             }
         } else if (currentFilter === 'image') {
             if (item.type !== 'image') continue;
-            if (includeMovingImages && (fileName.endsWith('.gif') || fileName.endsWith('.webp'))) continue;
+            const isMoving = item.animated || fileName.endsWith('.gif');
+            if (includeMovingImages && isMoving) continue;
         }
 
         if (needRating && item.type !== 'folder' && item.path) {

@@ -219,7 +219,7 @@ describe('type filters', () => {
         send({ type: 'setItems', items: [
             makeItem('vid.mp4', 'video'),
             makeItem('pic.png', 'image'),
-            makeItem('anim.gif', 'image'),
+            makeItem('anim.gif', 'image', { animated: true }),
             makeItem('folder1', 'folder'),
         ]});
     });
@@ -243,9 +243,40 @@ describe('type filters', () => {
         expect(indices).toHaveLength(2); // pic.png + anim.gif
     });
 
-    it('currentFilter=image excludes GIF/WebP when includeMovingImages=true', () => {
+    it('currentFilter=image excludes animated GIF/WebP when includeMovingImages=true', () => {
         const indices = resultIndices({ currentFilter: 'image', includeMovingImages: true });
         expect(indices).toHaveLength(1); // only pic.png
+    });
+});
+
+describe('type filters — static vs animated WEBP', () => {
+    beforeEach(() => {
+        send({ type: 'setItems', items: [
+            makeItem('vid.mp4', 'video'),                        // 0
+            makeItem('pic.png', 'image'),                        // 1
+            makeItem('anim.gif', 'image', { animated: true }),   // 2 — GIFs always animated
+            makeItem('anim.webp', 'image', { animated: true }),  // 3
+            makeItem('static.webp', 'image'),                    // 4 — no animated flag
+            makeItem('folder1', 'folder'),                       // 5
+        ]});
+    });
+
+    it('currentFilter=image keeps static WEBP when includeMovingImages=true', () => {
+        const indices = resultIndices({ currentFilter: 'image', includeMovingImages: true });
+        // pic.png + static.webp (animated gif + animated webp moved to video)
+        expect(indices).toHaveLength(2);
+    });
+
+    it('currentFilter=video includes animated WEBP but not static WEBP when includeMovingImages=true', () => {
+        const indices = resultIndices({ currentFilter: 'video', includeMovingImages: true });
+        // vid.mp4 + anim.gif + anim.webp (static.webp stays in images)
+        expect(indices).toHaveLength(3);
+    });
+
+    it('currentFilter=image keeps all images when includeMovingImages=false', () => {
+        const indices = resultIndices({ currentFilter: 'image', includeMovingImages: false });
+        // pic.png + anim.gif + anim.webp + static.webp
+        expect(indices).toHaveLength(4);
     });
 });
 

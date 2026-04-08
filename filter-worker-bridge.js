@@ -393,14 +393,13 @@ class FilterWorkerBridge {
             }
 
             let matchesFilter = true;
+            const isMoving = item.animated || fileName.endsWith('.gif');
             if (h.currentFilter === 'video') {
-                const isGifOrWebp = fileName.endsWith('.gif') || fileName.endsWith('.webp');
                 matchesFilter = item.type === 'video' ||
-                    (h.includeMovingImages && item.type === 'image' && isGifOrWebp);
+                    (h.includeMovingImages && item.type === 'image' && isMoving);
             } else if (h.currentFilter === 'image') {
                 const isImage = item.type === 'image';
-                const isGifOrWebp = fileName.endsWith('.gif') || fileName.endsWith('.webp');
-                matchesFilter = isImage && !(h.includeMovingImages && isGifOrWebp);
+                matchesFilter = isImage && !(h.includeMovingImages && isMoving);
             }
             if (!matchesFilter) return false;
 

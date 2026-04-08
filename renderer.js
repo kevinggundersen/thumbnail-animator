@@ -4787,11 +4787,13 @@ function getFileType(url) {
     return 'video'; // Default to video for unknown types
 }
 
-// Moving-image extension check (gif/webp treated as videos when includeMovingImages is ON)
-function _isMovingImageExt(name) {
-    if (!name) return false;
-    const n = name.toLowerCase();
-    return n.endsWith('.gif') || n.endsWith('.webp');
+// Moving-image check.
+// GIFs are always treated as moving (extension check — static GIFs are rare).
+// WebP uses the `animated` flag set at scan time so static WebP stays in images.
+function _isMovingImage(item) {
+    if (item.animated) return true;
+    const n = (item.name || '').toLowerCase();
+    return n.endsWith('.gif');
 }
 
 // Color mapping for file extensions (user-customizable)
@@ -5684,12 +5686,12 @@ function filterItems(items) {
     if (currentFilter === 'video') {
         filtered = filtered.filter(item =>
             item.type === 'video' ||
-            (includeMovingImages && item.type === 'image' && _isMovingImageExt(item.name))
+            (includeMovingImages && _isMovingImage(item))
         );
     } else if (currentFilter === 'image') {
         filtered = filtered.filter(item =>
             item.type === 'image' &&
-            !(includeMovingImages && _isMovingImageExt(item.name))
+            !(includeMovingImages && _isMovingImage(item))
         );
     }
     if (starFilterActive) {

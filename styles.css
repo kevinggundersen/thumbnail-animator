@@ -3739,7 +3739,8 @@ video.blow-up-media {
     /* Remove max-width/max-height to allow consistent zoom scaling */
     width: auto;
     height: auto;
-    max-width: var(--lightbox-max-w, 90vw);
+    /* Account for inspector panel width so media doesn't overflow behind it */
+    max-width: min(var(--lightbox-max-w, 90vw), calc(100vw - var(--lb-inspector-width, 0px) - 80px));
     max-height: var(--lightbox-max-h, 90vh);
     border-radius: 8px;
     /* Rounded corners */
@@ -7501,7 +7502,7 @@ video.blow-up-media {
 /* ==================== CUSTOM MEDIA CONTROLS ==================== */
 
 #lightbox-gif-canvas {
-    max-width: var(--lightbox-max-w, 90vw);
+    max-width: min(var(--lightbox-max-w, 90vw), calc(100vw - var(--lb-inspector-width, 0px) - 80px));
     max-height: var(--lightbox-max-h, 90vh);
     object-fit: contain;
 }

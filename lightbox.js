@@ -89,9 +89,16 @@ function syncLightboxZoomControlsPlacement() {
 }
 
 // ── Lightbox Zoom Calculation ──
+function getLightboxInspectorWidth() {
+    return parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--lb-inspector-width')) || 0;
+}
+
 function calculateFitZoomLevel(naturalWidth, naturalHeight) {
-    const availableW = window.innerWidth * 0.9;
-    const availableH = window.innerHeight * 0.9;
+    const vpFrac = (lightboxViewportSetting || 90) / 100;
+    // Subtract inspector panel width from available space (matches CSS min() constraint)
+    const inspectorW = getLightboxInspectorWidth();
+    const availableW = Math.min(window.innerWidth * vpFrac, window.innerWidth - inspectorW - 80);
+    const availableH = window.innerHeight * vpFrac;
     const scaleX = availableW / naturalWidth;
     const scaleY = availableH / naturalHeight;
     const fitScale = Math.min(scaleX, scaleY);
@@ -207,8 +214,9 @@ function _showStaticImage(mediaUrl, lightboxImage, lightboxGifCanvas, lightbox, 
 
     lightbox.classList.remove('hidden');
     lightboxImage.style.transform = getLightboxRotationString();
-    lightboxImage.style.maxWidth = `${lightboxViewportSetting}vw`;
-    lightboxImage.style.maxHeight = `${lightboxViewportSetting}vh`;
+    // Clear inline overrides — let CSS var(--lightbox-max-w) handle constraints
+    lightboxImage.style.maxWidth = '';
+    lightboxImage.style.maxHeight = '';
     lightboxImage.style.width = 'auto';
     lightboxImage.style.height = 'auto';
 
@@ -759,8 +767,8 @@ function openLightbox(mediaUrl, filePath, fileName) {
             lightboxGifCanvas.style.display = 'none';
             lightboxImage.style.display = 'block';
             lightboxImage.style.transform = getLightboxRotationString();
-            lightboxImage.style.maxWidth = `${lightboxViewportSetting}vw`;
-            lightboxImage.style.maxHeight = `${lightboxViewportSetting}vh`;
+            lightboxImage.style.maxWidth = '';
+            lightboxImage.style.maxHeight = '';
             lightboxImage.style.width = 'auto';
             lightboxImage.style.height = 'auto';
             lightboxImage.dataset.src = mediaUrl;
@@ -795,8 +803,8 @@ function openLightbox(mediaUrl, filePath, fileName) {
                 lightboxImage.style.display = 'none';
                 lightboxGifCanvas.style.display = 'block';
                 lightboxGifCanvas.style.transform = getLightboxRotationString();
-                lightboxGifCanvas.style.maxWidth = `${lightboxViewportSetting}vw`;
-                lightboxGifCanvas.style.maxHeight = `${lightboxViewportSetting}vh`;
+                lightboxGifCanvas.style.maxWidth = '';
+                lightboxGifCanvas.style.maxHeight = '';
                 activePlaybackController = controller;
 
                 // Bind control bar
@@ -881,8 +889,8 @@ function openLightbox(mediaUrl, filePath, fileName) {
         lightboxVideo.dataset.src = mediaUrl;
         lightbox.classList.remove('hidden');
         lightboxVideo.style.transform = getLightboxRotationString();
-        lightboxVideo.style.maxWidth = `${lightboxViewportSetting}vw`;
-        lightboxVideo.style.maxHeight = `${lightboxViewportSetting}vh`;
+        lightboxVideo.style.maxWidth = '';
+        lightboxVideo.style.maxHeight = '';
 
         // Create video playback controller
         const controller = new VideoPlaybackController(lightboxVideo);
@@ -1105,8 +1113,9 @@ function applyLightboxZoom(zoomLevel, mouseX = null, mouseY = null) {
             const natW = isImageVisible ? lightboxImage.naturalWidth : (activePlaybackController?.gifWidth || 0);
             const natH = isImageVisible ? lightboxImage.naturalHeight : (activePlaybackController?.gifHeight || 0);
             if (natW > 0 && natH > 0) {
-                const vpFrac = lightboxViewportSetting / 100;
-                const maxW = window.innerWidth * vpFrac;
+                const vpFrac = (lightboxViewportSetting || 90) / 100;
+                const inspW = getLightboxInspectorWidth();
+                const maxW = Math.min(window.innerWidth * vpFrac, window.innerWidth - inspW - 80);
                 const maxH = window.innerHeight * vpFrac;
                 const fitScale = Math.min(1, maxW / natW, maxH / natH);
                 const bw = natW * fitScale;
@@ -1138,16 +1147,17 @@ function applyLightboxZoom(zoomLevel, mouseX = null, mouseY = null) {
         lightboxGifCanvas.classList.remove('zoomed');
         cachedImgRemainingScale = null;
         lightboxImage.style.willChange = '';
-        lightboxImage.style.maxWidth = `${lightboxViewportSetting}vw`;
-        lightboxImage.style.maxHeight = `${lightboxViewportSetting}vh`;
+        // Clear inline overrides — let CSS var(--lightbox-max-w) handle constraints
+        lightboxImage.style.maxWidth = '';
+        lightboxImage.style.maxHeight = '';
         lightboxImage.style.width = 'auto';
         lightboxImage.style.height = 'auto';
         delete lightboxImage.dataset.baseWidth;
         delete lightboxImage.dataset.baseHeight;
-        lightboxVideo.style.maxWidth = `${lightboxViewportSetting}vw`;
-        lightboxVideo.style.maxHeight = `${lightboxViewportSetting}vh`;
-        lightboxGifCanvas.style.maxWidth = `${lightboxViewportSetting}vw`;
-        lightboxGifCanvas.style.maxHeight = `${lightboxViewportSetting}vh`;
+        lightboxVideo.style.maxWidth = '';
+        lightboxVideo.style.maxHeight = '';
+        lightboxGifCanvas.style.maxWidth = '';
+        lightboxGifCanvas.style.maxHeight = '';
         lightboxGifCanvas.style.width = '';
         lightboxGifCanvas.style.height = '';
         delete lightboxGifCanvas.dataset.baseWidth;
@@ -1222,16 +1232,16 @@ function resetZoom() {
     lightboxImage.classList.remove('zoomed');
     lightboxVideo.classList.remove('zoomed');
     lightboxGifCanvas.classList.remove('zoomed');
-    // Reset max constraints and explicit dimensions (use viewport setting, not hardcoded 90)
+    // Clear inline overrides — let CSS var(--lightbox-max-w) handle constraints
     lightboxImage.style.willChange = '';
-    lightboxImage.style.maxWidth = `${lightboxViewportSetting}vw`;
-    lightboxImage.style.maxHeight = `${lightboxViewportSetting}vh`;
+    lightboxImage.style.maxWidth = '';
+    lightboxImage.style.maxHeight = '';
     lightboxImage.style.width = 'auto';
     lightboxImage.style.height = 'auto';
-    lightboxVideo.style.maxWidth = `${lightboxViewportSetting}vw`;
-    lightboxVideo.style.maxHeight = `${lightboxViewportSetting}vh`;
-    lightboxGifCanvas.style.maxWidth = `${lightboxViewportSetting}vw`;
-    lightboxGifCanvas.style.maxHeight = `${lightboxViewportSetting}vh`;
+    lightboxVideo.style.maxWidth = '';
+    lightboxVideo.style.maxHeight = '';
+    lightboxGifCanvas.style.maxWidth = '';
+    lightboxGifCanvas.style.maxHeight = '';
     lightboxGifCanvas.style.width = '';
     lightboxGifCanvas.style.height = '';
     // Clear stored base dimensions

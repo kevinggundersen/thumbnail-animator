@@ -222,6 +222,7 @@ class AppDatabase {
         this._stmts.upsertRecentFile = this.db.prepare('INSERT OR REPLACE INTO recent_files (path, timestamp) VALUES (?, ?)');
         this._stmts.trimRecentFiles = this.db.prepare('DELETE FROM recent_files WHERE id NOT IN (SELECT id FROM recent_files ORDER BY timestamp DESC LIMIT ?)');
         this._stmts.clearRecentFiles = this.db.prepare('DELETE FROM recent_files');
+        this._stmts.removeRecentFile = this.db.prepare('DELETE FROM recent_files WHERE path = ?');
 
         // Collections
         this._stmts.getAllCollections = this.db.prepare('SELECT * FROM collections ORDER BY sort_order');
@@ -436,6 +437,10 @@ class AppDatabase {
 
     clearRecentFiles() {
         this._stmts.clearRecentFiles.run();
+    }
+
+    removeRecentFile(path) {
+        this._stmts.removeRecentFile.run(path);
     }
 
     // ── Collections ──────────────────────────────────────────────────────

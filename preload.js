@@ -161,6 +161,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     dbGetRecentFiles: (limit) => ipcRenderer.invoke('db-get-recent-files', limit),
     dbAddRecentFile: (entry, limit) => ipcRenderer.invoke('db-add-recent-file', entry, limit),
     dbClearRecentFiles: () => ipcRenderer.invoke('db-clear-recent-files'),
+    dbRemoveRecentFile: (filePath) => ipcRenderer.invoke('db-remove-recent-file', filePath),
     // Collections
     dbGetAllCollections: () => ipcRenderer.invoke('db-get-all-collections'),
     dbGetCollection: (id) => ipcRenderer.invoke('db-get-collection', id),
@@ -201,5 +202,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     updateMainSetting: (key, value) => ipcRenderer.invoke('update-main-setting', key, value),
     getAppInfo: () => ipcRenderer.invoke('get-app-info'),
     getLogs: () => ipcRenderer.invoke('get-logs'),
-    getReleaseNotes: (version) => ipcRenderer.invoke('get-release-notes', version)
+    getReleaseNotes: (version) => ipcRenderer.invoke('get-release-notes', version),
+    // Toast notifications from main process
+    onShowToast: (callback) => ipcRenderer.on('show-toast', (_e, message, type) => callback(message, type)),
+    removeShowToastListener: () => ipcRenderer.removeAllListeners('show-toast'),
+    // Folder scan progress
+    onScanProgress: (callback) => ipcRenderer.on('scan-progress', (_e, data) => callback(data)),
+    removeScanProgressListener: () => ipcRenderer.removeAllListeners('scan-progress')
 });

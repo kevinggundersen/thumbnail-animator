@@ -131,7 +131,7 @@ function initKeyboardShortcuts() {
             } else if (!renameDialog.classList.contains('hidden')) {
                 handleRenameCancel();
             } else if (document.getElementById('duplicates-modal') && !document.getElementById('duplicates-modal').classList.contains('hidden')) {
-                closeDuplicatesModal();
+                await closeDuplicatesModal();
             } else if (!toolsMenuDropdown.classList.contains('hidden')) {
                 toolsMenuDropdown.classList.add('hidden');
             } else if (selection.marqueeActive || selection.marqueePending) {
@@ -220,15 +220,19 @@ function initKeyboardShortcuts() {
                         window.electronAPI.removeBatchDeleteProgressListener();
                         hideProgress();
                         const batchVal = (result && result.ok) ? (result.value || {}) : {};
-                        const failCount = Array.isArray(batchVal.failed) ? batchVal.failed.length : 0;
+                        const failedFiles = Array.isArray(batchVal.failed) ? batchVal.failed : [];
+                        const failCount = failedFiles.length;
                         const successCount = count - failCount;
                         if (successCount > 0) {
                             const msg = useSystemTrash
                                 ? platformString('movedToTrash', `${successCount} files`)
                                 : `Deleted ${successCount} files`;
+                            const failDetails = failCount > 0
+                                ? failedFiles.slice(0, 5).map(f => (f && (f.name || f.path)) ? (f.name || f.path.replace(/^.*[\\/]/, '')) : String(f)).join(', ') + (failedFiles.length > 5 ? ` and ${failedFiles.length - 5} more` : '')
+                                : undefined;
                             showToast(msg, failCount > 0 ? 'warning' : 'success', {
                                 duration: 8000,
-                                details: failCount > 0 ? `${failCount} failed` : undefined,
+                                details: failDetails,
                                 actionLabel: useSystemTrash ? undefined : 'Undo',
                                 actionCallback: useSystemTrash ? undefined : () => {
                                     window.electronAPI.undoFileOperation().then(undoResult => {
@@ -248,7 +252,8 @@ function initKeyboardShortcuts() {
                                 }
                             });
                         } else if (failCount > 0) {
-                            showToast(`Could not delete ${failCount} files`, 'error');
+                            const allFailDetails = failedFiles.slice(0, 5).map(f => (f && (f.name || f.path)) ? (f.name || f.path.replace(/^.*[\\/]/, '')) : String(f)).join(', ') + (failedFiles.length > 5 ? ` and ${failedFiles.length - 5} more` : '');
+                            showToast(`Could not delete ${failCount} files`, 'error', { details: allFailDetails, duration: 8000 });
                         }
                         clearCardSelection();
                         if (currentFolderPath) {
@@ -917,9 +922,18 @@ function addFavorite(path, name, groupId = 'uncategorized') {
 function removeFavorite(groupId, itemIndex) {
     const group = favorites.groups.find(g => g.id === groupId);
     if (!group) return;
+    const removedItem = JSON.parse(JSON.stringify(group.items[itemIndex]));
     group.items.splice(itemIndex, 1);
     saveFavorites();
     renderFavorites();
+    pushMetadataUndo('Remove favorite', () => {
+        const g = favorites.groups.find(g => g.id === groupId);
+        if (g) {
+            g.items.splice(itemIndex, 0, removedItem);
+            saveFavorites();
+            renderFavorites();
+        }
+    });
 }
 
 function toggleGroupCollapse(groupId) {
@@ -951,11 +965,26 @@ function deleteFavoriteGroup(groupId) {
     const groupIndex = favorites.groups.findIndex(g => g.id === groupId);
     if (groupIndex === -1) return;
     const uncategorized = favorites.groups.find(g => g.id === 'uncategorized');
+    // Snapshot for undo
+    const deletedGroup = JSON.parse(JSON.stringify(favorites.groups[groupIndex]));
+    const deletedIndex = groupIndex;
+    const movedItemCount = deletedGroup.items.length;
     // Move items to uncategorized before deleting
     uncategorized.items.push(...favorites.groups[groupIndex].items);
     favorites.groups.splice(groupIndex, 1);
     saveFavorites();
     renderFavorites();
+    pushMetadataUndo('Delete favorite group', () => {
+        // Remove the items that were moved to uncategorized
+        const unc = favorites.groups.find(g => g.id === 'uncategorized');
+        if (unc && movedItemCount > 0) {
+            unc.items.splice(unc.items.length - movedItemCount, movedItemCount);
+        }
+        // Re-insert the deleted group at its original position
+        favorites.groups.splice(deletedIndex, 0, JSON.parse(JSON.stringify(deletedGroup)));
+        saveFavorites();
+        renderFavorites();
+    });
 }
 
 function moveFavoriteToGroup(fromGroupId, itemIndex, toGroupId) {
@@ -1005,9 +1034,10 @@ function showFavGroupContextMenu(e, groupId) {
         const deleteItem = document.createElement('div');
         deleteItem.className = 'context-menu-item context-menu-item-danger';
         deleteItem.textContent = 'Delete Group';
-        deleteItem.addEventListener('click', () => {
+        deleteItem.addEventListener('click', async () => {
             hideFavContextMenu();
-            deleteFavoriteGroup(groupId);
+            const confirmed = await showConfirm('Delete Group', 'Are you sure you want to delete this group? Items will be moved to Uncategorized.', { confirmLabel: 'Delete', danger: true });
+            if (confirmed) deleteFavoriteGroup(groupId);
         });
         favContextMenu.appendChild(deleteItem);
     }
@@ -1061,6 +1091,21 @@ function showFavItemContextMenu(e, groupId, itemIndex) {
         favContextMenu.appendChild(moveContainer);
     }
 
+    // New Group from Item
+    const newGroupItem = document.createElement('div');
+    newGroupItem.className = 'context-menu-item';
+    newGroupItem.textContent = 'New Group from Item';
+    newGroupItem.addEventListener('click', async () => {
+        hideFavContextMenu();
+        const name = await showPromptDialog('New Group', { placeholder: 'Group name' });
+        if (name && name.trim()) {
+            const newGroup = { id: 'grp_' + Date.now(), name: name.trim(), collapsed: false, items: [] };
+            favorites.groups.push(newGroup);
+            moveFavoriteToGroup(groupId, itemIndex, newGroup.id);
+        }
+    });
+    favContextMenu.appendChild(newGroupItem);
+
     // Divider + Remove
     const divider = document.createElement('div');
     divider.className = 'context-menu-divider';
@@ -1069,9 +1114,10 @@ function showFavItemContextMenu(e, groupId, itemIndex) {
     const removeItem = document.createElement('div');
     removeItem.className = 'context-menu-item context-menu-item-danger';
     removeItem.textContent = 'Remove from Favorites';
-    removeItem.addEventListener('click', () => {
+    removeItem.addEventListener('click', async () => {
         hideFavContextMenu();
-        removeFavorite(groupId, itemIndex);
+        const confirmed = await showConfirm('Remove Favorite', 'Remove this item from favorites?', { confirmLabel: 'Remove', danger: true });
+        if (confirmed) removeFavorite(groupId, itemIndex);
     });
     favContextMenu.appendChild(removeItem);
 
@@ -1252,6 +1298,43 @@ function renderRecentFiles() {
             openLightbox(file.url, file.path, file.name);
             toolsMenuDropdown.classList.add('hidden');
         });
+
+        item.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+
+            const menu = document.createElement('div');
+            menu.className = 'tab-group-context-menu';
+
+            const openItem = document.createElement('div');
+            openItem.className = 'context-menu-item';
+            openItem.textContent = 'Open';
+            openItem.addEventListener('click', () => {
+                _hideTabGroupContextMenu();
+                // Remove hover preview before opening
+                const pid = item.dataset.previewId;
+                if (pid) {
+                    const p = document.getElementById(pid);
+                    if (p) p.remove();
+                    delete item.dataset.previewId;
+                }
+                openLightbox(file.url, file.path, file.name);
+                toolsMenuDropdown.classList.add('hidden');
+            });
+            menu.appendChild(openItem);
+
+            const removeItem = document.createElement('div');
+            removeItem.className = 'context-menu-item context-menu-item-danger';
+            removeItem.textContent = 'Remove from Recent';
+            removeItem.addEventListener('click', () => {
+                _hideTabGroupContextMenu();
+                removeRecentFile(file.path);
+            });
+            menu.appendChild(removeItem);
+
+            _showContextMenuAt(menu, e);
+        });
+
         recentFilesList.appendChild(item);
     });
 }
@@ -1265,6 +1348,12 @@ function getTimeAgo(timestamp) {
     if (hours < 24) return `${hours}h ago`;
     const days = Math.floor(hours / 24);
     return `${days}d ago`;
+}
+
+function removeRecentFile(filePath) {
+    recentFiles = recentFiles.filter(f => f.path !== filePath);
+    window.electronAPI.dbRemoveRecentFile(filePath);
+    renderRecentFiles();
 }
 
 function clearRecentFiles() {
@@ -2068,9 +2157,17 @@ async function restoreSavedTabGroup(savedGroupId) {
 }
 
 function deleteSavedTabGroup(savedGroupId) {
+    const deletedGroup = savedTabGroups.find(g => g.id === savedGroupId);
+    if (!deletedGroup) return;
+    const deletedSnapshot = JSON.parse(JSON.stringify(deletedGroup));
     savedTabGroups = savedTabGroups.filter(g => g.id !== savedGroupId);
     saveSavedTabGroups();
     renderSavedTabGroupsSidebar();
+    pushMetadataUndo('Delete tab group', () => {
+        savedTabGroups.push(deletedSnapshot);
+        saveSavedTabGroups();
+        renderSavedTabGroupsSidebar();
+    });
 }
 
 async function renameSavedTabGroup(savedGroupId) {
@@ -2358,9 +2455,10 @@ function showSavedTabGroupContextMenu(e, savedGroup) {
     const deleteItem = document.createElement('div');
     deleteItem.className = 'context-menu-item context-menu-item-danger';
     deleteItem.textContent = 'Delete';
-    deleteItem.addEventListener('click', () => {
+    deleteItem.addEventListener('click', async () => {
         _hideTabGroupContextMenu();
-        deleteSavedTabGroup(savedGroup.id);
+        const confirmed = await showConfirm('Delete Tab Group', `Delete saved tab group "${savedGroup.name}"? This cannot be undone.`, { confirmLabel: 'Delete', danger: true });
+        if (confirmed) deleteSavedTabGroup(savedGroup.id);
     });
     menu.appendChild(deleteItem);
 

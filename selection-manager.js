@@ -235,7 +235,6 @@ class SelectionManager {
         const el = this._statusBarEl;
         if (el) {
             el.textContent = count > 0 ? `${count} selected` : '';
-            el.classList.toggle('hidden', count === 0);
         }
     }
 

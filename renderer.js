@@ -1797,6 +1797,24 @@ function showToastOnce(key, message, type = 'info', options = {}) {
     });
 })();
 
+// ── Main-process toast relay ──
+// The main process can send show-toast messages (e.g. single-instance focus notification).
+if (window.electronAPI.onShowToast) {
+    window.electronAPI.onShowToast((message, type) => showToast(message, type));
+}
+
+// ── Folder scan progress ──
+// Listen for scan-progress events from main (scanning started / complete).
+if (window.electronAPI.onScanProgress) {
+    window.electronAPI.onScanProgress((data) => {
+        if (data.status === 'scanning') {
+            console.log(`[scan] Scanning folder: ${data.folder}`);
+        } else if (data.status === 'complete') {
+            console.log(`[scan] Scan complete: ${data.count} files found`);
+        }
+    });
+}
+
 // ── Button Loading State ──
 /**
  * Set a button to loading state with an inline spinner.
@@ -3629,14 +3647,15 @@ setTimeout(() => { getPluginMenuItems(); }, 0);
 
 // Show first-run welcome card
 (function initWelcomeCard() {
-    if (localStorage.getItem('welcomeDismissed') === 'true') return;
+    const currentVersion = '2.0'; // bump when you want to re-show
+    if (localStorage.getItem('welcomeDismissedVersion') === currentVersion) return;
     const card = document.getElementById('welcome-card');
     if (!card) return;
     // Delay so it doesn't compete with initial render
     setTimeout(() => { card.classList.remove('hidden'); }, 800);
     const dismiss = () => {
         card.classList.add('hidden');
-        localStorage.setItem('welcomeDismissed', 'true');
+        localStorage.setItem('welcomeDismissedVersion', currentVersion);
     };
     const closeBtn = document.getElementById('welcome-close');
     const dismissBtn = document.getElementById('welcome-dismiss');
@@ -6235,7 +6254,11 @@ function renderItems(items, preservedScrollTop = null) {
                     : `No files match the current filter. Try showing all files.`}</p>
             `;
         } else {
-            emptyDiv.innerHTML = `${emptyIcon.folder}<p class="grid-empty-title">No folders or supported media found.</p>`;
+            emptyDiv.innerHTML = `
+                ${emptyIcon.folder}
+                <p class="grid-empty-title">No folders or supported media found</p>
+                <p class="grid-empty-hint">Open a folder with <kbd>Ctrl+O</kbd> or drag a folder into the sidebar to get started.</p>
+            `;
         }
         gridContainer.appendChild(emptyDiv);
         updateItemCount();
@@ -7433,7 +7456,11 @@ function updateStatusBar() {
     const { folders, videos, images, total } = getCurrentItemStats();
 
     if (total === 0) {
-        statusItemCounts.textContent = 'No items';
+        if (!currentCollectionId && !searchBox.value.trim()) {
+            statusItemCounts.textContent = 'Open a folder to browse thumbnails';
+        } else {
+            statusItemCounts.textContent = 'No items';
+        }
     } else {
         const parts = [];
         if (folders > 0) parts.push(`${folders} folder${folders !== 1 ? 's' : ''}`);
@@ -8509,19 +8536,22 @@ function getDroppedFilePaths(dataTransfer) {
     // Check for external files dropped from Explorer / native drag
     if (dataTransfer.files && dataTransfer.files.length > 0) {
         const paths = [];
+        let unsupportedCount = 0;
         for (const file of dataTransfer.files) {
             const filePath = window.electronAPI.getPathForFile(file);
             if (filePath && isDroppedFileSupported(file.name)) {
                 paths.push(filePath);
+            } else if (filePath) {
+                unsupportedCount++;
             }
         }
         // If every dropped path matches what we just native-dragged out, treat
         // this as an internal move (not an external copy).
         const isInternal = paths.length > 0 && _nativeDragPaths
             && paths.every(p => _nativeDragPaths.has(p));
-        return { paths, isInternal };
+        return { paths, isInternal, unsupportedCount };
     }
-    return { paths: [], isInternal: false };
+    return { paths: [], isInternal: false, unsupportedCount: 0 };
 }
 
 // Copy external files into a destination folder
@@ -8673,6 +8703,7 @@ gridContainer.addEventListener('dragover', (e) => {
         } else {
             hideDragLabel();
         }
+        if (!folderCard) gridContainer.classList.add('drag-over-grid');
     }
 });
 
@@ -8681,27 +8712,38 @@ gridContainer.addEventListener('dragleave', (e) => {
     if (folderCard && folderCard.classList && folderCard.classList.remove) {
         folderCard.classList.remove('drag-over');
     }
-    // Hide label when leaving grid entirely
+    // Hide label and remove grid highlight when leaving grid entirely
     if (e.target === gridContainer || !gridContainer.contains(e.relatedTarget)) {
         hideDragLabel();
+        gridContainer.classList.remove('drag-over-grid');
     }
 });
 
 gridContainer.addEventListener('drop', async (e) => {
     e.preventDefault();
     hideDragLabel();
+    gridContainer.classList.remove('drag-over-grid');
 
     // Remove drag-over styling (DOM cards only; canvas-grid manages its own state)
     if (!(window.CG && window.CG.isEnabled())) {
         gridContainer.querySelectorAll('.folder-card.drag-over').forEach(c => c.classList.remove('drag-over'));
     }
 
-    const { paths, isInternal } = getDroppedFilePaths(e.dataTransfer);
+    const { paths, isInternal, unsupportedCount } = getDroppedFilePaths(e.dataTransfer);
     // Consumed — clear the native-drag tag so future external drops don't
     // accidentally look "internal".
     _nativeDragPaths = null;
     if (_nativeDragClearTimer) { clearTimeout(_nativeDragClearTimer); _nativeDragClearTimer = null; }
-    if (paths.length === 0) return;
+    if (paths.length === 0) {
+        if (unsupportedCount > 0) {
+            showToast(`${unsupportedCount} unsupported file(s) skipped`, 'warning');
+        }
+        return;
+    }
+    if (unsupportedCount > 0) {
+        // Show after the copy/move completes so it doesn't get buried
+        setTimeout(() => showToast(`${paths.length} file(s) accepted, ${unsupportedCount} unsupported skipped`, 'info'), 100);
+    }
 
     // Check if dropped on a folder card
     const folderCard = _resolveDragFolderCard(e);
@@ -8768,8 +8810,16 @@ sidebarTree.addEventListener('drop', async (e) => {
     const destFolder = node ? node.dataset.path : null;
     if (!destFolder) return;
 
-    const { paths, isInternal } = getDroppedFilePaths(e.dataTransfer);
-    if (paths.length === 0) return;
+    const { paths, isInternal, unsupportedCount: sidebarUnsupported } = getDroppedFilePaths(e.dataTransfer);
+    if (paths.length === 0) {
+        if (sidebarUnsupported > 0) {
+            showToast(`${sidebarUnsupported} unsupported file(s) skipped`, 'warning');
+        }
+        return;
+    }
+    if (sidebarUnsupported > 0) {
+        setTimeout(() => showToast(`${paths.length} file(s) accepted, ${sidebarUnsupported} unsupported skipped`, 'info'), 100);
+    }
 
     if (isInternal) {
         await moveFilesToFolder(paths, destFolder);
@@ -9610,7 +9660,7 @@ function showEmbedProgressUI(totalFiles) {
     if (fill) fill.style.width = '0%';
     if (text) text.textContent = `0 / 0`;
     if (totalFill) totalFill.style.width = '0%';
-    if (totalText) totalText.textContent = `0 / ${totalFiles}`;
+    if (totalText) totalText.textContent = `Analyzing file 0 of ${totalFiles}`;
 }
 
 function updateEmbedProgressUI(current, total) {
@@ -9624,7 +9674,7 @@ function updateTotalProgressUI(done, total) {
     const fill = document.getElementById('ai-embed-total-fill');
     const text = document.getElementById('ai-embed-total-text');
     if (fill) fill.style.width = total > 0 ? `${Math.round((done / total) * 100)}%` : '0%';
-    if (text) text.textContent = `${done} / ${total}`;
+    if (text) text.textContent = `Analyzing file ${done} of ${total}`;
 }
 
 function hideEmbedProgressUI() {
@@ -10212,16 +10262,16 @@ batchRenameApply.addEventListener('click', async () => {
     if (fileCount > 5) {
         progressEl.classList.remove('hidden');
         progressFill.style.width = '0%';
-        progressText.textContent = `0 / ${fileCount}`;
+        progressText.textContent = `Renaming 0 of ${fileCount} files...`;
         window.electronAPI.onBatchRenameProgress((_e, data) => {
             const pct = Math.round((data.current / data.total) * 100);
             progressFill.style.width = `${pct}%`;
-            progressText.textContent = `${data.current} / ${data.total}`;
+            progressText.textContent = `Renaming ${data.current} of ${data.total} files...`;
         });
     }
 
     try {
-        setStatusActivity('Batch renaming...');
+        setStatusActivity(`Renaming ${fileCount} file${fileCount === 1 ? '' : 's'}...`);
         const result = await window.electronAPI.batchRename(batchRenameFilePaths, type, opts);
         setStatusActivity('');
 
@@ -10447,7 +10497,9 @@ async function openAutoTag(filePaths) {
             });
         }
 
-        autoTagUpdateProgress(Math.min(i + BATCH, filePaths.length), filePaths.length);
+        const progressDone = Math.min(i + BATCH, filePaths.length);
+        autoTagUpdateProgress(progressDone, filePaths.length);
+        autoTagStatus.textContent = `Analyzing file ${progressDone} of ${filePaths.length}...`;
         // Incremental render after each batch so users see results as they stream in
         renderAutoTagResults();
     }
@@ -11867,8 +11919,8 @@ function openCollectionDialog(existingCollection = null, onCreated = null) {
                 <div class="collection-dialog-field">
                     <label>Minimum Dimensions (width x height)</label>
                     <div class="collection-dialog-row">
-                        <input type="text" id="col-dialog-width" value="${rules.width || ''}" placeholder="Width (e.g. 3840)">
-                        <input type="text" id="col-dialog-height" value="${rules.height || ''}" placeholder="Height (e.g. 2160)">
+                        <input type="text" id="col-dialog-width" value="${rules.width || ''}" placeholder="e.g. 1920">
+                        <input type="text" id="col-dialog-height" value="${rules.height || ''}" placeholder="e.g. 1080">
                     </div>
                 </div>
                 <div class="collection-dialog-field">
@@ -11890,7 +11942,7 @@ function openCollectionDialog(existingCollection = null, onCreated = null) {
                             <option value=">" ${rules.sizeOperator === '>' ? 'selected' : ''}>Larger than</option>
                             <option value="<" ${rules.sizeOperator === '<' ? 'selected' : ''}>Smaller than</option>
                         </select>
-                        <input type="text" id="col-dialog-size-val" value="${rules.sizeValue || ''}" placeholder="e.g. 100">
+                        <input type="text" id="col-dialog-size-val" value="${rules.sizeValue || ''}" placeholder="e.g. 100 MB">
                     </div>
                 </div>
                 <div class="collection-dialog-field">

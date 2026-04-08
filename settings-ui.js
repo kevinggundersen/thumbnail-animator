@@ -1655,10 +1655,13 @@ function startShortcutRecording(actionId, displayEl) {
         if (conflictId) {
             // Swap: give the conflicting action our old binding
             const oldBinding = getShortcut(actionId);
+            const conflictName = DEFAULT_SHORTCUTS[conflictId]?.label || conflictId;
             userShortcutOverrides[conflictId] = { key: oldBinding.key };
             if (oldBinding.ctrl) userShortcutOverrides[conflictId].ctrl = true;
             if (oldBinding.shift) userShortcutOverrides[conflictId].shift = true;
             if (oldBinding.alt) userShortcutOverrides[conflictId].alt = true;
+            // Notify user about the swap
+            showToast(`Swapped: "${conflictName}" moved to ${shortcutToString(conflictId)}`, 'info', { duration: 5000 });
         }
 
         userShortcutOverrides[actionId] = newBinding;
@@ -2038,3 +2041,59 @@ document.getElementById('reset-all-settings-btn')?.addEventListener('click', asy
 
 // Initialize shortcut settings tab
 renderShortcutSettings();
+
+// ── Settings Search ──
+(function initSettingsSearch() {
+    const searchInput = document.getElementById('settings-search-input');
+    if (!searchInput) return;
+
+    searchInput.addEventListener('input', () => {
+        const query = searchInput.value.toLowerCase().trim();
+        const tabContents = document.querySelectorAll('.settings-tab-content');
+
+        if (!query) {
+            // Clear search: show all items, remove no-matches indicators
+            document.querySelectorAll('.settings-item.settings-search-hidden').forEach(el => {
+                el.classList.remove('settings-search-hidden');
+            });
+            tabContents.forEach(tc => {
+                tc.classList.remove('settings-search-no-matches');
+                tc.style.display = '';
+            });
+            return;
+        }
+
+        tabContents.forEach(tabContent => {
+            const items = tabContent.querySelectorAll('.settings-item');
+            let hasMatch = false;
+
+            items.forEach(item => {
+                const title = (item.querySelector('.settings-item-title')?.textContent || '').toLowerCase();
+                const desc = (item.querySelector('.settings-item-description')?.textContent || '').toLowerCase();
+                const matches = title.includes(query) || desc.includes(query);
+                item.classList.toggle('settings-search-hidden', !matches);
+                if (matches) hasMatch = true;
+            });
+
+            tabContent.classList.toggle('settings-search-no-matches', !hasMatch);
+        });
+
+        // Show all tabs during search (don't hide non-active tabs)
+        tabContents.forEach(tc => {
+            if (!tc.classList.contains('settings-search-hidden')) {
+                tc.style.display = '';
+            }
+        });
+    });
+
+    // Clear search when switching tabs
+    const tabs = document.querySelectorAll('.settings-tab');
+    tabs.forEach(tab => {
+        tab.addEventListener('click', () => {
+            if (searchInput.value) {
+                searchInput.value = '';
+                searchInput.dispatchEvent(new Event('input'));
+            }
+        });
+    });
+})();

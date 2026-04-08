@@ -32,7 +32,7 @@ function initDuplicateDetection() {
         openDuplicatesModal();
     });
 
-    closeBtn.addEventListener('click', closeDuplicatesModal);
+    closeBtn.addEventListener('click', () => closeDuplicatesModal());
 
     modal.addEventListener('click', (e) => {
         if (e.target === modal) closeDuplicatesModal();
@@ -64,9 +64,9 @@ function initDuplicateDetection() {
         }
     });
 
-    highlightBtn.addEventListener('click', () => {
+    highlightBtn.addEventListener('click', async () => {
         highlightDuplicatesInGrid();
-        closeDuplicatesModal();
+        await closeDuplicatesModal();
     });
 
     deleteBtn.addEventListener('click', async () => {
@@ -154,7 +154,16 @@ function openDuplicatesModal() {
     startDuplicateScan();
 }
 
-function closeDuplicatesModal() {
+async function closeDuplicatesModal() {
+    // Warn if files are marked for deletion but not yet applied
+    if (duplicateMarkedForDeletion.size > 0) {
+        const confirmed = await showConfirm(
+            'Discard Changes?',
+            `You have ${duplicateMarkedForDeletion.size} file(s) marked for deletion. Close without applying?`,
+            { confirmLabel: 'Discard', danger: true }
+        );
+        if (!confirmed) return;
+    }
     const modal = document.getElementById('duplicates-modal');
     modal.classList.add('hidden');
     duplicateScanActive = false;

@@ -675,6 +675,7 @@ if (!gotSingleInstanceLock) {
             if (mainWindow.isMinimized()) mainWindow.restore();
             mainWindow.show();
             mainWindow.focus();
+            mainWindow.webContents.send('show-toast', 'Thumbnail Animator is already running \u2014 focused existing window.', 'info');
         }
     });
 }
@@ -1926,10 +1927,19 @@ ipcMain.handle('get-folder-preview', async (event, folderPath, previewCount) => 
 ipcMain.handle('scan-folder', async (event, folderPath, options = {}) => {
     try {
         folderPath = validateUserPath(folderPath, { mustExist: true });
+        if (!event.sender.isDestroyed()) {
+            event.sender.send('scan-progress', { status: 'scanning', folder: path.basename(folderPath) });
+        }
         const { folders, mediaFiles } = await scanFolderInternal(folderPath, options);
+        if (!event.sender.isDestroyed()) {
+            event.sender.send('scan-progress', { status: 'complete', count: mediaFiles.length });
+        }
         return { ok: true, value: folders.length + mediaFiles.length > 0 ? [...folders, ...mediaFiles] : [] };
     } catch (error) {
         console.error('Error scanning folder:', error);
+        if (!event.sender.isDestroyed()) {
+            event.sender.send('scan-progress', { status: 'complete', count: 0 });
+        }
         return { ok: false, error: error.message };
     }
 });
@@ -1959,6 +1969,9 @@ ipcMain.handle('scan-folder-stream', async (event, folderPath, options = {}) => 
 
     try {
         folderPath = validateUserPath(folderPath, { mustExist: true });
+        if (!sender.isDestroyed()) {
+            sender.send('scan-progress', { status: 'scanning', folder: path.basename(folderPath) });
+        }
         // Phase A: fast enumeration (no dimensions)
         const phaseAStart = performance.now();
         const { folders, mediaFiles } = await scanFolderInternal(folderPath, {
@@ -2033,10 +2046,16 @@ ipcMain.handle('scan-folder-stream', async (event, folderPath, options = {}) => 
         }
 
         send({ scanId, phase: 'complete' });
+        if (!sender.isDestroyed()) {
+            sender.send('scan-progress', { status: 'complete', count: mediaFiles.length });
+        }
         return { ok: true, value: { scanId, totalFolders: folders.length, totalFiles: mediaFiles.length } };
     } catch (error) {
         console.error('Error streaming folder scan:', error);
         send({ scanId, phase: 'complete', error: error.message });
+        if (!sender.isDestroyed()) {
+            sender.send('scan-progress', { status: 'complete', count: 0 });
+        }
         return { ok: false, error: error.message };
     }
 });
@@ -5750,6 +5769,7 @@ wrapIpc('db-save-favorites', (favObj) => appDb.saveFavorites(favObj));
 wrapIpc('db-get-recent-files', (limit) => appDb.getRecentFiles(limit || 50));
 wrapIpc('db-add-recent-file', (entry, limit) => appDb.addRecentFile(entry, limit || 50));
 wrapIpc('db-clear-recent-files', () => appDb.clearRecentFiles());
+wrapIpc('db-remove-recent-file', (filePath) => appDb.removeRecentFile(filePath));
 
 // Batched init data — single IPC round-trip for ratings + pins + favorites + recent files
 ipcMain.handle('db-get-init-data', async (event, recentLimit) => {

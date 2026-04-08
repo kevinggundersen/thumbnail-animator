@@ -485,6 +485,13 @@ function initKeyboardShortcuts() {
             return;
         }
 
+        // Flat tab folder list (sub-toggle)
+        if (matchesShortcut(e, 'sidebarTabFlat')) {
+            e.preventDefault();
+            toggleSidebarTabFlat();
+            return;
+        }
+
         // New tab group from active tab
         if (matchesShortcut(e, 'newTabGroup')) {
             e.preventDefault();

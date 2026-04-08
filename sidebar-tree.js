@@ -10,7 +10,9 @@
 let sidebarWidth = parseInt(localStorage.getItem('sidebarWidth')) || 260;
 let sidebarCollapsed = localStorage.getItem('sidebarCollapsed') === 'true';
 let sidebarTabFilterActive = localStorage.getItem('sidebarTabFilterActive') === 'true';
+let sidebarTabFilterFlat = localStorage.getItem('sidebarTabFilterFlat') === 'true';
 let sidebarTabFilterBtn = null;
+let sidebarTabFlatBtn = null;
 let sidebarLayoutSyncTimeout = null;
 let sidebarTransitionEndHandler = null;
 let sidebarExpandedNodes;
@@ -559,24 +561,44 @@ function renderTabFilteredTree() {
         return;
     }
 
-    const allPaths = buildPathAncestry(tabPaths);
-    const { roots, childrenMap } = buildFilteredTreeStructure(allPaths);
+    if (sidebarTabFilterFlat) {
+        // Flat mode: each tab folder is a top-level node, no parent hierarchy
+        const sorted = [...tabPaths.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+        const nodes = [];
+        for (const [, originalPath] of sorted) {
+            const name = originalPath.replace(/\\/g, '/').replace(/\/+$/, '').split('/').filter(Boolean).pop() || originalPath;
+            const node = createTreeNode(
+                { name, path: originalPath, hasChildren: true },
+                0
+            );
+            sidebarTree.appendChild(node);
+            nodes.push(node);
+        }
+        // Auto-expand each tab folder to show its child directories
+        for (const node of nodes) {
+            toggleTreeNode(node, 0);
+        }
+    } else {
+        // Tree mode: show full parent hierarchy back to drive roots
+        const allPaths = buildPathAncestry(tabPaths);
+        const { roots, childrenMap } = buildFilteredTreeStructure(allPaths);
 
-    for (const rootNorm of roots) {
-        const originalPath = allPaths.get(rootNorm) || rootNorm;
-        // Detect if this is a drive root (e.g. "C:/" or "/")
-        const isDrive = /^[a-z]:\/$/i.test(originalPath.replace(/\\/g, '/')) || originalPath === '/' || originalPath === '\\';
-        const name = isDrive
-            ? originalPath.replace(/\\/g, '/').replace(/\/+$/, '') || '/'
-            : originalPath.replace(/\\/g, '/').replace(/\/+$/, '').split('/').filter(Boolean).pop() || originalPath;
+        for (const rootNorm of roots) {
+            const originalPath = allPaths.get(rootNorm) || rootNorm;
+            // Detect if this is a drive root (e.g. "C:/" or "/")
+            const isDrive = /^[a-z]:\/$/i.test(originalPath.replace(/\\/g, '/')) || originalPath === '/' || originalPath === '\\';
+            const name = isDrive
+                ? originalPath.replace(/\\/g, '/').replace(/\/+$/, '') || '/'
+                : originalPath.replace(/\\/g, '/').replace(/\/+$/, '').split('/').filter(Boolean).pop() || originalPath;
 
-        const node = createTreeNode(
-            { name, path: originalPath, hasChildren: childrenMap.has(rootNorm) },
-            0,
-            isDrive
-        );
-        sidebarTree.appendChild(node);
-        renderFilteredChildren(node, rootNorm, 0, childrenMap, allPaths);
+            const node = createTreeNode(
+                { name, path: originalPath, hasChildren: childrenMap.has(rootNorm) },
+                0,
+                isDrive
+            );
+            sidebarTree.appendChild(node);
+            renderFilteredChildren(node, rootNorm, 0, childrenMap, allPaths);
+        }
     }
 
     // Highlight the active tab's folder
@@ -598,6 +620,11 @@ async function toggleSidebarTabFilter(force) {
             : 'Show only tab folders';
     }
 
+    // Show/hide the flat sub-toggle based on filter state
+    if (sidebarTabFlatBtn) {
+        sidebarTabFlatBtn.classList.toggle('hidden', !sidebarTabFilterActive);
+    }
+
     if (sidebarTabFilterActive) {
         renderTabFilteredTree();
     } else {
@@ -612,6 +639,25 @@ async function toggleSidebarTabFilter(force) {
             sidebarExpandToPath(activeTab.path);
         }
     }
+}
+
+/** Toggle flat-list mode (sub-toggle of tab filter). */
+function toggleSidebarTabFlat(force) {
+    // Implicitly activate tab filter if not already active
+    if (!sidebarTabFilterActive) {
+        toggleSidebarTabFilter(true);
+    }
+    sidebarTabFilterFlat = force !== undefined ? force : !sidebarTabFilterFlat;
+    localStorage.setItem('sidebarTabFilterFlat', sidebarTabFilterFlat.toString());
+
+    if (sidebarTabFlatBtn) {
+        sidebarTabFlatBtn.classList.toggle('active', sidebarTabFilterFlat);
+        sidebarTabFlatBtn.title = sidebarTabFilterFlat
+            ? 'Show parent folders'
+            : 'Flat list (no parent folders)';
+    }
+
+    renderTabFilteredTree();
 }
 
 /** Reactive update: rebuild filtered tree when tabs change (debounced). */
@@ -691,6 +737,19 @@ async function initSidebar() {
         if (sidebarTabFilterActive) {
             sidebarTabFilterBtn.classList.add('active');
             sidebarTabFilterBtn.title = 'Show all folders';
+        }
+    }
+
+    // Flat-list sub-toggle button (only visible when tab filter is active)
+    sidebarTabFlatBtn = document.getElementById('sidebar-tab-flat-btn');
+    if (sidebarTabFlatBtn) {
+        sidebarTabFlatBtn.addEventListener('click', () => toggleSidebarTabFlat());
+        if (sidebarTabFilterActive) {
+            sidebarTabFlatBtn.classList.remove('hidden');
+            if (sidebarTabFilterFlat) {
+                sidebarTabFlatBtn.classList.add('active');
+                sidebarTabFlatBtn.title = 'Show parent folders';
+            }
         }
     }
 

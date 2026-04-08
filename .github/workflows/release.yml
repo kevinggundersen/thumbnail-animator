@@ -15,11 +15,11 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            build_cmd: npm run build:win
+            build_cmd: npm run build:win -- -p never
           - os: macos-latest
-            build_cmd: npm run build:mac
+            build_cmd: npm run build:mac -- -p never
           - os: ubuntu-latest
-            build_cmd: npm run build:linux
+            build_cmd: npm run build:linux -- -p never
 
     runs-on: ${{ matrix.os }}
 

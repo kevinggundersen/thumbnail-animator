@@ -48,6 +48,7 @@ async function saveCollection(collection) {
         else collectionsCache.push(collection);
         // Invalidate smart collection result cache (rules may have changed)
         smartCollectionCache.delete(collection.id);
+        removeCollectionResultsFromIndexedDB(collection.id);
     } catch (e) {
         console.error('Error saving collection:', e);
         showToast('Failed to save collection', 'error');
@@ -59,6 +60,7 @@ async function deleteCollection(id) {
         await window.electronAPI.dbDeleteCollection(id);
         collectionsCache = collectionsCache.filter(c => c.id !== id);
         smartCollectionCache.delete(id);
+        removeCollectionResultsFromIndexedDB(id);
     } catch (e) {
         console.error('Error deleting collection:', e);
         showToast('Failed to delete collection', 'error');
@@ -248,7 +250,23 @@ async function loadCollectionIntoGrid(collectionId) {
             }
 
             // --- Cache-first: show cached results instantly, then background-refresh ---
-            const cached = smartCollectionCache.get(collectionId);
+            // Two-tier lookup: in-memory (instant) → IndexedDB (persistent across sessions)
+            let cached = smartCollectionCache.get(collectionId);
+
+            if (!cached || !cached.items || cached.items.length === 0) {
+                const idbResult = await getCollectionResultsFromIndexedDB(collectionId, collection);
+                if (loadToken !== _collectionLoadToken) return; // user navigated away during IDB read
+                if (idbResult && idbResult.items && idbResult.items.length > 0) {
+                    cached = { items: idbResult.items, timestamp: idbResult.timestamp };
+                    // Promote to in-memory cache for subsequent instant access
+                    smartCollectionCache.set(collectionId, cached);
+                    // LRU eviction for in-memory cache
+                    if (smartCollectionCache.size > SMART_COLLECTION_CACHE_MAX) {
+                        const oldest = smartCollectionCache.keys().next().value;
+                        smartCollectionCache.delete(oldest);
+                    }
+                }
+            }
 
             if (cached && cached.items && cached.items.length > 0) {
                 // Render cached results immediately — near-instant load
@@ -260,6 +278,7 @@ async function loadCollectionIntoGrid(collectionId) {
                 currentEmbeddings.clear(); bumpEmbeddingsVersion();
                 currentTextEmbedding = null;
                 cancelEmbeddingScan();
+                _cancelIdlePreEmbedding();
 
                 renderItems(sortedCached, null);
                 updateBreadcrumbForCollection(collection);
@@ -275,14 +294,19 @@ async function loadCollectionIntoGrid(collectionId) {
                     setStatusActivity('Loading media...');
                     scheduleMediaLoadSettle();
                 }
+
+                // Reconcile new/changed/removed files entirely in the background —
+                // no foreground re-scan or two-step re-render needed.
+                backgroundScanSmartCollection(collectionId);
+                return;
             }
 
-            const hadCache = !!(cached && cached.items && cached.items.length > 0);
+            // No cache — full foreground scan
 
             // Check if rules need dimensions (aspect ratio, width, height)
             const needsDimensionFilter = !!(collection.rules?.aspectRatio || collection.rules?.width != null || collection.rules?.height != null);
 
-            // Accumulate items progressively and render as they arrive (only if no cache shown)
+            // Accumulate items progressively and render as they arrive
             const progressiveItems = [];
             let progressRenderTimer = null;
 
@@ -304,21 +328,14 @@ async function loadCollectionIntoGrid(collectionId) {
                 if (loadToken !== _collectionLoadToken) return;
                 if (progress.items) progressFileCount += progress.items.length;
                 const itemLabel = collection.rules?.fileType === 'video' ? 'videos' : collection.rules?.fileType === 'image' ? 'images' : 'items';
-                if (hadCache) {
-                    setStatusActivity(
-                        `Refreshing... ${progress.foldersScanned}/${progress.totalFolders}`,
-                        { done: progress.foldersScanned, total: progress.totalFolders }
-                    );
-                } else {
-                    setStatusActivity(
-                        `Scanning folders... ${progress.foldersScanned}/${progress.totalFolders} | ${progressFileCount} ${itemLabel}`,
-                        { done: progress.foldersScanned, total: progress.totalFolders }
-                    );
-                }
+                setStatusActivity(
+                    `Scanning folders... ${progress.foldersScanned}/${progress.totalFolders} | ${progressFileCount} ${itemLabel}`,
+                    { done: progress.foldersScanned, total: progress.totalFolders }
+                );
 
-                // Progressive rendering only when no cache was shown and no AI query
+                // Progressive rendering when no AI query
                 // (AI query requires embeddings which aren't available during streaming)
-                if (!hadCache && !collection.rules?.aiQuery && progress.items && progress.items.length > 0) {
+                if (!collection.rules?.aiQuery && progress.items && progress.items.length > 0) {
                     for (const item of progress.items) {
                         if (matchesSmartRules(item, collection.rules)) {
                             progressiveItems.push(item);
@@ -349,6 +366,9 @@ async function loadCollectionIntoGrid(collectionId) {
 
             // Update in-memory cache for instant re-opens
             smartCollectionCache.set(collectionId, { items, timestamp: Date.now() });
+            // Persist to IndexedDB for instant loads across sessions
+            storeCollectionResultsInIndexedDB(collectionId, items, collection)
+                .catch(err => console.warn('storeCollectionResults (foreground):', err));
         } else {
             const collectionFiles = await getCollectionFiles(collectionId);
             const filePaths = collectionFiles.map(cf => cf.filePath);
@@ -597,6 +617,13 @@ async function loadCollectionIntoGrid(collectionId) {
         const badge = document.querySelector(`[data-col-count="${collectionId}"]`);
         if (badge) badge.textContent = items.filter(i => !i.missing).length;
 
+        // Final cache update — ensures AI-scored results are persisted (not just metadata-filtered)
+        smartCollectionCache.set(collectionId, { items, timestamp: Date.now() });
+        if (collection) {
+            storeCollectionResultsInIndexedDB(collectionId, items, collection)
+                .catch(err => console.warn('storeCollectionResults (final):', err));
+        }
+
     } finally {
         if (_aiForegroundScanCollectionId === collectionId) _aiForegroundScanCollectionId = null;
         setCollectionLoading(collectionId, false);
@@ -816,6 +843,9 @@ async function backgroundScanSmartCollection(collectionId) {
         }
 
         smartCollectionCache.set(collectionId, { items, timestamp: Date.now() });
+        // Persist to IndexedDB for instant loads across sessions
+        storeCollectionResultsInIndexedDB(collectionId, items, collection)
+            .catch(err => console.warn('storeCollectionResults (background):', err));
 
         // Update sidebar badge with final count
         const badge = document.querySelector(`[data-col-count="${collectionId}"]`);
@@ -1096,4 +1126,89 @@ async function clearEmbeddingCache() {
     } catch {
         // Ignore
     }
+}
+
+// --- Smart Collection Results Cache (IndexedDB persistent) ---
+// Persists AI/smart collection results across sessions so revisits are instant.
+// Records are keyed by collectionId and invalidated when rules change.
+
+/**
+ * Store smart collection results in IndexedDB for persistent caching.
+ * @param {string} collectionId
+ * @param {Array} items - the matched items (will be stripped to essential fields)
+ * @param {object} collection - the collection object (for rules hash)
+ */
+async function storeCollectionResultsInIndexedDB(collectionId, items, collection) {
+    if (!db) {
+        try { await initIndexedDB(); } catch { return; }
+    }
+    try {
+        const transaction = db.transaction([SMART_COLLECTION_RESULTS_STORE], 'readwrite');
+        const store = transaction.objectStore(SMART_COLLECTION_RESULTS_STORE);
+        store.put({
+            collectionId,
+            items: items.map(i => ({
+                name: i.name,
+                path: i.path,
+                url: i.url,
+                type: i.type,
+                mtime: i.mtime,
+                size: i.size,
+                width: i.width,
+                height: i.height,
+                missing: i.missing || undefined,
+                _aiScore: i._aiScore || undefined
+            })),
+            rulesHash: JSON.stringify(collection.rules || null),
+            embeddingVersion: EMBEDDING_VERSION,
+            timestamp: Date.now()
+        });
+    } catch (e) {
+        console.warn('Failed to store collection results in IndexedDB:', e);
+    }
+}
+
+/**
+ * Retrieve cached smart collection results from IndexedDB.
+ * Returns null if no cache exists or if the cache is stale (rules changed / embedding version changed).
+ * @param {string} collectionId
+ * @param {object} collection - the collection object (for rules hash validation)
+ * @returns {Promise<{items: Array, timestamp: number}|null>}
+ */
+async function getCollectionResultsFromIndexedDB(collectionId, collection) {
+    if (!db) {
+        try { await initIndexedDB(); } catch { return null; }
+    }
+    try {
+        const transaction = db.transaction([SMART_COLLECTION_RESULTS_STORE], 'readonly');
+        const store = transaction.objectStore(SMART_COLLECTION_RESULTS_STORE);
+        const request = store.get(collectionId);
+        return new Promise(resolve => {
+            request.onsuccess = () => {
+                const result = request.result;
+                if (!result || !result.items) { resolve(null); return; }
+                // Invalidate if rules changed
+                const currentRulesHash = JSON.stringify(collection.rules || null);
+                if (result.rulesHash !== currentRulesHash) { resolve(null); return; }
+                // Invalidate if embedding model version changed (AI scores would be stale)
+                if (result.embeddingVersion && result.embeddingVersion !== EMBEDDING_VERSION) { resolve(null); return; }
+                resolve(result);
+            };
+            request.onerror = () => resolve(null);
+        });
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Remove cached results for a specific collection from IndexedDB.
+ * @param {string} collectionId
+ */
+async function removeCollectionResultsFromIndexedDB(collectionId) {
+    if (!db) return;
+    try {
+        const transaction = db.transaction([SMART_COLLECTION_RESULTS_STORE], 'readwrite');
+        transaction.objectStore(SMART_COLLECTION_RESULTS_STORE).delete(collectionId);
+    } catch { /* best-effort */ }
 }

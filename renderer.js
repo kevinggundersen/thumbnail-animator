@@ -102,7 +102,7 @@ let INDEXEDDB_CACHE_TTL = 3600000; // IndexedDB persistent cache TTL (1 hour)
 
 // IndexedDB Configuration
 const DB_NAME = 'ThumbnailAnimatorCache';
-const DB_VERSION = 5;
+const DB_VERSION = 6;
 const STORE_NAME = 'folderCache';
 const DIMENSIONS_STORE = 'dimensionCache';
 const GIF_DURATION_STORE = 'gifDurationCache';
@@ -110,6 +110,7 @@ const EMBEDDING_STORE = 'embeddingCache';
 const EMBEDDING_VERSION = 'v2'; // bump when embedding method changes (invalidates cached embeddings)
 const COLLECTIONS_STORE = 'collections';
 const COLLECTION_FILES_STORE = 'collectionFiles';
+const SMART_COLLECTION_RESULTS_STORE = 'smartCollectionResults';
 
 // Cache Size Limits
 const PX_CACHE_MAX_SIZE = 4096;           // Max entries in the px() string cache
@@ -2941,9 +2942,10 @@ function getTabScrollMap(tabId) {
 // Cache folder contents globally (for recently accessed folders)
 const folderCache = new Map(); // Map<folderPath, { items, timestamp }>
 
-// Smart collection result cache — in-memory only for speed
+// Smart collection result cache — in-memory (fast) + IndexedDB (persistent)
 // Key: collectionId, Value: { items: [], timestamp: number }
 const smartCollectionCache = new Map();
+const SMART_COLLECTION_CACHE_MAX = 20; // LRU eviction cap for in-memory cache
 
 // IndexedDB persistent cache
 let db = null;
@@ -2980,6 +2982,9 @@ async function initIndexedDB() {
             if (!database.objectStoreNames.contains(COLLECTION_FILES_STORE)) {
                 const cfStore = database.createObjectStore(COLLECTION_FILES_STORE, { keyPath: 'id' });
                 cfStore.createIndex('collectionId', 'collectionId', { unique: false });
+            }
+            if (!database.objectStoreNames.contains(SMART_COLLECTION_RESULTS_STORE)) {
+                database.createObjectStore(SMART_COLLECTION_RESULTS_STORE, { keyPath: 'collectionId' });
             }
         };
     });
@@ -11564,6 +11569,8 @@ function showCollectionContextMenu(e, collection) {
                 openCollectionDialog(collection);
                 break;
             case 'refresh-collection':
+                smartCollectionCache.delete(collection.id);
+                removeCollectionResultsFromIndexedDB(collection.id);
                 if (currentCollectionId === collection.id) loadCollectionIntoGrid(collection.id);
                 else backgroundScanSmartCollection(collection.id);
                 break;

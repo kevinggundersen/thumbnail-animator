@@ -719,9 +719,20 @@ button:active:not(:disabled):not(.lightbox-nav-btn):not(.lb-inspector-toggle) {
 
 .collection-item-count.loading {
     background: transparent;
+    font-size: 0;
     width: 14px;
     height: 14px;
+    min-width: 14px;
+    max-width: 14px;
     padding: 0;
+    position: relative;
+    overflow: hidden;
+}
+
+.collection-item-count.loading::after {
+    content: '';
+    position: absolute;
+    inset: 0;
     border: 2px solid var(--border-strong);
     border-top-color: var(--accent);
     border-radius: 50%;

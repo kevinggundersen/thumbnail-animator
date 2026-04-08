@@ -1603,11 +1603,17 @@ function renderTabs() {
 
         const colorValue = _getGroupColor(group.color);
 
+        // Wrapper div for Chrome-like group underline
+        const wrapperEl = document.createElement('div');
+        wrapperEl.className = 'tab-group-wrapper';
+        if (group.collapsed) wrapperEl.classList.add('collapsed');
+        wrapperEl.dataset.groupId = group.id;
+        wrapperEl.style.setProperty('--tab-group-color', colorValue);
+
         // Render group label
         const labelEl = document.createElement('div');
         labelEl.className = 'tab-group-label';
         labelEl.dataset.groupId = group.id;
-        labelEl.style.setProperty('--tab-group-color', colorValue);
         const chevronClass = group.collapsed ? '' : ' expanded';
         labelEl.innerHTML = `
             <span class="tab-group-toggle${chevronClass}">${icon('chevron-right', 12)}</span>
@@ -1623,14 +1629,16 @@ function renderTabs() {
             e.preventDefault();
             showTabGroupContextMenu(e, group);
         });
-        tabsContainer.appendChild(labelEl);
+        wrapperEl.appendChild(labelEl);
 
         // Render group's tabs
         for (const tab of groupTabs) {
             renderedTabIds.add(tab.id);
             const tabEl = _createTabElement(tab, colorValue, group.collapsed);
-            tabsContainer.appendChild(tabEl);
+            wrapperEl.appendChild(tabEl);
         }
+
+        tabsContainer.appendChild(wrapperEl);
     }
 
     // Render ungrouped tabs

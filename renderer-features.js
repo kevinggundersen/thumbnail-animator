@@ -1669,8 +1669,17 @@ function _createTabElement(tab, groupColorValue, isGroupCollapsed) {
         tabEl.dataset.groupId = tab.groupId;
         if (groupColorValue) tabEl.style.setProperty('--tab-group-color', groupColorValue);
     }
+    let tabIcon = '';
+    if (tab.collectionId) {
+        const col = collectionsCache.find(c => c.id === tab.collectionId);
+        const hasAi = col && col.type === 'smart' && col.rules?.aiQuery;
+        const isSmart = col && col.type === 'smart';
+        tabIcon = `<span class="tab-icon">${hasAi ? '\u2726' : isSmart ? '\u2606' : '\u25A6'}</span>`;
+    } else if (tab.path) {
+        tabIcon = `<span class="tab-icon tab-icon-svg">${icon('folder', 12)}</span>`;
+    }
     tabEl.innerHTML = `
-        <span class="tab-name" title="${escapeHtml(tab.path || 'Home')}">${escapeHtml(tab.name)}</span>
+        ${tabIcon}<span class="tab-name" title="${escapeHtml(tab.path || 'Home')}">${escapeHtml(tab.name)}</span>
         <span class="tab-close" data-tab-id="${tab.id}">${icon('x', 14)}</span>
     `;
 

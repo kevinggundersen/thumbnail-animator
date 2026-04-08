@@ -1519,6 +1519,22 @@ header {
     font-weight: 600;
 }
 
+.tab-icon {
+    flex-shrink: 0;
+    font-size: 11px;
+    line-height: 1;
+    opacity: 0.6;
+}
+
+.tab-icon-svg {
+    display: flex;
+    align-items: center;
+}
+
+.tab.active .tab-icon {
+    opacity: 0.9;
+}
+
 .tab-name {
     flex: 1;
     overflow: hidden;

@@ -318,7 +318,12 @@ async function loadCollectionIntoGrid(collectionId) {
                     currentItems = progressiveItems.slice();
                     const filtered = filterItems(currentItems);
                     const sorted = sortItems(filtered);
-                    renderItems(sorted, null);
+                    if (vsState.enabled) {
+                        vsUpdateItems(sorted, { preserveScroll: true });
+                        updateItemCount();
+                    } else {
+                        renderItems(sorted, null);
+                    }
                 }, 200);
             };
 
@@ -507,7 +512,13 @@ async function loadCollectionIntoGrid(collectionId) {
                                     allScored.sort((a, b) => (b._aiScore || 0) - (a._aiScore || 0));
                                     items = allScored;
                                     currentItems = items;
-                                    renderItems(sortItems(filterItems(items)), null);
+                                    const sorted = sortItems(filterItems(items));
+                                    if (vsState.enabled) {
+                                        vsUpdateItems(sorted, { preserveScroll: true });
+                                        updateItemCount();
+                                    } else {
+                                        renderItems(sorted, null);
+                                    }
                                     const badge2 = document.querySelector(`[data-col-count="${collectionId}"]`);
                                     if (badge2) badge2.textContent = items.length;
                                 }, 500);
@@ -645,6 +656,21 @@ function cancelBackgroundScan(collectionId) {
     }
 }
 
+/**
+ * Incrementally update the grid for background AI scan results.
+ * Uses vsUpdateItems when virtual scrolling is already active (preserves DOM/media),
+ * falls back to renderItems for the initial render or empty results.
+ */
+function bgScanRenderUpdate(items) {
+    const sorted = sortItems(filterItems(items));
+    if (sorted.length === 0 || !vsState.enabled) {
+        renderItems(sorted, null);
+    } else {
+        vsUpdateItems(sorted, { preserveScroll: true });
+        updateItemCount();
+    }
+}
+
 async function backgroundScanSmartCollection(collectionId) {
     // Cancel any existing background scan for this collection
     cancelBackgroundScan(collectionId);
@@ -757,9 +783,8 @@ async function backgroundScanSmartCollection(collectionId) {
                     if (badge) badge.textContent = items.length;
 
                     if (currentCollectionId === collectionId) {
-                        const scrollBefore = gridContainer.scrollTop;
                         currentItems = items;
-                        renderItems(sortItems(filterItems(items)), scrollBefore);
+                        bgScanRenderUpdate(items);
                         updateBreadcrumbForCollection(collection);
                     }
 
@@ -771,8 +796,38 @@ async function backgroundScanSmartCollection(collectionId) {
                         let done = 0;
                         let newMatches = false;
 
+                        let bgRenderTimer = null;
+                        const scheduleBgRender = () => {
+                            if (bgRenderTimer) return;
+                            bgRenderTimer = setTimeout(() => {
+                                bgRenderTimer = null;
+                                if (scanState.abort || currentCollectionId !== collectionId) return;
+
+                                const allScored = [];
+                                for (const item of mediaItems) {
+                                    const emb = embeddingMap.get(item.path);
+                                    if (emb) {
+                                        const sim = cosineSimilarity(textEmb, emb);
+                                        if (sim >= aiThreshold) { item._aiScore = sim; allScored.push(item); }
+                                    }
+                                }
+                                allScored.sort((a, b) => (b._aiScore || 0) - (a._aiScore || 0));
+                                items = allScored;
+                                smartCollectionCache.set(collectionId, { items, timestamp: Date.now() });
+
+                                const badge = document.querySelector(`[data-col-count="${collectionId}"]`);
+                                if (badge) badge.textContent = items.length;
+
+                                currentItems = items;
+                                bgScanRenderUpdate(items);
+                            }, 800);
+                        };
+
                         for (let i = 0; i < uncached.length; i += BG_BATCH_SIZE) {
-                            if (scanState.abort) return;
+                            if (scanState.abort) {
+                                if (bgRenderTimer) { clearTimeout(bgRenderTimer); bgRenderTimer = null; }
+                                return;
+                            }
 
                             const batch = uncached.slice(i, i + BG_BATCH_SIZE);
                             try {
@@ -795,28 +850,18 @@ async function backgroundScanSmartCollection(collectionId) {
                                 done += batch.length;
                             } catch { done += batch.length; }
 
-                            // Update sidebar badge periodically
+                            // Update sidebar badge and schedule debounced render
                             if (newMatches) {
-                                const allScored = [];
-                                for (const item of mediaItems) {
-                                    const emb = embeddingMap.get(item.path);
-                                    if (emb) {
-                                        const sim = cosineSimilarity(textEmb, emb);
-                                        if (sim >= aiThreshold) { item._aiScore = sim; allScored.push(item); }
+                                const badgeEl = document.querySelector(`[data-col-count="${collectionId}"]`);
+                                if (badgeEl) {
+                                    let count = 0;
+                                    for (const item of mediaItems) {
+                                        const emb = embeddingMap.get(item.path);
+                                        if (emb && cosineSimilarity(textEmb, emb) >= aiThreshold) count++;
                                     }
+                                    badgeEl.textContent = count;
                                 }
-                                allScored.sort((a, b) => (b._aiScore || 0) - (a._aiScore || 0));
-                                items = allScored;
-                                smartCollectionCache.set(collectionId, { items, timestamp: Date.now() });
-
-                                const badge2 = document.querySelector(`[data-col-count="${collectionId}"]`);
-                                if (badge2) badge2.textContent = items.length;
-
-                                if (currentCollectionId === collectionId) {
-                                    const scrollBefore = gridContainer.scrollTop;
-                                    currentItems = items;
-                                    renderItems(sortItems(filterItems(items)), scrollBefore);
-                                }
+                                scheduleBgRender();
                                 newMatches = false;
                             }
 
@@ -826,7 +871,13 @@ async function backgroundScanSmartCollection(collectionId) {
                             }
                         }
 
-                        if (scanState.abort) return;
+                        if (scanState.abort) {
+                            if (bgRenderTimer) { clearTimeout(bgRenderTimer); bgRenderTimer = null; }
+                            return;
+                        }
+
+                        // Cancel any pending debounced render — final scoring pass replaces it
+                        if (bgRenderTimer) { clearTimeout(bgRenderTimer); bgRenderTimer = null; }
 
                         // Final scoring pass
                         const finalScored = [];
@@ -855,11 +906,8 @@ async function backgroundScanSmartCollection(collectionId) {
 
         // If user navigated to this collection during the scan, render results
         if (currentCollectionId === collectionId) {
-            const scrollBefore = gridContainer.scrollTop;
             currentItems = items;
-            const filtered = filterItems(items);
-            const sorted = sortItems(filtered);
-            renderItems(sorted, scrollBefore);
+            bgScanRenderUpdate(items);
             updateBreadcrumbForCollection(collection);
         }
     } finally {

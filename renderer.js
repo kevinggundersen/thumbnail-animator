@@ -9317,8 +9317,25 @@ function restoreGridScrollPosition(targetScrollTop) {
     });
 }
 
+// Navigation busy guard — queues the latest request instead of dropping it,
+// and cancels the active scan so the current navigation resolves quickly.
+let _navBusy = false;
+let _pendingNav = null;
+let _abortCurrentScan = null;
+let _lastNavCompleteTime = 0; // timestamp — watcher ignores events shortly after navigation
 // Function to navigate to a folder
 async function navigateToFolder(folderPath, addToHistory = true, forceReload = false, trustCache = false) {
+    if (_navBusy) {
+        // Queue the LATEST destination (overwrites any previous pending)
+        console.log(`[nav] QUEUED (busy): "${folderPath.split(/[\\/]/).pop()}" forceReload=${forceReload}`, new Error().stack.split('\n').slice(1, 3).join(' ← '));
+        _pendingNav = { folderPath, addToHistory, forceReload, trustCache };
+        // Cancel the active scan so the current loadVideos resolves/rejects quickly
+        if (typeof cancelActiveStream === 'function') cancelActiveStream();
+        if (_abortCurrentScan) _abortCurrentScan();
+        return;
+    }
+    _navBusy = true;
+    const _navT0 = performance.now();
     // Exit collection mode when navigating to a folder
     if (currentCollectionId) {
         // Hand off any in-flight foreground AI scan to the background scanner
@@ -9359,7 +9376,7 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
         const now = Date.now();
         let hasCachedContent = false;
         let cacheAge = Infinity;
-        const CACHE_STALE_THRESHOLD = 5000; // 5 seconds - if cache is older, refresh to show new files
+        const CACHE_STALE_THRESHOLD = 30000; // 30 seconds — file watcher handles freshness; avoid forced rescans on back/forth navigation
         
         if (!forceReload) {
             const normalizedPath = normalizePath(folderPath);
@@ -9444,10 +9461,16 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
         // Update UI chrome BEFORE the async load so navigation feels instant
         updateCurrentTab(folderPath, folderName);
         updateBreadcrumb(folderPath);
-        // Expand sidebar tree in parallel with folder load (fire-and-forget)
-        sidebarExpandToPath(folderPath);
 
+        console.time('[nav] loadVideos');
         await loadVideos(folderPath, !forceReload, preservedScrollTop); // Use cache unless forcing reload
+        console.timeEnd('[nav] loadVideos');
+
+        // Expand sidebar tree AFTER loadVideos so sidebar IPC calls (which use a
+        // synchronous native scanner that blocks the main process) don't delay the scan.
+        console.time('[nav] sidebarExpandToPath');
+        sidebarExpandToPath(folderPath);
+        console.timeEnd('[nav] sidebarExpandToPath');
         clearPendingSessionScrollRestore();
 
         // Save the folder path to localStorage whenever we navigate to a folder (if remembering is enabled)
@@ -9462,7 +9485,12 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
         focusedCardIndex = -1;
         _lastFocusedCard = null;
         perfTest.end('navigateToFolder', perfStart);
+        // Mark navigation completion so the file watcher ignores the initial burst
+        // of events from the watcher being set up on the new folder.
+        _lastNavCompleteTime = Date.now();
+        console.log(`[nav] navigateToFolder total: ${(performance.now() - _navT0).toFixed(1)}ms (cached=${!forceReload})`);
     } catch (error) {
+        // Revert state for all errors (cancellation or real)
         currentFolderPath = previousFolderPath;
         searchBox.value = previousSearchValue;
         searchClearBtn.style.display = previousSearchValue ? '' : 'none';
@@ -9478,50 +9506,44 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
         filterImagesBtn.classList.toggle('active', currentFilter === 'image');
         updateItemCount();
         perfTest.end('navigateToFolder', perfStart);
-        // Path doesn't exist or is invalid - show error and revert UI chrome
-        console.error('Invalid path:', folderPath, error);
-        // Revert breadcrumb, tab label, and sidebar to previous path
-        if (previousFolderPath) {
-            const previousName = previousFolderPath.split(/[/\\]/).filter(Boolean).pop() || previousFolderPath;
-            updateBreadcrumb(previousFolderPath);
-            updateCurrentTab(previousFolderPath, previousName);
-            sidebarExpandToPath(previousFolderPath);
+        // Don't show error toast for scan-cancelled (user clicked another folder)
+        if (error && error.message === 'scan-cancelled') {
+            // Silently swallow — the queued navigation will take over
+        } else {
+            // Path doesn't exist or is invalid - show error and revert UI chrome
+            console.error('Invalid path:', folderPath, error);
+            // Revert breadcrumb, tab label, and sidebar to previous path
+            if (previousFolderPath) {
+                const previousName = previousFolderPath.split(/[/\\]/).filter(Boolean).pop() || previousFolderPath;
+                updateBreadcrumb(previousFolderPath);
+                updateCurrentTab(previousFolderPath, previousName);
+                sidebarExpandToPath(previousFolderPath);
+            }
+            showToast(`Path not found: ${folderPath}`, 'error');
         }
-        showToast(`Path not found: ${folderPath}`, 'error');
+    } finally {
+        _navBusy = false;
+        // Process the queued navigation (latest click wins)
+        if (_pendingNav) {
+            const p = _pendingNav;
+            _pendingNav = null;
+            navigateToFolder(p.folderPath, p.addToHistory, p.forceReload, p.trustCache);
+        }
     }
 }
 
-// Navigation functions
-let _navBusy = false;
+// Navigation functions (guarded by _navBusy inside navigateToFolder)
 async function goBack() {
-    if (_navBusy) return;
     const path = navigationHistory.goBack();
     if (path) {
-        _navBusy = true;
-        try {
-            await navigateToFolder(path, false, false, true); // trustCache for instant back
-        } catch (err) {
-            console.error('Error navigating back:', err);
-            hideLoadingIndicator();
-        } finally {
-            _navBusy = false;
-        }
+        await navigateToFolder(path, false, false, true); // trustCache for instant back
     }
 }
 
 async function goForward() {
-    if (_navBusy) return;
     const path = navigationHistory.goForward();
     if (path) {
-        _navBusy = true;
-        try {
-            await navigateToFolder(path, false, false, true); // trustCache for instant forward
-        } catch (err) {
-            console.error('Error navigating forward:', err);
-            hideLoadingIndicator();
-        } finally {
-            _navBusy = false;
-        }
+        await navigateToFolder(path, false, false, true); // trustCache for instant forward
     }
 }
 
@@ -11112,6 +11134,12 @@ let _activePrefetchPath = null;
 
 function prefetchFolderIfNeeded(folderPath) {
     if (!folderPath) return;
+    // Don't prefetch while a navigation is in progress — avoid competing IPC calls
+    if (_navBusy) return;
+    // Don't prefetch shortly after navigation — the user's mouse is often still
+    // hovering over folder cards from the just-rendered grid, triggering expensive
+    // scans (e.g. 822 files) that block the main process and cause a GC hang.
+    if (_lastNavCompleteTime && (Date.now() - _lastNavCompleteTime) < 1500) return;
     const normalizedPath = normalizePath(folderPath);
 
     // Skip if this is the current folder or already prefetching this path
@@ -11149,12 +11177,14 @@ function prefetchFolderIfNeeded(folderPath) {
 }
 
 async function loadVideos(folderPath, useCache = true, preservedScrollTop = null) {
+    const _lvT0 = performance.now();
     clearFindSimilarState();
     // Clear card selection on folder navigation
     clearCardSelection();
     // Stop periodic cleanup during folder switch
     stopPeriodicCleanup();
     activeDimensionHydrationToken++;
+    _abortCurrentScan = null; // Reset scan abort hook
     // Cancel any in-flight streaming scan from a previous folder
     if (typeof cancelActiveStream === 'function') cancelActiveStream();
     // Free bitmap cache from the previous folder — releases GPU memory
@@ -11200,7 +11230,9 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
         // Yield control to allow UI to update and show loading indicator
         await yieldToEventLoop();
         
-        window.electronAPI.triggerGC(); // GC before loading new folder
+        // Removed: window.electronAPI.triggerGC() — forced GC blocks the main process
+        // (100-300ms) before the scan can start.  V8 schedules GC automatically.
+        console.log(`[loadVideos] setup done: ${(performance.now() - _lvT0).toFixed(1)}ms, useCache=${useCache}`);
 
         // Check cache first
         let items = null;
@@ -11272,6 +11304,11 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
         // If not cached, scan folder via STREAMING path:
         // items arrive immediately, dimensions trickle in as background chunks.
         if (!items) {
+            console.log(`[loadVideos] cache MISS, starting scan: ${(performance.now() - _lvT0).toFixed(1)}ms`);
+        } else {
+            console.log(`[loadVideos] cache HIT (${items.length} items): ${(performance.now() - _lvT0).toFixed(1)}ms`);
+        }
+        if (!items) {
             // Yield control before starting scan to keep UI responsive
             await yieldToEventLoop();
 
@@ -11290,6 +11327,8 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
                     let resolved = false;
                     const safeResolve = (val) => { if (!resolved) { resolved = true; resolve(val); } };
                     const safeReject = (error) => { if (!resolved) { resolved = true; reject(new Error(error || 'scan failed')); } };
+                    // Allow navigateToFolder to abort this promise when the user clicks a different folder
+                    _abortCurrentScan = () => { _abortCurrentScan = null; safeReject('scan-cancelled'); };
                     scanFolderStreaming(folderPath, {
                         skipStats,
                         scanImageDimensions,
@@ -11297,6 +11336,7 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
                         recursive: recursiveSearchEnabled
                     }, {
                         onItems: (folders, files) => {
+                            _abortCurrentScan = null; // scan delivered items, no longer cancellable
                             initialItems = [...folders, ...files];
                             itemByPath = new Map();
                             for (const it of initialItems) {
@@ -11315,6 +11355,7 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
                             scheduleStreamingLayoutRefresh();
                         },
                         onComplete: (ok) => {
+                            _abortCurrentScan = null;
                             // Final refresh to pick up any lingering dimensions
                             scheduleStreamingLayoutRefresh();
                             if (ok && initialItems) {
@@ -11348,6 +11389,7 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
                 items = _scanRes.value || [];
             }
             perfTest.end('scanFolder (IPC stream)', scanPerfStart, { itemCount: items ? items.length : 0 });
+            console.log(`[loadVideos] scan done (${items ? items.length : 0} items): ${(performance.now() - _lvT0).toFixed(1)}ms`);
 
             // Yield control after initial chunk arrives
             await yieldToEventLoop();
@@ -11404,12 +11446,13 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
         currentItems = items;
 
         // Filter items based on current filter, then sort
+        console.log(`[loadVideos] filter/sort start: ${(performance.now() - _lvT0).toFixed(1)}ms`);
         const filteredItems = filterItems(items);
         const sortedItems = sortItems(filteredItems);
-        
+
         // Yield control before rendering
         await yieldToEventLoop();
-        
+
         // Render the filtered and sorted items
         // Clear embeddings from previous folder so stale data doesn't affect new folder
         currentEmbeddings.clear(); bumpEmbeddingsVersion();
@@ -11417,7 +11460,9 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
         cancelEmbeddingScan();
         _cancelIdlePreEmbedding();
 
+        console.log(`[loadVideos] renderItems start: ${(performance.now() - _lvT0).toFixed(1)}ms`);
         renderItems(sortedItems, preservedScrollTop);
+        console.log(`[loadVideos] renderItems done: ${(performance.now() - _lvT0).toFixed(1)}ms`);
 
         // Show "Loading media..." while IntersectionObserver lazy-loads images/videos into cards
         const mediaItemCount = sortedItems.filter(i => i.type !== 'folder').length;
@@ -11441,8 +11486,10 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
         // Reset idle pre-embedding timer so remaining files get embedded when idle
         _resetIdleTimer();
 
-        // Start watching folder for changes
-        await startWatchingFolder(folderPath);
+        // Start watching folder for changes (fire-and-forget — no need to block navigation)
+        console.log(`[loadVideos] startWatchingFolder: ${(performance.now() - _lvT0).toFixed(1)}ms`);
+        startWatchingFolder(folderPath);
+        console.log(`[loadVideos] complete: ${(performance.now() - _lvT0).toFixed(1)}ms`);
     } finally {
         // Hide loading indicator
         hideLoadingIndicator();

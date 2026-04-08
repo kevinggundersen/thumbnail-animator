@@ -1050,10 +1050,23 @@ function cgGetFolderPreviews(folderPath) {
     return cached ? cached.bitmaps : null;
 }
 
-/** Request folder preview images and decode them into ImageBitmaps for canvas drawing. */
+/** Request folder preview images and decode them into ImageBitmaps for canvas drawing.
+ *  Requests are queued and processed sequentially so 20+ folder cards don't fire
+ *  20+ simultaneous IPC calls that overwhelm the main process and trigger Major GC. */
+const _cgPreviewQueue = [];
+let _cgPreviewBusy = false;
+
 function cgRequestFolderPreviews(folderPath) {
     if (cgFolderPreviewRequested.has(folderPath) || !host || !host.requestFolderPreview) return;
     cgFolderPreviewRequested.add(folderPath);
+    _cgPreviewQueue.push(folderPath);
+    _cgProcessPreviewQueue();
+}
+
+function _cgProcessPreviewQueue() {
+    if (_cgPreviewBusy || _cgPreviewQueue.length === 0) return;
+    _cgPreviewBusy = true;
+    const folderPath = _cgPreviewQueue.shift();
     host.requestFolderPreview(folderPath).then(urls => {
         if (!urls || urls.length === 0) return;
         // Decode each URL into an ImageBitmap for fast canvas drawing
@@ -1063,14 +1076,20 @@ function cgRequestFolderPreviews(folderPath) {
                 .then(blob => createImageBitmap(blob, { resizeWidth: 256, resizeQuality: 'low' }))
                 .catch(() => null);
         });
-        Promise.all(promises).then(bitmaps => {
+        return Promise.all(promises).then(bitmaps => {
             const valid = bitmaps.filter(Boolean);
             if (valid.length > 0) {
                 cgFolderPreviewCache.set(folderPath, { bitmaps: valid, urls });
                 cgScheduleRender();
             }
         });
-    }).catch(() => { /* ignore preview errors */ });
+    }).catch(() => { /* ignore preview errors */ }).finally(() => {
+        _cgPreviewBusy = false;
+        // Process next item after a small yield so the main thread stays responsive
+        if (_cgPreviewQueue.length > 0) {
+            setTimeout(_cgProcessPreviewQueue, 30);
+        }
+    });
 }
 
 function cgDrawBitmapCover(ctx, bitmap, bw, bh, x, y, w, h) {

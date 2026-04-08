@@ -4305,8 +4305,12 @@ function initNewFeatures() {
     
     // File watching
     const _sidebarRefreshTimers = new Map(); // debounce sidebar tree refreshes per parent path
+    let _watcherNavTimer = null; // debounce watcher-triggered re-navigation
     window.electronAPI.onFolderChanged((event, data) => {
         if (!currentFolderPath) return;
+        // Ignore the initial burst of events from the watcher being set up after navigation.
+        // The scan just completed — there's nothing to refresh yet.
+        if (_lastNavCompleteTime && (Date.now() - _lastNavCompleteTime) < 1000) return;
 
         // Normalize paths for consistent comparison (case-insensitive on Windows)
         const normalizedWatchedPath = normalizePath(data.folderPath).toLowerCase();
@@ -4362,21 +4366,25 @@ function initNewFeatures() {
             if (subfolderPath) {
                 invalidateFolderCache(subfolderPath);
                 
-                // If we're currently viewing that subfolder, refresh it immediately
+                // If we're currently viewing that subfolder, refresh it (debounced)
                 const normalizedSubfolderPath = normalizePath(subfolderPath).toLowerCase();
                 if (normalizedSubfolderPath === normalizedCurrentPath) {
-                    setTimeout(() => {
-                        navigateToFolder(currentFolderPath, false, true); // forceReload = true to ensure fresh data
-                    }, 100);
+                    clearTimeout(_watcherNavTimer);
+                    _watcherNavTimer = setTimeout(() => {
+                        _watcherNavTimer = null;
+                        navigateToFolder(currentFolderPath, false, true); // forceReload = true
+                    }, 300);
                     return; // Don't refresh parent if we're already refreshing the subfolder
                 }
             }
             
             // Refresh current folder (parent) to show newly created/modified/deleted files
-            // Use a small delay to ensure file system operations are complete
-            setTimeout(() => {
-                navigateToFolder(currentFolderPath, false, true); // forceReload = true to ensure fresh data
-            }, 100);
+            // Debounced to coalesce burst events (git checkout, bulk file ops)
+            clearTimeout(_watcherNavTimer);
+            _watcherNavTimer = setTimeout(() => {
+                _watcherNavTimer = null;
+                navigateToFolder(currentFolderPath, false, true); // forceReload = true
+            }, 300);
         }
     });
     

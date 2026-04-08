@@ -155,17 +155,27 @@ async function loadTreeNodeChildren(node, depth, isDrive = false, { forceReload 
     children.appendChild(loading);
 
     try {
+        const _ipcT0 = performance.now();
         const _subRes = await window.electronAPI.listSubdirectories(nodePath);
         const subdirs = _subRes && _subRes.ok ? (_subRes.value || []) : [];
+        console.log(`[sidebar] listSubdirectories "${nodePath.split(/[\\/]/).pop()}" (${subdirs.length} dirs): ${(performance.now() - _ipcT0).toFixed(1)}ms`);
         children.innerHTML = '';
         children.dataset.loaded = '1';
 
+        // Collect children that need re-expansion so we can await them sequentially
+        // (firing all at once causes a thundering herd of IPC calls on 10+ subfolders)
+        const toExpand = [];
         for (const subdir of subdirs) {
             const childNode = createTreeNode(subdir, depth + 1);
             children.appendChild(childNode);
             if (sidebarExpandedNodes.has(subdir.path)) {
-                toggleTreeNode(childNode, depth + 1);
+                toExpand.push({ childNode, name: subdir.name });
             }
+        }
+        for (const { childNode, name } of toExpand) {
+            const _reT0 = performance.now();
+            await toggleTreeNode(childNode, depth + 1);
+            console.log(`[sidebar] re-expand "${name}": ${(performance.now() - _reT0).toFixed(1)}ms`);
         }
         if (subdirs.length === 0) {
             toggle.classList.remove('expanded');
@@ -279,16 +289,35 @@ function sidebarHighlightActive(folderPath) {
         }
     }
 
-    // Node not in DOM yet — expand the tree to it, then highlight
-    sidebarExpandToPath(folderPath);
+    // Node not in DOM yet — expand the tree to it, then highlight.
+    // Skip when tab-filter is active: the tree is already fully rendered,
+    // so if the node isn't found it simply doesn't exist in the filtered set.
+    if (!sidebarTabFilterActive) {
+        sidebarExpandToPath(folderPath);
+    }
 }
 
 async function sidebarExpandToPath(folderPath) {
     if (!folderPath || !sidebarTree) return;
+    const _seT0 = performance.now();
 
-    // In tab-filter mode the tree already shows all tab paths expanded
+    // In tab-filter mode the tree already shows all tab paths expanded.
+    // Inline the highlight logic instead of calling sidebarHighlightActive
+    // to avoid mutual recursion (sidebarHighlightActive -> sidebarExpandToPath -> ...).
     if (sidebarTabFilterActive) {
-        sidebarHighlightActive(folderPath);
+        const target = sidebarNormalize(folderPath);
+        const prev = sidebarTree.querySelector('.tree-node-row.active');
+        if (prev) prev.classList.remove('active');
+        for (const node of sidebarTree.querySelectorAll('.tree-node')) {
+            if (sidebarNormalize(node.dataset.path) === target) {
+                const row = node.querySelector(':scope > .tree-node-row');
+                if (row) {
+                    row.classList.add('active');
+                    row.scrollIntoView({ block: 'nearest' });
+                }
+                break;
+            }
+        }
         return;
     }
 
@@ -340,10 +369,15 @@ async function sidebarExpandToPath(folderPath) {
         }
         if (!found) break;
 
-        // Expand intermediate segments, and also the last segment so its children show
+        // Expand intermediate segments to reveal the target folder.
+        // Skip the LAST segment — its children load on demand when the user clicks
+        // the expand arrow.  This avoids a costly listSubdirectories IPC call that
+        // blocks the main process (hasChildren checks for every child directory).
         const childContainer = found.querySelector('.tree-children');
-        if (!childContainer.classList.contains('expanded')) {
+        if (i < parts.length - 1 && !childContainer.classList.contains('expanded')) {
+            const _tT0 = performance.now();
             await toggleTreeNode(found, i);
+            console.log(`[sidebar] toggleTreeNode "${parts[i]}": ${(performance.now() - _tT0).toFixed(1)}ms`);
         }
         parentContainer = childContainer;
 
@@ -358,6 +392,7 @@ async function sidebarExpandToPath(folderPath) {
             }
         }
     }
+    console.log(`[sidebar] sidebarExpandToPath complete: ${(performance.now() - _seT0).toFixed(1)}ms`);
 }
 
 function initSidebarResize() {
@@ -548,7 +583,7 @@ function renderFilteredChildren(parentNode, parentNormPath, depth, childrenMap, 
 }
 
 /** Render the sidebar tree showing only folders for open tabs. */
-function renderTabFilteredTree() {
+async function renderTabFilteredTree() {
     if (!sidebarTree) return;
     sidebarTree.innerHTML = '';
 
@@ -574,9 +609,9 @@ function renderTabFilteredTree() {
             sidebarTree.appendChild(node);
             nodes.push(node);
         }
-        // Auto-expand each tab folder to show its child directories
+        // Auto-expand each tab folder to show its child directories (sequential to avoid IPC flood)
         for (const node of nodes) {
-            toggleTreeNode(node, 0);
+            await toggleTreeNode(node, 0);
         }
     } else {
         // Tree mode: show full parent hierarchy back to drive roots

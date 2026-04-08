@@ -1731,8 +1731,8 @@ function showToastOnce(key, message, type = 'info', options = {}) {
                 : Array.isArray(info.releaseNotes)
                     ? info.releaseNotes.map(n => n.note || n).join('\n')
                     : '';
-            // Strip markdown formatting and take first ~120 chars as a preview
-            const plain = notes.replace(/[#*_`~>\[\]()!|-]/g, '').replace(/\n{2,}/g, '\n').trim();
+            // Strip HTML tags and markdown formatting, then take first ~120 chars as a preview
+            const plain = notes.replace(/<[^>]*>/g, '').replace(/&[a-z]+;/gi, ' ').replace(/[#*_`~>\[\]()!|-]/g, '').replace(/\n{2,}/g, '\n').trim();
             if (plain) details = plain.length > 120 ? plain.slice(0, 120) + '...' : plain;
         }
         updateToast = showToast(`Update v${info.version} available`, 'info', {

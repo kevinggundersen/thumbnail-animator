@@ -66,7 +66,7 @@ const SETTINGS_EXPORT_KEYS_STRING = [
     'selectedTheme', 'sidebarWidth', 'sidebarCollapsed', 'layoutMode',
     'zoomLevel', 'zoomToFit', 'thumbnailQuality', 'sortType', 'sortOrder',
     'rememberLastFolder', 'lastFolderPath', 'includeMovingImages',
-    'autoRepeatVideos', 'pauseOnBlur', 'pauseOnLightbox', 'hoverScrub', 'lightboxFilmstripEnabled',
+    'autoRepeatVideos', 'pauseOnBlur', 'pauseOnLightbox', 'hoverScrub', 'gifHoverScrub', 'lightboxFilmstripEnabled',
     'playbackControls', 'activeTabId',
     'aiVisualSearchEnabled', 'aiModelDownloadConfirmed', 'aiAutoScan',
     'aiSimilarityThreshold', 'aiClusteringMode',
@@ -932,6 +932,12 @@ hoverScrubToggle.addEventListener('change', () => {
     hoverScrubEnabled = hoverScrubToggle.checked;
     hoverScrubLabel.textContent = hoverScrubEnabled ? 'On' : 'Off';
     deferLocalStorageWrite('hoverScrub', hoverScrubEnabled.toString());
+});
+
+gifHoverScrubToggle.addEventListener('change', () => {
+    gifHoverScrubEnabled = gifHoverScrubToggle.checked;
+    gifHoverScrubLabel.textContent = gifHoverScrubEnabled ? 'On' : 'Off';
+    deferLocalStorageWrite('gifHoverScrub', gifHoverScrubEnabled.toString());
 });
 
 // Lightbox filmstrip toggle

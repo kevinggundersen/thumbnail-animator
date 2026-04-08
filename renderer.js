@@ -944,6 +944,14 @@ function vsResetCard(card) {
     const overlay = card.querySelector('.gif-static-overlay');
     if (overlay && overlay._blobUrl) URL.revokeObjectURL(overlay._blobUrl);
 
+    // Destroy any active GIF scrub controller
+    if (card._gifScrubController) {
+        card._gifScrubController.destroy();
+        delete card._gifScrubController;
+    }
+    delete card._gifScrubCanvas;
+    delete card._lastScrubPct;
+
     card.textContent = '';
 
     const dataset = card.dataset;
@@ -2271,6 +2279,8 @@ const zoomToFitToggle = document.getElementById('zoom-to-fit-toggle');
 const zoomToFitLabel = document.getElementById('zoom-to-fit-label');
 const hoverScrubToggle = document.getElementById('hover-scrub-toggle');
 const hoverScrubLabel = document.getElementById('hover-scrub-label');
+const gifHoverScrubToggle = document.getElementById('gif-hover-scrub-toggle');
+const gifHoverScrubLabel = document.getElementById('gif-hover-scrub-label');
 const lightboxZoomToFitToggle = document.getElementById('lightbox-zoom-to-fit-toggle');
 const zoomSlider = document.getElementById('zoom-slider');
 const zoomValue = document.getElementById('zoom-value');
@@ -2937,6 +2947,7 @@ let autoRepeatVideos = false;
 let playbackControlsEnabled = true;
 let zoomToFit = true;
 let hoverScrubEnabled = true;
+let gifHoverScrubEnabled = true;
 let lightboxFilmstripEnabled = localStorage.getItem('lightboxFilmstripEnabled') !== 'false';
 
 // Track progress
@@ -8021,6 +8032,9 @@ gridContainer.addEventListener('mouseover', (e) => {
         } else if (card.dataset.gifDuration && Number(card.dataset.gifDuration) > 0) {
             currentHoveredCard = card;
             showGifProgress(card);
+            if (gifHoverScrubEnabled) {
+                initGifScrub(card);
+            }
         }
     }
     // Check if filename text overlaps with right-aligned tags and shift if needed.
@@ -8056,14 +8070,109 @@ gridContainer.addEventListener('mouseover', (e) => {
     }
 });
 
+// --- GIF/WEBP Hover Scrub ---
+let _gifScrubGeneration = 0;
+
+async function initGifScrub(card) {
+    const gen = ++_gifScrubGeneration;
+    const mediaUrl = card.dataset.src;
+    if (!mediaUrl) return;
+    // Don't scrub while GIFs are frozen
+    if ((isWindowBlurred && pauseOnBlur) || (isLightboxOpen && pauseOnLightbox)) return;
+
+    try {
+        const response = await fetch(mediaUrl);
+        if (gen !== _gifScrubGeneration || currentHoveredCard !== card) return;
+        const buffer = await response.arrayBuffer();
+        if (gen !== _gifScrubGeneration || currentHoveredCard !== card) return;
+
+        // Create an offscreen canvas for the controller's internal compositing
+        const ctrlCanvas = document.createElement('canvas');
+        const controller = new AnimatedImagePlaybackController(ctrlCanvas, buffer);
+        await controller.ready;
+        if (gen !== _gifScrubGeneration || currentHoveredCard !== card) {
+            controller.destroy();
+            return;
+        }
+
+        // Create the visible scrub canvas (sized to card thumbnail)
+        const rect = card.getBoundingClientRect();
+        const MAX_DIM = 400;
+        const s = Math.min(1, MAX_DIM / Math.max(rect.width, rect.height));
+        const scrubCanvas = document.createElement('canvas');
+        scrubCanvas.className = 'gif-scrub-canvas';
+        scrubCanvas.width = Math.round(rect.width * s);
+        scrubCanvas.height = Math.round(rect.height * s);
+
+        // Insert into card DOM
+        const info = card.querySelector('.video-info');
+        card.insertBefore(scrubCanvas, info);
+
+        // Freeze native GIF animation by showing the static overlay
+        const staticOverlay = card.querySelector('.gif-static-overlay');
+        if (staticOverlay) staticOverlay.classList.add('visible');
+
+        // Transition from passive progress to scrub mode
+        hideGifProgress(card);
+        card._scrubbing = true;
+        card._scrubRect = card.getBoundingClientRect();
+        card._gifScrubController = controller;
+        card._gifScrubCanvas = scrubCanvas;
+
+        // Show scrub progress bar + time label
+        showGifScrubber(card, controller);
+
+        // Render the frame matching the tracked mouse position
+        renderGifScrubFrame(card, card._lastScrubPct || 0);
+    } catch (err) {
+        // Decode failed — passive progress bar stays visible as fallback
+    }
+}
+
+function renderGifScrubFrame(card, pct) {
+    const controller = card._gifScrubController;
+    const scrubCanvas = card._gifScrubCanvas;
+    if (!controller || !scrubCanvas) return;
+    const frameIndex = controller.getFrameIndexAtTime(pct * controller.duration);
+    const frameCanvas = controller.getFrameAtIndex(frameIndex);
+    if (!frameCanvas) return;
+    const ctx = scrubCanvas.getContext('2d');
+    ctx.drawImage(frameCanvas, 0, 0, scrubCanvas.width, scrubCanvas.height);
+}
+
 // --- Video Scrub on Mousemove ---
 let _scrubRafPending = false;
 
 gridContainer.addEventListener('mousemove', (e) => {
     if (marqueeState.active) return;
     if (window.CG && window.CG.isEnabled()) return; // no DOM scrub in canvas mode
-    if (!currentHoveredCard || !currentHoveredCard._scrubbing) return;
+    if (!currentHoveredCard) return;
     const card = currentHoveredCard;
+
+    // Track mouse pct for GIF cards even before controller is ready
+    if (card.dataset.gifDuration && Number(card.dataset.gifDuration) > 0) {
+        const rect = card._scrubRect || card.getBoundingClientRect();
+        card._lastScrubPct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    }
+
+    if (!card._scrubbing) return;
+
+    // GIF/WEBP scrub path
+    if (card._gifScrubController) {
+        if (!_scrubRafPending) {
+            _scrubRafPending = true;
+            const pct = card._lastScrubPct || 0;
+            requestAnimationFrame(() => {
+                _scrubRafPending = false;
+                if (!card._scrubbing || !card._gifScrubController) return;
+                renderGifScrubFrame(card, pct);
+                if (card._updateTimeDisplay) card._updateTimeDisplay();
+            });
+        }
+        return;
+    }
+
+    // Video scrub path (existing, unchanged)
     const video = card._scrubVideo || card.querySelector('video'); // Perf: use cached ref
     if (!video || video.readyState < 2 || !video.duration || isNaN(video.duration)) return;
 
@@ -8096,6 +8205,19 @@ gridContainer.addEventListener('mouseout', (e) => {
             delete currentHoveredCard._scrubRect; // Invalidate cached rect
             delete currentHoveredCard._scrubVideo; // Perf: cleanup cached video ref
         }
+        // GIF scrub cleanup
+        if (currentHoveredCard._gifScrubController) {
+            currentHoveredCard._gifScrubController.destroy();
+            delete currentHoveredCard._gifScrubController;
+        }
+        if (currentHoveredCard._gifScrubCanvas) {
+            currentHoveredCard._gifScrubCanvas.remove();
+            delete currentHoveredCard._gifScrubCanvas;
+        }
+        delete currentHoveredCard._lastScrubPct;
+        const staticOvl = currentHoveredCard.querySelector('.gif-static-overlay');
+        if (staticOvl) staticOvl.classList.remove('visible');
+        _gifScrubGeneration++; // abort any in-flight initGifScrub
         hideScrubber(currentHoveredCard);
         hideGifProgress(currentHoveredCard);
         currentHoveredCard = null;

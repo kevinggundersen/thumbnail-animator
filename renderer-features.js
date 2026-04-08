@@ -2382,6 +2382,47 @@ function initVideoScrubber() {
     // This function is kept for compatibility but does nothing
 }
 
+function showGifScrubber(card, controller) {
+    if (!controller || !card) return;
+    if (typeof cardInfoSettings !== 'undefined' && !cardInfoSettings.duration) return;
+
+    let timeLabel = card.querySelector('.video-time-label');
+    if (!timeLabel) {
+        timeLabel = document.createElement('div');
+        timeLabel.className = 'video-time-label';
+        card.appendChild(timeLabel);
+    }
+
+    let progressBar = card.querySelector('.scrub-progress-bar');
+    if (!progressBar) {
+        progressBar = document.createElement('div');
+        progressBar.className = 'scrub-progress-bar';
+        const fill = document.createElement('div');
+        fill.className = 'scrub-progress-fill';
+        progressBar.appendChild(fill);
+        card.appendChild(progressBar);
+    }
+    const progressFill = progressBar.querySelector('.scrub-progress-fill');
+
+    const updateTimeDisplay = () => {
+        if (!timeLabel || !card.contains(timeLabel)) return;
+        const ctrl = card._gifScrubController;
+        if (!ctrl) return;
+        const pct = card._lastScrubPct || 0;
+        const currentTime = pct * ctrl.duration;
+        const duration = ctrl.duration;
+        timeLabel.textContent = `${formatTime(currentTime)} / ${formatTime(duration)}`;
+        if (progressFill && duration > 0) {
+            progressFill.style.width = (pct * 100) + '%';
+        }
+    };
+
+    updateTimeDisplay();
+    card._updateTimeDisplay = updateTimeDisplay;
+    timeLabel.classList.add('show');
+    progressBar.classList.add('show');
+}
+
 function showScrubber(card, video) {
     if (!video || !card) return;
     if (typeof cardInfoSettings !== 'undefined' && !cardInfoSettings.duration) {
@@ -4784,6 +4825,7 @@ function initPreferences() {
     restoreToggle('pauseOnBlur', v => { pauseOnBlur = v; }, pauseOnBlurToggle, pauseOnBlurLabel);
     restoreToggle('playbackControls', v => { playbackControlsEnabled = v; }, playbackControlsToggle, playbackControlsLabel);
     restoreToggle('hoverScrub', v => { hoverScrubEnabled = v; }, hoverScrubToggle, hoverScrubLabel);
+    restoreToggle('gifHoverScrub', v => { gifHoverScrubEnabled = v; }, gifHoverScrubToggle, gifHoverScrubLabel);
     restoreToggle('zoomToFit', v => { zoomToFit = v; }, zoomToFitToggle, zoomToFitLabel, v => {
         if (lightboxZoomToFitToggle) lightboxZoomToFitToggle.checked = v;
     });

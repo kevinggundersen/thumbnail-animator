@@ -951,6 +951,7 @@ function vsResetCard(card) {
     }
     delete card._gifScrubCanvas;
     delete card._lastScrubPct;
+    delete card._gifScrubPending;
 
     card.textContent = '';
 
@@ -8035,6 +8036,13 @@ gridContainer.addEventListener('mouseover', (e) => {
             if (gifHoverScrubEnabled) {
                 initGifScrub(card);
             }
+        } else if (gifHoverScrubEnabled && !(Number(card.dataset.gifDuration) > 0) && card.dataset.src) {
+            // gifDuration not yet resolved or parser returned 0 — try scrub by extension
+            const srcLower = card.dataset.src.toLowerCase();
+            if (srcLower.endsWith('.gif') || srcLower.endsWith('.webp')) {
+                currentHoveredCard = card;
+                initGifScrub(card);
+            }
         }
     }
     // Check if filename text overlaps with right-aligned tags and shift if needed.
@@ -8080,6 +8088,9 @@ async function initGifScrub(card) {
     // Don't scrub while GIFs are frozen
     if ((isWindowBlurred && pauseOnBlur) || (isLightboxOpen && pauseOnLightbox)) return;
 
+    card._gifScrubPending = true; // Signal mousemove to track position
+    card._scrubRect = card.getBoundingClientRect(); // Cache rect for pre-scrub tracking
+
     try {
         const response = await fetch(mediaUrl);
         if (gen !== _gifScrubGeneration || currentHoveredCard !== card) return;
@@ -8093,6 +8104,14 @@ async function initGifScrub(card) {
         if (gen !== _gifScrubGeneration || currentHoveredCard !== card) {
             controller.destroy();
             return;
+        }
+
+        // Verify frames were decoded (WASM/decode failures leave frameCount at 0)
+        if (controller.frameCount === 0 || controller.duration === 0) {
+            console.warn('[GIF Scrub] Decode produced 0 frames for', mediaUrl);
+            controller.destroy();
+            delete card._gifScrubPending;
+            return; // Fall back to passive progress bar
         }
 
         // Create the visible scrub canvas (sized to card thumbnail)
@@ -8114,6 +8133,7 @@ async function initGifScrub(card) {
 
         // Transition from passive progress to scrub mode
         hideGifProgress(card);
+        delete card._gifScrubPending;
         card._scrubbing = true;
         card._scrubRect = card.getBoundingClientRect();
         card._gifScrubController = controller;
@@ -8125,7 +8145,9 @@ async function initGifScrub(card) {
         // Render the frame matching the tracked mouse position
         renderGifScrubFrame(card, card._lastScrubPct || 0);
     } catch (err) {
+        console.warn('[GIF Scrub] initGifScrub failed:', err);
         // Decode failed — passive progress bar stays visible as fallback
+        delete card._gifScrubPending;
     }
 }
 
@@ -8149,9 +8171,9 @@ gridContainer.addEventListener('mousemove', (e) => {
     if (!currentHoveredCard) return;
     const card = currentHoveredCard;
 
-    // Track mouse pct for GIF cards even before controller is ready
-    if (card.dataset.gifDuration && Number(card.dataset.gifDuration) > 0) {
-        const rect = card._scrubRect || card.getBoundingClientRect();
+    // Track mouse pct for GIF/WEBP cards even before controller is ready
+    if (card._gifScrubPending || card._gifScrubController) {
+        const rect = card._scrubRect || (card._scrubRect = card.getBoundingClientRect());
         card._lastScrubPct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     }
 
@@ -8215,6 +8237,10 @@ gridContainer.addEventListener('mouseout', (e) => {
             delete currentHoveredCard._gifScrubCanvas;
         }
         delete currentHoveredCard._lastScrubPct;
+        if (currentHoveredCard._gifScrubPending) {
+            delete currentHoveredCard._gifScrubPending;
+            delete currentHoveredCard._scrubRect; // Also set during pending phase
+        }
         const staticOvl = currentHoveredCard.querySelector('.gif-static-overlay');
         if (staticOvl) staticOvl.classList.remove('visible');
         _gifScrubGeneration++; // abort any in-flight initGifScrub

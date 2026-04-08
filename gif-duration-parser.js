@@ -129,13 +129,13 @@ function parseWebpDuration(buffer) {
         const chunkDataStart = offset + 8;
 
         if (fourcc === 0x56503858) {
-            // 'VP8X' – extended format
-            if (chunkDataStart + 4 <= len) {
-                const flags = data.getUint32(chunkDataStart, true);
-                isAnimated = !!(flags & 0x02); // animation flag is bit 1
+            // 'VP8X' – extended format; animation flag is bit 1 of the flags byte
+            if (chunkDataStart < len) {
+                isAnimated = !!(data.getUint8(chunkDataStart) & 0x02);
             }
         } else if (fourcc === 0x414E4D46) {
-            // 'ANMF' – animation frame
+            // 'ANMF' – animation frame (presence implies animated even without VP8X flag)
+            isAnimated = true;
             frameCount++;
             if (chunkDataStart + 16 <= len) {
                 // Frame duration is at bytes 12-14 (24-bit LE) within the ANMF chunk data

@@ -853,6 +853,17 @@ useSystemTrashToggle.checked = useSystemTrash;
 useSystemTrashLabel.textContent = useSystemTrash ? 'On' : 'Off';
 if (useSystemTrash) window.electronAPI.setUseSystemTrash(true);
 
+// Linked duplicates toggle event listener
+if (linkedDuplicatesToggle) {
+    linkedDuplicatesToggle.addEventListener('change', () => {
+        toggleLinkedDuplicates();
+    });
+    // Restore linked duplicates setting on startup
+    const ldEnabled = localStorage.getItem('linkedDuplicates') === 'true';
+    linkedDuplicatesToggle.checked = ldEnabled;
+    if (linkedDuplicatesLabel) linkedDuplicatesLabel.textContent = ldEnabled ? 'On' : 'Off';
+}
+
 // Card info toggles
 [cardInfoExtensionToggle, cardInfoResolutionToggle, cardInfoSizeToggle, cardInfoDateToggle, cardInfoDurationToggle, cardInfoStarsToggle, cardInfoAudioToggle, cardInfoFilenameToggle, cardInfoTagsToggle, cardInfoExtensionHoverToggle, cardInfoResolutionHoverToggle, cardInfoSizeHoverToggle, cardInfoDateHoverToggle, cardInfoStarsHoverToggle, cardInfoAudioHoverToggle, cardInfoFilenameHoverToggle, cardInfoTagsHoverToggle, cardInfoHoverTooltipToggle, tooltipShowNameToggle, tooltipShowPathToggle, tooltipShowDimensionsToggle, tooltipShowFileSizeToggle, tooltipShowDurationToggle, tooltipShowDateToggle, tooltipShowRatingToggle, tooltipShowTagsToggle]
     .filter(Boolean)
@@ -1490,6 +1501,7 @@ const DEFAULT_SHORTCUTS = {
     sidebarTabFilter: { key: 'e', alt: true, label: 'Filter sidebar to tabs', category: 'View' },
     sidebarTabFlat:   { key: 'e', alt: true, shift: true, label: 'Flat tab folder list', category: 'View' },
     toggleCanvasGrid: { key: 'g', ctrl: true, shift: true, alt: true, label: 'Toggle canvas grid', category: 'View' },
+    toggleLinkedDuplicates: { key: '', label: 'Toggle linked duplicates', category: 'View' },
 };
 
 // Merge user overrides over defaults

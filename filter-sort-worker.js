@@ -40,6 +40,10 @@ let findSimilarEmbedding = null;// Float32Array
 // Trigram index: trigram (3-char) -> Uint32Array of item indices (sorted)
 // Built once when items are set. Used as a pre-filter for text search.
 // Incremental updates are used when items change slightly (same-folder refresh).
+// Linked duplicates dedup state
+let dedupEnabled = false;
+let dedupPathToHash = new Map(); // path -> exact_hash
+
 let trigramIndex = null;
 let indexBuiltForItemCount = 0;
 let _prevItemPaths = null; // Map<path, index> for detecting incremental changes
@@ -431,7 +435,9 @@ function runFilterPipeline(state) {
     }
 
     // Partition pinned to top (operating on indices)
-    const pFolders = [], uFolders = [], pFiles = [], uFiles = [];
+    // pFiles/uFiles are let because the linked-duplicates dedup pass may reassign them
+    const pFolders = [], uFolders = [];
+    let pFiles = [], uFiles = [];
     for (const idx of folderIdxs) (isPinned(items[idx].path) ? pFolders : uFolders).push(idx);
     for (const idx of fileIdxs) (isPinned(items[idx].path) ? pFiles : uFiles).push(idx);
 
@@ -439,6 +445,28 @@ function runFilterPipeline(state) {
     const synthetics = [];
     let finalIndices;
     let groupHeadersPresent = false;
+
+    // Linked duplicates: dedup pass — show only one instance per hash group
+    if (dedupEnabled && dedupPathToHash.size > 0) {
+        const dedupFilter = (arr) => {
+            const seen = new Set();
+            const result = [];
+            for (const idx of arr) {
+                const hash = dedupPathToHash.get(items[idx].path);
+                if (!hash) { result.push(idx); continue; }
+                if (seen.has(hash)) continue;
+                seen.add(hash);
+                result.push(idx);
+            }
+            return result;
+        };
+        // Dedup files only (not folders). Pinned files are deduped separately
+        // to ensure the pinned copy is preferred over the unpinned copy.
+        const dpFiles = dedupFilter(pFiles);
+        const duFiles = dedupFilter(uFiles);
+        pFiles = dpFiles;
+        uFiles = duFiles;
+    }
 
     if (groupByDate && (pFiles.length + uFiles.length) > 0) {
         groupHeadersPresent = true;
@@ -640,6 +668,16 @@ self.onmessage = (e) => {
             if (removed) {
                 for (let i = 0; i < removed.length; i++) {
                     embeddings.delete(removed[i]);
+                }
+            }
+            break;
+        }
+        case 'setDuplicateGroups': {
+            dedupEnabled = !!msg.dedupEnabled;
+            dedupPathToHash = new Map();
+            if (msg.pathToHash) {
+                for (const [p, h] of Object.entries(msg.pathToHash)) {
+                    if (h) dedupPathToHash.set(p, h);
                 }
             }
             break;

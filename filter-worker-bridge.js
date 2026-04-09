@@ -28,6 +28,8 @@ class FilterWorkerBridge {
         this._embSyncedVersion = -1;
         this._syncedEmbPaths = new Set();
         this._clusteringStatusTimer = null;
+        this._dedupVersion = 0;
+        this._dedupSyncedVersion = -1;
     }
 
     // ── Public API ────────────────────────────────────────────────────
@@ -36,6 +38,7 @@ class FilterWorkerBridge {
     bumpPinsVersion()      { this._pinsVersion++; }
     bumpTagFilterVersion() { this._tagFilterVersion++; }
     bumpEmbeddingsVersion(){ this._embVersion++; }
+    bumpDedupVersion()     { this._dedupVersion++; }
     markItemsStale()       { this._itemsRef = null; }
 
     /**
@@ -123,7 +126,9 @@ class FilterWorkerBridge {
         const w = this._getOrSpawnWorker();
         if (!w) return;
         if (this._ratingsSyncedVersion === this._ratingsVersion) return;
-        w.postMessage({ type: 'setRatings', ratings: this._host.fileRatings });
+        // When linked duplicates is enabled, use resolved ratings (hash overlay on top of per-path)
+        const ratings = (typeof buildResolvedRatings === 'function') ? buildResolvedRatings() : this._host.fileRatings;
+        w.postMessage({ type: 'setRatings', ratings });
         this._ratingsSyncedVersion = this._ratingsVersion;
     }
 
@@ -131,8 +136,9 @@ class FilterWorkerBridge {
         const w = this._getOrSpawnWorker();
         if (!w) return;
         if (this._pinsSyncedVersion === this._pinsVersion) return;
-        const pinnedFiles = this._host.pinnedFiles;
-        const paths = (typeof pinnedFiles === 'object' && pinnedFiles) ? Object.keys(pinnedFiles) : [];
+        // When linked duplicates is enabled, use resolved pins (hash overlay on top of per-path)
+        const resolvedPins = (typeof buildResolvedPins === 'function') ? buildResolvedPins() : this._host.pinnedFiles;
+        const paths = (typeof resolvedPins === 'object' && resolvedPins) ? Object.keys(resolvedPins) : [];
         w.postMessage({ type: 'setPins', paths });
         this._pinsSyncedVersion = this._pinsVersion;
     }
@@ -200,6 +206,16 @@ class FilterWorkerBridge {
         w.postMessage({ type: 'setFindSimilarEmbedding', vec: this._host.findSimilarState.embedding || null });
     }
 
+    _syncDedup() {
+        const w = this._getOrSpawnWorker();
+        if (!w) return;
+        if (this._dedupSyncedVersion === this._dedupVersion) return;
+        const enabled = (typeof isLinkedDuplicatesEnabled === 'function') && isLinkedDuplicatesEnabled();
+        const pathToHash = (typeof _pathToHash !== 'undefined') ? _pathToHash : {};
+        w.postMessage({ type: 'setDuplicateGroups', dedupEnabled: enabled, pathToHash });
+        this._dedupSyncedVersion = this._dedupVersion;
+    }
+
     // ── Worker dispatch ───────────────────────────────────────────────
 
     _applyFiltersViaWorker() {
@@ -214,6 +230,7 @@ class FilterWorkerBridge {
         this._syncTagFilter();
         this._syncTextEmbedding();
         this._syncFindSimilarEmbedding();
+        this._syncDedup();
 
         if (h.aiSearchActive || h.aiClusteringMode === 'similarity' || h.findSimilarState.active) {
             if (h.aiClusteringMode === 'similarity' && this._embSyncedSize !== h.currentEmbeddings.size) {
@@ -494,6 +511,20 @@ class FilterWorkerBridge {
         }
 
         sortedFiltered = this._applyOperatorPostFilter(sortedFiltered);
+
+        // Linked duplicates: dedup pass (main-thread fallback)
+        if (typeof isLinkedDuplicatesEnabled === 'function' && isLinkedDuplicatesEnabled()
+            && typeof _pathToHash !== 'undefined' && Object.keys(_pathToHash).length > 0) {
+            const seen = new Set();
+            sortedFiltered = sortedFiltered.filter(item => {
+                if (!item || item.type === 'folder' || item.type === 'group-header') return true;
+                const hash = _pathToHash[h.normalizePath(item.path)];
+                if (!hash) return true;
+                if (seen.has(hash)) return false;
+                seen.add(hash);
+                return true;
+            });
+        }
 
         if (h.vsStateEnabled) {
             h.vsUpdateItems(sortedFiltered, { preserveScroll: true });

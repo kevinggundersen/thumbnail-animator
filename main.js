@@ -5735,7 +5735,7 @@ wrapIpc('db-get-meta', (key) => appDb.getMeta(key));
 wrapIpc('db-set-meta', (key, value) => appDb.setMeta(key, value));
 
 // IPC result caches for frequently-fetched full-table queries
-const _ipcCache = { ratings: null, pinned: null, tags: null, collections: null };
+const _ipcCache = { ratings: null, pinned: null, tags: null, collections: null, hashRatings: null, hashPins: null };
 
 // Ratings
 ipcMain.handle('db-get-all-ratings', async () => {
@@ -5771,19 +5771,24 @@ wrapIpc('db-add-recent-file', (entry, limit) => appDb.addRecentFile(entry, limit
 wrapIpc('db-clear-recent-files', () => appDb.clearRecentFiles());
 wrapIpc('db-remove-recent-file', (filePath) => appDb.removeRecentFile(filePath));
 
-// Batched init data — single IPC round-trip for ratings + pins + favorites + recent files
+// Batched init data — single IPC round-trip for ratings + pins + favorites + recent files + linked duplicates
 ipcMain.handle('db-get-init-data', async (event, recentLimit) => {
     try {
-        const [ratings, pinned, favorites, recent] = await Promise.all([
+        const [ratings, pinned, favorites, recent, hashRatings, hashPins, duplicateGroups] = await Promise.all([
             _ipcCache.ratings ? _ipcCache.ratings.value : appDb.getAllRatings(),
             _ipcCache.pinned ? _ipcCache.pinned.value : appDb.getAllPinned(),
             appDb.getFavorites(),
             appDb.getRecentFiles(recentLimit || 50),
+            _ipcCache.hashRatings ? _ipcCache.hashRatings.value : appDb.getAllHashRatings(),
+            _ipcCache.hashPins ? _ipcCache.hashPins.value : appDb.getAllHashPins(),
+            appDb.getDuplicateHashGroups(),
         ]);
         // Populate caches so individual calls benefit too
         if (!_ipcCache.ratings) _ipcCache.ratings = { ok: true, value: ratings };
         if (!_ipcCache.pinned) _ipcCache.pinned = { ok: true, value: pinned };
-        return { ok: true, value: { ratings, pinned, favorites, recent } };
+        if (!_ipcCache.hashRatings) _ipcCache.hashRatings = { ok: true, value: hashRatings };
+        if (!_ipcCache.hashPins) _ipcCache.hashPins = { ok: true, value: hashPins };
+        return { ok: true, value: { ratings, pinned, favorites, recent, hashRatings, hashPins, duplicateGroups } };
     } catch (e) {
         return { ok: false, error: e.message };
     }
@@ -5858,3 +5863,103 @@ wrapIpc('db-touch-saved-search', (id) => appDb.touchSavedSearch(id));
 wrapIpc('db-suggest-tags', (filePath) => appDb.suggestTagsForFile(filePath));
 wrapIpc('db-export-tags', () => appDb.exportTags());
 wrapIpc('db-import-tags', (data) => appDb.importTags(data));
+
+// ── Linked Duplicates (hash-keyed shared metadata) ─────────────────────────
+ipcMain.handle('db-get-all-hash-ratings', async () => {
+    try {
+        if (!_ipcCache.hashRatings) _ipcCache.hashRatings = { ok: true, value: await appDb.getAllHashRatings() };
+        return _ipcCache.hashRatings;
+    } catch (e) { return { ok: false, error: e.message }; }
+});
+wrapIpc('db-set-hash-rating', async (hash, rating) => {
+    await appDb.setHashRating(hash, rating); _ipcCache.hashRatings = null;
+});
+
+ipcMain.handle('db-get-all-hash-pins', async () => {
+    try {
+        if (!_ipcCache.hashPins) _ipcCache.hashPins = { ok: true, value: await appDb.getAllHashPins() };
+        return _ipcCache.hashPins;
+    } catch (e) { return { ok: false, error: e.message }; }
+});
+wrapIpc('db-set-hash-pinned', async (hash, pinned) => {
+    await appDb.setHashPinned(hash, pinned); _ipcCache.hashPins = null;
+});
+
+wrapIpc('db-add-hash-tag', (hash, tagId) => appDb.addHashTag(hash, tagId));
+wrapIpc('db-remove-hash-tag', (hash, tagId) => appDb.removeHashTag(hash, tagId));
+wrapIpc('db-get-hash-tags', (hash) => appDb.getHashTags(hash));
+wrapIpc('db-get-all-hash-tags', () => appDb.getAllHashTags());
+wrapIpc('db-bulk-add-hash-tag', (hashes, tagId) => appDb.bulkAddHashTag(hashes, tagId));
+wrapIpc('db-bulk-remove-hash-tag', (hashes, tagId) => appDb.bulkRemoveHashTag(hashes, tagId));
+
+wrapIpc('db-get-paths-by-hash', (hash) => appDb.getPathsByHash(hash));
+wrapIpc('db-get-duplicate-groups', () => appDb.getDuplicateHashGroups());
+wrapIpc('db-get-path-to-hash-map', (filePaths) => appDb.getPathToHashMap(filePaths));
+wrapIpc('db-resolve-linked-conflicts', () => appDb.resolveLinkedConflicts());
+
+// Auto-hash files for linked duplicates (background, after folder load)
+ipcMain.handle('auto-hash-folder', async (event, filePaths) => {
+    try {
+        if (!filePaths || filePaths.length === 0 || !hashPool) {
+            return { ok: true, value: {} };
+        }
+        // Check which files already have hashes (and are still fresh)
+        const existing = await appDb.getHashesForPaths(filePaths);
+        const needHash = [];
+        for (const fp of filePaths) {
+            const cached = existing[fp];
+            if (cached && cached.exact_hash) continue; // already hashed
+            needHash.push({ path: fp, isImage: true, isVideo: false });
+        }
+        if (needHash.length === 0) {
+            // Build path→hash map from existing data
+            const pathToHash = {};
+            for (const fp of filePaths) {
+                const cached = existing[fp];
+                if (cached && cached.exact_hash) pathToHash[fp] = cached.exact_hash;
+            }
+            return { ok: true, value: pathToHash };
+        }
+        // Use native scanner for exact hashes if available, otherwise hash pool
+        let freshResults;
+        if (nativeScanner && nativeScanner.scanHashes) {
+            const nativeItems = needHash.map(f => ({
+                path: f.path, isImage: true, isVideo: false, thumbPath: null
+            }));
+            freshResults = new Map();
+            const nativeResults = nativeScanner.scanHashes(nativeItems);
+            for (const r of nativeResults) {
+                freshResults.set(r.path, { exactHash: r.exactHash, perceptualHash: r.perceptualHash || null });
+            }
+        } else {
+            freshResults = await hashPool.scanHashes(needHash);
+        }
+        // Save to DB
+        const hashEntries = [];
+        for (const [fp, result] of freshResults) {
+            if (result.exactHash) {
+                const cached = existing[fp];
+                hashEntries.push({
+                    file_path: fp,
+                    file_size: cached ? cached.file_size : 0,
+                    file_mtime: cached ? cached.file_mtime : 0,
+                    exact_hash: result.exactHash,
+                    perceptual_hash: result.perceptualHash || null
+                });
+            }
+        }
+        if (hashEntries.length > 0) await appDb.saveHashes(hashEntries);
+        // Build path→hash map including both existing and fresh
+        const pathToHash = {};
+        for (const fp of filePaths) {
+            const cached = existing[fp];
+            if (cached && cached.exact_hash) { pathToHash[fp] = cached.exact_hash; continue; }
+            const fresh = freshResults.get(fp);
+            if (fresh && fresh.exactHash) pathToHash[fp] = fresh.exactHash;
+        }
+        return { ok: true, value: pathToHash };
+    } catch (e) {
+        console.error('[auto-hash-folder] error:', e);
+        return { ok: false, error: e.message };
+    }
+});

@@ -3,7 +3,7 @@
 const Database = require('better-sqlite3');
 const path = require('path');
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 class AppDatabase {
     constructor(dbPath) {
@@ -163,6 +163,30 @@ class AppDatabase {
             `);
             this._setSchemaVersion(3);
         }
+
+        if (currentVersion < 4) {
+            this.db.exec(`
+                -- Hash-keyed shared ratings (linked duplicates overlay)
+                CREATE TABLE IF NOT EXISTS hash_ratings (
+                    exact_hash TEXT PRIMARY KEY,
+                    rating     INTEGER NOT NULL CHECK(rating BETWEEN 0 AND 5)
+                );
+                -- Hash-keyed shared pins (linked duplicates overlay)
+                CREATE TABLE IF NOT EXISTS hash_pins (
+                    exact_hash TEXT PRIMARY KEY
+                );
+                -- Hash-keyed shared tags (linked duplicates overlay)
+                CREATE TABLE IF NOT EXISTS hash_tags (
+                    exact_hash TEXT NOT NULL,
+                    tag_id     INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+                    added_at   INTEGER NOT NULL,
+                    PRIMARY KEY (exact_hash, tag_id)
+                );
+                -- Index for reverse lookup: hash → file paths
+                CREATE INDEX IF NOT EXISTS idx_file_hashes_exact ON file_hashes(exact_hash);
+            `);
+            this._setSchemaVersion(4);
+        }
     }
 
     _getSchemaVersion() {
@@ -304,6 +328,47 @@ class AppDatabase {
             'INSERT OR REPLACE INTO file_hashes (file_path, file_size, file_mtime, exact_hash, perceptual_hash, computed_at) VALUES (?, ?, ?, ?, ?, ?)'
         );
         this._stmts.deleteHashByPath = this.db.prepare('DELETE FROM file_hashes WHERE file_path = ?');
+
+        // Hash-keyed shared metadata (linked duplicates)
+        this._stmts.getHashRating = this.db.prepare('SELECT rating FROM hash_ratings WHERE exact_hash = ?');
+        this._stmts.setHashRating = this.db.prepare('INSERT OR REPLACE INTO hash_ratings (exact_hash, rating) VALUES (?, ?)');
+        this._stmts.deleteHashRating = this.db.prepare('DELETE FROM hash_ratings WHERE exact_hash = ?');
+        this._stmts.getAllHashRatings = this.db.prepare('SELECT exact_hash, rating FROM hash_ratings');
+
+        this._stmts.isHashPinned = this.db.prepare('SELECT 1 FROM hash_pins WHERE exact_hash = ?');
+        this._stmts.addHashPin = this.db.prepare('INSERT OR IGNORE INTO hash_pins (exact_hash) VALUES (?)');
+        this._stmts.removeHashPin = this.db.prepare('DELETE FROM hash_pins WHERE exact_hash = ?');
+        this._stmts.getAllHashPins = this.db.prepare('SELECT exact_hash FROM hash_pins');
+
+        this._stmts.addHashTag = this.db.prepare('INSERT OR IGNORE INTO hash_tags (exact_hash, tag_id, added_at) VALUES (?, ?, ?)');
+        this._stmts.removeHashTag = this.db.prepare('DELETE FROM hash_tags WHERE exact_hash = ? AND tag_id = ?');
+        this._stmts.getHashTags = this.db.prepare(`
+            SELECT t.* FROM tags t
+            JOIN hash_tags ht ON ht.tag_id = t.id
+            WHERE ht.exact_hash = ?
+            ORDER BY t.name COLLATE NOCASE
+        `);
+        this._stmts.getTagsForHashes = this.db.prepare(`
+            SELECT ht.exact_hash, t.id, t.name, t.color
+            FROM hash_tags ht JOIN tags t ON t.id = ht.tag_id
+            ORDER BY t.name COLLATE NOCASE
+        `);
+
+        // Reverse lookup: hash → file paths
+        this._stmts.getPathsByHash = this.db.prepare('SELECT file_path FROM file_hashes WHERE exact_hash = ?');
+        // Duplicate hash groups (2+ files sharing exact_hash)
+        this._stmts.getDuplicateHashGroups = this.db.prepare(`
+            SELECT exact_hash, file_path FROM file_hashes
+            WHERE exact_hash IS NOT NULL AND exact_hash IN (
+                SELECT exact_hash FROM file_hashes WHERE exact_hash IS NOT NULL
+                GROUP BY exact_hash HAVING COUNT(*) >= 2
+            )
+            ORDER BY exact_hash
+        `);
+        // Bulk hash lookup for a set of paths
+        this._stmts.getHashesForPathsBulk = this.db.prepare(
+            'SELECT file_path, exact_hash FROM file_hashes WHERE exact_hash IS NOT NULL AND file_path IN (SELECT value FROM json_each(?))'
+        );
     }
 
     // ── Meta ─────────────────────────────────────────────────────────────
@@ -771,6 +836,134 @@ class AppDatabase {
 
     deleteHash(filePath) {
         this._stmts.deleteHashByPath.run(filePath);
+    }
+
+    // ── Hash-keyed shared metadata (linked duplicates) ────────────────
+
+    getAllHashRatings() {
+        const rows = this._stmts.getAllHashRatings.all();
+        const result = {};
+        for (const row of rows) result[row.exact_hash] = row.rating;
+        return result;
+    }
+
+    setHashRating(hash, rating) {
+        if (rating === 0) {
+            this._stmts.deleteHashRating.run(hash);
+        } else {
+            this._stmts.setHashRating.run(hash, rating);
+        }
+    }
+
+    getAllHashPins() {
+        const rows = this._stmts.getAllHashPins.all();
+        const result = {};
+        for (const row of rows) result[row.exact_hash] = true;
+        return result;
+    }
+
+    setHashPinned(hash, pinned) {
+        if (pinned) {
+            this._stmts.addHashPin.run(hash);
+        } else {
+            this._stmts.removeHashPin.run(hash);
+        }
+    }
+
+    addHashTag(hash, tagId) {
+        this._stmts.addHashTag.run(hash, tagId, Date.now());
+    }
+
+    removeHashTag(hash, tagId) {
+        this._stmts.removeHashTag.run(hash, tagId);
+    }
+
+    getHashTags(hash) {
+        return this._stmts.getHashTags.all(hash);
+    }
+
+    getAllHashTags() {
+        const rows = this._stmts.getTagsForHashes.all();
+        const result = {};
+        for (const row of rows) {
+            (result[row.exact_hash] ||= []).push({ id: row.id, name: row.name, color: row.color });
+        }
+        return result;
+    }
+
+    bulkAddHashTag(hashes, tagId) {
+        const now = Date.now();
+        const tx = this.db.transaction((hs) => {
+            for (const h of hs) this._stmts.addHashTag.run(h, tagId, now);
+        });
+        tx(hashes);
+    }
+
+    bulkRemoveHashTag(hashes, tagId) {
+        const tx = this.db.transaction((hs) => {
+            for (const h of hs) this._stmts.removeHashTag.run(h, tagId);
+        });
+        tx(hashes);
+    }
+
+    getPathsByHash(hash) {
+        return this._stmts.getPathsByHash.all(hash).map(r => r.file_path);
+    }
+
+    getDuplicateHashGroups() {
+        const rows = this._stmts.getDuplicateHashGroups.all();
+        const groups = {};
+        for (const row of rows) {
+            (groups[row.exact_hash] ||= []).push(row.file_path);
+        }
+        return groups;
+    }
+
+    getPathToHashMap(filePaths) {
+        const rows = this._stmts.getHashesForPathsBulk.all(JSON.stringify(filePaths));
+        const result = {};
+        for (const row of rows) result[row.file_path] = row.exact_hash;
+        return result;
+    }
+
+    /**
+     * Resolve conflicts when enabling linked duplicates.
+     * For each hash group: take highest rating, union of tags, union of pins.
+     */
+    resolveLinkedConflicts() {
+        const groups = this.getDuplicateHashGroups();
+        const tx = this.db.transaction(() => {
+            for (const [hash, paths] of Object.entries(groups)) {
+                // Ratings: take highest
+                let maxRating = 0;
+                for (const p of paths) {
+                    const row = this._stmts.getRating.get(p);
+                    if (row && row.rating > maxRating) maxRating = row.rating;
+                }
+                if (maxRating > 0) this._stmts.setHashRating.run(hash, maxRating);
+
+                // Pins: union
+                let anyPinned = false;
+                for (const p of paths) {
+                    if (this._stmts.isPinned.get(p)) { anyPinned = true; break; }
+                }
+                if (anyPinned) this._stmts.addHashPin.run(hash);
+
+                // Tags: union of all per-path tags
+                const seenTags = new Set();
+                for (const p of paths) {
+                    const tags = this._stmts.getTagsForFile.all(p);
+                    for (const t of tags) {
+                        if (!seenTags.has(t.id)) {
+                            seenTags.add(t.id);
+                            this._stmts.addHashTag.run(hash, t.id, Date.now());
+                        }
+                    }
+                }
+            }
+        });
+        tx();
+        return Object.keys(groups).length;
     }
 
     // ── File path migration (for batch rename) ────────────────────────

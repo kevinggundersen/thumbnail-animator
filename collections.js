@@ -113,6 +113,53 @@ async function removeAllMissingFromCollection(collectionId, missingPaths) {
     }
 }
 
+/**
+ * Deduplicate collection items by content hash.
+ * Fetches hashes from the main process for any items not in the renderer's
+ * _pathToHash cache (e.g. items from folders the user hasn't browsed yet).
+ */
+async function _deduplicateCollectionItems(items) {
+    if (!items || items.length === 0) return items;
+
+    // Collect file paths that need hash lookup
+    const filePaths = [];
+    for (const item of items) {
+        if (item.type !== 'folder' && item.path) filePaths.push(item.path);
+    }
+    if (filePaths.length === 0) return items;
+
+    // Find paths missing from the in-memory index
+    const missing = [];
+    for (const fp of filePaths) {
+        const np = normalizePath(fp);
+        if (typeof _pathToHash === 'undefined' || !_pathToHash[np]) missing.push(fp);
+    }
+
+    // Fetch hashes for missing paths (triggers computation if needed)
+    if (missing.length > 0 && window.electronAPI && window.electronAPI.autoHashFolder) {
+        try {
+            const result = await window.electronAPI.autoHashFolder(missing);
+            if (result && result.ok && result.value) {
+                if (typeof _mergePathToHash === 'function') _mergePathToHash(result.value);
+            }
+        } catch (e) {
+            console.warn('[linked-duplicates] collection hash fetch failed:', e);
+        }
+    }
+
+    // Now deduplicate using the (hopefully populated) _pathToHash
+    const seen = new Set();
+    return items.filter(item => {
+        if (item.type === 'folder') return true;
+        const np = normalizePath(item.path);
+        const hash = (typeof _pathToHash !== 'undefined') ? _pathToHash[np] : null;
+        if (!hash) return true;
+        if (seen.has(hash)) return false;
+        seen.add(hash);
+        return true;
+    });
+}
+
 // Match an item against smart collection filter rules
 function matchesSmartRules(item, rules) {
     if (!rules) return true;
@@ -368,6 +415,11 @@ async function loadCollectionIntoGrid(collectionId) {
 
             // Final render with full results (including dimension data)
             items = ((result.ok && result.value && result.value.items) || []).filter(item => matchesSmartRules(item, collection.rules));
+
+            // Linked duplicates: deduplicate by hash
+            if (typeof isLinkedDuplicatesEnabled === 'function' && isLinkedDuplicatesEnabled()) {
+                items = await _deduplicateCollectionItems(items);
+            }
 
             // Update in-memory cache for instant re-opens
             smartCollectionCache.set(collectionId, { items, timestamp: Date.now() });
@@ -723,6 +775,11 @@ async function backgroundScanSmartCollection(collectionId) {
         if (scanState.abort) return;
 
         let items = ((result.ok && result.value && result.value.items) || []).filter(item => matchesSmartRules(item, collection.rules));
+
+        // Linked duplicates: deduplicate by hash
+        if (typeof isLinkedDuplicatesEnabled === 'function' && isLinkedDuplicatesEnabled()) {
+            items = await _deduplicateCollectionItems(items);
+        }
 
         // --- Background AI Content Search ---
         const aiQuery = collection.rules?.aiQuery;

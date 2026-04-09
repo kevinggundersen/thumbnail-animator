@@ -6437,6 +6437,22 @@ video.blow-up-media {
     line-height: 1.2;
 }
 
+.linked-duplicate-badge {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    padding: 2px 5px;
+    font-size: 9px;
+    font-weight: 600;
+    color: var(--text-primary);
+    background: var(--accent);
+    border-radius: var(--radius-sm);
+    z-index: 5;
+    line-height: 1.2;
+    opacity: 0.85;
+    pointer-events: none;
+}
+
 /* Hover preview (kept for quick glance) */
 .duplicate-hover-preview {
     position: fixed;

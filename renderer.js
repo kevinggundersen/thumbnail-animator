@@ -1103,6 +1103,18 @@ function vsPopulateExistingCard(card, item) {
         // Apply duplicate highlight if active
         if (typeof applyDuplicateHighlight === 'function') applyDuplicateHighlight(card);
 
+        // Linked duplicates badge
+        if (_linkedDuplicatesEnabled && item.path) {
+            const hash = typeof getPathHash === 'function' ? getPathHash(item.path) : null;
+            if (hash && _hashToPaths[hash] && _hashToPaths[hash].length >= 2) {
+                card.dataset.linkedHash = hash;
+                const badge = document.createElement('div');
+                badge.className = 'linked-duplicate-badge';
+                badge.textContent = 'L\u00B7' + _hashToPaths[hash].length;
+                card.appendChild(badge);
+            }
+        }
+
         return { card, isMedia: true };
     }
 }
@@ -2363,6 +2375,8 @@ const tooltipPositionSelect = document.getElementById('tooltip-position-select')
 const useSystemTrashToggle = document.getElementById('use-system-trash-toggle');
 const useSystemTrashLabel = document.getElementById('use-system-trash-label');
 let useSystemTrash = localStorage.getItem('useSystemTrash') === 'true';
+const linkedDuplicatesToggle = document.getElementById('linked-duplicates-toggle');
+const linkedDuplicatesLabel = document.getElementById('linked-duplicates-label');
 const toolsMenuBtn = document.getElementById('tools-menu-btn');
 const toolsMenuDropdown = document.getElementById('tools-menu-dropdown');
 const favoritesList = document.getElementById('favorites-list');
@@ -2754,6 +2768,18 @@ async function undoLastMetadataOp() {
 // These wrap the IPC calls so every tag mutation runs through a single
 // point that can track previous state and push an undo entry.
 async function tagAddToFile(normalizedPath, tagId, tagName) {
+    // Linked duplicates: tag the hash, not the path
+    if (typeof isLinkedDuplicatesEnabled === 'function' && isLinkedDuplicatesEnabled()) {
+        const hash = typeof getPathHash === 'function' ? getPathHash(normalizedPath) : null;
+        if (hash) {
+            const result = await window.electronAPI.dbAddHashTag(hash, tagId);
+            pushMetadataUndo(
+                `Add tag "${tagName || 'tag'}" (linked)`,
+                () => window.electronAPI.dbRemoveHashTag(hash, tagId)
+            );
+            return result;
+        }
+    }
     const result = await window.electronAPI.dbAddTagToFile(normalizedPath, tagId);
     pushMetadataUndo(
         `Add tag "${tagName || 'tag'}"`,
@@ -2763,6 +2789,18 @@ async function tagAddToFile(normalizedPath, tagId, tagName) {
 }
 
 async function tagRemoveFromFile(normalizedPath, tagId, tagName) {
+    // Linked duplicates: untag the hash, not the path
+    if (typeof isLinkedDuplicatesEnabled === 'function' && isLinkedDuplicatesEnabled()) {
+        const hash = typeof getPathHash === 'function' ? getPathHash(normalizedPath) : null;
+        if (hash) {
+            const result = await window.electronAPI.dbRemoveHashTag(hash, tagId);
+            pushMetadataUndo(
+                `Remove tag "${tagName || 'tag'}" (linked)`,
+                () => window.electronAPI.dbAddHashTag(hash, tagId)
+            );
+            return result;
+        }
+    }
     const result = await window.electronAPI.dbRemoveTagFromFile(normalizedPath, tagId);
     pushMetadataUndo(
         `Remove tag "${tagName || 'tag'}"`,
@@ -2772,6 +2810,23 @@ async function tagRemoveFromFile(normalizedPath, tagId, tagName) {
 }
 
 async function tagBulkAdd(normalizedPaths, tagId, tagName) {
+    // Linked duplicates: tag the unique hashes instead of individual paths
+    if (typeof isLinkedDuplicatesEnabled === 'function' && isLinkedDuplicatesEnabled() && typeof getPathHash === 'function') {
+        const hashes = new Set();
+        for (const p of normalizedPaths) {
+            const h = getPathHash(p);
+            if (h) hashes.add(h);
+        }
+        if (hashes.size > 0) {
+            const hashArr = Array.from(hashes);
+            const result = await window.electronAPI.dbBulkAddHashTag(hashArr, tagId);
+            pushMetadataUndo(
+                `Tag ${hashes.size} linked group${hashes.size === 1 ? '' : 's'} with "${tagName || 'tag'}"`,
+                () => window.electronAPI.dbBulkRemoveHashTag(hashArr, tagId)
+            );
+            return result;
+        }
+    }
     // Capture previous state so we can restore precisely (only add-back paths
     // that actually gained the tag as a result of this operation).
     let prevHad = [];
@@ -2797,6 +2852,23 @@ async function tagBulkAdd(normalizedPaths, tagId, tagName) {
 }
 
 async function tagBulkRemove(normalizedPaths, tagId, tagName) {
+    // Linked duplicates: untag the unique hashes
+    if (typeof isLinkedDuplicatesEnabled === 'function' && isLinkedDuplicatesEnabled() && typeof getPathHash === 'function') {
+        const hashes = new Set();
+        for (const p of normalizedPaths) {
+            const h = getPathHash(p);
+            if (h) hashes.add(h);
+        }
+        if (hashes.size > 0) {
+            const hashArr = Array.from(hashes);
+            const result = await window.electronAPI.dbBulkRemoveHashTag(hashArr, tagId);
+            pushMetadataUndo(
+                `Remove tag "${tagName || 'tag'}" from ${hashes.size} linked group${hashes.size === 1 ? '' : 's'}`,
+                () => window.electronAPI.dbBulkAddHashTag(hashArr, tagId)
+            );
+            return result;
+        }
+    }
     // Capture which files actually had the tag so undo only re-adds those.
     let prevHad = [];
     try {
@@ -5222,7 +5294,7 @@ function applyCardInfoStarRatingVisibility(card) {
 
 function syncPinIndicator(card, filePath) {
     let pinEl = card.querySelector('.pin-indicator');
-    if (isFilePinned(filePath)) {
+    if ((typeof isEffectivelyPinned === 'function' ? isEffectivelyPinned(filePath) : isFilePinned(filePath))) {
         if (!pinEl) {
             pinEl = document.createElement('div');
             pinEl.className = 'pin-indicator';
@@ -5237,7 +5309,7 @@ function syncPinIndicator(card, filePath) {
 function syncStarRatingOnCard(card, filePath) {
     let starEl = card.querySelector('.star-rating');
     if (cardInfoSettings.starRating) {
-        const rating = getFileRating(filePath);
+        const rating = (typeof getEffectiveRating === 'function') ? getEffectiveRating(filePath) : getFileRating(filePath);
         if (!starEl) {
             starEl = getStarRatingElement(rating);
             const infoEl = card.querySelector('.video-info');
@@ -5759,6 +5831,38 @@ function toggleUseSystemTrash() {
     useSystemTrashLabel.textContent = useSystemTrash ? 'On' : 'Off';
     deferLocalStorageWrite('useSystemTrash', useSystemTrash.toString());
     window.electronAPI.setUseSystemTrash(useSystemTrash);
+}
+
+async function toggleLinkedDuplicates() {
+    const enabled = linkedDuplicatesToggle.checked;
+    linkedDuplicatesLabel.textContent = enabled ? 'On' : 'Off';
+    localStorage.setItem('linkedDuplicates', enabled.toString());
+    _linkedDuplicatesEnabled = enabled;
+    if (enabled) {
+        // Resolve conflicts on first enable (highest rating wins, union tags/pins)
+        try {
+            await window.electronAPI.dbResolveLinkedConflicts();
+            // Reload hash metadata after conflict resolution
+            const [hrResult, hpResult, dgResult] = await Promise.all([
+                window.electronAPI.dbGetAllHashRatings(),
+                window.electronAPI.dbGetAllHashPins(),
+                window.electronAPI.dbGetDuplicateGroups(),
+            ]);
+            if (hrResult && hrResult.ok && hrResult.value) _hashRatings = hrResult.value;
+            if (hpResult && hpResult.ok && hpResult.value) _hashPins = hpResult.value;
+            if (dgResult && dgResult.ok && dgResult.value) _rebuildLinkedIndex(dgResult.value);
+        } catch (e) {
+            console.warn('[linked-duplicates] conflict resolution failed:', e);
+        }
+        // Trigger auto-hash for current folder
+        if (typeof currentItems !== 'undefined' && currentItems.length > 0) {
+            autoHashCurrentFolder(currentItems);
+        }
+    }
+    bumpFilterWorkerRatingsVersion();
+    bumpFilterWorkerPinsVersion();
+    bumpFilterWorkerDedupVersion();
+    applyFilters();
 }
 
 function toggleIncludeMovingImages() {
@@ -7723,8 +7827,8 @@ window.__filterBridgeHost = {
     hideClusteringStatus:       () => _hideClusteringStatus(),
     showToastOnce:              (key, msg, type, opts) => showToastOnce(key, msg, type, opts),
     normalizePath:              (p) => normalizePath(p),
-    isFilePinned:               (p) => isFilePinned(p),
-    getFileRating:              (p) => getFileRating(p),
+    isFilePinned:               (p) => (typeof isEffectivelyPinned === 'function' ? isEffectivelyPinned(p) : isFilePinned(p)),
+    getFileRating:              (p) => (typeof getEffectiveRating === 'function' ? getEffectiveRating(p) : getFileRating(p)),
     cosineSimilarity:           (a, b) => cosineSimilarity(a, b),
     applyVisualClustering:      (items) => applyVisualClustering(items),
     parseAspectRatio:           (str) => (typeof parseAspectRatio === 'function' ? parseAspectRatio(str) : 16/9),
@@ -7742,6 +7846,7 @@ function bumpFilterWorkerRatingsVersion() { filterBridge.bumpRatingsVersion(); }
 function bumpFilterWorkerPinsVersion() { filterBridge.bumpPinsVersion(); }
 function bumpFilterWorkerTagFilterVersion() { filterBridge.bumpTagFilterVersion(); }
 function bumpEmbeddingsVersion() { filterBridge.bumpEmbeddingsVersion(); }
+function bumpFilterWorkerDedupVersion() { filterBridge.bumpDedupVersion(); }
 function markFilterWorkerItemsStale() { filterBridge.markItemsStale(); }
 
 function performSearch(searchQuery) {
@@ -7961,7 +8066,7 @@ gridContainer.addEventListener('click', (e) => {
             const stars = Array.from(star.parentElement.children);
             const starIndex = stars.indexOf(star) + 1;
             if (starIndex > 0) {
-                const currentRating = getFileRating(card.dataset.path);
+                const currentRating = (typeof getEffectiveRating === 'function') ? getEffectiveRating(card.dataset.path) : getFileRating(card.dataset.path);
                 setFileRating(card.dataset.path, currentRating === starIndex ? 0 : starIndex);
             }
         }
@@ -11562,6 +11667,11 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
         // Reset idle pre-embedding timer so remaining files get embedded when idle
         _resetIdleTimer();
 
+        // Linked duplicates: auto-hash files in background for duplicate detection
+        if (typeof autoHashCurrentFolder === 'function') {
+            autoHashCurrentFolder(items);
+        }
+
         // Start watching folder for changes (fire-and-forget — no need to block navigation)
         console.log(`[loadVideos] startWatchingFolder: ${(performance.now() - _lvT0).toFixed(1)}ms`);
         startWatchingFolder(folderPath);
@@ -12605,6 +12715,20 @@ async function renderTagPickerList(filter) {
                 const result = await window.electronAPI.dbGetTagsForFile(normalizePath(tagPickerFilePaths[0]));
                 if (result.ok && result.value) {
                     for (const t of result.value) tagCounts.set(t.id, 1);
+                }
+            }
+            // Linked duplicates: also include hash-keyed tags
+            if (typeof isLinkedDuplicatesEnabled === 'function' && isLinkedDuplicatesEnabled() && typeof getPathHash === 'function') {
+                for (const fp of tagPickerFilePaths) {
+                    const hash = getPathHash(fp);
+                    if (hash) {
+                        const hResult = await window.electronAPI.dbGetHashTags(hash);
+                        if (hResult && hResult.ok && hResult.value) {
+                            for (const t of hResult.value) {
+                                tagCounts.set(t.id, (tagCounts.get(t.id) || 0) + 1);
+                            }
+                        }
+                    }
                 }
             }
         } catch {}
@@ -13760,7 +13884,7 @@ class InspectorPanel {
             const star = e.target.closest('.star');
             if (!star || !this._currentPath) return;
             const r = parseInt(star.dataset.rating, 10) || 0;
-            const current = typeof getFileRating === 'function' ? getFileRating(this._currentPath) : 0;
+            const current = typeof getEffectiveRating === 'function' ? getEffectiveRating(this._currentPath) : (typeof getFileRating === 'function' ? getFileRating(this._currentPath) : 0);
             const newRating = (current === r) ? 0 : r; // click same rating to clear
             if (typeof setFileRating === 'function') setFileRating(this._currentPath, newRating);
             this._renderRating();

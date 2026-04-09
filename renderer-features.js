@@ -3384,6 +3384,134 @@ async function appendPluginInfoSections(detailsEl, filePath, pluginMetadata) {
     }
 }
 
+// ==================== LINKED DUPLICATES ====================
+// Non-destructive dual-layer metadata: per-file (existing) + per-hash (shared overlay).
+// When _linkedDuplicatesEnabled is true, hash-keyed metadata takes precedence.
+
+let _linkedDuplicatesEnabled = false;
+let _hashRatings = {};       // hash → rating (shared layer)
+let _hashPins = {};          // hash → true (shared layer)
+let _pathToHash = {};        // normalizedPath → exact_hash
+let _hashToPaths = {};       // hash → [path, ...] (only groups with 2+ members)
+
+function isLinkedDuplicatesEnabled() { return _linkedDuplicatesEnabled; }
+
+function getPathHash(filePath) {
+    if (!filePath) return null;
+    return _pathToHash[normalizePath(filePath)] || null;
+}
+
+/** Get all sibling paths (same hash, excluding self). Synchronous, uses in-memory index. */
+function _getSiblingPathsSync(filePath) {
+    const hash = getPathHash(filePath);
+    if (!hash || !_hashToPaths[hash]) return [];
+    const np = normalizePath(filePath);
+    return _hashToPaths[hash].filter(p => normalizePath(p) !== np);
+}
+
+/** Build _pathToHash and _hashToPaths from duplicate groups object. */
+function _rebuildLinkedIndex(duplicateGroups) {
+    _pathToHash = {};
+    _hashToPaths = {};
+    if (!duplicateGroups) return;
+    for (const [hash, paths] of Object.entries(duplicateGroups)) {
+        if (!paths || paths.length < 2) continue;
+        _hashToPaths[hash] = paths;
+        for (const p of paths) {
+            _pathToHash[normalizePath(p)] = hash;
+        }
+    }
+}
+
+/** Merge fresh path-to-hash data (from auto-hash) into the in-memory index. */
+function _mergePathToHash(pathToHashMap) {
+    if (!pathToHashMap) return;
+    // Track which hashes gained new paths
+    const affectedHashes = new Set();
+    for (const [p, hash] of Object.entries(pathToHashMap)) {
+        if (!hash) continue;
+        const np = normalizePath(p);
+        _pathToHash[np] = hash;
+        affectedHashes.add(hash);
+    }
+    // Rebuild _hashToPaths for affected hashes
+    for (const hash of affectedHashes) {
+        const paths = [];
+        for (const [np, h] of Object.entries(_pathToHash)) {
+            if (h === hash) paths.push(np);
+        }
+        if (paths.length >= 2) {
+            _hashToPaths[hash] = paths;
+        } else {
+            delete _hashToPaths[hash];
+        }
+    }
+}
+
+/** Effective rating considering linked duplicates overlay. */
+function getEffectiveRating(filePath) {
+    if (_linkedDuplicatesEnabled) {
+        const hash = getPathHash(filePath);
+        if (hash && hash in _hashRatings) return _hashRatings[hash];
+    }
+    return getFileRating(filePath);
+}
+
+/** Effective pinned status considering linked duplicates overlay. */
+function isEffectivelyPinned(filePath) {
+    if (_linkedDuplicatesEnabled) {
+        const hash = getPathHash(filePath);
+        if (hash && hash in _hashPins) return _hashPins[hash];
+    }
+    return isFilePinned(filePath);
+}
+
+/**
+ * Build a resolved ratings map for the filter worker.
+ * When linked duplicates is enabled, hash ratings override per-path ratings.
+ */
+function buildResolvedRatings() {
+    if (!_linkedDuplicatesEnabled) return fileRatings;
+    const resolved = Object.assign({}, fileRatings);
+    for (const [np, hash] of Object.entries(_pathToHash)) {
+        if (hash in _hashRatings) resolved[np] = _hashRatings[hash];
+    }
+    return resolved;
+}
+
+/**
+ * Build a resolved pins set for the filter worker.
+ * When linked duplicates is enabled, hash pins override per-path pins.
+ */
+function buildResolvedPins() {
+    if (!_linkedDuplicatesEnabled) return pinnedFiles;
+    const resolved = Object.assign({}, pinnedFiles);
+    for (const [np, hash] of Object.entries(_pathToHash)) {
+        if (hash in _hashPins) resolved[np] = true;
+    }
+    return resolved;
+}
+
+/** Trigger auto-hashing for the current folder's files, then update the linked index. */
+async function autoHashCurrentFolder(items) {
+    if (!_linkedDuplicatesEnabled) return;
+    const filePaths = [];
+    for (const item of items) {
+        if (item.type !== 'folder' && item.path) filePaths.push(item.path);
+    }
+    if (filePaths.length === 0) return;
+    try {
+        const result = await window.electronAPI.autoHashFolder(filePaths);
+        if (result && result.ok && result.value) {
+            _mergePathToHash(result.value);
+            if (typeof bumpFilterWorkerDedupVersion === 'function') bumpFilterWorkerDedupVersion();
+            if (typeof applyFilters === 'function') applyFilters();
+        }
+    } catch (e) {
+        console.warn('[linked-duplicates] auto-hash failed:', e);
+    }
+}
+
 // Star ratings
 function getFileRating(filePath) {
     if (!filePath) return 0;
@@ -3394,6 +3522,45 @@ function getFileRating(filePath) {
 
 function setFileRating(filePath, rating) {
     if (!filePath) return;
+
+    // Linked duplicates: write to hash layer and update all sibling cards
+    if (_linkedDuplicatesEnabled) {
+        const hash = getPathHash(filePath);
+        if (hash) {
+            const prevHash = _hashRatings[hash] || 0;
+            if (rating === 0) {
+                delete _hashRatings[hash];
+            } else {
+                _hashRatings[hash] = rating;
+            }
+            window.electronAPI.dbSetHashRating(hash, rating).then(r => {
+                if (r && !r.ok) showToast(`Could not save linked rating: ${friendlyError(r.error)}`, 'error');
+            }).catch(err => showToast(`Could not save linked rating: ${friendlyError(err)}`, 'error'));
+            // Update cards for all siblings + self
+            const siblings = _getSiblingPathsSync(filePath);
+            updateCardRating(filePath, rating);
+            for (const p of siblings) updateCardRating(p, rating);
+            if (typeof bumpFilterWorkerRatingsVersion === 'function') bumpFilterWorkerRatingsVersion();
+            if (window.CG && window.CG.isEnabled()) window.CG.scheduleRender();
+            if (prevHash !== rating) {
+                pushMetadataUndo(
+                    `Rating ${rating || 0} (linked)`,
+                    () => {
+                        if (prevHash === 0) delete _hashRatings[hash];
+                        else _hashRatings[hash] = prevHash;
+                        window.electronAPI.dbSetHashRating(hash, prevHash);
+                        updateCardRating(filePath, prevHash);
+                        for (const p of siblings) updateCardRating(p, prevHash);
+                        if (typeof bumpFilterWorkerRatingsVersion === 'function') bumpFilterWorkerRatingsVersion();
+                        if (window.CG && window.CG.isEnabled()) window.CG.scheduleRender();
+                    }
+                );
+            }
+            return;
+        }
+    }
+
+    // Per-path fallback (original behavior)
     const prev = getFileRating(filePath);
     // Store with both original and normalized path for consistent lookups
     fileRatings[filePath] = rating;
@@ -3485,6 +3652,37 @@ function isFilePinned(filePath) {
 
 function setFilePinned(filePath, pinned) {
     if (!filePath) return;
+
+    // Linked duplicates: write to hash layer
+    if (_linkedDuplicatesEnabled) {
+        const hash = getPathHash(filePath);
+        if (hash) {
+            const prevPinned = !!(hash in _hashPins && _hashPins[hash]);
+            if (pinned) {
+                _hashPins[hash] = true;
+            } else {
+                delete _hashPins[hash];
+            }
+            window.electronAPI.dbSetHashPinned(hash, pinned);
+            if (typeof bumpFilterWorkerPinsVersion === 'function') bumpFilterWorkerPinsVersion();
+            if (window.CG && window.CG.isEnabled()) window.CG.scheduleRender();
+            if (prevPinned !== pinned) {
+                const name = filePath.split(/[\\/]/).pop();
+                pushMetadataUndo(
+                    pinned ? `Pin "${name}" (linked)` : `Unpin "${name}" (linked)`,
+                    () => {
+                        if (prevPinned) _hashPins[hash] = true; else delete _hashPins[hash];
+                        window.electronAPI.dbSetHashPinned(hash, prevPinned);
+                        if (typeof bumpFilterWorkerPinsVersion === 'function') bumpFilterWorkerPinsVersion();
+                        if (typeof applySorting === 'function') applySorting();
+                    }
+                );
+            }
+            return;
+        }
+    }
+
+    // Per-path fallback (original behavior)
     const prev = isFilePinned(filePath);
     const normalizedPath = normalizePath(filePath);
     if (pinned) {
@@ -3535,7 +3733,7 @@ async function loadInitDataBatched() {
         if (window.electronAPI.dbGetInitData) {
             const result = await window.electronAPI.dbGetInitData(recentFilesLimitSetting);
             if (result.ok && result.value) {
-                const { ratings, pinned, favorites: favData, recent } = result.value;
+                const { ratings, pinned, favorites: favData, recent, hashRatings, hashPins, duplicateGroups } = result.value;
 
                 if (ratings) {
                     fileRatings = ratings;
@@ -3547,6 +3745,15 @@ async function loadInitDataBatched() {
                 }
                 hydrateFavorites(favData);
                 hydrateRecentFiles(recent);
+
+                // Linked duplicates: hydrate hash metadata + index
+                if (hashRatings) _hashRatings = hashRatings;
+                if (hashPins) _hashPins = hashPins;
+                if (duplicateGroups) _rebuildLinkedIndex(duplicateGroups);
+                _linkedDuplicatesEnabled = localStorage.getItem('linkedDuplicates') === 'true';
+                if (_linkedDuplicatesEnabled) {
+                    if (typeof bumpFilterWorkerDedupVersion === 'function') bumpFilterWorkerDedupVersion();
+                }
                 return;
             }
         }

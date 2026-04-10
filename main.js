@@ -5932,6 +5932,7 @@ wrapIpc('db-bulk-add-hash-tag', (hashes, tagId) => appDb.bulkAddHashTag(hashes, 
 wrapIpc('db-bulk-remove-hash-tag', (hashes, tagId) => appDb.bulkRemoveHashTag(hashes, tagId));
 
 wrapIpc('db-get-paths-by-hash', (hash) => appDb.getPathsByHash(hash));
+wrapIpc('db-get-paths-by-hashes', (hashes) => appDb.getPathsByHashes(hashes));
 wrapIpc('db-get-duplicate-groups', () => appDb.getDuplicateHashGroups());
 wrapIpc('db-get-path-to-hash-map', (filePaths) => appDb.getPathToHashMap(filePaths));
 wrapIpc('db-resolve-linked-conflicts', () => appDb.resolveLinkedConflicts());
@@ -5944,12 +5945,24 @@ ipcMain.handle('auto-hash-folder', async (event, filePaths) => {
         if (!filePaths || filePaths.length === 0 || !hashPool) {
             return { ok: true, value: {} };
         }
-        // Check which files already have hashes (and are still fresh)
+
+        // Stat all files upfront for mtime validation and DB storage (parallelised)
+        const fileStats = new Map();
+        await Promise.all(filePaths.map(async (fp) => {
+            try {
+                const st = await require('fs').promises.stat(fp);
+                fileStats.set(fp, { size: st.size, mtime: st.mtimeMs });
+            } catch { /* file may have been deleted */ }
+        }));
+
+        // Check which files already have fresh hashes (mtime must match)
         const existing = await appDb.getHashesForPaths(filePaths);
         const needHash = [];
         for (const fp of filePaths) {
+            const st = fileStats.get(fp);
+            if (!st) continue; // file gone
             const cached = existing[fp];
-            if (cached && cached.exact_hash) continue; // already hashed
+            if (cached && cached.exact_hash && cached.file_mtime === st.mtime) continue;
             needHash.push({ path: fp, isImage: true, isVideo: false });
         }
         if (needHash.length === 0) {
@@ -5962,45 +5975,32 @@ ipcMain.handle('auto-hash-folder', async (event, filePaths) => {
             return { ok: true, value: pathToHash };
         }
 
-        // Native BLAKE3 exact hashes (same approach as scan-duplicates)
-        let nativeExactMap;
+        // Exact hashes: prefer native BLAKE3, fall back to JS pool only if needed
+        let freshResults;
+        let nativeSuccess = false;
         if (nativeScanner && nativeScanner.hashFiles) {
             try {
                 const results = nativeScanner.hashFiles(needHash.map(f => f.path));
-                nativeExactMap = new Map();
+                freshResults = new Map();
                 for (const r of results) {
-                    if (r.hash) nativeExactMap.set(r.path, r.hash);
+                    if (r.hash) freshResults.set(r.path, { exactHash: r.hash, perceptualHash: null });
                 }
+                nativeSuccess = true;
             } catch (e) {
                 console.warn('[auto-hash-folder] native hashFiles failed, using JS pool:', e.message);
             }
         }
 
-        // JS hash pool (SHA256 exact + perceptual)
-        const freshResults = await hashPool.scanHashes(needHash);
-
-        // Merge: native BLAKE3 overwrites JS SHA256 for exact hash (same as scan-duplicates)
-        if (nativeExactMap) {
-            for (const [fp, hashes] of freshResults) {
-                const nativeHash = nativeExactMap.get(fp);
-                if (nativeHash) hashes.exactHash = nativeHash;
-            }
+        // JS pool fallback: only runs when native is unavailable or failed
+        if (!nativeSuccess) {
+            freshResults = await hashPool.scanHashes(needHash);
         }
 
-        // Stat files for proper DB entries (file_size, file_mtime)
-        const statCache = new Map();
-        await Promise.all(needHash.map(async (f) => {
-            try {
-                const st = await require('fs').promises.stat(f.path);
-                statCache.set(f.path, { size: st.size, mtime: st.mtimeMs });
-            } catch { /* file may have been deleted */ }
-        }));
-
-        // Save to DB
+        // Save to DB (reuse upfront stats — no redundant stat pass)
         const hashEntries = [];
         for (const [fp, result] of freshResults) {
             if (result.exactHash) {
-                const st = statCache.get(fp) || {};
+                const st = fileStats.get(fp) || {};
                 hashEntries.push({
                     file_path: fp,
                     file_size: st.size || 0,
@@ -6015,7 +6015,10 @@ ipcMain.handle('auto-hash-folder', async (event, filePaths) => {
         const pathToHash = {};
         for (const fp of filePaths) {
             const cached = existing[fp];
-            if (cached && cached.exact_hash) { pathToHash[fp] = cached.exact_hash; continue; }
+            if (cached && cached.exact_hash && cached.file_mtime === (fileStats.get(fp) || {}).mtime) {
+                pathToHash[fp] = cached.exact_hash;
+                continue;
+            }
             const fresh = freshResults.get(fp);
             if (fresh && fresh.exactHash) pathToHash[fp] = fresh.exactHash;
         }

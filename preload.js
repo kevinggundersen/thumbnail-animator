@@ -208,6 +208,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     dbBulkAddHashTag: (hashes, tagId) => ipcRenderer.invoke('db-bulk-add-hash-tag', hashes, tagId),
     dbBulkRemoveHashTag: (hashes, tagId) => ipcRenderer.invoke('db-bulk-remove-hash-tag', hashes, tagId),
     dbGetPathsByHash: (hash) => ipcRenderer.invoke('db-get-paths-by-hash', hash),
+    dbGetPathsByHashes: (hashes) => ipcRenderer.invoke('db-get-paths-by-hashes', hashes),
     dbGetDuplicateGroups: () => ipcRenderer.invoke('db-get-duplicate-groups'),
     dbGetPathToHashMap: (filePaths) => ipcRenderer.invoke('db-get-path-to-hash-map', filePaths),
     dbResolveLinkedConflicts: () => ipcRenderer.invoke('db-resolve-linked-conflicts'),

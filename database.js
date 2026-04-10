@@ -356,6 +356,10 @@ class AppDatabase {
 
         // Reverse lookup: hash → file paths
         this._stmts.getPathsByHash = this.db.prepare('SELECT file_path FROM file_hashes WHERE exact_hash = ?');
+        // Batch reverse lookup: multiple hashes → file paths (single query via json_each)
+        this._stmts.getPathsByHashes = this.db.prepare(
+            'SELECT exact_hash, file_path FROM file_hashes WHERE exact_hash IN (SELECT value FROM json_each(?))'
+        );
         // Duplicate hash groups (2+ files sharing exact_hash)
         this._stmts.getDuplicateHashGroups = this.db.prepare(`
             SELECT exact_hash, file_path FROM file_hashes
@@ -908,6 +912,17 @@ class AppDatabase {
 
     getPathsByHash(hash) {
         return this._stmts.getPathsByHash.all(hash).map(r => r.file_path);
+    }
+
+    /** Batch reverse lookup: returns { hash: [filePath, ...] } for all given hashes in one query. */
+    getPathsByHashes(hashes) {
+        if (!hashes || hashes.length === 0) return {};
+        const rows = this._stmts.getPathsByHashes.all(JSON.stringify(hashes));
+        const groups = {};
+        for (const row of rows) {
+            (groups[row.exact_hash] ||= []).push(row.file_path);
+        }
+        return groups;
     }
 
     getDuplicateHashGroups() {

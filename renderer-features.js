@@ -3437,20 +3437,20 @@ async function _resolveHashedPathsAtInit() {
         if (!_hashToPaths[h]) missing.push(h);
     }
     if (missing.length === 0) return;
-    // Fetch paths for each missing hash
-    for (const h of missing) {
-        try {
-            const result = await window.electronAPI.dbGetPathsByHash(h);
-            if (result && result.ok && result.value) {
-                for (const p of result.value) {
+    // Single batch IPC call instead of N individual calls
+    try {
+        const result = await window.electronAPI.dbGetPathsByHashes(missing);
+        if (result && result.ok && result.value) {
+            for (const [h, paths] of Object.entries(result.value)) {
+                for (const p of paths) {
                     _pathToHash[normalizePath(p)] = h;
                 }
-                if (result.value.length >= 2) {
-                    _hashToPaths[h] = result.value.map(p => normalizePath(p));
+                if (paths.length >= 2) {
+                    _hashToPaths[h] = paths.map(p => normalizePath(p));
                 }
             }
-        } catch { /* ignore */ }
-    }
+        }
+    } catch { /* ignore */ }
 }
 
 /** Build _pathToHash and _hashToPaths from duplicate groups object. */
@@ -3467,25 +3467,35 @@ function _rebuildLinkedIndex(duplicateGroups) {
     }
 }
 
-/** Merge fresh path-to-hash data (from auto-hash) into the in-memory index. */
+/** Merge fresh path-to-hash data (from auto-hash) into the in-memory index.
+ *  O(n + k) where n = incoming entries, k = existing group members for affected hashes. */
 function _mergePathToHash(pathToHashMap) {
     if (!pathToHashMap) return;
-    // Track which hashes gained new paths
-    const affectedHashes = new Set();
+
+    // Group incoming paths by hash
+    const newPathsByHash = {};
     for (const [p, hash] of Object.entries(pathToHashMap)) {
         if (!hash) continue;
         const np = normalizePath(p);
+        const oldHash = _pathToHash[np];
         _pathToHash[np] = hash;
-        affectedHashes.add(hash);
-    }
-    // Rebuild _hashToPaths for affected hashes
-    for (const hash of affectedHashes) {
-        const paths = [];
-        for (const [np, h] of Object.entries(_pathToHash)) {
-            if (h === hash) paths.push(np);
+
+        // Collect new paths per hash for the merge below
+        (newPathsByHash[hash] ||= new Set()).add(np);
+
+        // If this path moved from one hash to another, clean up the old group
+        if (oldHash && oldHash !== hash && _hashToPaths[oldHash]) {
+            _hashToPaths[oldHash] = _hashToPaths[oldHash].filter(x => x !== np);
+            if (_hashToPaths[oldHash].length < 2) delete _hashToPaths[oldHash];
         }
-        if (paths.length >= 2) {
-            _hashToPaths[hash] = paths;
+    }
+
+    // For each affected hash, merge new paths with existing _hashToPaths entries
+    for (const [hash, newPaths] of Object.entries(newPathsByHash)) {
+        const existing = _hashToPaths[hash] ? new Set(_hashToPaths[hash]) : new Set();
+        for (const np of newPaths) existing.add(np);
+        if (existing.size >= 2) {
+            _hashToPaths[hash] = [...existing];
         } else {
             delete _hashToPaths[hash];
         }

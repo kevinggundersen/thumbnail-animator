@@ -9426,6 +9426,55 @@ video.blow-up-media {
     background: var(--bg-hover);
 }
 
+/* Hierarchical tag tree */
+.tag-picker-group-header {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    padding: 4px var(--space-2);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    user-select: none;
+    transition: background var(--duration-fast);
+}
+.tag-picker-group-header:hover {
+    background: var(--bg-hover);
+}
+.tag-picker-group-chevron {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform var(--duration-fast);
+    flex-shrink: 0;
+}
+.tag-picker-group-chevron.expanded {
+    transform: rotate(90deg);
+}
+.tag-picker-group-name {
+    flex: 1;
+}
+
+/* Tag list group header in settings */
+.tag-list-group-header {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    padding: 6px var(--space-2);
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    user-select: none;
+    border-radius: 4px;
+    transition: background var(--duration-fast);
+}
+.tag-list-group-header:hover {
+    background: var(--bg-hover);
+}
+
 /* Tags management in settings */
 .tags-management {
     margin-top: var(--space-3);

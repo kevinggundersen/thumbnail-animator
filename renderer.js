@@ -13235,6 +13235,66 @@ async function refreshTagsCache() {
     } catch {}
 }
 
+// ── Hierarchical tag helpers (slash-notation convention) ─────────────────────
+
+function getTagLeafName(tagName) {
+    if (!tagName) return '';
+    const idx = tagName.lastIndexOf('/');
+    return idx >= 0 ? tagName.substring(idx + 1) : tagName;
+}
+
+function getTagPrefix(tagName) {
+    if (!tagName) return '';
+    const idx = tagName.lastIndexOf('/');
+    return idx >= 0 ? tagName.substring(0, idx) : '';
+}
+
+/** Build a tree from flat tag array for hierarchical display.
+ *  Returns an array of root-level nodes: { segment, fullPath, tag (or null for virtual groups), children[], depth }
+ *  Tags without '/' appear as root-level leaf nodes. */
+function buildTagTree(tags) {
+    const root = { segment: '', fullPath: '', tag: null, children: [], depth: -1 };
+    const nodeMap = new Map(); // fullPath -> node
+    nodeMap.set('', root);
+
+    // Sort tags alphabetically for consistent tree building
+    const sorted = [...tags].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+
+    for (const tag of sorted) {
+        const segments = tag.name.split('/');
+        let currentPath = '';
+        let parent = root;
+
+        for (let i = 0; i < segments.length; i++) {
+            const seg = segments[i];
+            const isLeaf = i === segments.length - 1;
+            currentPath = currentPath ? currentPath + '/' + seg : seg;
+
+            let node = nodeMap.get(currentPath);
+            if (!node) {
+                node = { segment: seg, fullPath: currentPath, tag: null, children: [], depth: i };
+                nodeMap.set(currentPath, node);
+                parent.children.push(node);
+            }
+            if (isLeaf) {
+                node.tag = tag; // Attach the actual tag object to the leaf node
+            }
+            parent = node;
+        }
+    }
+    return root.children;
+}
+
+let tagTreeCollapsed = new Set();
+try {
+    const saved = localStorage.getItem('tagTreeCollapsed');
+    if (saved) tagTreeCollapsed = new Set(JSON.parse(saved));
+} catch {}
+
+function saveTagTreeCollapsed() {
+    deferLocalStorageWrite('tagTreeCollapsed', JSON.stringify([...tagTreeCollapsed]));
+}
+
 // ── File-tag cache (mirrors star-rating in-memory pattern) ──────────────────
 
 let fileTagsCache = new Map(); // Map<normalizedPath, Tag[]>
@@ -13328,7 +13388,7 @@ function updateCardTagBadges(card) {
         const badge = document.createElement('span');
         badge.className = 'tag-badge';
         if (tag.color) badge.style.background = tag.color;
-        badge.textContent = tag.name;
+        badge.textContent = getTagLeafName(tag.name);
         badge.title = tag.name;
         container.appendChild(badge);
     }
@@ -13454,45 +13514,99 @@ async function renderTagPickerList(filter) {
 
     const checkSvg = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>`;
     const dashSvg = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3"><line x1="6" y1="12" x2="18" y2="12"/></svg>`;
+    const chevronSvg = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>`;
 
-    for (const tag of tags) {
+    function makeTagItem(tag, depth) {
         const count = tagCounts.get(tag.id) || 0;
         const isAll = count === totalFiles;
         const isPartial = count > 0 && count < totalFiles;
         const stateClass = isAll ? ' active' : isPartial ? ' partial' : '';
         const icon = isPartial ? dashSvg : checkSvg;
+        const displayName = (filter && filter.trim()) ? tag.name : getTagLeafName(tag.name);
 
         const item = document.createElement('div');
         item.className = 'tag-picker-item' + stateClass;
+        if (depth > 0) item.style.paddingLeft = (8 + depth * 20) + 'px';
         item.innerHTML = `
             <div class="tag-picker-item-check">${icon}</div>
             <span class="tag-picker-item-dot" style="background:${tag.color || '#6366f1'}"></span>
-            <span class="tag-picker-item-name">${tag.name}</span>
+            <span class="tag-picker-item-name">${escapeHtml(displayName)}</span>
         `;
+        item.title = tag.name;
         item.addEventListener('click', async () => {
             const wasAll = item.classList.contains('active');
             const normalizedPaths = tagPickerFilePaths.map(fp => normalizePath(fp));
 
             if (wasAll) {
-                // Remove from all files
                 if (isMulti) {
                     await tagBulkRemove(normalizedPaths, tag.id, tag.name);
                 } else {
                     await tagRemoveFromFile(normalizedPaths[0], tag.id, tag.name);
                 }
             } else {
-                // Add to all files (covers both partial and unchecked)
                 if (isMulti) {
                     await tagBulkAdd(normalizedPaths, tag.id, tag.name);
                 } else {
                     await tagAddToFile(normalizedPaths[0], tag.id, tag.name);
                 }
             }
-            // Re-render to get accurate state
             await renderTagPickerList(filter);
             refreshVisibleCardTags();
         });
-        list.appendChild(item);
+        return item;
+    }
+
+    // When searching, show flat list with full paths
+    if (filter && filter.trim()) {
+        for (const tag of tags) {
+            list.appendChild(makeTagItem(tag, 0));
+        }
+    } else {
+        // Build hierarchical tree
+        const tree = buildTagTree(tags);
+
+        function renderTreeNodes(nodes, parentEl) {
+            for (const node of nodes) {
+                if (node.tag && node.children.length === 0) {
+                    // Leaf tag node — render as selectable item
+                    parentEl.appendChild(makeTagItem(node.tag, node.depth));
+                } else {
+                    // Group header (virtual prefix or tag-with-children)
+                    const header = document.createElement('div');
+                    header.className = 'tag-picker-group-header';
+                    if (node.depth > 0) header.style.paddingLeft = (8 + node.depth * 20) + 'px';
+                    const collapsed = tagTreeCollapsed.has(node.fullPath);
+
+                    header.innerHTML = `
+                        <span class="tag-picker-group-chevron${collapsed ? '' : ' expanded'}">${chevronSvg}</span>
+                        <span class="tag-picker-group-name">${escapeHtml(node.segment)}</span>
+                    `;
+                    header.addEventListener('click', () => {
+                        if (tagTreeCollapsed.has(node.fullPath)) {
+                            tagTreeCollapsed.delete(node.fullPath);
+                        } else {
+                            tagTreeCollapsed.add(node.fullPath);
+                        }
+                        saveTagTreeCollapsed();
+                        renderTagPickerList(filter);
+                    });
+                    parentEl.appendChild(header);
+
+                    // If this group node IS also a real tag, render a selectable item for it
+                    if (node.tag) {
+                        if (!collapsed) {
+                            parentEl.appendChild(makeTagItem(node.tag, node.depth + 1));
+                        }
+                    }
+
+                    // Render children if not collapsed
+                    if (!collapsed) {
+                        renderTreeNodes(node.children, parentEl);
+                    }
+                }
+            }
+        }
+        renderTreeNodes(tree, list);
     }
 }
 
@@ -13607,21 +13721,65 @@ function showTagFilterDropdown() {
             dropdown.appendChild(clearItem);
         }
 
-        for (const tag of allTagsCache) {
-            const isActive = activeIds.has(tag.id);
-            const item = document.createElement('div');
-            item.style.cssText = 'display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:4px;cursor:pointer;font-size:13px;color:var(--text-primary);';
-            item.innerHTML = `<span style="width:8px;height:8px;border-radius:50%;background:${escapeHtml(tag.color || '#6366f1')};flex-shrink:0"></span><span style="flex:1">${escapeHtml(tag.name)}</span>${isActive ? '<span style="color:var(--accent)">&#10003;</span>' : ''}`;
-            item.addEventListener('mouseenter', () => item.style.background = 'var(--bg-hover,#2a2a2e)');
-            item.addEventListener('mouseleave', () => item.style.background = '');
-            item.addEventListener('click', async () => {
-                await toggleTagFilter(tag);
-                buildDropdownItems();
-                // Reposition after content change
-                dropdown.style.top = (rect.top - dropdown.offsetHeight - 4) + 'px';
-            });
-            dropdown.appendChild(item);
+        const tree = buildTagTree(allTagsCache);
+
+        function renderFilterTreeNodes(nodes, parentEl) {
+            for (const node of nodes) {
+                if (node.tag && node.children.length === 0) {
+                    // Leaf tag — selectable
+                    const isActive = activeIds.has(node.tag.id);
+                    const item = document.createElement('div');
+                    item.style.cssText = `display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:4px;cursor:pointer;font-size:13px;color:var(--text-primary);padding-left:${8 + node.depth * 16}px;`;
+                    item.innerHTML = `<span style="width:8px;height:8px;border-radius:50%;background:${escapeHtml(node.tag.color || '#6366f1')};flex-shrink:0"></span><span style="flex:1">${escapeHtml(node.segment)}</span>${isActive ? '<span style="color:var(--accent)">&#10003;</span>' : ''}`;
+                    item.title = node.tag.name;
+                    item.addEventListener('mouseenter', () => item.style.background = 'var(--bg-hover,#2a2a2e)');
+                    item.addEventListener('mouseleave', () => item.style.background = '');
+                    item.addEventListener('click', async () => {
+                        await toggleTagFilter(node.tag);
+                        buildDropdownItems();
+                        dropdown.style.top = (rect.top - dropdown.offsetHeight - 4) + 'px';
+                    });
+                    parentEl.appendChild(item);
+                } else {
+                    // Group header
+                    const collapsed = tagTreeCollapsed.has(node.fullPath);
+                    const header = document.createElement('div');
+                    header.style.cssText = `display:flex;align-items:center;gap:6px;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:12px;color:var(--text-secondary);padding-left:${8 + node.depth * 16}px;`;
+                    header.innerHTML = `<span style="display:inline-flex;transform:rotate(${collapsed ? '0' : '90'}deg);transition:transform 0.15s">${'<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>'}</span><span>${escapeHtml(node.segment)}</span>`;
+                    header.addEventListener('mouseenter', () => header.style.background = 'var(--bg-hover,#2a2a2e)');
+                    header.addEventListener('mouseleave', () => header.style.background = '');
+                    header.addEventListener('click', () => {
+                        if (tagTreeCollapsed.has(node.fullPath)) tagTreeCollapsed.delete(node.fullPath);
+                        else tagTreeCollapsed.add(node.fullPath);
+                        saveTagTreeCollapsed();
+                        buildDropdownItems();
+                        dropdown.style.top = (rect.top - dropdown.offsetHeight - 4) + 'px';
+                    });
+                    parentEl.appendChild(header);
+
+                    if (!collapsed) {
+                        // If this group IS also a tag, render selectable item
+                        if (node.tag) {
+                            const isActive = activeIds.has(node.tag.id);
+                            const item = document.createElement('div');
+                            item.style.cssText = `display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:4px;cursor:pointer;font-size:13px;color:var(--text-primary);padding-left:${8 + (node.depth + 1) * 16}px;`;
+                            item.innerHTML = `<span style="width:8px;height:8px;border-radius:50%;background:${escapeHtml(node.tag.color || '#6366f1')};flex-shrink:0"></span><span style="flex:1">${escapeHtml(node.segment)}</span>${isActive ? '<span style="color:var(--accent)">&#10003;</span>' : ''}`;
+                            item.title = node.tag.name;
+                            item.addEventListener('mouseenter', () => item.style.background = 'var(--bg-hover,#2a2a2e)');
+                            item.addEventListener('mouseleave', () => item.style.background = '');
+                            item.addEventListener('click', async () => {
+                                await toggleTagFilter(node.tag);
+                                buildDropdownItems();
+                                dropdown.style.top = (rect.top - dropdown.offsetHeight - 4) + 'px';
+                            });
+                            parentEl.appendChild(item);
+                        }
+                        renderFilterTreeNodes(node.children, parentEl);
+                    }
+                }
+            }
         }
+        renderFilterTreeNodes(tree, dropdown);
     }
 
     buildDropdownItems();
@@ -13729,20 +13887,21 @@ async function renderTagsManagement() {
     const countMap = {};
     for (const t of topTags) countMap[t.id] = t.file_count || 0;
 
-    for (const tag of allTagsCache) {
+    function makeTagManagementItem(tag, depth) {
         const item = document.createElement('div');
         item.className = 'tag-list-item';
+        if (depth > 0) item.style.paddingLeft = (8 + depth * 20) + 'px';
         item.innerHTML = `
             <span class="tag-list-item-dot" style="background:${tag.color || '#6366f1'}"></span>
-            <span class="tag-list-item-name">${tag.name}</span>
+            <span class="tag-list-item-name">${escapeHtml(getTagLeafName(tag.name))}</span>
             <span class="tag-list-item-count">${countMap[tag.id] || 0} files</span>
             <div class="tag-list-item-actions">
                 <button class="tag-list-item-btn edit-tag-btn" title="Edit">&#9998;</button>
                 <button class="tag-list-item-btn danger delete-tag-btn" title="Delete">&times;</button>
             </div>
         `;
+        item.title = tag.name;
         item.querySelector('.edit-tag-btn').addEventListener('click', () => {
-            // Already in edit mode? bail
             if (item.classList.contains('editing')) return;
             item.classList.add('editing');
 
@@ -13751,13 +13910,11 @@ async function renderTagsManagement() {
             const countSpan = item.querySelector('.tag-list-item-count');
             const actionsDiv = item.querySelector('.tag-list-item-actions');
 
-            // Hide display elements
             dot.style.display = 'none';
             nameSpan.style.display = 'none';
             countSpan.style.display = 'none';
             actionsDiv.style.display = 'none';
 
-            // Build inline edit row
             const editRow = document.createElement('div');
             editRow.className = 'tag-edit-row';
             editRow.innerHTML = `
@@ -13813,8 +13970,41 @@ async function renderTagsManagement() {
                 renderTagsManagement();
             }
         });
-        list.appendChild(item);
+        return item;
     }
+
+    const tree = buildTagTree(allTagsCache);
+    const chevronSvg = '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>';
+
+    function renderMgmtTreeNodes(nodes, parentEl) {
+        for (const node of nodes) {
+            if (node.tag && node.children.length === 0) {
+                parentEl.appendChild(makeTagManagementItem(node.tag, node.depth));
+            } else {
+                // Group header
+                const collapsed = tagTreeCollapsed.has(node.fullPath);
+                const header = document.createElement('div');
+                header.className = 'tag-list-group-header';
+                if (node.depth > 0) header.style.paddingLeft = (8 + node.depth * 20) + 'px';
+                header.innerHTML = `<span class="tag-picker-group-chevron${collapsed ? '' : ' expanded'}">${chevronSvg}</span><span>${escapeHtml(node.segment)}</span>`;
+                header.addEventListener('click', () => {
+                    if (tagTreeCollapsed.has(node.fullPath)) tagTreeCollapsed.delete(node.fullPath);
+                    else tagTreeCollapsed.add(node.fullPath);
+                    saveTagTreeCollapsed();
+                    renderTagsManagement();
+                });
+                parentEl.appendChild(header);
+
+                if (!collapsed) {
+                    if (node.tag) {
+                        parentEl.appendChild(makeTagManagementItem(node.tag, node.depth + 1));
+                    }
+                    renderMgmtTreeNodes(node.children, parentEl);
+                }
+            }
+        }
+    }
+    renderMgmtTreeNodes(tree, list);
 
     if (allTagsCache.length === 0) {
         list.innerHTML = '<div style="color:var(--text-secondary);font-size:13px;padding:16px 0;text-align:center;">No tags yet. Create one above or right-click a file.</div>';
@@ -13841,6 +14031,44 @@ document.getElementById('tag-create-btn').addEventListener('click', async () => 
 
 document.getElementById('tag-create-name').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') document.getElementById('tag-create-btn').click();
+    if (e.key === 'Escape') {
+        const hint = document.getElementById('tag-create-prefix-hint');
+        if (hint) hint.remove();
+    }
+});
+
+// Auto-suggest existing prefixes when typing '/' in tag name
+document.getElementById('tag-create-name').addEventListener('input', (e) => {
+    let hint = document.getElementById('tag-create-prefix-hint');
+    const val = e.target.value;
+    if (!val.includes('/')) {
+        if (hint) hint.remove();
+        return;
+    }
+    const prefix = val.substring(0, val.lastIndexOf('/'));
+    if (!prefix) {
+        if (hint) hint.remove();
+        return;
+    }
+    const matchingPrefixes = new Set();
+    for (const tag of allTagsCache) {
+        if (tag.name.toLowerCase().startsWith(prefix.toLowerCase() + '/')) {
+            matchingPrefixes.add(tag.name.substring(0, tag.name.indexOf('/', prefix.length + 1) >= 0
+                ? tag.name.indexOf('/', prefix.length + 1)
+                : tag.name.length));
+        }
+    }
+    if (matchingPrefixes.size === 0) {
+        if (hint) hint.remove();
+        return;
+    }
+    if (!hint) {
+        hint = document.createElement('div');
+        hint.id = 'tag-create-prefix-hint';
+        hint.style.cssText = 'font-size:11px;color:var(--text-secondary);padding:2px 0 4px;';
+        e.target.parentElement.appendChild(hint);
+    }
+    hint.textContent = 'Existing: ' + [...matchingPrefixes].slice(0, 5).join(', ');
 });
 
 // Render tags management when settings tab is clicked
@@ -14859,7 +15087,8 @@ class InspectorPanel {
         tags.forEach(t => {
             const chip = document.createElement('span');
             chip.className = 'lb-insp-tag-chip';
-            chip.textContent = t.name || '';
+            chip.textContent = getTagLeafName(t.name) || '';
+            chip.title = t.name || '';
             if (t.color) {
                 chip.style.background = t.color + '33';
                 chip.style.borderColor = t.color + '66';

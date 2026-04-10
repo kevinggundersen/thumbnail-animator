@@ -2316,6 +2316,28 @@
                     <input type="checkbox" id="cmo-sync-zoom" checked>
                     <span>Sync Zoom</span>
                 </label>
+                <button id="cmo-blend-btn" class="cmo-ctrl-btn hidden" title="Overlay blend (2 files)">Blend</button>
+                <div id="cmo-blend-controls" class="cmo-extra-controls hidden">
+                    <label class="cmo-slider-label">
+                        <span>Opacity</span>
+                        <input type="range" id="cmo-blend-opacity" min="0" max="100" value="50" step="1">
+                    </label>
+                    <select id="cmo-blend-mix-mode" class="cmo-blend-select">
+                        <option value="normal">Normal</option>
+                        <option value="difference">Difference</option>
+                        <option value="multiply">Multiply</option>
+                        <option value="screen">Screen</option>
+                        <option value="overlay">Overlay</option>
+                    </select>
+                </div>
+                <button id="cmo-diff-btn" class="cmo-ctrl-btn hidden" title="Pixel difference (2 files)">Diff</button>
+                <div id="cmo-diff-controls" class="cmo-extra-controls hidden">
+                    <label class="cmo-slider-label">
+                        <span>Amplify</span>
+                        <input type="range" id="cmo-diff-amplify" min="1" max="10" value="1" step="1">
+                        <span id="cmo-diff-amplify-value">1x</span>
+                    </label>
+                </div>
                 <button id="cmo-reset-zoom-btn" class="cmo-ctrl-btn" title="Reset zoom">Reset</button>
                 <button id="cmo-close-btn" class="cmo-close-btn" title="Close (Esc)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
             </div>

@@ -14417,6 +14417,191 @@ let preDateGroupSortType = null;
 let cmoZoomState = { scale: 1, panX: 0, panY: 0 };
 let cmoPanelStates = []; // per-panel zoom state when not synced
 
+// Blend & Diff state (only active for 2-file compare)
+let cmoBlendMode = false;
+let cmoBlendOpacity = 0.5;
+let cmoBlendMixMode = 'normal';
+let cmoDiffMode = false;
+let cmoDiffAmplify = 1;
+let cmoPaths = []; // stash paths for blend/diff reuse
+
+function waitForMediaReady(el) {
+    return new Promise((resolve) => {
+        if (el.tagName === 'IMG') {
+            if (el.complete && el.naturalWidth > 0) return resolve();
+            el.addEventListener('load', resolve, { once: true });
+            el.addEventListener('error', resolve, { once: true });
+        } else if (el.tagName === 'VIDEO') {
+            if (el.readyState >= 2) return resolve();
+            el.addEventListener('loadeddata', resolve, { once: true });
+            el.addEventListener('error', resolve, { once: true });
+        } else {
+            resolve();
+        }
+    });
+}
+
+function computePixelDiff(imgA, imgB, amplify) {
+    const wA = imgA.naturalWidth || imgA.videoWidth || imgA.width;
+    const hA = imgA.naturalHeight || imgA.videoHeight || imgA.height;
+    const wB = imgB.naturalWidth || imgB.videoWidth || imgB.width;
+    const hB = imgB.naturalHeight || imgB.videoHeight || imgB.height;
+    const w = Math.max(wA, wB) || 1;
+    const h = Math.max(hA, hB) || 1;
+
+    const canvasA = document.createElement('canvas');
+    canvasA.width = w; canvasA.height = h;
+    const ctxA = canvasA.getContext('2d', { willReadFrequently: true });
+    ctxA.drawImage(imgA, 0, 0, w, h);
+
+    const canvasB = document.createElement('canvas');
+    canvasB.width = w; canvasB.height = h;
+    const ctxB = canvasB.getContext('2d', { willReadFrequently: true });
+    ctxB.drawImage(imgB, 0, 0, w, h);
+
+    const dataA = ctxA.getImageData(0, 0, w, h);
+    const dataB = ctxB.getImageData(0, 0, w, h);
+    const output = ctxA.createImageData(w, h);
+    const a = dataA.data, b = dataB.data, o = output.data;
+
+    for (let i = 0; i < a.length; i += 4) {
+        o[i]     = Math.min(255, Math.abs(a[i]     - b[i])     * amplify);
+        o[i + 1] = Math.min(255, Math.abs(a[i + 1] - b[i + 1]) * amplify);
+        o[i + 2] = Math.min(255, Math.abs(a[i + 2] - b[i + 2]) * amplify);
+        o[i + 3] = 255;
+    }
+    return { imageData: output, width: w, height: h };
+}
+
+function syncCmoBlendTransform() {
+    const blendMediaB = document.getElementById('cmo-blend-media-b');
+    if (!blendMediaB) return;
+    blendMediaB.style.transform = `translate(${cmoZoomState.panX}px, ${cmoZoomState.panY}px) scale(${cmoZoomState.scale})`;
+}
+
+function enterCmoBlendMode() {
+    if (cmoPaths.length !== 2) return;
+    cmoBlendMode = true;
+
+    const container = document.getElementById('cmo-panels-container');
+    container.classList.add('cmo-single-panel');
+
+    const panels = container.querySelectorAll('.cmo-panel');
+    const vpA = panels[0].querySelector('.cmo-viewport');
+    const mediaB = panels[1].querySelector('.cmo-media');
+
+    // Clone media B into overlay layer inside viewport A
+    const layerB = document.createElement('div');
+    layerB.className = 'cmo-blend-layer-b';
+    layerB.id = 'cmo-blend-layer-b';
+    const clonedB = mediaB.cloneNode(true);
+    clonedB.style.opacity = cmoBlendOpacity;
+    clonedB.style.mixBlendMode = cmoBlendMixMode;
+    clonedB.id = 'cmo-blend-media-b';
+    if (clonedB.tagName === 'VIDEO') {
+        clonedB.autoplay = true; clonedB.loop = true; clonedB.muted = true;
+        clonedB.play().catch(() => {});
+    }
+    layerB.appendChild(clonedB);
+    vpA.appendChild(layerB);
+
+    // Show controls
+    document.getElementById('cmo-blend-controls')?.classList.remove('hidden');
+    document.getElementById('cmo-blend-btn')?.classList.add('active');
+
+    // Force sync zoom in blend mode
+    document.getElementById('cmo-sync-zoom').checked = true;
+    syncCmoBlendTransform();
+}
+
+function exitCmoBlendMode() {
+    if (!cmoBlendMode) return;
+    cmoBlendMode = false;
+    const container = document.getElementById('cmo-panels-container');
+    container?.classList.remove('cmo-single-panel');
+
+    const layerB = document.getElementById('cmo-blend-layer-b');
+    if (layerB) {
+        layerB.querySelectorAll('video').forEach(v => { v.pause(); v.src = ''; });
+        layerB.remove();
+    }
+
+    document.getElementById('cmo-blend-controls')?.classList.add('hidden');
+    document.getElementById('cmo-blend-btn')?.classList.remove('active');
+}
+
+function enterCmoDiffMode() {
+    if (cmoPaths.length !== 2) return;
+    cmoDiffMode = true;
+
+    const container = document.getElementById('cmo-panels-container');
+    container.classList.add('cmo-single-panel');
+
+    const panels = container.querySelectorAll('.cmo-panel');
+    const mediaA = panels[0].querySelector('img.cmo-media, video.cmo-media');
+    const mediaB = panels[1].querySelector('.cmo-media');
+    if (!mediaA || !mediaB) return;
+
+    Promise.all([waitForMediaReady(mediaA), waitForMediaReady(mediaB)]).then(() => {
+        if (!cmoDiffMode) return; // might have been exited while waiting
+        const diff = computePixelDiff(mediaA, mediaB, cmoDiffAmplify);
+
+        const diffCanvas = document.createElement('canvas');
+        diffCanvas.width = diff.width;
+        diffCanvas.height = diff.height;
+        diffCanvas.className = 'cmo-media';
+        diffCanvas.id = 'cmo-diff-canvas';
+        const ctx = diffCanvas.getContext('2d');
+        ctx.putImageData(diff.imageData, 0, 0);
+
+        const vpA = panels[0].querySelector('.cmo-viewport');
+        mediaA.style.display = 'none';
+        vpA.appendChild(diffCanvas);
+
+        document.getElementById('cmo-diff-controls')?.classList.remove('hidden');
+        document.getElementById('cmo-diff-btn')?.classList.add('active');
+    });
+}
+
+function exitCmoDiffMode() {
+    if (!cmoDiffMode) return;
+    cmoDiffMode = false;
+    const container = document.getElementById('cmo-panels-container');
+    container?.classList.remove('cmo-single-panel');
+
+    const diffCanvas = document.getElementById('cmo-diff-canvas');
+    if (diffCanvas) diffCanvas.remove();
+
+    // Restore original media A visibility
+    const panels = container?.querySelectorAll('.cmo-panel');
+    if (panels && panels[0]) {
+        const mediaA = panels[0].querySelector('.cmo-media');
+        if (mediaA) mediaA.style.display = '';
+    }
+
+    document.getElementById('cmo-diff-controls')?.classList.add('hidden');
+    document.getElementById('cmo-diff-btn')?.classList.remove('active');
+}
+
+function recomputeCmoDiff() {
+    const container = document.getElementById('cmo-panels-container');
+    if (!container) return;
+    const panels = container.querySelectorAll('.cmo-panel');
+    if (panels.length < 2) return;
+
+    const mediaA = panels[0].querySelector('img.cmo-media, video.cmo-media');
+    const mediaB = panels[1].querySelector('.cmo-media');
+    if (!mediaA || !mediaB) return;
+
+    const diff = computePixelDiff(mediaA, mediaB, cmoDiffAmplify);
+    const diffCanvas = document.getElementById('cmo-diff-canvas');
+    if (diffCanvas) {
+        diffCanvas.width = diff.width;
+        diffCanvas.height = diff.height;
+        diffCanvas.getContext('2d').putImageData(diff.imageData, 0, 0);
+    }
+}
+
 function openCompareMode(paths) {
     if (!paths || paths.length < 2) { showToast('Select 2–4 files to compare', 'info'); return; }
     if (paths.length > 4) paths = paths.slice(0, 4);
@@ -14482,6 +14667,7 @@ function openCompareMode(paths) {
             container.querySelectorAll('.cmo-media').forEach(m => {
                 m.style.transform = `translate(${cmoZoomState.panX}px, ${cmoZoomState.panY}px) scale(${cmoZoomState.scale})`;
             });
+            if (cmoBlendMode) syncCmoBlendTransform();
         }
         function applyOne() { applyTransform(cmoPanelStates[i]); }
 
@@ -14532,10 +14718,21 @@ function openCompareMode(paths) {
         container.appendChild(panel);
     });
 
+    // Show blend/diff buttons only for 2-file comparison
+    const blendBtn = document.getElementById('cmo-blend-btn');
+    const diffBtn = document.getElementById('cmo-diff-btn');
+    const show2 = paths.length === 2;
+    if (blendBtn) blendBtn.classList.toggle('hidden', !show2);
+    if (diffBtn) diffBtn.classList.toggle('hidden', !show2);
+    cmoPaths = show2 ? [...paths] : [];
+
     overlay.classList.remove('hidden');
 }
 
 function closeCompareMode() {
+    exitCmoBlendMode();
+    exitCmoDiffMode();
+    cmoPaths = [];
     const overlay = document.getElementById('compare-mode-overlay');
     if (!overlay) return;
     overlay.classList.add('hidden');
@@ -14561,6 +14758,50 @@ function closeCompareMode() {
         cmoPanelStates = cmoPanelStates.map(() => ({ scale: 1, panX: 0, panY: 0 }));
         const container = document.getElementById('cmo-panels-container');
         if (container) container.querySelectorAll('.cmo-media').forEach(m => { m.style.transform = ''; });
+    });
+
+    // Blend button
+    const blendBtn = document.getElementById('cmo-blend-btn');
+    if (blendBtn) blendBtn.addEventListener('click', () => {
+        if (cmoBlendMode) {
+            exitCmoBlendMode();
+        } else {
+            exitCmoDiffMode();
+            enterCmoBlendMode();
+        }
+    });
+
+    // Blend opacity slider
+    document.getElementById('cmo-blend-opacity')?.addEventListener('input', (e) => {
+        cmoBlendOpacity = e.target.value / 100;
+        const blendMediaB = document.getElementById('cmo-blend-media-b');
+        if (blendMediaB) blendMediaB.style.opacity = cmoBlendOpacity;
+    });
+
+    // Blend mix mode selector
+    document.getElementById('cmo-blend-mix-mode')?.addEventListener('change', (e) => {
+        cmoBlendMixMode = e.target.value;
+        const blendMediaB = document.getElementById('cmo-blend-media-b');
+        if (blendMediaB) blendMediaB.style.mixBlendMode = cmoBlendMixMode;
+    });
+
+    // Diff button
+    const diffBtn = document.getElementById('cmo-diff-btn');
+    if (diffBtn) diffBtn.addEventListener('click', () => {
+        if (cmoDiffMode) {
+            exitCmoDiffMode();
+        } else {
+            exitCmoBlendMode();
+            enterCmoDiffMode();
+        }
+    });
+
+    // Diff amplify slider
+    document.getElementById('cmo-diff-amplify')?.addEventListener('input', (e) => {
+        cmoDiffAmplify = parseInt(e.target.value, 10);
+        const label = document.getElementById('cmo-diff-amplify-value');
+        if (label) label.textContent = cmoDiffAmplify + 'x';
+        if (cmoDiffMode) recomputeCmoDiff();
     });
 
     // Escape closes compare mode

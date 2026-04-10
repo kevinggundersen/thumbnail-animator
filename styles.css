@@ -9779,11 +9779,19 @@ video.blow-up-media {
     align-items: center;
     justify-content: space-between;
     padding: 0 var(--space-4);
+    padding-right: 138px; /* Windows: space for titlebar overlay buttons */
     height: 48px;
     background: var(--bg-secondary);
     border-bottom: 1px solid var(--border-default);
     flex-shrink: 0;
     gap: var(--space-3);
+    -webkit-app-region: no-drag;
+}
+[data-platform="darwin"] .cmo-header {
+    padding-right: var(--space-4);
+}
+[data-platform="linux"] .cmo-header {
+    padding-right: var(--space-4);
 }
 .cmo-title {
     font-size: 14px;
@@ -9822,6 +9830,9 @@ video.blow-up-media {
 .cmo-ctrl-btn:hover {
     background: var(--bg-hover);
     color: var(--text-primary);
+}
+.cmo-ctrl-btn.hidden {
+    display: none !important;
 }
 .cmo-close-btn {
     background: none;
@@ -9889,6 +9900,67 @@ video.cmo-media {
     overflow: hidden;
     text-overflow: ellipsis;
     flex-shrink: 0;
+}
+
+/* Compare mode: Blend & Diff controls */
+.cmo-ctrl-btn.active {
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
+}
+.cmo-extra-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.cmo-extra-controls.hidden {
+    display: none !important;
+}
+.cmo-slider-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+.cmo-slider-label input[type=range] {
+    width: 100px;
+    accent-color: var(--accent);
+}
+.cmo-blend-select {
+    padding: 3px 6px;
+    border: 1px solid var(--border-default);
+    border-radius: 4px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+}
+
+/* Single-panel mode for blend/diff (stacks both in one viewport) */
+.cmo-panels-container.cmo-single-panel {
+    grid-template-columns: 1fr !important;
+    grid-template-rows: 1fr !important;
+}
+.cmo-panels-container.cmo-single-panel .cmo-panel:nth-child(2) {
+    display: none;
+}
+.cmo-blend-layer-b {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+}
+.cmo-blend-layer-b img,
+.cmo-blend-layer-b video {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    pointer-events: none;
+    user-select: none;
 }
 
 /* ==================== MORE LIKE THIS OVERLAY ==================== */

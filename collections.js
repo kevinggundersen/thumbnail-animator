@@ -318,6 +318,10 @@ async function loadCollectionIntoGrid(collectionId) {
             if (cached && cached.items && cached.items.length > 0) {
                 // Render cached results immediately — near-instant load
                 items = cached.items;
+                // Linked duplicates: deduplicate cached results
+                if (typeof isLinkedDuplicatesEnabled === 'function' && isLinkedDuplicatesEnabled()) {
+                    items = await _deduplicateCollectionItems(items);
+                }
                 currentItems = items;
                 const filteredCached = filterItems(items);
                 const sortedCached = sortItems(filteredCached);
@@ -714,6 +718,19 @@ function cancelBackgroundScan(collectionId) {
  * falls back to renderItems for the initial render or empty results.
  */
 function bgScanRenderUpdate(items) {
+    // Linked duplicates: synchronous dedup using already-populated _pathToHash
+    if (typeof isLinkedDuplicatesEnabled === 'function' && isLinkedDuplicatesEnabled()
+        && typeof _pathToHash !== 'undefined' && Object.keys(_pathToHash).length > 0) {
+        const seen = new Set();
+        items = items.filter(item => {
+            if (!item || item.type === 'folder') return true;
+            const hash = _pathToHash[normalizePath(item.path)];
+            if (!hash) return true;
+            if (seen.has(hash)) return false;
+            seen.add(hash);
+            return true;
+        });
+    }
     const sorted = sortItems(filterItems(items));
     if (sorted.length === 0 || !vsState.enabled) {
         renderItems(sorted, null);

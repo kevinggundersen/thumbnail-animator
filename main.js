@@ -2432,14 +2432,27 @@ ipcMain.handle('rename-file', async (event, filePath, newName) => {
         const dir = path.dirname(filePath);
         const newPath = path.join(dir, newName);
         
-        // Check if new name already exists
+        // Check if new name already exists (fast-fail for common case)
         if (fs.existsSync(newPath)) {
             return { ok: false, error:'A file with this name already exists' };
         }
-        
-        await fs.promises.rename(filePath, newPath);
-        try { await appDb.updateFilePaths([{ oldPath: filePath, newPath }]); } catch (e) {
+
+        try {
+            await fs.promises.rename(filePath, newPath);
+        } catch (err) {
+            // Handle TOCTOU race: file created between existsSync and rename
+            if (err.code === 'EPERM' || err.code === 'EEXIST') {
+                return { ok: false, error:'A file with this name already exists' };
+            }
+            throw err;
+        }
+        try {
+            await appDb.updateFilePaths([{ oldPath: filePath, newPath }]);
+        } catch (e) {
             console.error('Failed to update DB paths after rename:', e);
+            // Revert the file rename to avoid DB/disk inconsistency
+            try { await fs.promises.rename(newPath, filePath); } catch {}
+            return { ok: false, error: 'Rename succeeded but database update failed. The rename has been reverted.' };
         }
         pushUndoEntry({
             type: 'rename',
@@ -3550,6 +3563,7 @@ function computeHammingPairsViaRenderer(hashBytes, threshold, timeoutMs = 30000)
 ipcMain.handle('scan-duplicates', async (event, folderPath, options = {}) => {
     const threshold = options.threshold != null ? options.threshold : 10;
     try {
+        folderPath = validateUserPath(folderPath, { mustExist: true });
         const entries = await fs.promises.readdir(folderPath, { withFileTypes: true });
         const videoExtensions = new Set(['.mp4', '.webm', '.ogg', '.mov']);
         const imageExtensions = new Set(['.gif', '.jpg', '.jpeg', '.png', '.webp', '.bmp', '.svg']);
@@ -3587,7 +3601,7 @@ ipcMain.handle('scan-duplicates', async (event, folderPath, options = {}) => {
 
         if (files.length === 0) return { ok: true, value: { exactGroups: [], similarGroups: [] } };
 
-        event.sender.send('duplicate-scan-progress', { current: 0, total: files.length, phase: 'hashing' });
+        if (!event.sender.isDestroyed()) event.sender.send('duplicate-scan-progress', { current: 0, total: files.length, phase: 'hashing' });
 
         // ── DB hash cache: skip files whose mtime hasn't changed ─────
         const normPath = (p) => p.replace(/\\/g, '/');
@@ -3627,7 +3641,7 @@ ipcMain.handle('scan-duplicates', async (event, folderPath, options = {}) => {
             }
             logPerf('scan-duplicates.exact-hash-native', hashStart, { files: staleFiles.length });
         }
-        event.sender.send('duplicate-scan-progress', { current: cachedHashMap.size, total: files.length, phase: 'hashing' });
+        if (!event.sender.isDestroyed()) event.sender.send('duplicate-scan-progress', { current: cachedHashMap.size, total: files.length, phase: 'hashing' });
 
         // ── Gate: identify stale files that can skip perceptual hashing ──
         // 1) Files < 10KB — dHash at 9×8 is meaningless for tiny icons/sprites
@@ -3805,7 +3819,7 @@ ipcMain.handle('scan-duplicates', async (event, folderPath, options = {}) => {
 
             freshHashMap = await hashPool.scanHashes(hashFiles, (completed, total) => {
                 if (!exactHashMap) {
-                    event.sender.send('duplicate-scan-progress', {
+                    if (!event.sender.isDestroyed()) event.sender.send('duplicate-scan-progress', {
                         current: cachedHashMap.size + completed, total: files.length, phase: 'hashing'
                     });
                 }
@@ -3851,9 +3865,9 @@ ipcMain.handle('scan-duplicates', async (event, folderPath, options = {}) => {
             }
         }
 
-        event.sender.send('duplicate-scan-progress', { current: files.length, total: files.length, phase: 'hashing' });
+        if (!event.sender.isDestroyed()) event.sender.send('duplicate-scan-progress', { current: files.length, total: files.length, phase: 'hashing' });
 
-        event.sender.send('duplicate-scan-progress', { current: 0, total: 0, phase: 'comparing' });
+        if (!event.sender.isDestroyed()) event.sender.send('duplicate-scan-progress', { current: 0, total: 0, phase: 'comparing' });
 
         // Group by exact hash
         const exactMap = new Map();
@@ -3992,7 +4006,7 @@ ipcMain.handle('scan-duplicates', async (event, folderPath, options = {}) => {
             if (group.length >= 2) similarGroups.push(group);
         }
 
-        event.sender.send('duplicate-scan-progress', { current: 0, total: 0, phase: 'done' });
+        if (!event.sender.isDestroyed()) event.sender.send('duplicate-scan-progress', { current: 0, total: 0, phase: 'done' });
 
         // Build hashData for client-side caching (enables instant re-grouping)
         const hashData = files.map(file => {
@@ -5645,9 +5659,12 @@ ipcMain.handle('redo-file-operation', async () => {
         return { ok: false, error:'Nothing to redo' };
     }
     const entry = redoStack.pop();
+    // Deep-copy operations so mutations (e.g. stagingPath) don't corrupt the
+    // original entry if redo fails and we need to push it back onto the stack.
+    const workOps = entry.operations.map(op => ({ ...op }));
     const completedOps = [];
     try {
-        for (const op of entry.operations) {
+        for (const op of workOps) {
             switch (op.type) {
                 case 'rename':
                     await fs.promises.rename(op.oldPath, op.newPath);
@@ -5664,7 +5681,7 @@ ipcMain.handle('redo-file-operation', async () => {
             }
             completedOps.push(op);
         }
-        undoStack.push(entry);
+        undoStack.push({ ...entry, operations: workOps });
         return { ok: true, value: { description: entry.description, canUndo: true, canRedo: redoStack.length > 0 } };
     } catch (error) {
         console.error('Redo failed:', error);
@@ -5687,6 +5704,7 @@ ipcMain.handle('redo-file-operation', async () => {
                 console.error('Redo rollback failed for op:', op.type, rollbackErr);
             }
         }
+        // Push original (unmutated) entry back so redo can be retried
         redoStack.push(entry);
         return { ok: false, error: `${entry.description}: ${error.message}` };
     }
@@ -5898,6 +5916,8 @@ wrapIpc('db-get-path-to-hash-map', (filePaths) => appDb.getPathToHashMap(filePat
 wrapIpc('db-resolve-linked-conflicts', () => appDb.resolveLinkedConflicts());
 
 // Auto-hash files for linked duplicates (background, after folder load)
+// Mirrors the hashing approach from scan-duplicates: native BLAKE3 when available,
+// JS hash pool (SHA256) as fallback, native overwrites pool results for consistency.
 ipcMain.handle('auto-hash-folder', async (event, filePaths) => {
     try {
         if (!filePaths || filePaths.length === 0 || !hashPool) {
@@ -5920,29 +5940,50 @@ ipcMain.handle('auto-hash-folder', async (event, filePaths) => {
             }
             return { ok: true, value: pathToHash };
         }
-        // Use native scanner for exact hashes if available, otherwise hash pool
-        let freshResults;
-        if (nativeScanner && nativeScanner.scanHashes) {
-            const nativeItems = needHash.map(f => ({
-                path: f.path, isImage: true, isVideo: false, thumbPath: null
-            }));
-            freshResults = new Map();
-            const nativeResults = nativeScanner.scanHashes(nativeItems);
-            for (const r of nativeResults) {
-                freshResults.set(r.path, { exactHash: r.exactHash, perceptualHash: r.perceptualHash || null });
+
+        // Native BLAKE3 exact hashes (same approach as scan-duplicates)
+        let nativeExactMap;
+        if (nativeScanner && nativeScanner.hashFiles) {
+            try {
+                const results = nativeScanner.hashFiles(needHash.map(f => f.path));
+                nativeExactMap = new Map();
+                for (const r of results) {
+                    if (r.hash) nativeExactMap.set(r.path, r.hash);
+                }
+            } catch (e) {
+                console.warn('[auto-hash-folder] native hashFiles failed, using JS pool:', e.message);
             }
-        } else {
-            freshResults = await hashPool.scanHashes(needHash);
         }
+
+        // JS hash pool (SHA256 exact + perceptual)
+        const freshResults = await hashPool.scanHashes(needHash);
+
+        // Merge: native BLAKE3 overwrites JS SHA256 for exact hash (same as scan-duplicates)
+        if (nativeExactMap) {
+            for (const [fp, hashes] of freshResults) {
+                const nativeHash = nativeExactMap.get(fp);
+                if (nativeHash) hashes.exactHash = nativeHash;
+            }
+        }
+
+        // Stat files for proper DB entries (file_size, file_mtime)
+        const statCache = new Map();
+        await Promise.all(needHash.map(async (f) => {
+            try {
+                const st = await require('fs').promises.stat(f.path);
+                statCache.set(f.path, { size: st.size, mtime: st.mtimeMs });
+            } catch { /* file may have been deleted */ }
+        }));
+
         // Save to DB
         const hashEntries = [];
         for (const [fp, result] of freshResults) {
             if (result.exactHash) {
-                const cached = existing[fp];
+                const st = statCache.get(fp) || {};
                 hashEntries.push({
                     file_path: fp,
-                    file_size: cached ? cached.file_size : 0,
-                    file_mtime: cached ? cached.file_mtime : 0,
+                    file_size: st.size || 0,
+                    file_mtime: st.mtime || 0,
                     exact_hash: result.exactHash,
                     perceptual_hash: result.perceptualHash || null
                 });

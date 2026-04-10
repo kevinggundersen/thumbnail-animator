@@ -1714,11 +1714,7 @@ function dismissToast(toast) {
     toast.addEventListener('animationend', () => toast.remove(), { once: true });
 }
 
-function escapeHtml(str) {
-    const div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
-}
+// escapeHtml — single definition at line ~10921 (regex-based, covers & < > " ')
 
 // Show a toast for a given category only once per session
 const _shownToastKeys = new Set();
@@ -2209,7 +2205,7 @@ function _renderConflictMeta(container, info, otherInfo) {
     for (const row of rows) {
         const div = document.createElement('div');
         div.className = 'conflict-meta-row';
-        div.innerHTML = `<span class="conflict-meta-label">${row.label}</span><span class="conflict-meta-value${row.cls ? ' ' + row.cls : ''}">${row.value}</span>`;
+        div.innerHTML = `<span class="conflict-meta-label">${escapeHtml(row.label)}</span><span class="conflict-meta-value${row.cls ? ' ' + row.cls : ''}">${escapeHtml(row.value)}</span>`;
         container.appendChild(div);
     }
 }
@@ -12744,7 +12740,7 @@ async function renderTagPickerList(filter) {
         // Show "create tag" option
         const createItem = document.createElement('div');
         createItem.className = 'tag-picker-create';
-        createItem.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Create "${filter.trim()}"`;
+        createItem.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Create "${escapeHtml(filter.trim())}"`;
         createItem.addEventListener('click', async () => {
             try {
                 const result = await window.electronAPI.dbCreateTag(filter.trim(), null, '#6366f1');
@@ -12822,7 +12818,7 @@ async function renderTagPickerSuggestions() {
         for (const sug of result.value.slice(0, 6)) {
             const chip = document.createElement('span');
             chip.className = 'tag-suggestion';
-            chip.innerHTML = `<span class="tag-picker-item-dot" style="background:${sug.tag.color || '#6366f1'}"></span>${sug.tag.name}`;
+            chip.innerHTML = `<span class="tag-picker-item-dot" style="background:${escapeHtml(sug.tag.color || '#6366f1')}"></span>${escapeHtml(sug.tag.name)}`;
             chip.addEventListener('click', async () => {
                 const normalizedPaths = tagPickerFilePaths.map(fp => normalizePath(fp));
                 if (normalizedPaths.length > 1) {
@@ -12926,7 +12922,7 @@ function showTagFilterDropdown() {
             const isActive = activeIds.has(tag.id);
             const item = document.createElement('div');
             item.style.cssText = 'display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:4px;cursor:pointer;font-size:13px;color:var(--text-primary);';
-            item.innerHTML = `<span style="width:8px;height:8px;border-radius:50%;background:${tag.color || '#6366f1'};flex-shrink:0"></span><span style="flex:1">${tag.name}</span>${isActive ? '<span style="color:var(--accent)">&#10003;</span>' : ''}`;
+            item.innerHTML = `<span style="width:8px;height:8px;border-radius:50%;background:${escapeHtml(tag.color || '#6366f1')};flex-shrink:0"></span><span style="flex:1">${escapeHtml(tag.name)}</span>${isActive ? '<span style="color:var(--accent)">&#10003;</span>' : ''}`;
             item.addEventListener('mouseenter', () => item.style.background = 'var(--bg-hover,#2a2a2e)');
             item.addEventListener('mouseleave', () => item.style.background = '');
             item.addEventListener('click', async () => {
@@ -13018,7 +13014,7 @@ function renderActiveTagFilters() {
         const chip = document.createElement('span');
         chip.className = 'active-tag-chip';
         if (tag.color) chip.style.background = tag.color;
-        chip.innerHTML = `${tag.name}<span class="active-tag-chip-remove">&times;</span>`;
+        chip.innerHTML = `${escapeHtml(tag.name)}<span class="active-tag-chip-remove">&times;</span>`;
         chip.querySelector('.active-tag-chip-remove').addEventListener('click', (e) => {
             e.stopPropagation();
             toggleTagFilter({ id: tag.tagId, name: tag.name, color: tag.color });

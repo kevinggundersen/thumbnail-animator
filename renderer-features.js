@@ -2252,7 +2252,10 @@ function _showContextMenuAt(menuEl, e) {
     menuEl.style.left = `${x}px`;
     menuEl.style.top = `${y}px`;
 
-    setTimeout(() => document.addEventListener('click', _onTabGroupContextMenuOutsideClick, true), 0);
+    setTimeout(() => {
+        document.removeEventListener('click', _onTabGroupContextMenuOutsideClick, true);
+        document.addEventListener('click', _onTabGroupContextMenuOutsideClick, true);
+    }, 0);
 }
 
 function showTabContextMenu(e, tab) {

@@ -29,7 +29,14 @@ const lightboxZoomSlider = document.getElementById('lightbox-zoom-slider');
 const lightboxZoomValue = document.getElementById('lightbox-zoom-value');
 const lightboxRotateLeftBtn = document.getElementById('lightbox-rotate-left-btn');
 const lightboxRotateRightBtn = document.getElementById('lightbox-rotate-right-btn');
+const lightboxFlipHBtn = document.getElementById('lightbox-flip-h-btn');
+const lightboxFlipVBtn = document.getElementById('lightbox-flip-v-btn');
 const lightboxCropBtn = document.getElementById('lightbox-crop-btn');
+const lbTransformBar = document.getElementById('lb-transform-bar');
+const lbTfRotateLeftBtn = document.getElementById('lb-tf-rotate-left');
+const lbTfRotateRightBtn = document.getElementById('lb-tf-rotate-right');
+const lbTfFlipHBtn = document.getElementById('lb-tf-flip-h');
+const lbTfFlipVBtn = document.getElementById('lb-tf-flip-v');
 const lightboxCropOverlay = document.getElementById('lightbox-crop-overlay');
 const lightboxCropBox = document.getElementById('lightbox-crop-box');
 const lightboxCropSize = document.getElementById('lightbox-crop-size');
@@ -47,6 +54,8 @@ let dragStartY = 0;
 let currentTranslateX = 0;
 let currentTranslateY = 0;
 let currentLightboxRotation = 0;
+let currentLightboxFlipH = false;
+let currentLightboxFlipV = false;
 
 let lightboxCropMeta = { enabled: false, outputExt: '.png' };
 const LIGHTBOX_CROP_MIN_DISPLAY_SIZE = 12;
@@ -149,6 +158,13 @@ function getLightboxRotationString() {
     return `rotate(${normalizeLightboxRotation(currentLightboxRotation)}deg)`;
 }
 
+function getLightboxFlipString() {
+    const sx = currentLightboxFlipH ? -1 : 1;
+    const sy = currentLightboxFlipV ? -1 : 1;
+    if (sx === 1 && sy === 1) return '';
+    return `scale(${sx}, ${sy})`;
+}
+
 function getVisibleLightboxMediaElement() {
     const imageDisplay = lightboxImage.style.display;
     const videoDisplay = lightboxVideo.style.display;
@@ -195,6 +211,24 @@ function refreshLightboxRotationControls() {
         lightboxRotateRightBtn.classList.toggle('hidden', !shouldShow);
         lightboxRotateRightBtn.disabled = !shouldShow;
     }
+    if (lightboxFlipHBtn) {
+        lightboxFlipHBtn.classList.toggle('hidden', !shouldShow);
+        lightboxFlipHBtn.disabled = !shouldShow;
+    }
+    if (lightboxFlipVBtn) {
+        lightboxFlipVBtn.classList.toggle('hidden', !shouldShow);
+        lightboxFlipVBtn.disabled = !shouldShow;
+    }
+    // Show/hide the bottom transform bar
+    if (lbTransformBar) {
+        lbTransformBar.classList.toggle('hidden', !shouldShow);
+        // Position above media controls if they are visible
+        const mcVisible = document.getElementById('media-controls')?.style.display === 'flex';
+        lbTransformBar.classList.toggle('above-mc', mcVisible);
+    }
+    // Sync active state on bottom bar buttons
+    lbTfFlipHBtn?.classList.toggle('active', currentLightboxFlipH);
+    lbTfFlipVBtn?.classList.toggle('active', currentLightboxFlipV);
 }
 
 function applyLightboxRotation(step) {
@@ -205,6 +239,25 @@ function applyLightboxRotation(step) {
         applyCurrentLightboxTransform();
     }
     refreshLightboxRotationControls();
+}
+
+function toggleLightboxFlip(axis) {
+    if (axis === 'horizontal') currentLightboxFlipH = !currentLightboxFlipH;
+    else if (axis === 'vertical') currentLightboxFlipV = !currentLightboxFlipV;
+    if (zoomToFit) {
+        applyZoomToFitNow();
+    } else {
+        applyCurrentLightboxTransform();
+    }
+}
+
+function resetLightboxFlip() {
+    currentLightboxFlipH = false;
+    currentLightboxFlipV = false;
+    lightboxFlipHBtn?.classList.remove('active');
+    lightboxFlipVBtn?.classList.remove('active');
+    lbTfFlipHBtn?.classList.remove('active');
+    lbTfFlipVBtn?.classList.remove('active');
 }
 
 /** Helper: display a static (non-animated) image in the lightbox */
@@ -432,9 +485,10 @@ function enterLightboxCropMode() {
         showToast('Open a still image in the lightbox first', 'info');
         return;
     }
-    if (currentLightboxRotation !== 0) {
+    if (currentLightboxRotation !== 0 || currentLightboxFlipH || currentLightboxFlipV) {
         currentLightboxRotation = 0;
-        showToast('Crop mode resets rotation to 0 for now', 'info', { duration: 2200 });
+        resetLightboxFlip();
+        showToast('Crop mode resets rotation and flip for now', 'info', { duration: 2200 });
     }
 
     hideContextMenu();
@@ -667,6 +721,7 @@ function openLightbox(mediaUrl, filePath, fileName) {
     setLightboxCropAvailability(filePath, false);
     exitLightboxCropMode({ silent: true });
     currentLightboxRotation = 0;
+    resetLightboxFlip();
 
     // Track current index for navigation
     if (lightboxItemsOverride && lightboxItemsOverride.length > 0) {
@@ -1063,16 +1118,18 @@ function applyLightboxZoom(zoomLevel, mouseX = null, mouseY = null) {
 
     // Build transform strings — <img> may use a reduced scale (layout handles the rest)
     const rotation = getLightboxRotationString();
+    const flip = getLightboxFlipString();
+    const flipPart = flip ? ` ${flip}` : '';
     let baseTransformString; // For video, canvas
     let imgTransformString;  // For <img> (may use reduced scale for hi-res rendering)
 
     if (zoomLevel <= 100) {
-        baseTransformString = `${rotation} scale(${zoomValue})`;
+        baseTransformString = `${rotation}${flipPart} scale(${zoomValue})`;
         imgTransformString = baseTransformString;
     } else {
-        baseTransformString = `translate(${currentTranslateX}px, ${currentTranslateY}px) ${rotation} scale(${zoomValue})`;
+        baseTransformString = `translate(${currentTranslateX}px, ${currentTranslateY}px) ${rotation}${flipPart} scale(${zoomValue})`;
         if (imgRemainingScale !== null) {
-            imgTransformString = `translate(${currentTranslateX}px, ${currentTranslateY}px) ${rotation} scale(${imgRemainingScale})`;
+            imgTransformString = `translate(${currentTranslateX}px, ${currentTranslateY}px) ${rotation}${flipPart} scale(${imgRemainingScale})`;
         } else {
             imgTransformString = baseTransformString;
         }
@@ -1181,15 +1238,17 @@ function applyLightboxZoom(zoomLevel, mouseX = null, mouseY = null) {
 function applyCurrentLightboxTransform() {
     const zoomValue = cachedZoomValue;
     const rotation = getLightboxRotationString();
+    const flip = getLightboxFlipString();
+    const flipPart = flip ? ` ${flip}` : '';
 
     const baseTransform = currentZoomLevel <= 100
-        ? `${rotation} scale(${zoomValue})`
-        : `translate(${currentTranslateX}px, ${currentTranslateY}px) ${rotation} scale(${zoomValue})`;
+        ? `${rotation}${flipPart} scale(${zoomValue})`
+        : `translate(${currentTranslateX}px, ${currentTranslateY}px) ${rotation}${flipPart} scale(${zoomValue})`;
 
     // For <img> hi-res zoom, use the reduced scale (layout handles the rest)
     let imgTransform = baseTransform;
     if (currentZoomLevel > 100 && cachedImgRemainingScale !== null) {
-        imgTransform = `translate(${currentTranslateX}px, ${currentTranslateY}px) ${rotation} scale(${cachedImgRemainingScale})`;
+        imgTransform = `translate(${currentTranslateX}px, ${currentTranslateY}px) ${rotation}${flipPart} scale(${cachedImgRemainingScale})`;
     }
 
     const imageDisplay = lightboxImage.style.display;
@@ -1265,6 +1324,7 @@ function closeLightbox() {
     exitLightboxCropMode({ silent: true });
     setLightboxCropAvailability(window.currentLightboxFilePath, false);
     currentLightboxRotation = 0;
+    resetLightboxFlip();
 
     // Persist playback settings from controller before destroying
     if (activePlaybackController) {
@@ -1333,6 +1393,47 @@ lightboxRotateRightBtn?.addEventListener('click', (e) => {
     e.stopPropagation();
     applyLightboxRotation(90);
 });
+lightboxFlipHBtn?.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    toggleLightboxFlip('horizontal');
+    lightboxFlipHBtn.classList.toggle('active', currentLightboxFlipH);
+    lbTfFlipHBtn?.classList.toggle('active', currentLightboxFlipH);
+});
+lightboxFlipVBtn?.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    toggleLightboxFlip('vertical');
+    lightboxFlipVBtn.classList.toggle('active', currentLightboxFlipV);
+    lbTfFlipVBtn?.classList.toggle('active', currentLightboxFlipV);
+});
+
+// Bottom transform bar button listeners
+lbTfRotateLeftBtn?.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    applyLightboxRotation(-90);
+});
+lbTfRotateRightBtn?.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    applyLightboxRotation(90);
+});
+lbTfFlipHBtn?.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    toggleLightboxFlip('horizontal');
+    lightboxFlipHBtn?.classList.toggle('active', currentLightboxFlipH);
+    lbTfFlipHBtn.classList.toggle('active', currentLightboxFlipH);
+});
+lbTfFlipVBtn?.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    toggleLightboxFlip('vertical');
+    lightboxFlipVBtn?.classList.toggle('active', currentLightboxFlipV);
+    lbTfFlipVBtn.classList.toggle('active', currentLightboxFlipV);
+});
+
 lightboxCropBtn?.addEventListener('click', (e) => {
     e.preventDefault();
     e.stopPropagation();

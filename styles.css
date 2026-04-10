@@ -4002,6 +4002,19 @@ video.blow-up-media {
     right: 148px;
 }
 
+#lightbox-flip-h-btn {
+    right: 192px;
+}
+
+#lightbox-flip-v-btn {
+    right: 236px;
+}
+
+.lightbox-action-btn.active {
+    background: rgba(99, 102, 241, 0.35);
+    color: white;
+}
+
 #lightbox.crop-mode .lightbox-nav-btn,
 #lightbox.crop-mode .media-controls,
 #lightbox.crop-mode #lightbox-filmstrip {
@@ -7538,6 +7551,56 @@ video.blow-up-media {
     max-width: min(var(--lightbox-max-w, 90vw), calc(100vw - var(--lb-inspector-width, 0px) - 80px));
     max-height: var(--lightbox-max-h, 90vh);
     object-fit: contain;
+}
+
+/* Transform toolbar (rotate / flip) */
+.lb-transform-bar {
+    position: fixed;
+    bottom: var(--space-5);
+    left: calc(50% - (var(--lb-inspector-width, 0px) / 2));
+    transform: translateX(-50%);
+    z-index: 1002;
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    padding: 4px 8px;
+    background: rgba(13, 13, 15, 0.94);
+    border: 1px solid var(--border-default);
+    border-radius: 8px;
+    box-shadow: var(--shadow-lg);
+    transition: opacity var(--duration-slow), visibility var(--duration-slow), bottom var(--duration-normal);
+    user-select: none;
+}
+
+.lb-transform-bar.hidden {
+    display: none !important;
+}
+
+/* When media controls are visible, push transform bar above them */
+.lb-transform-bar.above-mc {
+    bottom: calc(var(--space-5) + 52px);
+}
+
+.lb-tf-btn {
+    padding: 5px;
+    border-radius: 5px;
+}
+
+.lb-tf-btn.active {
+    background: rgba(99, 102, 241, 0.35);
+    color: white;
+}
+
+.lb-tf-separator {
+    width: 1px;
+    height: 16px;
+    background: var(--border-default);
+    margin: 0 2px;
+}
+
+/* Hide transform bar during crop mode */
+#lightbox.crop-mode .lb-transform-bar {
+    display: none !important;
 }
 
 .media-controls {

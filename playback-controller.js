@@ -883,6 +883,10 @@ class MediaControlBar {
         // Show controls
         this._container.style.display = 'flex';
         this._showControls();
+
+        // Push transform bar above media controls
+        const tfBar = document.getElementById('lb-transform-bar');
+        if (tfBar) tfBar.classList.add('above-mc');
     }
 
     unbind() {
@@ -901,6 +905,10 @@ class MediaControlBar {
     hide() {
         this._container.style.display = 'none';
         this._stopHideTimer();
+
+        // Drop transform bar back to default position
+        const tfBar = document.getElementById('lb-transform-bar');
+        if (tfBar) tfBar.classList.remove('above-mc');
     }
 
     // --- Seek bar ---

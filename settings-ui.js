@@ -1490,6 +1490,8 @@ const DEFAULT_SHORTCUTS = {
     lb_clearMarks:      { key: 'x', label: 'Clear loop marks',   category: 'Lightbox' },
     lb_rotateLeft:      { key: 'q', label: 'Rotate left',        category: 'Lightbox' },
     lb_rotateRight:     { key: 'w', label: 'Rotate right',       category: 'Lightbox' },
+    lb_flipH:           { key: 'h', label: 'Flip horizontal',    category: 'Lightbox' },
+    lb_flipV:           { key: 'v', label: 'Flip vertical',      category: 'Lightbox' },
     lb_cropImage:       { key: 'r', label: 'Crop image',         category: 'Lightbox' },
     lb_saveFrame:       { key: 'e', label: 'Save current frame', category: 'Lightbox' },
     lb_exportTrim:      { key: 'e', ctrl: true, label: 'Export trimmed range', category: 'Lightbox' },

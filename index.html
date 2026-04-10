@@ -235,6 +235,12 @@
             <button id="lightbox-rotate-right-btn" class="lightbox-action-btn hidden" title="Rotate Right">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"/><path d="M21 8a9 9 0 1 1-3-6.7L21 4"/></svg>
             </button>
+            <button id="lightbox-flip-v-btn" class="lightbox-action-btn hidden" title="Flip Vertical">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h18"/><path d="m7 16-5-4 5-4"/><path d="m17 16 5-4-5-4"/></svg>
+            </button>
+            <button id="lightbox-flip-h-btn" class="lightbox-action-btn hidden" title="Flip Horizontal">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18"/><path d="m16 8 4 4-4 4"/><path d="m8 8-4 4 4 4"/></svg>
+            </button>
             <button id="lightbox-crop-btn" class="lightbox-action-btn hidden" title="Crop Image">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/><path d="M6 18H4a2 2 0 0 1-2-2v-2"/><path d="M18 6h2a2 2 0 0 1 2 2v2"/></svg>
             </button>
@@ -255,6 +261,22 @@
                         </div>
                     </label>
                 </div>
+            </div>
+            <!-- Transform toolbar (rotate/flip) — always visible when lightbox is open -->
+            <div class="lb-transform-bar hidden" id="lb-transform-bar">
+                <button class="mc-btn lb-tf-btn" id="lb-tf-rotate-left" title="Rotate left (Q)">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 2v6h6"/><path d="M3 8a9 9 0 1 0 3-6.7L3 4"/></svg>
+                </button>
+                <button class="mc-btn lb-tf-btn" id="lb-tf-rotate-right" title="Rotate right (W)">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"/><path d="M21 8a9 9 0 1 1-3-6.7L21 4"/></svg>
+                </button>
+                <div class="lb-tf-separator"></div>
+                <button class="mc-btn lb-tf-btn" id="lb-tf-flip-h" title="Flip horizontal (H)">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18"/><path d="m16 8 4 4-4 4"/><path d="m8 8-4 4 4 4"/></svg>
+                </button>
+                <button class="mc-btn lb-tf-btn" id="lb-tf-flip-v" title="Flip vertical (V)">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h18"/><path d="m7 16-5-4 5-4"/><path d="m17 16 5-4-5-4"/></svg>
+                </button>
             </div>
             <!-- Custom media controls -->
             <div class="media-controls" id="media-controls">

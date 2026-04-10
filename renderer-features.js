@@ -4731,6 +4731,20 @@ function initNewFeatures() {
             } else if (matchesShortcut(e, 'lb_rotateRight')) {
                 e.preventDefault();
                 if (typeof applyLightboxRotation === 'function') applyLightboxRotation(90);
+            } else if (matchesShortcut(e, 'lb_flipH')) {
+                e.preventDefault();
+                if (typeof toggleLightboxFlip === 'function') {
+                    toggleLightboxFlip('horizontal');
+                    document.getElementById('lightbox-flip-h-btn')?.classList.toggle('active', currentLightboxFlipH);
+                    document.getElementById('lb-tf-flip-h')?.classList.toggle('active', currentLightboxFlipH);
+                }
+            } else if (matchesShortcut(e, 'lb_flipV')) {
+                e.preventDefault();
+                if (typeof toggleLightboxFlip === 'function') {
+                    toggleLightboxFlip('vertical');
+                    document.getElementById('lightbox-flip-v-btn')?.classList.toggle('active', currentLightboxFlipV);
+                    document.getElementById('lb-tf-flip-v')?.classList.toggle('active', currentLightboxFlipV);
+                }
             } else if (matchesShortcut(e, 'lb_cropImage')) {
                 e.preventDefault();
                 if (typeof enterLightboxCropMode === 'function') enterLightboxCropMode();

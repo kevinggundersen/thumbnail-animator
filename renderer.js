@@ -13235,64 +13235,78 @@ async function refreshTagsCache() {
     } catch {}
 }
 
-// ── Hierarchical tag helpers (slash-notation convention) ─────────────────────
+// ── Tag groups (drag-and-drop grouping, stored in localStorage) ──────────────
 
-function getTagLeafName(tagName) {
-    if (!tagName) return '';
-    const idx = tagName.lastIndexOf('/');
-    return idx >= 0 ? tagName.substring(idx + 1) : tagName;
-}
-
-function getTagPrefix(tagName) {
-    if (!tagName) return '';
-    const idx = tagName.lastIndexOf('/');
-    return idx >= 0 ? tagName.substring(0, idx) : '';
-}
-
-/** Build a tree from flat tag array for hierarchical display.
- *  Returns an array of root-level nodes: { segment, fullPath, tag (or null for virtual groups), children[], depth }
- *  Tags without '/' appear as root-level leaf nodes. */
-function buildTagTree(tags) {
-    const root = { segment: '', fullPath: '', tag: null, children: [], depth: -1 };
-    const nodeMap = new Map(); // fullPath -> node
-    nodeMap.set('', root);
-
-    // Sort tags alphabetically for consistent tree building
-    const sorted = [...tags].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
-
-    for (const tag of sorted) {
-        const segments = tag.name.split('/');
-        let currentPath = '';
-        let parent = root;
-
-        for (let i = 0; i < segments.length; i++) {
-            const seg = segments[i];
-            const isLeaf = i === segments.length - 1;
-            currentPath = currentPath ? currentPath + '/' + seg : seg;
-
-            let node = nodeMap.get(currentPath);
-            if (!node) {
-                node = { segment: seg, fullPath: currentPath, tag: null, children: [], depth: i };
-                nodeMap.set(currentPath, node);
-                parent.children.push(node);
-            }
-            if (isLeaf) {
-                node.tag = tag; // Attach the actual tag object to the leaf node
-            }
-            parent = node;
+// Structure: { groups: [{ id, name, collapsed }], tagToGroup: { [tagId]: groupId } }
+let tagGroups = { groups: [], tagToGroup: {} };
+let _tagGroupIdCounter = 0;
+try {
+    const saved = localStorage.getItem('tagGroups');
+    if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && Array.isArray(parsed.groups)) {
+            tagGroups = parsed;
+            _tagGroupIdCounter = parsed.groups.reduce((max, g) => Math.max(max, g.id || 0), 0);
         }
     }
-    return root.children;
-}
-
-let tagTreeCollapsed = new Set();
-try {
-    const saved = localStorage.getItem('tagTreeCollapsed');
-    if (saved) tagTreeCollapsed = new Set(JSON.parse(saved));
 } catch {}
 
-function saveTagTreeCollapsed() {
-    deferLocalStorageWrite('tagTreeCollapsed', JSON.stringify([...tagTreeCollapsed]));
+function saveTagGroups() {
+    deferLocalStorageWrite('tagGroups', JSON.stringify(tagGroups));
+}
+
+function createTagGroup(name) {
+    const id = ++_tagGroupIdCounter;
+    tagGroups.groups.push({ id, name, collapsed: false });
+    saveTagGroups();
+    return id;
+}
+
+function renameTagGroup(groupId, newName) {
+    const g = tagGroups.groups.find(g => g.id === groupId);
+    if (g) { g.name = newName; saveTagGroups(); }
+}
+
+function deleteTagGroup(groupId) {
+    // Move all tags in this group back to ungrouped
+    for (const [tagId, gId] of Object.entries(tagGroups.tagToGroup)) {
+        if (gId === groupId) delete tagGroups.tagToGroup[tagId];
+    }
+    tagGroups.groups = tagGroups.groups.filter(g => g.id !== groupId);
+    saveTagGroups();
+}
+
+function moveTagToGroup(tagId, groupId) {
+    if (groupId === null || groupId === undefined) {
+        delete tagGroups.tagToGroup[tagId];
+    } else {
+        tagGroups.tagToGroup[tagId] = groupId;
+    }
+    saveTagGroups();
+}
+
+function toggleTagGroupCollapse(groupId) {
+    const g = tagGroups.groups.find(g => g.id === groupId);
+    if (g) { g.collapsed = !g.collapsed; saveTagGroups(); }
+}
+
+/** Returns { grouped: Map<groupId, { group, tags[] }>, ungrouped: tag[] } */
+function getGroupedTags(tags) {
+    const grouped = new Map();
+    const ungrouped = [];
+    // Init group buckets
+    for (const g of tagGroups.groups) {
+        grouped.set(g.id, { group: g, tags: [] });
+    }
+    for (const tag of tags) {
+        const gId = tagGroups.tagToGroup[tag.id];
+        if (gId != null && grouped.has(gId)) {
+            grouped.get(gId).tags.push(tag);
+        } else {
+            ungrouped.push(tag);
+        }
+    }
+    return { grouped, ungrouped };
 }
 
 // ── File-tag cache (mirrors star-rating in-memory pattern) ──────────────────
@@ -13388,7 +13402,7 @@ function updateCardTagBadges(card) {
         const badge = document.createElement('span');
         badge.className = 'tag-badge';
         if (tag.color) badge.style.background = tag.color;
-        badge.textContent = getTagLeafName(tag.name);
+        badge.textContent = tag.name;
         badge.title = tag.name;
         container.appendChild(badge);
     }
@@ -13516,23 +13530,20 @@ async function renderTagPickerList(filter) {
     const dashSvg = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3"><line x1="6" y1="12" x2="18" y2="12"/></svg>`;
     const chevronSvg = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>`;
 
-    function makeTagItem(tag, depth) {
+    function makeTagItem(tag) {
         const count = tagCounts.get(tag.id) || 0;
         const isAll = count === totalFiles;
         const isPartial = count > 0 && count < totalFiles;
         const stateClass = isAll ? ' active' : isPartial ? ' partial' : '';
         const icon = isPartial ? dashSvg : checkSvg;
-        const displayName = (filter && filter.trim()) ? tag.name : getTagLeafName(tag.name);
 
         const item = document.createElement('div');
         item.className = 'tag-picker-item' + stateClass;
-        if (depth > 0) item.style.paddingLeft = (8 + depth * 20) + 'px';
         item.innerHTML = `
             <div class="tag-picker-item-check">${icon}</div>
             <span class="tag-picker-item-dot" style="background:${tag.color || '#6366f1'}"></span>
-            <span class="tag-picker-item-name">${escapeHtml(displayName)}</span>
+            <span class="tag-picker-item-name">${escapeHtml(tag.name)}</span>
         `;
-        item.title = tag.name;
         item.addEventListener('click', async () => {
             const wasAll = item.classList.contains('active');
             const normalizedPaths = tagPickerFilePaths.map(fp => normalizePath(fp));
@@ -13556,57 +13567,43 @@ async function renderTagPickerList(filter) {
         return item;
     }
 
-    // When searching, show flat list with full paths
+    // When searching, show flat list
     if (filter && filter.trim()) {
         for (const tag of tags) {
-            list.appendChild(makeTagItem(tag, 0));
+            list.appendChild(makeTagItem(tag));
         }
     } else {
-        // Build hierarchical tree
-        const tree = buildTagTree(tags);
+        // Show tags organized by groups
+        const { grouped, ungrouped } = getGroupedTags(tags);
 
-        function renderTreeNodes(nodes, parentEl) {
-            for (const node of nodes) {
-                if (node.tag && node.children.length === 0) {
-                    // Leaf tag node — render as selectable item
-                    parentEl.appendChild(makeTagItem(node.tag, node.depth));
-                } else {
-                    // Group header (virtual prefix or tag-with-children)
-                    const header = document.createElement('div');
-                    header.className = 'tag-picker-group-header';
-                    if (node.depth > 0) header.style.paddingLeft = (8 + node.depth * 20) + 'px';
-                    const collapsed = tagTreeCollapsed.has(node.fullPath);
+        for (const [gId, { group, tags: groupTags }] of grouped) {
+            if (groupTags.length === 0) continue;
+            const collapsed = group.collapsed;
 
-                    header.innerHTML = `
-                        <span class="tag-picker-group-chevron${collapsed ? '' : ' expanded'}">${chevronSvg}</span>
-                        <span class="tag-picker-group-name">${escapeHtml(node.segment)}</span>
-                    `;
-                    header.addEventListener('click', () => {
-                        if (tagTreeCollapsed.has(node.fullPath)) {
-                            tagTreeCollapsed.delete(node.fullPath);
-                        } else {
-                            tagTreeCollapsed.add(node.fullPath);
-                        }
-                        saveTagTreeCollapsed();
-                        renderTagPickerList(filter);
-                    });
-                    parentEl.appendChild(header);
+            const header = document.createElement('div');
+            header.className = 'tag-picker-group-header';
+            header.innerHTML = `
+                <span class="tag-picker-group-chevron${collapsed ? '' : ' expanded'}">${chevronSvg}</span>
+                <span class="tag-picker-group-name">${escapeHtml(group.name)}</span>
+                <span class="tag-picker-group-count">${groupTags.length}</span>
+            `;
+            header.addEventListener('click', () => {
+                toggleTagGroupCollapse(gId);
+                renderTagPickerList(filter);
+            });
+            list.appendChild(header);
 
-                    // If this group node IS also a real tag, render a selectable item for it
-                    if (node.tag) {
-                        if (!collapsed) {
-                            parentEl.appendChild(makeTagItem(node.tag, node.depth + 1));
-                        }
-                    }
-
-                    // Render children if not collapsed
-                    if (!collapsed) {
-                        renderTreeNodes(node.children, parentEl);
-                    }
+            if (!collapsed) {
+                for (const tag of groupTags) {
+                    list.appendChild(makeTagItem(tag));
                 }
             }
         }
-        renderTreeNodes(tree, list);
+
+        // Ungrouped tags
+        for (const tag of ungrouped) {
+            list.appendChild(makeTagItem(tag));
+        }
     }
 }
 
@@ -13721,65 +13718,48 @@ function showTagFilterDropdown() {
             dropdown.appendChild(clearItem);
         }
 
-        const tree = buildTagTree(allTagsCache);
+        const { grouped, ungrouped } = getGroupedTags(allTagsCache);
+        const chevronSvg = '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>';
 
-        function renderFilterTreeNodes(nodes, parentEl) {
-            for (const node of nodes) {
-                if (node.tag && node.children.length === 0) {
-                    // Leaf tag — selectable
-                    const isActive = activeIds.has(node.tag.id);
-                    const item = document.createElement('div');
-                    item.style.cssText = `display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:4px;cursor:pointer;font-size:13px;color:var(--text-primary);padding-left:${8 + node.depth * 16}px;`;
-                    item.innerHTML = `<span style="width:8px;height:8px;border-radius:50%;background:${escapeHtml(node.tag.color || '#6366f1')};flex-shrink:0"></span><span style="flex:1">${escapeHtml(node.segment)}</span>${isActive ? '<span style="color:var(--accent)">&#10003;</span>' : ''}`;
-                    item.title = node.tag.name;
-                    item.addEventListener('mouseenter', () => item.style.background = 'var(--bg-hover,#2a2a2e)');
-                    item.addEventListener('mouseleave', () => item.style.background = '');
-                    item.addEventListener('click', async () => {
-                        await toggleTagFilter(node.tag);
-                        buildDropdownItems();
-                        dropdown.style.top = (rect.top - dropdown.offsetHeight - 4) + 'px';
-                    });
-                    parentEl.appendChild(item);
-                } else {
-                    // Group header
-                    const collapsed = tagTreeCollapsed.has(node.fullPath);
-                    const header = document.createElement('div');
-                    header.style.cssText = `display:flex;align-items:center;gap:6px;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:12px;color:var(--text-secondary);padding-left:${8 + node.depth * 16}px;`;
-                    header.innerHTML = `<span style="display:inline-flex;transform:rotate(${collapsed ? '0' : '90'}deg);transition:transform 0.15s">${'<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>'}</span><span>${escapeHtml(node.segment)}</span>`;
-                    header.addEventListener('mouseenter', () => header.style.background = 'var(--bg-hover,#2a2a2e)');
-                    header.addEventListener('mouseleave', () => header.style.background = '');
-                    header.addEventListener('click', () => {
-                        if (tagTreeCollapsed.has(node.fullPath)) tagTreeCollapsed.delete(node.fullPath);
-                        else tagTreeCollapsed.add(node.fullPath);
-                        saveTagTreeCollapsed();
-                        buildDropdownItems();
-                        dropdown.style.top = (rect.top - dropdown.offsetHeight - 4) + 'px';
-                    });
-                    parentEl.appendChild(header);
+        function makeFilterTagItem(tag) {
+            const isActive = activeIds.has(tag.id);
+            const item = document.createElement('div');
+            item.style.cssText = 'display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:4px;cursor:pointer;font-size:13px;color:var(--text-primary);';
+            item.innerHTML = `<span style="width:8px;height:8px;border-radius:50%;background:${escapeHtml(tag.color || '#6366f1')};flex-shrink:0"></span><span style="flex:1">${escapeHtml(tag.name)}</span>${isActive ? '<span style="color:var(--accent)">&#10003;</span>' : ''}`;
+            item.addEventListener('mouseenter', () => item.style.background = 'var(--bg-hover,#2a2a2e)');
+            item.addEventListener('mouseleave', () => item.style.background = '');
+            item.addEventListener('click', async () => {
+                await toggleTagFilter(tag);
+                buildDropdownItems();
+                dropdown.style.top = (rect.top - dropdown.offsetHeight - 4) + 'px';
+            });
+            return item;
+        }
 
-                    if (!collapsed) {
-                        // If this group IS also a tag, render selectable item
-                        if (node.tag) {
-                            const isActive = activeIds.has(node.tag.id);
-                            const item = document.createElement('div');
-                            item.style.cssText = `display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:4px;cursor:pointer;font-size:13px;color:var(--text-primary);padding-left:${8 + (node.depth + 1) * 16}px;`;
-                            item.innerHTML = `<span style="width:8px;height:8px;border-radius:50%;background:${escapeHtml(node.tag.color || '#6366f1')};flex-shrink:0"></span><span style="flex:1">${escapeHtml(node.segment)}</span>${isActive ? '<span style="color:var(--accent)">&#10003;</span>' : ''}`;
-                            item.title = node.tag.name;
-                            item.addEventListener('mouseenter', () => item.style.background = 'var(--bg-hover,#2a2a2e)');
-                            item.addEventListener('mouseleave', () => item.style.background = '');
-                            item.addEventListener('click', async () => {
-                                await toggleTagFilter(node.tag);
-                                buildDropdownItems();
-                                dropdown.style.top = (rect.top - dropdown.offsetHeight - 4) + 'px';
-                            });
-                            parentEl.appendChild(item);
-                        }
-                        renderFilterTreeNodes(node.children, parentEl);
-                    }
+        for (const [gId, { group, tags: groupTags }] of grouped) {
+            if (groupTags.length === 0) continue;
+            const header = document.createElement('div');
+            header.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:12px;color:var(--text-secondary);';
+            header.innerHTML = `<span style="display:inline-flex;transform:rotate(${group.collapsed ? '0' : '90'}deg);transition:transform 0.15s">${chevronSvg}</span><span>${escapeHtml(group.name)}</span>`;
+            header.addEventListener('mouseenter', () => header.style.background = 'var(--bg-hover,#2a2a2e)');
+            header.addEventListener('mouseleave', () => header.style.background = '');
+            header.addEventListener('click', () => {
+                toggleTagGroupCollapse(gId);
+                buildDropdownItems();
+                dropdown.style.top = (rect.top - dropdown.offsetHeight - 4) + 'px';
+            });
+            dropdown.appendChild(header);
+
+            if (!group.collapsed) {
+                for (const tag of groupTags) {
+                    dropdown.appendChild(makeFilterTagItem(tag));
                 }
             }
         }
-        renderFilterTreeNodes(tree, dropdown);
+
+        for (const tag of ungrouped) {
+            dropdown.appendChild(makeFilterTagItem(tag));
+        }
     }
 
     buildDropdownItems();
@@ -13887,29 +13867,43 @@ async function renderTagsManagement() {
     const countMap = {};
     for (const t of topTags) countMap[t.id] = t.file_count || 0;
 
-    function makeTagManagementItem(tag, depth) {
+    const chevronSvg = '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>';
+
+    function makeTagManagementItem(tag) {
         const item = document.createElement('div');
         item.className = 'tag-list-item';
-        if (depth > 0) item.style.paddingLeft = (8 + depth * 20) + 'px';
+        item.draggable = true;
+        item.dataset.tagId = tag.id;
         item.innerHTML = `
+            <span class="tag-list-item-drag" title="Drag to group">&#8942;&#8942;</span>
             <span class="tag-list-item-dot" style="background:${tag.color || '#6366f1'}"></span>
-            <span class="tag-list-item-name">${escapeHtml(getTagLeafName(tag.name))}</span>
+            <span class="tag-list-item-name">${escapeHtml(tag.name)}</span>
             <span class="tag-list-item-count">${countMap[tag.id] || 0} files</span>
             <div class="tag-list-item-actions">
                 <button class="tag-list-item-btn edit-tag-btn" title="Edit">&#9998;</button>
                 <button class="tag-list-item-btn danger delete-tag-btn" title="Delete">&times;</button>
             </div>
         `;
-        item.title = tag.name;
+
+        // Drag source
+        item.addEventListener('dragstart', (e) => {
+            e.dataTransfer.setData('application/x-tag-group-drag', JSON.stringify({ tagId: tag.id }));
+            e.dataTransfer.effectAllowed = 'move';
+            item.classList.add('tag-dragging');
+        });
+        item.addEventListener('dragend', () => item.classList.remove('tag-dragging'));
+
         item.querySelector('.edit-tag-btn').addEventListener('click', () => {
             if (item.classList.contains('editing')) return;
             item.classList.add('editing');
 
+            const drag = item.querySelector('.tag-list-item-drag');
             const dot = item.querySelector('.tag-list-item-dot');
             const nameSpan = item.querySelector('.tag-list-item-name');
             const countSpan = item.querySelector('.tag-list-item-count');
             const actionsDiv = item.querySelector('.tag-list-item-actions');
 
+            drag.style.display = 'none';
             dot.style.display = 'none';
             nameSpan.style.display = 'none';
             countSpan.style.display = 'none';
@@ -13945,6 +13939,7 @@ async function renderTagsManagement() {
 
             const cancel = () => {
                 editRow.remove();
+                drag.style.display = '';
                 dot.style.display = '';
                 nameSpan.style.display = '';
                 countSpan.style.display = '';
@@ -13973,38 +13968,197 @@ async function renderTagsManagement() {
         return item;
     }
 
-    const tree = buildTagTree(allTagsCache);
-    const chevronSvg = '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>';
+    function makeGroupSection(group, groupTags) {
+        const section = document.createElement('div');
+        section.className = 'tag-group-section';
+        section.dataset.groupId = group.id;
 
-    function renderMgmtTreeNodes(nodes, parentEl) {
-        for (const node of nodes) {
-            if (node.tag && node.children.length === 0) {
-                parentEl.appendChild(makeTagManagementItem(node.tag, node.depth));
-            } else {
-                // Group header
-                const collapsed = tagTreeCollapsed.has(node.fullPath);
-                const header = document.createElement('div');
-                header.className = 'tag-list-group-header';
-                if (node.depth > 0) header.style.paddingLeft = (8 + node.depth * 20) + 'px';
-                header.innerHTML = `<span class="tag-picker-group-chevron${collapsed ? '' : ' expanded'}">${chevronSvg}</span><span>${escapeHtml(node.segment)}</span>`;
-                header.addEventListener('click', () => {
-                    if (tagTreeCollapsed.has(node.fullPath)) tagTreeCollapsed.delete(node.fullPath);
-                    else tagTreeCollapsed.add(node.fullPath);
-                    saveTagTreeCollapsed();
-                    renderTagsManagement();
-                });
-                parentEl.appendChild(header);
+        const header = document.createElement('div');
+        header.className = 'tag-list-group-header';
+        header.innerHTML = `
+            <span class="tag-picker-group-chevron${group.collapsed ? '' : ' expanded'}">${chevronSvg}</span>
+            <span class="tag-list-group-name">${escapeHtml(group.name)}</span>
+            <span class="tag-picker-group-count">${groupTags.length}</span>
+            <div class="tag-list-item-actions">
+                <button class="tag-list-item-btn tag-group-rename-btn" title="Rename group">&#9998;</button>
+                <button class="tag-list-item-btn danger tag-group-delete-btn" title="Delete group">&times;</button>
+            </div>
+        `;
 
-                if (!collapsed) {
-                    if (node.tag) {
-                        parentEl.appendChild(makeTagManagementItem(node.tag, node.depth + 1));
-                    }
-                    renderMgmtTreeNodes(node.children, parentEl);
-                }
+        // Collapse toggle
+        header.querySelector('.tag-picker-group-chevron').addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleTagGroupCollapse(group.id);
+            renderTagsManagement();
+        });
+
+        // Rename group
+        header.querySelector('.tag-group-rename-btn').addEventListener('click', (e) => {
+            e.stopPropagation();
+            const nameEl = header.querySelector('.tag-list-group-name');
+            const currentName = group.name;
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.value = currentName;
+            input.className = 'tag-create-input';
+            input.style.cssText = 'width:120px;font-size:12px;padding:2px 6px;';
+            nameEl.replaceWith(input);
+            input.focus();
+            input.select();
+            const commit = () => {
+                const newName = input.value.trim();
+                if (newName && newName !== currentName) renameTagGroup(group.id, newName);
+                renderTagsManagement();
+            };
+            input.addEventListener('blur', commit);
+            input.addEventListener('keydown', (ev) => {
+                if (ev.key === 'Enter') commit();
+                if (ev.key === 'Escape') renderTagsManagement();
+            });
+        });
+
+        // Delete group
+        header.querySelector('.tag-group-delete-btn').addEventListener('click', async (e) => {
+            e.stopPropagation();
+            deleteTagGroup(group.id);
+            renderTagsManagement();
+        });
+
+        // Drop target for tags
+        function handleDragOver(e) {
+            e.preventDefault();
+            if (e.dataTransfer.types.includes('application/x-tag-group-drag')) {
+                e.dataTransfer.dropEffect = 'move';
+                header.classList.add('tag-group-drag-over');
             }
         }
+        function handleDrop(e) {
+            e.preventDefault();
+            header.classList.remove('tag-group-drag-over');
+            try {
+                const data = JSON.parse(e.dataTransfer.getData('application/x-tag-group-drag'));
+                moveTagToGroup(data.tagId, group.id);
+                renderTagsManagement();
+            } catch {}
+        }
+        header.addEventListener('dragover', handleDragOver);
+        header.addEventListener('dragleave', () => header.classList.remove('tag-group-drag-over'));
+        header.addEventListener('drop', handleDrop);
+
+        section.appendChild(header);
+
+        if (!group.collapsed) {
+            const itemsContainer = document.createElement('div');
+            itemsContainer.className = 'tag-group-items';
+            itemsContainer.addEventListener('dragover', handleDragOver);
+            itemsContainer.addEventListener('dragleave', (e) => {
+                if (!itemsContainer.contains(e.relatedTarget)) header.classList.remove('tag-group-drag-over');
+            });
+            itemsContainer.addEventListener('drop', handleDrop);
+
+            for (const tag of groupTags) {
+                itemsContainer.appendChild(makeTagManagementItem(tag));
+            }
+            section.appendChild(itemsContainer);
+        }
+
+        return section;
     }
-    renderMgmtTreeNodes(tree, list);
+
+    // "Create Group" button — toggles an inline input row
+    const createGroupRow = document.createElement('div');
+    createGroupRow.className = 'tag-create-group-row';
+
+    const createGroupBtn = document.createElement('button');
+    createGroupBtn.className = 'settings-btn tag-create-group-btn';
+    createGroupBtn.textContent = '+ Create Group';
+
+    const createGroupInput = document.createElement('input');
+    createGroupInput.type = 'text';
+    createGroupInput.placeholder = 'Group name';
+    createGroupInput.className = 'tag-create-input tag-create-group-input hidden';
+
+    const createGroupConfirm = document.createElement('button');
+    createGroupConfirm.className = 'tag-list-item-btn tag-create-group-confirm hidden';
+    createGroupConfirm.innerHTML = '&#10003;';
+    createGroupConfirm.title = 'Create';
+
+    function commitGroupCreate() {
+        const name = createGroupInput.value.trim();
+        if (name) {
+            createTagGroup(name);
+            renderTagsManagement();
+        } else {
+            // Cancel — just hide
+            createGroupInput.classList.add('hidden');
+            createGroupConfirm.classList.add('hidden');
+            createGroupBtn.classList.remove('hidden');
+        }
+    }
+
+    createGroupBtn.addEventListener('click', () => {
+        createGroupBtn.classList.add('hidden');
+        createGroupInput.classList.remove('hidden');
+        createGroupConfirm.classList.remove('hidden');
+        createGroupInput.value = '';
+        createGroupInput.focus();
+    });
+    createGroupInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') commitGroupCreate();
+        if (e.key === 'Escape') {
+            createGroupInput.classList.add('hidden');
+            createGroupConfirm.classList.add('hidden');
+            createGroupBtn.classList.remove('hidden');
+        }
+    });
+    createGroupConfirm.addEventListener('click', commitGroupCreate);
+
+    createGroupRow.appendChild(createGroupBtn);
+    createGroupRow.appendChild(createGroupInput);
+    createGroupRow.appendChild(createGroupConfirm);
+    list.appendChild(createGroupRow);
+
+    const { grouped, ungrouped } = getGroupedTags(allTagsCache);
+
+    // Render groups
+    for (const [gId, { group, tags: groupTags }] of grouped) {
+        list.appendChild(makeGroupSection(group, groupTags));
+    }
+
+    // Ungrouped tags section — also a drop target to ungroup
+    if (ungrouped.length > 0 || grouped.size > 0) {
+        const ungroupedSection = document.createElement('div');
+        ungroupedSection.className = 'tag-group-section tag-ungrouped-section';
+
+        if (grouped.size > 0) {
+            const ungroupedLabel = document.createElement('div');
+            ungroupedLabel.className = 'tag-list-group-header tag-ungrouped-header';
+            ungroupedLabel.innerHTML = `<span style="font-style:italic">Ungrouped</span>`;
+            ungroupedLabel.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                if (e.dataTransfer.types.includes('application/x-tag-group-drag')) {
+                    e.dataTransfer.dropEffect = 'move';
+                    ungroupedLabel.classList.add('tag-group-drag-over');
+                }
+            });
+            ungroupedLabel.addEventListener('dragleave', () => ungroupedLabel.classList.remove('tag-group-drag-over'));
+            ungroupedLabel.addEventListener('drop', (e) => {
+                e.preventDefault();
+                ungroupedLabel.classList.remove('tag-group-drag-over');
+                try {
+                    const data = JSON.parse(e.dataTransfer.getData('application/x-tag-group-drag'));
+                    moveTagToGroup(data.tagId, null);
+                    renderTagsManagement();
+                } catch {}
+            });
+            ungroupedSection.appendChild(ungroupedLabel);
+        }
+
+        for (const tag of ungrouped) {
+            ungroupedSection.appendChild(makeTagManagementItem(tag));
+        }
+        list.appendChild(ungroupedSection);
+    }
 
     if (allTagsCache.length === 0) {
         list.innerHTML = '<div style="color:var(--text-secondary);font-size:13px;padding:16px 0;text-align:center;">No tags yet. Create one above or right-click a file.</div>';
@@ -14031,44 +14185,6 @@ document.getElementById('tag-create-btn').addEventListener('click', async () => 
 
 document.getElementById('tag-create-name').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') document.getElementById('tag-create-btn').click();
-    if (e.key === 'Escape') {
-        const hint = document.getElementById('tag-create-prefix-hint');
-        if (hint) hint.remove();
-    }
-});
-
-// Auto-suggest existing prefixes when typing '/' in tag name
-document.getElementById('tag-create-name').addEventListener('input', (e) => {
-    let hint = document.getElementById('tag-create-prefix-hint');
-    const val = e.target.value;
-    if (!val.includes('/')) {
-        if (hint) hint.remove();
-        return;
-    }
-    const prefix = val.substring(0, val.lastIndexOf('/'));
-    if (!prefix) {
-        if (hint) hint.remove();
-        return;
-    }
-    const matchingPrefixes = new Set();
-    for (const tag of allTagsCache) {
-        if (tag.name.toLowerCase().startsWith(prefix.toLowerCase() + '/')) {
-            matchingPrefixes.add(tag.name.substring(0, tag.name.indexOf('/', prefix.length + 1) >= 0
-                ? tag.name.indexOf('/', prefix.length + 1)
-                : tag.name.length));
-        }
-    }
-    if (matchingPrefixes.size === 0) {
-        if (hint) hint.remove();
-        return;
-    }
-    if (!hint) {
-        hint = document.createElement('div');
-        hint.id = 'tag-create-prefix-hint';
-        hint.style.cssText = 'font-size:11px;color:var(--text-secondary);padding:2px 0 4px;';
-        e.target.parentElement.appendChild(hint);
-    }
-    hint.textContent = 'Existing: ' + [...matchingPrefixes].slice(0, 5).join(', ');
 });
 
 // Render tags management when settings tab is clicked
@@ -15087,8 +15203,7 @@ class InspectorPanel {
         tags.forEach(t => {
             const chip = document.createElement('span');
             chip.className = 'lb-insp-tag-chip';
-            chip.textContent = getTagLeafName(t.name) || '';
-            chip.title = t.name || '';
+            chip.textContent = t.name || '';
             if (t.color) {
                 chip.style.background = t.color + '33';
                 chip.style.borderColor = t.color + '66';

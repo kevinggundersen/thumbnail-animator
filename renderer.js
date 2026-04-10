@@ -6490,7 +6490,8 @@ function filterItems(items) {
         }
         if (starFilterActive) {
             if (item.type === 'folder' || !item.path) return false;
-            const rating = getFileRating(item.path);
+            // Use effective rating (hash overlay when linked duplicates is on)
+            const rating = (typeof getEffectiveRating === 'function') ? getEffectiveRating(item.path) : getFileRating(item.path);
             item._cachedRating = rating; // cache for subsequent sort
             if (rating <= 0) return false;
         }
@@ -6529,11 +6530,13 @@ function sortItems(inputItems) {
     // eliminated by a single O(n) pre-pass (5-20x faster on rating sort).
     // Always overwrite (no === undefined guard) so pin/rating changes between
     // sorts are reflected immediately.
+    const _effectivePin = (typeof isEffectivelyPinned === 'function') ? isEffectivelyPinned : isFilePinned;
+    const _effectiveRating = (typeof getEffectiveRating === 'function') ? getEffectiveRating : getFileRating;
     for (let i = 0; i < items.length; i++) {
         const it = items[i];
-        it._cachedPinned = isFilePinned(it.path || it.folderPath);
+        it._cachedPinned = _effectivePin(it.path || it.folderPath);
         if (ratingSort) {
-            it._cachedRating = getFileRating(it.path);
+            it._cachedRating = _effectiveRating(it.path);
         }
     }
 

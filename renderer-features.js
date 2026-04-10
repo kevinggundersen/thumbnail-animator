@@ -3420,6 +3420,39 @@ function _getSiblingPathsSync(filePath) {
     return _hashToPaths[hash].filter(p => normalizePath(p) !== np);
 }
 
+/**
+ * At init, _rebuildLinkedIndex only covers groups of 2+. Files that were rated/pinned
+ * via the hash layer but have no duplicate won't be in _pathToHash yet.
+ * Fetch paths for every hash in _hashRatings / _hashPins so they can be resolved.
+ */
+async function _resolveHashedPathsAtInit() {
+    const hashes = new Set([
+        ...Object.keys(_hashRatings),
+        ...Object.keys(_hashPins)
+    ]);
+    if (hashes.size === 0) return;
+    // Filter to hashes not already fully covered in _pathToHash
+    const missing = [];
+    for (const h of hashes) {
+        if (!_hashToPaths[h]) missing.push(h);
+    }
+    if (missing.length === 0) return;
+    // Fetch paths for each missing hash
+    for (const h of missing) {
+        try {
+            const result = await window.electronAPI.dbGetPathsByHash(h);
+            if (result && result.ok && result.value) {
+                for (const p of result.value) {
+                    _pathToHash[normalizePath(p)] = h;
+                }
+                if (result.value.length >= 2) {
+                    _hashToPaths[h] = result.value.map(p => normalizePath(p));
+                }
+            }
+        } catch { /* ignore */ }
+    }
+}
+
 /** Build _pathToHash and _hashToPaths from duplicate groups object. */
 function _rebuildLinkedIndex(duplicateGroups) {
     _pathToHash = {};
@@ -3517,6 +3550,9 @@ async function autoHashCurrentFolder(items) {
         const result = await window.electronAPI.autoHashFolder(filePaths);
         if (result && result.ok && result.value) {
             _mergePathToHash(result.value);
+            // _pathToHash changed — resolved ratings/pins depend on it, so force re-sync
+            if (typeof bumpFilterWorkerRatingsVersion === 'function') bumpFilterWorkerRatingsVersion();
+            if (typeof bumpFilterWorkerPinsVersion === 'function') bumpFilterWorkerPinsVersion();
             if (typeof bumpFilterWorkerDedupVersion === 'function') bumpFilterWorkerDedupVersion();
             if (typeof applyFilters === 'function') applyFilters();
         }
@@ -3766,6 +3802,9 @@ async function loadInitDataBatched() {
                 _linkedDuplicatesEnabled = localStorage.getItem('linkedDuplicates') === 'true';
                 if (_linkedDuplicatesEnabled) {
                     if (typeof bumpFilterWorkerDedupVersion === 'function') bumpFilterWorkerDedupVersion();
+                    // Ensure _pathToHash covers all files with hash ratings/pins
+                    // (duplicateGroups only has groups of 2+; single rated files would be missing)
+                    _resolveHashedPathsAtInit();
                 }
                 return;
             }

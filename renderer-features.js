@@ -4778,6 +4778,13 @@ let compareShowAll = false;
 let compareSliderPosition = 50;
 let compareSliderRAF = null;
 
+// Blend & Diff state for duplicate compare
+let dcBlendMode = false;
+let dcBlendOpacity = 0.5;
+let dcBlendMixMode = 'normal';
+let dcDiffMode = false;
+let dcDiffAmplify = 1;
+
 function initCompareSlider() {
     const container = document.getElementById('compare-slider-container');
     if (!container) return;
@@ -4793,6 +4800,7 @@ function initCompareSlider() {
 }
 
 function updateSliderFromEvent(e) {
+    if (dcBlendMode || dcDiffMode) return;
     const container = document.getElementById('compare-slider-container');
     if (!container) return;
     const rect = container.getBoundingClientRect();
@@ -4823,6 +4831,21 @@ function openComparisonLightbox(groupIdx) {
     compareRightIndex = Math.min(1, group.files.length - 1);
     compareShowAll = false;
 
+    // Reset blend/diff state
+    dcBlendMode = false;
+    dcDiffMode = false;
+    dcBlendOpacity = 0.5;
+    dcBlendMixMode = 'normal';
+    dcDiffAmplify = 1;
+    const dcOpacitySlider = document.getElementById('dc-blend-opacity');
+    if (dcOpacitySlider) dcOpacitySlider.value = 50;
+    const dcMixSelect = document.getElementById('dc-blend-mix-mode');
+    if (dcMixSelect) dcMixSelect.value = 'normal';
+    const dcAmpSlider = document.getElementById('dc-diff-amplify');
+    if (dcAmpSlider) dcAmpSlider.value = 1;
+    const dcAmpLabel = document.getElementById('dc-diff-amplify-value');
+    if (dcAmpLabel) dcAmpLabel.textContent = '1x';
+
     const lightbox = document.getElementById('duplicate-compare-lightbox');
     if (!lightbox) return;
     const title = document.getElementById('compare-lightbox-title');
@@ -4836,6 +4859,9 @@ function openComparisonLightbox(groupIdx) {
     showAllBtn.classList.add('active');
     const showAllSpan = showAllBtn.querySelector('span');
     if (showAllSpan) showAllSpan.textContent = 'Compare';
+
+    // Hide blend/diff buttons in show-all mode
+    updateDcBlendDiffVisibility(false);
 
     // Start in show-all mode
     const body = lightbox.querySelector('.compare-lightbox-body');
@@ -4871,6 +4897,10 @@ function openComparisonLightbox(groupIdx) {
 }
 
 function closeComparisonLightbox() {
+    exitDcBlendMode();
+    exitDcDiffMode();
+    updateDcBlendDiffVisibility(false);
+
     const lightbox = document.getElementById('duplicate-compare-lightbox');
     if (!lightbox) return;
     lightbox.classList.add('hidden');
@@ -4922,11 +4952,19 @@ function handleCompareKeydown(e) {
     } else if (e.key === 'a' || e.key === 'A') {
         e.preventDefault();
         toggleCompareShowAll();
-    } else if (e.shiftKey && e.key === 'ArrowLeft') {
+    } else if ((e.key === 'b' || e.key === 'B') && !compareShowAll) {
+        e.preventDefault();
+        if (dcBlendMode) exitDcBlendMode();
+        else { exitDcDiffMode(); enterDcBlendMode(); }
+    } else if ((e.key === 'd' || e.key === 'D') && !compareShowAll) {
+        e.preventDefault();
+        if (dcDiffMode) exitDcDiffMode();
+        else { exitDcBlendMode(); enterDcDiffMode(); }
+    } else if (e.shiftKey && e.key === 'ArrowLeft' && !dcBlendMode && !dcDiffMode) {
         compareSliderPosition = Math.max(0, compareSliderPosition - 5);
         applySliderPosition(compareSliderPosition);
         e.preventDefault();
-    } else if (e.shiftKey && e.key === 'ArrowRight') {
+    } else if (e.shiftKey && e.key === 'ArrowRight' && !dcBlendMode && !dcDiffMode) {
         compareSliderPosition = Math.min(100, compareSliderPosition + 5);
         applySliderPosition(compareSliderPosition);
         e.preventDefault();
@@ -4943,6 +4981,10 @@ function toggleCompareShowAll() {
     const lightbox = document.getElementById('duplicate-compare-lightbox');
     if (!lightbox || lightbox.classList.contains('hidden')) return;
 
+    // Exit blend/diff when switching views
+    exitDcBlendMode();
+    exitDcDiffMode();
+
     compareShowAll = !compareShowAll;
     const showAllBtn = document.getElementById('compare-show-all-btn');
     showAllBtn.classList.toggle('active', compareShowAll);
@@ -4952,16 +4994,23 @@ function toggleCompareShowAll() {
     if (compareShowAll) {
         body.classList.add('hidden');
         grid.classList.remove('hidden');
+        updateDcBlendDiffVisibility(false);
         renderShowAllGrid();
     } else {
         body.classList.remove('hidden');
         grid.classList.add('hidden');
+        updateDcBlendDiffVisibility(true);
         renderComparisonView();
     }
 }
 
 function navigateComparePane(side, direction) {
     if (!compareGroup) return;
+    const wasBlend = dcBlendMode;
+    const wasDiff = dcDiffMode;
+    exitDcBlendMode();
+    exitDcDiffMode();
+
     const len = compareGroup.length;
     if (side === 'left') {
         compareLeftIndex = (compareLeftIndex + direction + len) % len;
@@ -4969,6 +5018,10 @@ function navigateComparePane(side, direction) {
         compareRightIndex = (compareRightIndex + direction + len) % len;
     }
     renderComparisonView();
+
+    // Re-enter the mode after new media loads
+    if (wasBlend) enterDcBlendMode();
+    else if (wasDiff) enterDcDiffMode();
 }
 
 function renderComparisonView() {
@@ -5182,6 +5235,158 @@ function renderShowAllGrid() {
         grid.appendChild(item);
     });
 }
+
+// ── Duplicate Compare: Blend & Diff modes ──
+
+function enterDcBlendMode() {
+    if (!compareGroup || compareShowAll) return;
+    dcBlendMode = true;
+
+    const container = document.getElementById('compare-slider-container');
+    if (!container) return;
+    container.classList.add('dc-blend-active');
+
+    // Apply opacity and mix-blend-mode to the left layer (which sits on top)
+    const leftLayer = document.getElementById('compare-slider-layer-left');
+    if (leftLayer) {
+        leftLayer.style.opacity = dcBlendOpacity;
+        leftLayer.style.mixBlendMode = dcBlendMixMode;
+    }
+
+    document.getElementById('dc-blend-controls')?.classList.remove('hidden');
+    document.getElementById('dc-blend-btn')?.classList.add('active');
+}
+
+function exitDcBlendMode() {
+    if (!dcBlendMode) return;
+    dcBlendMode = false;
+
+    const container = document.getElementById('compare-slider-container');
+    container?.classList.remove('dc-blend-active');
+
+    // Restore left layer styles
+    const leftLayer = document.getElementById('compare-slider-layer-left');
+    if (leftLayer) {
+        leftLayer.style.opacity = '';
+        leftLayer.style.mixBlendMode = '';
+    }
+
+    document.getElementById('dc-blend-controls')?.classList.add('hidden');
+    document.getElementById('dc-blend-btn')?.classList.remove('active');
+}
+
+function enterDcDiffMode() {
+    if (!compareGroup || compareShowAll) return;
+    dcDiffMode = true;
+
+    const container = document.getElementById('compare-slider-container');
+    if (!container) return;
+    container.classList.add('dc-diff-active');
+
+    const leftLayer = document.getElementById('compare-slider-layer-left');
+    const rightLayer = document.getElementById('compare-slider-layer-right');
+    const mediaA = leftLayer?.querySelector('img, video');
+    const mediaB = rightLayer?.querySelector('img, video');
+    if (!mediaA || !mediaB) return;
+
+    Promise.all([waitForMediaReady(mediaA), waitForMediaReady(mediaB)]).then(() => {
+        if (!dcDiffMode) return;
+        const diff = computePixelDiff(mediaA, mediaB, dcDiffAmplify);
+
+        // Remove any existing diff canvas
+        container.querySelector('.dc-diff-canvas')?.remove();
+
+        const canvas = document.createElement('canvas');
+        canvas.width = diff.width;
+        canvas.height = diff.height;
+        canvas.className = 'dc-diff-canvas';
+        canvas.id = 'dc-diff-canvas';
+        canvas.getContext('2d').putImageData(diff.imageData, 0, 0);
+        container.appendChild(canvas);
+    });
+
+    document.getElementById('dc-diff-controls')?.classList.remove('hidden');
+    document.getElementById('dc-diff-btn')?.classList.add('active');
+}
+
+function exitDcDiffMode() {
+    if (!dcDiffMode) return;
+    dcDiffMode = false;
+
+    const container = document.getElementById('compare-slider-container');
+    container?.classList.remove('dc-diff-active');
+    container?.querySelector('.dc-diff-canvas')?.remove();
+
+    document.getElementById('dc-diff-controls')?.classList.add('hidden');
+    document.getElementById('dc-diff-btn')?.classList.remove('active');
+}
+
+function recomputeDcDiff() {
+    const leftLayer = document.getElementById('compare-slider-layer-left');
+    const rightLayer = document.getElementById('compare-slider-layer-right');
+    const mediaA = leftLayer?.querySelector('img, video');
+    const mediaB = rightLayer?.querySelector('img, video');
+    if (!mediaA || !mediaB) return;
+
+    const diff = computePixelDiff(mediaA, mediaB, dcDiffAmplify);
+    const canvas = document.getElementById('dc-diff-canvas');
+    if (canvas) {
+        canvas.width = diff.width;
+        canvas.height = diff.height;
+        canvas.getContext('2d').putImageData(diff.imageData, 0, 0);
+    }
+}
+
+function updateDcBlendDiffVisibility(showSlider) {
+    const blendBtn = document.getElementById('dc-blend-btn');
+    const diffBtn = document.getElementById('dc-diff-btn');
+    if (blendBtn) blendBtn.classList.toggle('hidden', !showSlider);
+    if (diffBtn) diffBtn.classList.toggle('hidden', !showSlider);
+}
+
+// Initialise blend/diff controls for duplicate compare (runs once)
+(function initDcBlendDiff() {
+    const blendBtn = document.getElementById('dc-blend-btn');
+    if (blendBtn) blendBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (dcBlendMode) {
+            exitDcBlendMode();
+        } else {
+            exitDcDiffMode();
+            enterDcBlendMode();
+        }
+    });
+
+    const diffBtn = document.getElementById('dc-diff-btn');
+    if (diffBtn) diffBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (dcDiffMode) {
+            exitDcDiffMode();
+        } else {
+            exitDcBlendMode();
+            enterDcDiffMode();
+        }
+    });
+
+    document.getElementById('dc-blend-opacity')?.addEventListener('input', (e) => {
+        dcBlendOpacity = e.target.value / 100;
+        const leftLayer = document.getElementById('compare-slider-layer-left');
+        if (leftLayer && dcBlendMode) leftLayer.style.opacity = dcBlendOpacity;
+    });
+
+    document.getElementById('dc-blend-mix-mode')?.addEventListener('change', (e) => {
+        dcBlendMixMode = e.target.value;
+        const leftLayer = document.getElementById('compare-slider-layer-left');
+        if (leftLayer && dcBlendMode) leftLayer.style.mixBlendMode = dcBlendMixMode;
+    });
+
+    document.getElementById('dc-diff-amplify')?.addEventListener('input', (e) => {
+        dcDiffAmplify = parseInt(e.target.value, 10);
+        const label = document.getElementById('dc-diff-amplify-value');
+        if (label) label.textContent = dcDiffAmplify + 'x';
+        if (dcDiffMode) recomputeDcDiff();
+    });
+})();
 
 function syncDuplicateModalUI() {
     // Update all duplicate items in the main modal to reflect current deletion state

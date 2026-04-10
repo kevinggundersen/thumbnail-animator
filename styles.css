@@ -6793,6 +6793,72 @@ video.blow-up-media {
     color: var(--info);
     border-color: rgba(96, 165, 250, 0.25);
 }
+.compare-toggle-btn.hidden {
+    display: none !important;
+}
+
+/* Blend/Diff controls for duplicate compare */
+.dc-extra-controls {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+}
+.dc-extra-controls.hidden {
+    display: none !important;
+}
+.dc-slider-label {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: 11px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+.dc-slider-label input[type=range] {
+    width: 80px;
+    accent-color: var(--info);
+}
+.dc-blend-select {
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text-secondary);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: var(--radius-sm);
+    padding: 2px var(--space-2);
+    font-size: 11px;
+    cursor: pointer;
+}
+.dc-blend-select:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--text-primary);
+}
+
+/* Blend/Diff modes override the slider */
+.compare-slider-container.dc-blend-active .compare-slider-handle,
+.compare-slider-container.dc-blend-active .compare-slider-label,
+.compare-slider-container.dc-diff-active .compare-slider-handle,
+.compare-slider-container.dc-diff-active .compare-slider-label {
+    display: none !important;
+}
+.compare-slider-container.dc-blend-active .compare-slider-layer-left {
+    clip-path: none !important;
+}
+.compare-slider-container.dc-blend-active,
+.compare-slider-container.dc-diff-active {
+    cursor: default;
+}
+.compare-slider-container.dc-diff-active .compare-slider-layer-left,
+.compare-slider-container.dc-diff-active .compare-slider-layer-right {
+    display: none !important;
+}
+.dc-diff-canvas {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+}
 
 /* Show-all grid view */
 .compare-show-all-grid {

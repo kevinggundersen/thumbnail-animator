@@ -522,6 +522,34 @@
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
                         <span>Show All</span>
                     </button>
+                    <button id="dc-blend-btn" class="compare-toggle-btn hidden" title="Overlay blend">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="12" r="7"/><circle cx="15" cy="12" r="7"/></svg>
+                        <span>Blend</span>
+                    </button>
+                    <div id="dc-blend-controls" class="dc-extra-controls hidden">
+                        <label class="dc-slider-label">
+                            <span>Opacity</span>
+                            <input type="range" id="dc-blend-opacity" min="0" max="100" value="50" step="1">
+                        </label>
+                        <select id="dc-blend-mix-mode" class="dc-blend-select">
+                            <option value="normal">Normal</option>
+                            <option value="difference">Difference</option>
+                            <option value="multiply">Multiply</option>
+                            <option value="screen">Screen</option>
+                            <option value="overlay">Overlay</option>
+                        </select>
+                    </div>
+                    <button id="dc-diff-btn" class="compare-toggle-btn hidden" title="Pixel difference">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="12" y1="3" x2="12" y2="21"/></svg>
+                        <span>Diff</span>
+                    </button>
+                    <div id="dc-diff-controls" class="dc-extra-controls hidden">
+                        <label class="dc-slider-label">
+                            <span>Amplify</span>
+                            <input type="range" id="dc-diff-amplify" min="1" max="10" value="1" step="1">
+                            <span id="dc-diff-amplify-value">1x</span>
+                        </label>
+                    </div>
                     <button id="compare-lightbox-close" class="settings-modal-close-btn" title="Close (Esc)">
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                     </button>

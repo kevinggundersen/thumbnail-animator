@@ -3480,12 +3480,14 @@ function isEffectivelyPinned(filePath) {
 /**
  * Build a resolved ratings map for the filter worker.
  * When linked duplicates is enabled, hash ratings override per-path ratings.
+ * Iterates ALL paths in _pathToHash so every hashed file (not just duplicates) is covered.
  */
 function buildResolvedRatings() {
-    if (!_linkedDuplicatesEnabled) return fileRatings;
+    if (!_linkedDuplicatesEnabled || Object.keys(_hashRatings).length === 0) return fileRatings;
     const resolved = Object.assign({}, fileRatings);
     for (const [np, hash] of Object.entries(_pathToHash)) {
-        if (hash in _hashRatings) resolved[np] = _hashRatings[hash];
+        const hr = _hashRatings[hash];
+        if (hr !== undefined && hr > 0) resolved[np] = hr;
     }
     return resolved;
 }
@@ -3495,7 +3497,7 @@ function buildResolvedRatings() {
  * When linked duplicates is enabled, hash pins override per-path pins.
  */
 function buildResolvedPins() {
-    if (!_linkedDuplicatesEnabled) return pinnedFiles;
+    if (!_linkedDuplicatesEnabled || Object.keys(_hashPins).length === 0) return pinnedFiles;
     const resolved = Object.assign({}, pinnedFiles);
     for (const [np, hash] of Object.entries(_pathToHash)) {
         if (hash in _hashPins) resolved[np] = true;

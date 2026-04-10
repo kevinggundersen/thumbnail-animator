@@ -2785,8 +2785,9 @@ async function tagAddToFile(normalizedPath, tagId, tagName) {
             const result = await window.electronAPI.dbAddHashTag(hash, tagId);
             pushMetadataUndo(
                 `Add tag "${tagName || 'tag'}" (linked)`,
-                () => window.electronAPI.dbRemoveHashTag(hash, tagId)
+                async () => { await window.electronAPI.dbRemoveHashTag(hash, tagId); refreshVisibleCardTags(); }
             );
+            refreshVisibleCardTags();
             return result;
         }
     }
@@ -2806,8 +2807,9 @@ async function tagRemoveFromFile(normalizedPath, tagId, tagName) {
             const result = await window.electronAPI.dbRemoveHashTag(hash, tagId);
             pushMetadataUndo(
                 `Remove tag "${tagName || 'tag'}" (linked)`,
-                () => window.electronAPI.dbAddHashTag(hash, tagId)
+                async () => { await window.electronAPI.dbAddHashTag(hash, tagId); refreshVisibleCardTags(); }
             );
+            refreshVisibleCardTags();
             return result;
         }
     }
@@ -2832,8 +2834,9 @@ async function tagBulkAdd(normalizedPaths, tagId, tagName) {
             const result = await window.electronAPI.dbBulkAddHashTag(hashArr, tagId);
             pushMetadataUndo(
                 `Tag ${hashes.size} linked group${hashes.size === 1 ? '' : 's'} with "${tagName || 'tag'}"`,
-                () => window.electronAPI.dbBulkRemoveHashTag(hashArr, tagId)
+                async () => { await window.electronAPI.dbBulkRemoveHashTag(hashArr, tagId); refreshVisibleCardTags(); }
             );
+            refreshVisibleCardTags();
             return result;
         }
     }
@@ -2874,8 +2877,9 @@ async function tagBulkRemove(normalizedPaths, tagId, tagName) {
             const result = await window.electronAPI.dbBulkRemoveHashTag(hashArr, tagId);
             pushMetadataUndo(
                 `Remove tag "${tagName || 'tag'}" from ${hashes.size} linked group${hashes.size === 1 ? '' : 's'}`,
-                () => window.electronAPI.dbBulkAddHashTag(hashArr, tagId)
+                async () => { await window.electronAPI.dbBulkAddHashTag(hashArr, tagId); refreshVisibleCardTags(); }
             );
+            refreshVisibleCardTags();
             return result;
         }
     }
@@ -13244,6 +13248,35 @@ async function warmFileTagsCache(filePaths) {
             // Mark files with no tags so we don't refetch
             for (const fp of filePaths) {
                 if (!fileTagsCache.has(fp)) fileTagsCache.set(fp, []);
+            }
+            // Linked duplicates: merge hash-keyed tags into the cache
+            if (typeof isLinkedDuplicatesEnabled === 'function' && isLinkedDuplicatesEnabled()
+                && typeof getPathHash === 'function') {
+                const hashesNeeded = new Set();
+                for (const fp of filePaths) {
+                    const h = getPathHash(fp);
+                    if (h) hashesNeeded.add(h);
+                }
+                if (hashesNeeded.size > 0) {
+                    for (const h of hashesNeeded) {
+                        try {
+                            const hResult = await window.electronAPI.dbGetHashTags(h);
+                            if (hResult && hResult.ok && hResult.value && hResult.value.length > 0) {
+                                // Add hash tags to all paths with this hash
+                                for (const fp of filePaths) {
+                                    if (getPathHash(fp) === h) {
+                                        const existing = fileTagsCache.get(fp) || [];
+                                        const existingIds = new Set(existing.map(t => t.id));
+                                        for (const ht of hResult.value) {
+                                            if (!existingIds.has(ht.id)) existing.push(ht);
+                                        }
+                                        fileTagsCache.set(fp, existing);
+                                    }
+                                }
+                            }
+                        } catch { /* ignore individual hash tag fetch errors */ }
+                    }
+                }
             }
             // Evict oldest entries if cache exceeds limit
             if (fileTagsCache.size > FILE_TAGS_CACHE_MAX) {

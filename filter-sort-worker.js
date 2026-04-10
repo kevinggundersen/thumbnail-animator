@@ -452,7 +452,8 @@ function runFilterPipeline(state) {
             const seen = new Set();
             const result = [];
             for (const idx of arr) {
-                const hash = dedupPathToHash.get(items[idx].path);
+                // _pathToHash keys are normalized; item paths may use backslashes
+                const hash = dedupPathToHash.get(normalizePath(items[idx].path));
                 if (!hash) { result.push(idx); continue; }
                 if (seen.has(hash)) continue;
                 seen.add(hash);

@@ -167,6 +167,14 @@ function initKeyboardShortcuts() {
             return;
         }
 
+        // More Like This — open visual discovery overlay for focused card
+        if (matchesShortcut(e, 'moreLikeThis') && focusedCardIndex >= 0 && aiVisualSearchEnabled) {
+            e.preventDefault();
+            const card = visibleCards[focusedCardIndex];
+            if (card && card.dataset.path) openMoreLikeThis(card.dataset.path);
+            return;
+        }
+
         // Arrow keys: Navigate thumbnails (always use direct key check — not remappable)
         if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key) && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
             e.preventDefault();
@@ -5233,6 +5241,12 @@ function initWindowLifecycleHandlers() {
             gridContainer.querySelectorAll('video').forEach(v => v.pause());
             gridContainer.querySelectorAll('.gif-static-overlay').forEach(o => o.classList.add('visible'));
         }
+        // Pause MLT overlay media (videos + animated images)
+        const mltOverlay = document.getElementById('mlt-overlay');
+        if (mltOverlay && !mltOverlay.classList.contains('hidden')) {
+            mltOverlay.querySelectorAll('video').forEach(v => v.pause());
+            mltOverlay.querySelectorAll('.gif-static-overlay').forEach(o => o.classList.add('visible'));
+        }
     });
 
     window.addEventListener('focus', () => {
@@ -5253,6 +5267,14 @@ function initWindowLifecycleHandlers() {
                 const p = v.play(); if (p !== undefined) p.catch(() => {});
             });
             gridContainer.querySelectorAll('.gif-static-overlay').forEach(o => o.classList.remove('visible'));
+        }
+        // Resume MLT overlay media on focus
+        const mltOverlayFocus = document.getElementById('mlt-overlay');
+        if (mltOverlayFocus && !mltOverlayFocus.classList.contains('hidden')) {
+            mltOverlayFocus.querySelectorAll('video').forEach(v => {
+                if (v.style.display !== 'none') v.play().catch(() => {});
+            });
+            mltOverlayFocus.querySelectorAll('.gif-static-overlay').forEach(o => o.classList.remove('visible'));
         }
     });
 }

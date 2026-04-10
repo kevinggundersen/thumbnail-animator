@@ -560,6 +560,7 @@
             <div class="context-menu-item" data-action="tag-file"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"/><circle cx="7.5" cy="7.5" r=".5" fill="currentColor"/></svg> Tags...</div>
             <div class="context-menu-item" data-action="auto-tag"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z"/><circle cx="7.5" cy="7.5" r=".5" fill="currentColor"/><path d="m17 13 5 5m-2.5-2.5L17 18"/></svg> Auto-Tag with AI...</div>
             <div class="context-menu-item" data-action="find-similar"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/><path d="M11 8a3 3 0 0 0-3 3"/></svg> Find Similar</div>
+            <div class="context-menu-item" data-action="more-like-this"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m8 12 4-4 4 4"/><path d="m8 16 4-4 4 4"/></svg> More Like This</div>
             <div class="context-menu-item" data-action="compare" id="ctx-compare-item"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="9" height="18" rx="1"/><rect x="13" y="3" width="9" height="18" rx="1"/></svg> Compare Selected</div>
             <div class="context-menu-item" data-action="slideshow"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5,3 19,12 5,21"/></svg> Start Slideshow</div>
             <div class="context-menu-divider"></div>
@@ -2298,6 +2299,48 @@
             </div>
         </div>
         <div id="cmo-panels-container" class="cmo-panels-container"></div>
+    </div>
+
+    <!-- More Like This Overlay -->
+    <div id="mlt-overlay" class="mlt-overlay hidden">
+        <div class="mlt-header">
+            <div class="mlt-header-left">
+                <button id="mlt-back-btn" class="mlt-nav-btn" type="button" title="Back (Backspace)" disabled>&larr;</button>
+                <span class="mlt-title">More Like This</span>
+                <span id="mlt-breadcrumb" class="mlt-breadcrumb"></span>
+            </div>
+            <div class="mlt-header-controls">
+                <label class="mlt-threshold-label" for="mlt-threshold">Similarity</label>
+                <input type="range" id="mlt-threshold" class="mlt-threshold-slider" min="10" max="95" value="40" step="5">
+                <span id="mlt-threshold-value" class="mlt-threshold-value">0.40</span>
+                <span id="mlt-result-count" class="mlt-result-count"></span>
+                <button id="mlt-close-btn" class="mlt-close-btn" type="button" title="Close (Esc)">&times;</button>
+            </div>
+        </div>
+        <div class="mlt-body">
+            <div class="mlt-seed-panel">
+                <div class="mlt-seed-preview">
+                    <img id="mlt-seed-img" alt="Seed image">
+                    <video id="mlt-seed-video" muted loop playsinline style="display:none"></video>
+                </div>
+                <div class="mlt-seed-info">
+                    <span id="mlt-seed-name" class="mlt-seed-name"></span>
+                    <span id="mlt-seed-path" class="mlt-seed-path"></span>
+                </div>
+            </div>
+            <div class="mlt-content">
+                <div id="mlt-results" class="mlt-results"></div>
+                <div id="mlt-loading" class="mlt-loading hidden">
+                    <svg class="mlt-spinner" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round"/></svg>
+                    Searching all indexed folders...
+                </div>
+                <div id="mlt-empty" class="mlt-empty hidden">
+                    <p>No similar images found.</p>
+                    <p class="mlt-empty-hint">Visit more folders with AI Visual Search enabled to build the index.</p>
+                </div>
+                <button id="mlt-load-more" class="mlt-load-more hidden">Load More</button>
+            </div>
+        </div>
     </div>
 
     <!-- Slideshow Overlay -->

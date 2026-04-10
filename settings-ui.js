@@ -1502,6 +1502,7 @@ const DEFAULT_SHORTCUTS = {
     sidebarTabFlat:   { key: 'e', alt: true, shift: true, label: 'Flat tab folder list', category: 'View' },
     toggleCanvasGrid: { key: 'g', ctrl: true, shift: true, alt: true, label: 'Toggle canvas grid', category: 'View' },
     toggleLinkedDuplicates: { key: '', label: 'Toggle linked duplicates', category: 'View' },
+    moreLikeThis: { key: 'm', label: 'More Like This', category: 'View' },
 };
 
 // Merge user overrides over defaults

@@ -9702,6 +9702,356 @@ video.cmo-media {
     flex-shrink: 0;
 }
 
+/* ==================== MORE LIKE THIS OVERLAY ==================== */
+.mlt-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 999;
+    background: var(--bg-primary);
+    display: flex;
+    flex-direction: column;
+    contain: layout style paint;
+}
+.mlt-overlay.hidden { display: none !important; }
+
+.mlt-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--space-2) var(--space-4);
+    padding-right: 138px; /* Windows: space for titlebar overlay buttons */
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-subtle);
+    flex-shrink: 0;
+    gap: var(--space-3);
+    min-height: 48px;
+    -webkit-app-region: drag;
+}
+.mlt-header button, .mlt-header input, .mlt-header label, .mlt-header span {
+    -webkit-app-region: no-drag;
+}
+[data-platform="darwin"] .mlt-header {
+    padding-left: 80px;
+    padding-right: var(--space-4);
+}
+[data-platform="linux"] .mlt-header {
+    padding-right: var(--space-4);
+}
+.mlt-header-left {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-width: 0;
+    flex: 1;
+}
+.mlt-header-controls {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    flex-shrink: 0;
+}
+.mlt-title {
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--text-primary);
+    white-space: nowrap;
+}
+.mlt-nav-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-secondary, #aaa);
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+    transition: background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
+}
+.mlt-nav-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary, #fff); }
+.mlt-nav-btn:disabled { opacity: 0.3; cursor: default; }
+
+.mlt-breadcrumb {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    min-width: 0;
+    overflow: hidden;
+    font-size: 12px;
+    color: var(--text-tertiary);
+}
+.mlt-breadcrumb-sep { color: var(--text-tertiary); flex-shrink: 0; }
+.mlt-breadcrumb-link {
+    cursor: pointer;
+    color: var(--accent);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 120px;
+    transition: color var(--duration-fast) var(--ease-out);
+}
+.mlt-breadcrumb-link:hover { color: var(--accent-hover); text-decoration: underline; }
+.mlt-breadcrumb-current {
+    color: var(--text-secondary);
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 160px;
+}
+
+.mlt-threshold-label {
+    font-size: 12px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+.mlt-threshold-slider {
+    width: 100px;
+    accent-color: var(--accent);
+}
+.mlt-threshold-value {
+    font-size: 12px;
+    color: var(--text-tertiary);
+    min-width: 28px;
+    font-variant-numeric: tabular-nums;
+}
+.mlt-result-count {
+    font-size: 12px;
+    color: var(--text-tertiary);
+    white-space: nowrap;
+}
+.mlt-close-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-secondary, #aaa);
+    font-size: 20px;
+    line-height: 1;
+    cursor: pointer;
+    transition: background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
+}
+.mlt-close-btn:hover { background: var(--bg-hover); color: var(--text-primary, #fff); }
+
+.mlt-body {
+    flex: 1;
+    display: flex;
+    gap: var(--space-4);
+    padding: var(--space-4);
+    overflow-y: auto;
+    min-height: 0;
+}
+
+.mlt-seed-panel {
+    width: 240px;
+    flex-shrink: 0;
+    position: sticky;
+    top: 0;
+    align-self: flex-start;
+}
+.mlt-seed-preview {
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    background: var(--bg-tertiary);
+    aspect-ratio: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.mlt-seed-preview img,
+.mlt-seed-preview video {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+}
+.mlt-seed-info {
+    margin-top: var(--space-2);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.mlt-seed-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    word-break: break-all;
+}
+.mlt-seed-path {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    word-break: break-all;
+}
+
+.mlt-content {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+}
+.mlt-results {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: var(--space-3);
+    align-content: start;
+}
+.mlt-result-card {
+    position: relative;
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    background: var(--bg-tertiary);
+    cursor: pointer;
+    aspect-ratio: 1;
+    transition: transform var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out);
+}
+.mlt-result-card:hover {
+    transform: scale(1.03);
+    box-shadow: var(--shadow-lg);
+}
+.mlt-result-card img,
+.mlt-result-card video {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+}
+.mlt-result-card .gif-static-overlay {
+    object-fit: contain;
+}
+.mlt-result-card .mlt-score,
+.mlt-result-card .mlt-folder,
+.mlt-result-card .mlt-pivot-btn {
+    z-index: 2;
+}
+.mlt-score {
+    position: absolute;
+    top: var(--space-1);
+    right: var(--space-1);
+    background: var(--scrim-strong);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: var(--radius-sm);
+    pointer-events: none;
+    font-variant-numeric: tabular-nums;
+}
+.mlt-pivot-btn {
+    position: absolute;
+    top: var(--space-1);
+    left: var(--space-1);
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--scrim-strong);
+    border: none;
+    border-radius: var(--radius-sm);
+    color: #fff;
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity var(--duration-fast) var(--ease-out), background var(--duration-fast) var(--ease-out);
+}
+.mlt-result-card:hover .mlt-pivot-btn { opacity: 1; }
+.mlt-pivot-btn:hover { background: var(--accent); }
+
+.mlt-folder {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    padding: 2px var(--space-1);
+    background: var(--scrim-strong);
+    color: var(--text-inverse);
+    font-size: 10px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    pointer-events: none;
+}
+
+.mlt-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-2);
+    padding: var(--space-8);
+    color: var(--text-secondary);
+    font-size: 14px;
+}
+.mlt-loading.hidden { display: none !important; }
+.mlt-spinner {
+    animation: mlt-spin 1s linear infinite;
+}
+@keyframes mlt-spin {
+    to { transform: rotate(360deg); }
+}
+
+.mlt-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: var(--space-8);
+    color: var(--text-secondary);
+    text-align: center;
+}
+.mlt-empty.hidden { display: none !important; }
+.mlt-empty p { margin: 0; }
+.mlt-empty-hint {
+    font-size: 12px;
+    color: var(--text-tertiary);
+    margin-top: var(--space-2) !important;
+}
+
+.mlt-load-more {
+    display: block;
+    margin: var(--space-4) auto;
+    padding: var(--space-2) var(--space-5);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    color: var(--text-primary);
+    font-size: 13px;
+    cursor: pointer;
+    transition: background var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out);
+}
+.mlt-load-more:hover { background: var(--bg-hover); border-color: var(--accent); }
+.mlt-load-more.hidden { display: none !important; }
+
+/* Inspector "Explore More" button */
+.lb-insp-explore-btn {
+    display: block;
+    width: 100%;
+    margin-top: var(--space-2);
+    padding: var(--space-1) var(--space-2);
+    background: transparent;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    color: var(--accent);
+    font-size: 12px;
+    cursor: pointer;
+    text-align: center;
+    transition: background var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out);
+}
+.lb-insp-explore-btn:hover {
+    background: var(--bg-hover);
+    border-color: var(--accent);
+}
+
 /* ==================== SLIDESHOW OVERLAY ==================== */
 .slideshow-overlay {
     position: fixed;

@@ -4,6 +4,7 @@
 // ============================================================================
 
 // --- Context Menu Functionality ---
+const CLIP_SUPPORTED_EXTS = ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif', 'mp4', 'webm', 'ogg', 'mov'];
 const folderContextMenu = document.getElementById('folder-context-menu');
 
 /** Helper: get selected file paths, works in both DOM and canvas-grid modes. */
@@ -15,13 +16,13 @@ function _getSelectedPaths() {
         .map(c => c.dataset.path).filter(Boolean);
 }
 
-function showLightboxContextMenu(event) {
+function showLightboxContextMenu(event, overridePath) {
     event.preventDefault();
     event.stopPropagation();
 
     contextMenuSource = 'lightbox';
 
-    const filePath = window.currentLightboxFilePath;
+    const filePath = overridePath || window.currentLightboxFilePath;
     if (!filePath) return;
     const fileName = filePath.split(/[\\/]/).pop();
 
@@ -207,11 +208,15 @@ function showContextMenu(event, card) {
         if (compareItem) compareItem.style.display = (selCount >= 2 && selCount <= 4) ? '' : 'none';
     }
 
-    // Show/hide "Find Similar" — only for images when AI visual search is enabled
+    // Show/hide "Find Similar" and "More Like This" — only for files when AI visual search is enabled
     if (!isFolder) {
         const findSimilarItem = menu.querySelector('[data-action="find-similar"]');
         if (findSimilarItem) {
             findSimilarItem.style.display = aiVisualSearchEnabled ? '' : 'none';
+        }
+        const moreLikeThisItem = menu.querySelector('[data-action="more-like-this"]');
+        if (moreLikeThisItem) {
+            moreLikeThisItem.style.display = aiVisualSearchEnabled ? '' : 'none';
         }
     }
 
@@ -539,8 +544,7 @@ contextMenu.addEventListener('click', async (e) => {
 
         case 'find-similar': {
             const ext = filePath.split('.').pop().toLowerCase();
-            const supportedExts = ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif', 'mp4', 'webm', 'ogg', 'mov'];
-            if (!supportedExts.includes(ext)) {
+            if (!CLIP_SUPPORTED_EXTS.includes(ext)) {
                 showToast('Find Similar works with image and video files', 'info');
                 break;
             }
@@ -549,6 +553,20 @@ contextMenu.addEventListener('click', async (e) => {
                 break;
             }
             activateFindSimilar(filePath, fileName);
+            break;
+        }
+
+        case 'more-like-this': {
+            const extMlt = filePath.split('.').pop().toLowerCase();
+            if (!CLIP_SUPPORTED_EXTS.includes(extMlt)) {
+                showToast('More Like This works with image and video files', 'info');
+                break;
+            }
+            if (!aiVisualSearchEnabled) {
+                showToast('Enable AI Visual Search in Settings first', 'info');
+                break;
+            }
+            openMoreLikeThis(filePath);
             break;
         }
 

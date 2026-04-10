@@ -2495,6 +2495,20 @@ const findSimilarState = {
     previousFolder: null,  // Stashed currentFolderPath to restore on clear
 };
 
+// --- More Like This state ---
+const moreLikeThisState = {
+    active: false,
+    seedPath: null,            // Current seed file path
+    seedEmbedding: null,       // Float32Array for current seed
+    allEmbeddings: null,       // Map from getAllCachedEmbeddings(), loaded per overlay open
+    results: [],               // [{path, score, mtime}] current displayed results
+    _totalMatches: 0,          // Total matches above threshold (before maxResults cap)
+    history: [],               // [{seedPath, seedEmbedding, scrollTop}] pivot stack
+    threshold: 0.40,           // Wider than Find Similar's 0.60 for discovery
+    maxResults: 100,
+    loading: false,
+};
+
 // Silent reset of find-similar state + banner (no re-render).
 function clearFindSimilarState() {
     if (!findSimilarState.active) return;
@@ -3443,6 +3457,581 @@ function updateFindSimilarCount() {
         countEl.textContent = `${count} result${count !== 1 ? 's' : ''}`;
     }
 }
+
+// ==================== MORE LIKE THIS — VISUAL DISCOVERY ====================
+
+/**
+ * Get or compute the CLIP embedding for a file path.
+ * Reuses the same pattern as activateFindSimilar.
+ * @param {string} filePath
+ * @returns {Promise<Float32Array|null>}
+ */
+async function getOrComputeEmbedding(filePath) {
+    let embedding = currentEmbeddings.get(filePath);
+    if (embedding) return embedding;
+
+    // Check if allEmbeddings cache has it (from a prior MLT session)
+    if (moreLikeThisState.allEmbeddings) {
+        const cached = moreLikeThisState.allEmbeddings.get(filePath);
+        if (cached) return cached.embedding;
+    }
+
+    // Compute on-the-fly
+    try {
+        const status = await window.electronAPI.clipStatus();
+        if (!status.value?.loaded) {
+            const init = await window.electronAPI.clipInit(getClipGpuMode());
+            if (!init.ok) {
+                showToast('Could not load AI model', 'error');
+                return null;
+            }
+        }
+        const sourceItem = currentItems.find(i => i.path === filePath);
+        const mtime = sourceItem ? (sourceItem.mtime || 0) : 0;
+        const resp = await window.electronAPI.clipEmbedImages([{ path: filePath, mtime, thumbPath: null }]);
+        const results = resp && resp.ok ? (resp.value || []) : [];
+        if (results.length > 0 && results[0].embedding) {
+            embedding = l2Normalize(new Float32Array(results[0].embedding));
+            currentEmbeddings.set(filePath, embedding);
+            await cacheEmbeddings([{ path: filePath, mtime, embedding: results[0].embedding }]);
+            return embedding;
+        }
+    } catch (err) { console.warn('getOrComputeEmbedding failed:', err); }
+    return null;
+}
+
+/**
+ * Pure computation: find similar embeddings across all indexed files.
+ * @param {Float32Array} seedEmbedding
+ * @param {Map} allEmbeddings - Map<path, {embedding, mtime}>
+ * @param {number} threshold - minimum cosine similarity
+ * @param {number} maxResults - cap on returned results
+ * @param {string} excludePath - seed path to skip
+ * @returns {{items: Array<{path, score, mtime}>, totalMatches: number}}
+ */
+function computeMoreLikeThisResults(seedEmbedding, allEmbeddings, threshold, maxResults, excludePath) {
+    const matches = [];
+    for (const [path, data] of allEmbeddings) {
+        if (path === excludePath) continue;
+        const sim = cosineSimilarity(seedEmbedding, data.embedding);
+        if (sim >= threshold) {
+            matches.push({ path, score: sim, mtime: data.mtime });
+        }
+    }
+    matches.sort((a, b) => b.score - a.score);
+    return { items: matches.slice(0, maxResults), totalMatches: matches.length };
+}
+
+/**
+ * Recompute and store MLT results from current state.
+ * Centralizes the recomputation so callers don't repeat the 5-arg call.
+ */
+function recomputeMltResults() {
+    const { items, totalMatches } = computeMoreLikeThisResults(
+        moreLikeThisState.seedEmbedding,
+        moreLikeThisState.allEmbeddings,
+        moreLikeThisState.threshold,
+        moreLikeThisState.maxResults,
+        moreLikeThisState.seedPath
+    );
+    moreLikeThisState.results = items;
+    moreLikeThisState._totalMatches = totalMatches;
+}
+
+/**
+ * Render the breadcrumb trail showing pivot history.
+ */
+function renderMltBreadcrumb() {
+    const container = document.getElementById('mlt-breadcrumb');
+    if (!container) return;
+    container.innerHTML = '';
+
+    const fullChain = [...moreLikeThisState.history.map(h => h.seedPath), moreLikeThisState.seedPath];
+    fullChain.forEach((p, i) => {
+        if (i > 0) {
+            const sep = document.createElement('span');
+            sep.className = 'mlt-breadcrumb-sep';
+            sep.textContent = '\u203A'; // single right-pointing angle quotation mark
+            container.appendChild(sep);
+        }
+        const span = document.createElement('span');
+        span.textContent = p.split(/[/\\]/).pop();
+        span.title = p;
+        if (i < fullChain.length - 1) {
+            span.className = 'mlt-breadcrumb-item mlt-breadcrumb-link';
+            const idx = i;
+            span.addEventListener('click', () => mltJumpToHistory(idx));
+        } else {
+            span.className = 'mlt-breadcrumb-item mlt-breadcrumb-current';
+        }
+        container.appendChild(span);
+    });
+}
+
+/**
+ * Render the More Like This overlay UI.
+ */
+function renderMoreLikeThisOverlay() {
+    const overlay = document.getElementById('mlt-overlay');
+    const seedImg = document.getElementById('mlt-seed-img');
+    const seedName = document.getElementById('mlt-seed-name');
+    const seedPath = document.getElementById('mlt-seed-path');
+    const resultsGrid = document.getElementById('mlt-results');
+    const loadingEl = document.getElementById('mlt-loading');
+    const emptyEl = document.getElementById('mlt-empty');
+    const loadMoreBtn = document.getElementById('mlt-load-more');
+    const resultCountEl = document.getElementById('mlt-result-count');
+    const backBtn = document.getElementById('mlt-back-btn');
+    const thresholdSlider = document.getElementById('mlt-threshold');
+    const thresholdValue = document.getElementById('mlt-threshold-value');
+
+    if (!overlay) return;
+
+    const seedFileName = moreLikeThisState.seedPath.split(/[/\\]/).pop();
+    const seedFolderPath = moreLikeThisState.seedPath.replace(/[/\\][^/\\]+$/, '');
+    const seedType = getFileType(moreLikeThisState.seedPath);
+    const seedVideo = document.getElementById('mlt-seed-video');
+    if (seedType === 'video' && seedVideo) {
+        if (seedImg) seedImg.style.display = 'none';
+        seedVideo.style.display = 'block';
+        seedVideo.src = pathToFileUrl(moreLikeThisState.seedPath);
+        seedVideo.play().catch(() => {});
+    } else {
+        if (seedVideo) { seedVideo.style.display = 'none'; seedVideo.pause(); seedVideo.removeAttribute('src'); }
+        if (seedImg) {
+            seedImg.style.display = 'block';
+            seedImg.src = pathToFileUrl(moreLikeThisState.seedPath);
+        }
+    }
+    if (seedName) seedName.textContent = seedFileName;
+    if (seedPath) seedPath.textContent = seedFolderPath;
+    if (thresholdSlider) thresholdSlider.value = Math.round(moreLikeThisState.threshold * 100);
+    if (thresholdValue) thresholdValue.textContent = moreLikeThisState.threshold.toFixed(2);
+    if (backBtn) backBtn.disabled = moreLikeThisState.history.length === 0;
+    renderMltBreadcrumb();
+
+    if (moreLikeThisState.loading) {
+        if (loadingEl) loadingEl.classList.remove('hidden');
+        if (emptyEl) emptyEl.classList.add('hidden');
+        if (resultsGrid) resultsGrid.innerHTML = '';
+        if (loadMoreBtn) loadMoreBtn.classList.add('hidden');
+        if (resultCountEl) resultCountEl.textContent = '';
+        return;
+    }
+
+    if (loadingEl) loadingEl.classList.add('hidden');
+    const results = moreLikeThisState.results;
+
+    if (results.length === 0) {
+        if (emptyEl) emptyEl.classList.remove('hidden');
+        if (resultsGrid) resultsGrid.innerHTML = '';
+        if (loadMoreBtn) loadMoreBtn.classList.add('hidden');
+        if (resultCountEl) resultCountEl.textContent = '0 results';
+        return;
+    }
+
+    if (emptyEl) emptyEl.classList.add('hidden');
+    const totalIndexed = moreLikeThisState.allEmbeddings ? moreLikeThisState.allEmbeddings.size : 0;
+    if (resultCountEl) resultCountEl.textContent = `${results.length} result${results.length !== 1 ? 's' : ''} (${totalIndexed} indexed)`;
+
+    if (resultsGrid) {
+        resultsGrid.innerHTML = '';
+        results.forEach(r => {
+            const card = document.createElement('div');
+            card.className = 'mlt-result-card';
+            card.dataset.path = r.path;
+            card.title = r.path;
+
+            // Data attributes for blow-up preview (right-click hold)
+            const fileName = r.path.split(/[/\\]/).pop();
+            const fileType = getFileType(r.path);
+            card.dataset.name = fileName;
+            card.dataset.src = pathToFileUrl(r.path);
+            card.dataset.mediaType = fileType;
+
+            if (fileType === 'video') {
+                const vid = document.createElement('video');
+                vid.src = pathToFileUrl(r.path);
+                vid.muted = true;
+                vid.loop = true;
+                vid.playsInline = true;
+                vid.preload = 'metadata';
+                // Set poster while video loads
+                requestVideoPosterUrl(r.path).then(url => {
+                    if (url && vid.isConnected) vid.poster = url;
+                }).catch(() => {});
+                vid.play().catch(() => {});
+                card.appendChild(vid);
+            } else {
+                const img = document.createElement('img');
+                img.loading = 'lazy';
+                img.alt = fileName;
+                img.src = pathToFileUrl(r.path);
+                img.onerror = () => { card.classList.add('hidden'); };
+                card.appendChild(img);
+
+                // For animated images (GIF/WebP): capture first frame as static overlay
+                // so we can "pause" the animation on window blur
+                const extLower = fileName.split('.').pop().toLowerCase();
+                if (extLower === 'gif' || extLower === 'webp') {
+                    img.addEventListener('load', () => {
+                        if (!card.isConnected || card.querySelector('.gif-static-overlay')) return;
+                        try {
+                            const MAX_DIM = 400;
+                            const scale = Math.min(1, MAX_DIM / Math.max(img.naturalWidth || 1, img.naturalHeight || 1));
+                            const w = Math.round((img.naturalWidth || 1) * scale);
+                            const h = Math.round((img.naturalHeight || 1) * scale);
+                            createImageBitmap(img, { resizeWidth: w, resizeHeight: h }).then(bitmap => {
+                                if (!card.isConnected) { bitmap.close(); return; }
+                                const offscreen = new OffscreenCanvas(w, h);
+                                offscreen.getContext('2d').drawImage(bitmap, 0, 0);
+                                bitmap.close();
+                                return offscreen.convertToBlob({ type: 'image/jpeg', quality: 0.7 });
+                            }).then(blob => {
+                                if (!blob || !card.isConnected) return;
+                                const ovl = document.createElement('img');
+                                ovl.className = 'gif-static-overlay';
+                                ovl.draggable = false;
+                                ovl.src = URL.createObjectURL(blob);
+                                card.appendChild(ovl);
+                            }).catch(() => {});
+                        } catch { /* ignore */ }
+                    }, { once: true });
+                }
+            }
+
+            const score = document.createElement('span');
+            score.className = 'mlt-score';
+            score.textContent = (r.score * 100).toFixed(0) + '%';
+            card.appendChild(score);
+
+            const pivotBtn = document.createElement('button');
+            pivotBtn.className = 'mlt-pivot-btn';
+            pivotBtn.type = 'button';
+            pivotBtn.title = 'Use as seed';
+            pivotBtn.textContent = '\u29BF'; // circled bullet ⦿
+            card.appendChild(pivotBtn);
+
+            const folder = document.createElement('span');
+            folder.className = 'mlt-folder';
+            folder.textContent = r.path.replace(/[/\\][^/\\]+$/, '').split(/[/\\]/).pop();
+            card.appendChild(folder);
+
+            resultsGrid.appendChild(card);
+        });
+    }
+
+    if (loadMoreBtn) {
+        const hasMore = (moreLikeThisState._totalMatches || 0) > results.length;
+        loadMoreBtn.classList.toggle('hidden', !hasMore);
+    }
+
+    // Show overlay
+    overlay.classList.remove('hidden');
+}
+
+/**
+ * Open the "More Like This" visual discovery overlay.
+ * @param {string} filePath - The seed image file path.
+ */
+async function openMoreLikeThis(filePath) {
+    const overlay = document.getElementById('mlt-overlay');
+    if (!overlay) return;
+
+    _modalTriggerMap.set(overlay, document.activeElement);
+
+    moreLikeThisState.active = true;
+    moreLikeThisState.seedPath = filePath;
+    moreLikeThisState.loading = true;
+    moreLikeThisState.history = [];
+    moreLikeThisState.results = [];
+    moreLikeThisState.maxResults = 100;
+
+    overlay.classList.remove('hidden');
+    renderMoreLikeThisOverlay();
+
+    const embedding = await getOrComputeEmbedding(filePath);
+    if (!embedding) {
+        showToast('Could not generate embedding for this file', 'error');
+        closeMoreLikeThis();
+        return;
+    }
+    moreLikeThisState.seedEmbedding = embedding;
+
+    if (!moreLikeThisState.allEmbeddings) {
+        moreLikeThisState.allEmbeddings = await getAllCachedEmbeddings();
+    }
+
+    if (moreLikeThisState.allEmbeddings.size === 0) {
+        moreLikeThisState.loading = false;
+        moreLikeThisState.results = [];
+        renderMoreLikeThisOverlay();
+        return;
+    }
+
+    recomputeMltResults();
+    moreLikeThisState.loading = false;
+
+    renderMoreLikeThisOverlay();
+}
+
+/**
+ * Pivot to a new seed image within the More Like This overlay.
+ * Pushes current state to history for back-navigation.
+ * @param {string} newSeedPath
+ */
+function pivotMoreLikeThis(newSeedPath) {
+    if (!moreLikeThisState.active || !moreLikeThisState.allEmbeddings) return;
+
+    const resultsGrid = document.getElementById('mlt-results');
+    const scrollTop = resultsGrid ? resultsGrid.parentElement.scrollTop : 0;
+
+    moreLikeThisState.history.push({
+        seedPath: moreLikeThisState.seedPath,
+        seedEmbedding: moreLikeThisState.seedEmbedding,
+        scrollTop,
+    });
+
+    const cached = moreLikeThisState.allEmbeddings.get(newSeedPath);
+    if (!cached) return;
+
+    moreLikeThisState.seedPath = newSeedPath;
+    moreLikeThisState.seedEmbedding = cached.embedding;
+    moreLikeThisState.maxResults = 100;
+    recomputeMltResults();
+    renderMoreLikeThisOverlay();
+
+    const body = document.querySelector('.mlt-body');
+    if (body) body.scrollTop = 0;
+}
+
+/**
+ * Go back one step in the pivot history.
+ */
+function mltGoBack() {
+    if (moreLikeThisState.history.length === 0) return;
+
+    const prev = moreLikeThisState.history.pop();
+    moreLikeThisState.seedPath = prev.seedPath;
+    moreLikeThisState.seedEmbedding = prev.seedEmbedding;
+    moreLikeThisState.maxResults = 100;
+    recomputeMltResults();
+    renderMoreLikeThisOverlay();
+
+    const body = document.querySelector('.mlt-body');
+    if (body && prev.scrollTop) body.scrollTop = prev.scrollTop;
+}
+
+/**
+ * Jump to an arbitrary point in the pivot history (from breadcrumb click).
+ * @param {number} index - index in history array
+ */
+function mltJumpToHistory(index) {
+    if (index < 0 || index >= moreLikeThisState.history.length) return;
+
+    const target = moreLikeThisState.history[index];
+    // Truncate history to this point
+    moreLikeThisState.history = moreLikeThisState.history.slice(0, index);
+
+    moreLikeThisState.seedPath = target.seedPath;
+    moreLikeThisState.seedEmbedding = target.seedEmbedding;
+    moreLikeThisState.maxResults = 100;
+    recomputeMltResults();
+    renderMoreLikeThisOverlay();
+
+    const body = document.querySelector('.mlt-body');
+    if (body) body.scrollTop = 0;
+}
+
+/**
+ * Update the threshold and re-filter results.
+ * @param {number} newThreshold - 0-1 range
+ */
+function updateMoreLikeThisThreshold(newThreshold) {
+    moreLikeThisState.threshold = newThreshold;
+    moreLikeThisState.maxResults = 100;
+    recomputeMltResults();
+    renderMoreLikeThisOverlay();
+}
+
+/**
+ * Close the More Like This overlay and free memory.
+ */
+function closeMoreLikeThis() {
+    const overlay = document.getElementById('mlt-overlay');
+    if (overlay) overlay.classList.add('hidden');
+
+    // Stop any playing seed video
+    const seedVideo = document.getElementById('mlt-seed-video');
+    if (seedVideo) { seedVideo.pause(); seedVideo.removeAttribute('src'); seedVideo.style.display = 'none'; }
+
+    const trigger = _modalTriggerMap.get(overlay);
+    _modalTriggerMap.delete(overlay);
+    if (trigger && trigger.focus) trigger.focus();
+
+    moreLikeThisState.active = false;
+    moreLikeThisState.seedPath = null;
+    moreLikeThisState.seedEmbedding = null;
+    moreLikeThisState.allEmbeddings = null;
+    moreLikeThisState.results = [];
+    moreLikeThisState._totalMatches = 0;
+    moreLikeThisState.history = [];
+    moreLikeThisState.loading = false;
+}
+
+/**
+ * Initialize More Like This overlay event listeners.
+ */
+(function initMoreLikeThis() {
+    document.addEventListener('DOMContentLoaded', () => {
+        const overlay = document.getElementById('mlt-overlay');
+        const closeBtn = document.getElementById('mlt-close-btn');
+        const backBtn = document.getElementById('mlt-back-btn');
+        const thresholdSlider = document.getElementById('mlt-threshold');
+        const resultsGrid = document.getElementById('mlt-results');
+        const loadMoreBtn = document.getElementById('mlt-load-more');
+
+        if (closeBtn) closeBtn.addEventListener('click', closeMoreLikeThis);
+        if (backBtn) backBtn.addEventListener('click', mltGoBack);
+
+        // Threshold slider — debounce heavy recomputation, update label immediately
+        let _mltThresholdTimer = 0;
+        if (thresholdSlider) {
+            thresholdSlider.addEventListener('input', () => {
+                const val = parseInt(thresholdSlider.value, 10) / 100;
+                const thresholdValueEl = document.getElementById('mlt-threshold-value');
+                if (thresholdValueEl) thresholdValueEl.textContent = val.toFixed(2);
+                clearTimeout(_mltThresholdTimer);
+                _mltThresholdTimer = setTimeout(() => updateMoreLikeThisThreshold(val), 120);
+            });
+        }
+
+        // Result card interactions:
+        // - Click card = open in lightbox
+        // - Click pivot button = use as new seed
+        // - Right-click = context menu
+        if (resultsGrid) {
+            resultsGrid.addEventListener('click', (e) => {
+                const pivotBtn = e.target.closest('.mlt-pivot-btn');
+                if (pivotBtn) {
+                    e.stopPropagation();
+                    const card = pivotBtn.closest('.mlt-result-card');
+                    if (card && card.dataset.path) pivotMoreLikeThis(card.dataset.path);
+                    return;
+                }
+                const card = e.target.closest('.mlt-result-card');
+                if (!card) return;
+                const path = card.dataset.path;
+                if (path) {
+                    const name = path.split(/[/\\]/).pop();
+                    const url = pathToFileUrl(path);
+                    openLightbox(url, path, name);
+                }
+            });
+
+            resultsGrid.addEventListener('contextmenu', (e) => {
+                // Let the document-level blow-up suppression handler run
+                if (blowUpSuppressContextMenu) return;
+                const card = e.target.closest('.mlt-result-card');
+                if (!card || !card.dataset.path) return;
+                e.preventDefault();
+                e.stopPropagation();
+                showLightboxContextMenu(e, card.dataset.path);
+            });
+
+        }
+
+        // Seed panel click — open seed in lightbox
+        const seedPanel = document.querySelector('.mlt-seed-preview');
+        if (seedPanel) {
+            seedPanel.style.cursor = 'pointer';
+            seedPanel.addEventListener('click', () => {
+                const path = moreLikeThisState.seedPath;
+                if (path) {
+                    const name = path.split(/[/\\]/).pop();
+                    const url = pathToFileUrl(path);
+                    openLightbox(url, path, name);
+                }
+            });
+            seedPanel.addEventListener('contextmenu', (e) => {
+                if (!moreLikeThisState.seedPath) return;
+                e.preventDefault();
+                e.stopPropagation();
+                showLightboxContextMenu(e, moreLikeThisState.seedPath);
+            });
+        }
+
+        // Load more
+        if (loadMoreBtn) {
+            loadMoreBtn.addEventListener('click', () => {
+                moreLikeThisState.maxResults += 100;
+                recomputeMltResults();
+                renderMoreLikeThisOverlay();
+            });
+        }
+
+        // Keyboard handler — arrow navigation, Escape, Backspace, Enter
+        let _mltFocusedIndex = -1;
+        let _mltFocusedCard = null;
+
+        function mltFocusCard(index) {
+            const cards = resultsGrid ? resultsGrid.querySelectorAll('.mlt-result-card:not(.hidden)') : [];
+            if (cards.length === 0) return;
+            index = Math.max(0, Math.min(cards.length - 1, index));
+            if (_mltFocusedCard) {
+                _mltFocusedCard.style.outline = '';
+                _mltFocusedCard.style.outlineOffset = '';
+            }
+            _mltFocusedIndex = index;
+            _mltFocusedCard = cards[index];
+            if (_mltFocusedCard) {
+                _mltFocusedCard.style.outline = '2px solid var(--accent)';
+                _mltFocusedCard.style.outlineOffset = '2px';
+                _mltFocusedCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+        }
+
+        document.addEventListener('keydown', (ev) => {
+            if (!overlay || overlay.classList.contains('hidden')) return;
+            // Don't intercept keys if the lightbox is open on top
+            const lb = document.getElementById('lightbox');
+            const lbOpen = lb && !lb.classList.contains('hidden');
+
+            if (ev.key === 'Escape') {
+                if (lbOpen) return;
+                ev.preventDefault();
+                ev.stopImmediatePropagation();
+                closeMoreLikeThis();
+            } else if (ev.key === 'Backspace' && !ev.target.matches('input, textarea, [contenteditable]')) {
+                if (lbOpen) return;
+                ev.preventDefault();
+                ev.stopImmediatePropagation();
+                mltGoBack();
+            } else if (ev.altKey && ev.key === 'ArrowLeft') {
+                if (lbOpen) return;
+                ev.preventDefault();
+                ev.stopImmediatePropagation();
+                mltGoBack();
+            } else if (!lbOpen && ['ArrowRight', 'ArrowDown'].includes(ev.key) && !ev.ctrlKey && !ev.metaKey && !ev.shiftKey) {
+                ev.preventDefault();
+                ev.stopImmediatePropagation();
+                mltFocusCard(_mltFocusedIndex + 1);
+            } else if (!lbOpen && ['ArrowLeft', 'ArrowUp'].includes(ev.key) && !ev.ctrlKey && !ev.metaKey && !ev.shiftKey && !ev.altKey) {
+                ev.preventDefault();
+                ev.stopImmediatePropagation();
+                mltFocusCard(_mltFocusedIndex <= 0 ? 0 : _mltFocusedIndex - 1);
+            } else if (!lbOpen && ev.key === 'Enter' && _mltFocusedCard) {
+                ev.preventDefault();
+                ev.stopImmediatePropagation();
+                const path = _mltFocusedCard.dataset.path;
+                if (path) {
+                    const name = path.split(/[/\\]/).pop();
+                    openLightbox(pathToFileUrl(path), path, name);
+                }
+            }
+        }, true);
+    });
+})();
 
 /**
  * Clear the "Find Similar" filter and restore previous view.
@@ -9136,6 +9725,15 @@ window.addEventListener('mouseup', (e) => {
     const dir = _mouseNavPending;
     _mouseNavPending = null;
     if (!dir) return;
+    // MLT overlay: mouse back = pivot history back
+    const mltOverlay = document.getElementById('mlt-overlay');
+    if (mltOverlay && !mltOverlay.classList.contains('hidden')) {
+        const lb2 = document.getElementById('lightbox');
+        if (!lb2 || lb2.classList.contains('hidden')) {
+            if (dir === 'prev' && moreLikeThisState.history.length > 0) mltGoBack();
+            return;
+        }
+    }
     const lb = document.getElementById('lightbox');
     if (lb && !lb.classList.contains('hidden')) {
         // Walk lightbox viewing history (like a browser)
@@ -9750,6 +10348,11 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
 
 // Navigation functions (guarded by _navBusy inside navigateToFolder)
 async function goBack() {
+    // If "More Like This" overlay is open, go back in pivot history instead
+    if (moreLikeThisState.active && moreLikeThisState.history.length > 0) {
+        mltGoBack();
+        return;
+    }
     const path = navigationHistory.goBack();
     if (path) {
         await navigateToFolder(path, false, false, true); // trustCache for instant back
@@ -10251,7 +10854,8 @@ document.addEventListener('mousedown', (e) => {
     let card =
         e.target.closest('.video-card') ||
         e.target.closest('.duplicate-item') ||
-        e.target.closest('.lb-insp-similar-card');
+        e.target.closest('.lb-insp-similar-card') ||
+        e.target.closest('.mlt-result-card');
     // Canvas grid: resolve card via hit-test
     if (!card && window.CG && window.CG.isEnabled()) {
         card = window.CG.targetFromEvent(e);
@@ -12581,6 +13185,16 @@ if (typeof CommandPalette !== 'undefined') {
         { id: 'misc.shortcuts', label: 'Show Keyboard Shortcuts', category: 'Misc', shortcut: '?', keywords: ['keyboard', 'shortcuts', 'hotkeys', 'keybindings'], action: () => toggleShortcutsOverlay() },
         { id: 'misc.perf', label: 'Toggle Performance Dashboard', category: 'Misc', shortcut: 'Ctrl+Shift+P', keywords: ['performance', 'perf', 'dashboard', 'debug'], action: () => { if (typeof perfTest !== 'undefined') perfTest.toggle(); } },
         { id: 'misc.command-palette', label: 'Command Palette', category: 'Misc', shortcut: 'Ctrl+P', keywords: ['command', 'palette', 'actions'], action: () => CommandPalette.open() },
+
+        // Discovery
+        { id: 'tools.more-like-this', label: 'More Like This', category: 'Tools', keywords: ['similar', 'visual', 'discovery', 'explore', 'like', 'pivot', 'clip', 'more'],
+          when: () => aiVisualSearchEnabled && (focusedCardIndex >= 0 || !!window.currentLightboxFilePath),
+          action: () => {
+              const path = window.currentLightboxFilePath
+                  || (visibleCards[focusedCardIndex] && visibleCards[focusedCardIndex].dataset.path);
+              if (path) openMoreLikeThis(path);
+          }
+        },
     ]);
 
     // Dynamic theme commands
@@ -14428,6 +15042,24 @@ class InspectorPanel {
             card.appendChild(score);
             this._similar.appendChild(card);
         });
+
+        // "Explore More" button to open the More Like This overlay
+        if (aiVisualSearchEnabled && results && results.length > 0) {
+            const exploreBtn = document.createElement('button');
+            exploreBtn.className = 'lb-insp-explore-btn';
+            exploreBtn.textContent = 'Explore More';
+            exploreBtn.title = 'Open "More Like This" visual discovery';
+            const currentPath = this._currentPath;
+            exploreBtn.addEventListener('click', () => {
+                if (moreLikeThisState.active) {
+                    // Update existing overlay seed instead of opening a second instance
+                    pivotMoreLikeThis(currentPath);
+                } else {
+                    openMoreLikeThis(currentPath);
+                }
+            });
+            this._similar.appendChild(exploreBtn);
+        }
     }
 
     destroy() {

@@ -147,6 +147,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     dbRunMigration: (data) => ipcRenderer.invoke('db-run-migration', data),
     dbGetMeta: (key) => ipcRenderer.invoke('db-get-meta', key),
     dbSetMeta: (key, value) => ipcRenderer.invoke('db-set-meta', key, value),
+    dbGetAllWorkspaces: () => ipcRenderer.invoke('db-get-all-workspaces'),
+    dbGetWorkspace: (id) => ipcRenderer.invoke('db-get-workspace', id),
+    dbSaveWorkspace: (name, dataJson) => ipcRenderer.invoke('db-save-workspace', name, dataJson),
+    dbUpdateWorkspace: (id, name, dataJson) => ipcRenderer.invoke('db-update-workspace', id, name, dataJson),
+    dbDeleteWorkspace: (id) => ipcRenderer.invoke('db-delete-workspace', id),
+    dbRenameWorkspace: (id, newName) => ipcRenderer.invoke('db-rename-workspace', id, newName),
     // Ratings
     dbGetAllRatings: () => ipcRenderer.invoke('db-get-all-ratings'),
     dbSetRating: (filePath, rating) => ipcRenderer.invoke('db-set-rating', filePath, rating),

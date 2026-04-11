@@ -488,6 +488,13 @@ function initKeyboardShortcuts() {
             return;
         }
 
+        // Save workspace
+        if (matchesShortcut(e, 'saveWorkspace')) {
+            e.preventDefault();
+            saveWorkspace();
+            return;
+        }
+
         // Filter sidebar to tab folders
         if (matchesShortcut(e, 'sidebarTabFilter')) {
             e.preventDefault();
@@ -2636,6 +2643,319 @@ function formatTime(seconds) {
     const secs = Math.floor(seconds % 60);
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 }
+
+// ==================== WORKSPACES ====================
+// Save/restore full app state snapshots (tabs, zoom, sort, sidebar, filters, scroll).
+
+const _workspaceMenu = document.getElementById('workspace-menu');
+const _workspaceList = document.getElementById('workspace-list');
+const _workspaceBtn  = document.getElementById('workspace-btn');
+const _workspaceSaveBtn = document.getElementById('workspace-save-btn');
+let _workspaceMenuOpen = false;
+
+function _snapshotWorkspace() {
+    // Serialize tabFolderScrollPositions (Map<tabId, Map<path, scrollTop>>) to plain object
+    const scrollObj = {};
+    const activeIdx = tabs.findIndex(t => t.id === activeTabId);
+    for (const [tabId, pathMap] of tabFolderScrollPositions) {
+        const tabIdx = tabs.findIndex(t => t.id === tabId);
+        if (tabIdx < 0) continue;
+        const pathObj = {};
+        for (const [p, s] of pathMap) pathObj[p] = s;
+        scrollObj[tabIdx] = pathObj;
+    }
+
+    return {
+        schemaVersion: 1,
+        tabs: tabs.map(t => ({
+            path: t.path, name: t.name, collectionId: t.collectionId || null,
+            sortType: t.sortType, sortOrder: t.sortOrder, groupId: t.groupId || null,
+        })),
+        activeTabIndex: activeIdx >= 0 ? activeIdx : 0,
+        tabGroups: tabGroups.map(g => ({ name: g.name, color: g.color, collapsed: g.collapsed, originalId: g.id })),
+        sidebarWidth,
+        sidebarCollapsed,
+        sidebarExpandedNodes: [...(sidebarExpandedNodes || [])],
+        sidebarTabFilterActive: typeof sidebarTabFilterActive !== 'undefined' ? sidebarTabFilterActive : false,
+        sidebarTabFilterFlat: typeof sidebarTabFilterFlat !== 'undefined' ? sidebarTabFilterFlat : false,
+        globalZoomLevel,
+        folderZoomPrefs: { ...folderZoomPrefs },
+        folderSortPrefs: { ...folderSortPrefs },
+        layoutMode,
+        sortType,
+        sortOrder,
+        currentFilter,
+        tabScrollPositions: scrollObj,
+    };
+}
+
+async function saveWorkspace() {
+    const name = await showPromptDialog('Save Workspace', { placeholder: 'Workspace name', confirmLabel: 'Save' });
+    if (name == null || name.trim() === '') return;
+    const snapshot = _snapshotWorkspace();
+    try {
+        const result = await window.electronAPI.dbSaveWorkspace(name.trim(), JSON.stringify(snapshot));
+        if (result && result.ok) {
+            showToast(`Workspace "${name.trim()}" saved`, 'success');
+            _refreshWorkspaceList();
+        } else {
+            showToast(`Could not save workspace: ${result ? result.error : 'unknown'}`, 'error');
+        }
+    } catch (err) {
+        showToast(`Could not save workspace: ${err.message}`, 'error');
+    }
+}
+
+async function loadWorkspace(workspaceId) {
+    let row;
+    try {
+        const result = await window.electronAPI.dbGetWorkspace(workspaceId);
+        row = result && result.ok ? result.value : null;
+    } catch { row = null; }
+    if (!row || !row.data_json) { showToast('Workspace not found', 'error'); return; }
+
+    let data;
+    try { data = JSON.parse(row.data_json); } catch { showToast('Workspace data is corrupt', 'error'); return; }
+
+    // Clean up existing tabs
+    for (const t of tabs) _cleanupTabCaches(t.id);
+
+    // Restore tab groups with new IDs
+    const groupIdMap = {};
+    tabGroups = [];
+    if (Array.isArray(data.tabGroups)) {
+        for (const g of data.tabGroups) {
+            const newId = tabGroupIdCounter++;
+            groupIdMap[g.originalId] = newId;
+            tabGroups.push({ id: newId, name: g.name, color: g.color, collapsed: g.collapsed || false });
+        }
+    }
+
+    // Restore tabs with new IDs
+    tabs = [];
+    let firstTabId = null;
+    const newActiveIndex = data.activeTabIndex || 0;
+    if (Array.isArray(data.tabs)) {
+        for (let i = 0; i < data.tabs.length; i++) {
+            const st = data.tabs[i];
+            const newId = tabIdCounter++;
+            const tab = {
+                id: newId,
+                path: st.path || null,
+                name: st.name || 'Home',
+                sortType: st.sortType || 'name',
+                sortOrder: st.sortOrder || 'ascending',
+                historyPaths: st.path ? [st.path] : [],
+                historyIndex: st.path ? 0 : -1,
+                collectionId: st.collectionId || null,
+                groupId: st.groupId != null ? (groupIdMap[st.groupId] || null) : null,
+            };
+            tabs.push(tab);
+            if (i === newActiveIndex) firstTabId = newId;
+
+            // Restore scroll positions for this tab
+            if (data.tabScrollPositions && data.tabScrollPositions[i]) {
+                const map = new Map();
+                for (const [p, s] of Object.entries(data.tabScrollPositions[i])) map.set(p, s);
+                tabFolderScrollPositions.set(newId, map);
+            }
+        }
+    }
+    if (firstTabId == null && tabs.length > 0) firstTabId = tabs[0].id;
+
+    // Restore sidebar
+    if (data.sidebarWidth != null) {
+        sidebarWidth = data.sidebarWidth;
+        localStorage.setItem('sidebarWidth', String(sidebarWidth));
+        const sidebar = document.getElementById('folder-sidebar');
+        if (sidebar) sidebar.style.width = sidebarWidth + 'px';
+    }
+    if (data.sidebarCollapsed != null) setSidebarCollapsed(data.sidebarCollapsed);
+    if (Array.isArray(data.sidebarExpandedNodes) && typeof sidebarExpandedNodes !== 'undefined') {
+        sidebarExpandedNodes.clear();
+        for (const p of data.sidebarExpandedNodes) sidebarExpandedNodes.add(p);
+        saveSidebarExpandedNodes();
+    }
+    if (data.sidebarTabFilterActive != null && typeof sidebarTabFilterActive !== 'undefined') {
+        sidebarTabFilterActive = data.sidebarTabFilterActive;
+        localStorage.setItem('sidebarTabFilterActive', String(sidebarTabFilterActive));
+    }
+    if (data.sidebarTabFilterFlat != null && typeof sidebarTabFilterFlat !== 'undefined') {
+        sidebarTabFilterFlat = data.sidebarTabFilterFlat;
+        localStorage.setItem('sidebarTabFilterFlat', String(sidebarTabFilterFlat));
+    }
+
+    // Restore zoom
+    if (data.globalZoomLevel != null) {
+        globalZoomLevel = data.globalZoomLevel;
+        zoomLevel = globalZoomLevel;
+        if (zoomSlider) zoomSlider.value = zoomLevel;
+        saveZoomLevel();
+        applyZoom();
+    }
+    if (data.folderZoomPrefs) {
+        folderZoomPrefs = { ...data.folderZoomPrefs };
+        deferLocalStorageWrite('folderZoomPrefs', JSON.stringify(folderZoomPrefs));
+    }
+
+    // Restore sort
+    if (data.folderSortPrefs) {
+        folderSortPrefs = { ...data.folderSortPrefs };
+        deferLocalStorageWrite('folderSortPrefs', JSON.stringify(folderSortPrefs));
+    }
+    if (data.sortType) { sortType = data.sortType; if (sortTypeSelect) sortTypeSelect.value = sortType; }
+    if (data.sortOrder) { sortOrder = data.sortOrder; if (sortOrderSelect) sortOrderSelect.value = sortOrder; }
+
+    // Restore layout
+    if (data.layoutMode && data.layoutMode !== layoutMode) {
+        layoutMode = data.layoutMode;
+        if (layoutModeToggle) layoutModeToggle.checked = layoutMode === 'grid';
+        deferLocalStorageWrite('layoutMode', layoutMode);
+        if (typeof switchLayoutMode === 'function') switchLayoutMode();
+    }
+
+    // Restore filter
+    if (data.currentFilter && typeof switchFilter === 'function') {
+        switchFilter(data.currentFilter);
+    }
+
+    // Activate tabs
+    saveTabs();
+    renderTabs();
+    if (firstTabId != null) switchToTab(firstTabId);
+    if (typeof onTabsChanged === 'function') onTabsChanged();
+
+    closeWorkspaceMenu();
+    showToast(`Loaded workspace "${row.name}"`);
+}
+
+async function deleteWorkspace(workspaceId) {
+    try {
+        // Fetch for undo before deleting
+        const getResult = await window.electronAPI.dbGetWorkspace(workspaceId);
+        const row = getResult && getResult.ok ? getResult.value : null;
+
+        const result = await window.electronAPI.dbDeleteWorkspace(workspaceId);
+        if (result && result.ok) {
+            _refreshWorkspaceList();
+            showToast('Workspace deleted');
+            if (row) {
+                pushMetadataUndo('Delete workspace', async () => {
+                    await window.electronAPI.dbSaveWorkspace(row.name, row.data_json);
+                    _refreshWorkspaceList();
+                });
+            }
+        }
+    } catch (err) {
+        showToast(`Could not delete: ${err.message}`, 'error');
+    }
+}
+
+async function renameWorkspace(workspaceId) {
+    const newName = await showPromptDialog('Rename Workspace', { placeholder: 'New name', confirmLabel: 'Rename' });
+    if (newName == null || newName.trim() === '') return;
+    try {
+        const result = await window.electronAPI.dbRenameWorkspace(workspaceId, newName.trim());
+        if (result && result.ok) {
+            _refreshWorkspaceList();
+            showToast(`Renamed to "${newName.trim()}"`);
+        } else {
+            showToast(`Rename failed: ${result ? result.error : 'unknown'}`, 'error');
+        }
+    } catch (err) {
+        showToast(`Rename failed: ${err.message}`, 'error');
+    }
+}
+
+async function overwriteWorkspace(workspaceId, name) {
+    const snapshot = _snapshotWorkspace();
+    try {
+        const result = await window.electronAPI.dbUpdateWorkspace(workspaceId, name, JSON.stringify(snapshot));
+        if (result && result.ok) {
+            _refreshWorkspaceList();
+            showToast(`Workspace "${name}" updated`);
+        }
+    } catch (err) {
+        showToast(`Could not update: ${err.message}`, 'error');
+    }
+}
+
+// ── Workspace Menu ──
+
+function openWorkspaceMenu() {
+    if (!_workspaceMenu) return;
+    _workspaceMenuOpen = true;
+    _workspaceMenu.classList.remove('hidden');
+    _refreshWorkspaceList();
+    // Close on outside click
+    setTimeout(() => document.addEventListener('click', _workspaceMenuOutsideClick, true), 0);
+}
+
+function closeWorkspaceMenu() {
+    if (!_workspaceMenu) return;
+    _workspaceMenuOpen = false;
+    _workspaceMenu.classList.add('hidden');
+    document.removeEventListener('click', _workspaceMenuOutsideClick, true);
+}
+
+function toggleWorkspaceMenu() {
+    _workspaceMenuOpen ? closeWorkspaceMenu() : openWorkspaceMenu();
+}
+
+function _workspaceMenuOutsideClick(e) {
+    if (!_workspaceMenu.contains(e.target) && e.target !== _workspaceBtn && !_workspaceBtn.contains(e.target)) {
+        closeWorkspaceMenu();
+    }
+}
+
+async function _refreshWorkspaceList() {
+    if (!_workspaceList) return;
+    let workspaces = [];
+    try {
+        const result = await window.electronAPI.dbGetAllWorkspaces();
+        if (result && result.ok) workspaces = result.value || [];
+    } catch { /* empty list */ }
+
+    if (workspaces.length === 0) {
+        _workspaceList.innerHTML = '<div class="workspace-empty">No saved workspaces</div>';
+        return;
+    }
+
+    let html = '';
+    for (const ws of workspaces) {
+        const date = new Date(ws.updated_at || ws.saved_at);
+        const dateStr = date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+        html += `<div class="workspace-item" data-id="${ws.id}">
+            <div class="workspace-item-info" data-action="load" data-id="${ws.id}">
+                <span class="workspace-item-name">${_escHtml(ws.name)}</span>
+                <span class="workspace-item-date">${dateStr}</span>
+            </div>
+            <div class="workspace-item-actions">
+                <button class="workspace-item-btn" data-action="overwrite" data-id="${ws.id}" data-name="${_escAttr(ws.name)}" title="Overwrite with current state">&#8635;</button>
+                <button class="workspace-item-btn" data-action="rename" data-id="${ws.id}" title="Rename">&#9998;</button>
+                <button class="workspace-item-btn workspace-item-delete" data-action="delete" data-id="${ws.id}" title="Delete">&times;</button>
+            </div>
+        </div>`;
+    }
+    _workspaceList.innerHTML = html;
+}
+
+function _escHtml(str) { const el = document.createElement('span'); el.textContent = str; return el.innerHTML; }
+function _escAttr(str) { return str.replace(/"/g, '&quot;').replace(/</g, '&lt;'); }
+
+// Wire up button + delegation
+if (_workspaceBtn) _workspaceBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleWorkspaceMenu(); });
+if (_workspaceSaveBtn) _workspaceSaveBtn.addEventListener('click', () => { closeWorkspaceMenu(); saveWorkspace(); });
+if (_workspaceList) _workspaceList.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-action]');
+    if (!btn) return;
+    const action = btn.dataset.action;
+    const id = Number(btn.dataset.id);
+    if (action === 'load') loadWorkspace(id);
+    else if (action === 'rename') renameWorkspace(id);
+    else if (action === 'delete') deleteWorkspace(id);
+    else if (action === 'overwrite') overwriteWorkspace(id, btn.dataset.name);
+});
 
 // ==================== HOVER PREVIEW STRIP ====================
 // Shows a filmstrip of 5 evenly-spaced keyframes at the bottom of video cards on hover.

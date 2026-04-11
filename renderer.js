@@ -13332,6 +13332,8 @@ if (typeof CommandPalette !== 'undefined') {
         { id: 'tools.duplicates', label: 'Find Duplicates', category: 'Tools', keywords: ['duplicate', 'similar', 'copy'], action: () => document.getElementById('find-duplicates-btn').click() },
         { id: 'tools.batch-rename', label: 'Batch Rename Selected', category: 'Tools', keywords: ['batch', 'rename', 'bulk'], when: () => selectedCardPaths.size >= 2, action: () => openBatchRename([...selectedCardPaths]) },
         { id: 'tools.compare', label: 'Compare Selected', category: 'Tools', shortcut: 'C', keywords: ['compare', 'side by side', 'diff'], when: () => selectedCardPaths.size >= 2 && selectedCardPaths.size <= 4, action: () => openCompareMode([...selectedCardPaths]) },
+        { id: 'workspace.save', label: 'Save Workspace', category: 'Workspace', shortcut: 'Ctrl+Shift+S', keywords: ['workspace', 'session', 'save', 'snapshot'], action: () => saveWorkspace() },
+        { id: 'workspace.load', label: 'Load Workspace...', category: 'Workspace', keywords: ['workspace', 'session', 'load', 'restore', 'open'], action: () => openWorkspaceMenu() },
         { id: 'tools.slideshow', label: 'Start Slideshow', category: 'Tools', shortcut: 'F5', keywords: ['slideshow', 'play', 'presentation'], action: () => startSlideshow() },
         { id: 'tools.select-all', label: 'Select All', category: 'Tools', shortcut: 'Ctrl+A', keywords: ['select', 'all'], action: () => selectAllCards() },
         { id: 'tools.clear-selection', label: 'Clear Selection', category: 'Tools', keywords: ['clear', 'deselect', 'none'], when: () => selectedCardPaths.size > 0, action: () => clearCardSelection() },

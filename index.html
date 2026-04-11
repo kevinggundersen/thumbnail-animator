@@ -55,6 +55,16 @@
                     </div>
                 </div>
             </div>
+            <div class="workspace-menu-container" style="position:relative;display:inline-block">
+                <button id="workspace-btn" class="toolbar-icon-btn" title="Workspaces (Ctrl+Shift+S)" aria-label="Workspaces" aria-haspopup="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="5" rx="1"/><rect x="2" y="10" width="9" height="11" rx="1"/><rect x="13" y="10" width="9" height="11" rx="1"/></svg></button>
+                <div id="workspace-menu" class="workspace-menu hidden">
+                    <div class="workspace-menu-header">Workspaces</div>
+                    <div class="workspace-menu-actions">
+                        <button id="workspace-save-btn" class="workspace-action-btn">Save Current Workspace</button>
+                    </div>
+                    <div id="workspace-list" class="workspace-list"></div>
+                </div>
+            </div>
             <button id="settings-btn" class="settings-btn toolbar-icon-btn" title="Settings" aria-label="Settings"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg></button>
         </header>
         <div class="content-wrapper">

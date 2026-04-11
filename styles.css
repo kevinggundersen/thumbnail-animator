@@ -8633,6 +8633,122 @@ video.blow-up-media {
     color: var(--text-tertiary);
 }
 
+/* ===== Workspace Menu ===== */
+
+.workspace-menu {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    margin-top: 4px;
+    width: 300px;
+    max-height: 400px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color, rgba(255,255,255,0.1));
+    border-radius: var(--radius-lg, 8px);
+    box-shadow: var(--shadow-xl, 0 8px 32px rgba(0,0,0,0.4));
+    z-index: var(--z-dropdown);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+.workspace-menu.hidden { display: none !important; }
+
+.workspace-menu-header {
+    padding: var(--space-2) var(--space-3);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    border-bottom: 1px solid var(--border-color, rgba(255,255,255,0.06));
+}
+
+.workspace-menu-actions {
+    padding: var(--space-2) var(--space-3);
+    border-bottom: 1px solid var(--border-color, rgba(255,255,255,0.06));
+}
+
+.workspace-action-btn {
+    width: 100%;
+    padding: 6px var(--space-2);
+    background: var(--accent, #4a90d9);
+    color: #fff;
+    border: none;
+    border-radius: var(--radius-sm, 4px);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background var(--duration-fast);
+}
+.workspace-action-btn:hover { background: var(--accent-hover, #5aa0e9); }
+
+.workspace-list {
+    overflow-y: auto;
+    flex: 1;
+    min-height: 0;
+    padding: var(--space-1) 0;
+}
+
+.workspace-empty {
+    color: var(--text-tertiary);
+    font-size: 12px;
+    text-align: center;
+    padding: var(--space-3);
+}
+
+.workspace-item {
+    display: flex;
+    align-items: center;
+    padding: var(--space-1) var(--space-3);
+    gap: var(--space-2);
+    transition: background var(--duration-fast);
+}
+.workspace-item:hover { background: var(--bg-hover, rgba(255,255,255,0.04)); }
+
+.workspace-item-info {
+    flex: 1;
+    min-width: 0;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+
+.workspace-item-name {
+    font-size: 13px;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.workspace-item-date {
+    font-size: 10px;
+    color: var(--text-tertiary);
+}
+
+.workspace-item-actions {
+    display: flex;
+    gap: 2px;
+    opacity: 0;
+    transition: opacity var(--duration-fast);
+    flex-shrink: 0;
+}
+.workspace-item:hover .workspace-item-actions { opacity: 1; }
+
+.workspace-item-btn {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 14px;
+    cursor: pointer;
+    padding: 2px 5px;
+    border-radius: var(--radius-sm, 3px);
+    line-height: 1;
+}
+.workspace-item-btn:hover { background: var(--bg-hover, rgba(255,255,255,0.08)); color: var(--text-primary); }
+.workspace-item-delete:hover { color: var(--danger, #e74c3c); }
+
 /* ===== Toast Notifications ===== */
 .card-hover-tooltip {
     position: fixed;

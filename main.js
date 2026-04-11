@@ -5803,6 +5803,14 @@ wrapIpc('db-run-migration', (data) => appDb.runMigration(data));
 wrapIpc('db-get-meta', (key) => appDb.getMeta(key));
 wrapIpc('db-set-meta', (key, value) => appDb.setMeta(key, value));
 
+// Workspaces
+wrapIpc('db-get-all-workspaces', () => appDb.getAllWorkspaces());
+wrapIpc('db-get-workspace', (id) => appDb.getWorkspace(id));
+wrapIpc('db-save-workspace', (name, dataJson) => appDb.saveWorkspace(name, dataJson));
+wrapIpc('db-update-workspace', (id, name, dataJson) => appDb.updateWorkspace(id, name, dataJson));
+wrapIpc('db-delete-workspace', (id) => appDb.deleteWorkspace(id));
+wrapIpc('db-rename-workspace', (id, newName) => appDb.renameWorkspace(id, newName));
+
 // IPC result caches for frequently-fetched full-table queries
 const _ipcCache = { ratings: null, pinned: null, tags: null, collections: null, hashRatings: null, hashPins: null };
 

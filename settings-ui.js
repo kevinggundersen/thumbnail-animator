@@ -1511,6 +1511,8 @@ const DEFAULT_SHORTCUTS = {
     toggleCanvasGrid: { key: 'g', ctrl: true, shift: true, alt: true, label: 'Toggle canvas grid', category: 'View' },
     toggleLinkedDuplicates: { key: '', label: 'Toggle linked duplicates', category: 'View' },
     moreLikeThis: { key: 'm', label: 'More Like This', category: 'View' },
+    collectionStats: { key: 'i', ctrl: true, label: 'Collection statistics', category: 'View' },
+    saveWorkspace: { key: 's', ctrl: true, shift: true, label: 'Save workspace', category: 'Workspace' },
 };
 
 // Merge user overrides over defaults

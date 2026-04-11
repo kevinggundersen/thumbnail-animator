@@ -187,6 +187,19 @@ class AppDatabase {
             `);
             this._setSchemaVersion(4);
         }
+
+        if (currentVersion < 5) {
+            this.db.exec(`
+                CREATE TABLE IF NOT EXISTS workspaces (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name       TEXT NOT NULL,
+                    data_json  TEXT NOT NULL,
+                    saved_at   INTEGER NOT NULL,
+                    updated_at INTEGER
+                );
+            `);
+            this._setSchemaVersion(5);
+        }
     }
 
     _getSchemaVersion() {
@@ -209,6 +222,14 @@ class AppDatabase {
         this._stmts = {};
         this._stmts.getMeta = this.db.prepare('SELECT value FROM meta WHERE key = ?');
         this._stmts.setMeta = this.db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)');
+
+        // Workspaces
+        this._stmts.getAllWorkspaces = this.db.prepare('SELECT id, name, saved_at, updated_at FROM workspaces ORDER BY COALESCE(updated_at, saved_at) DESC');
+        this._stmts.getWorkspace = this.db.prepare('SELECT * FROM workspaces WHERE id = ?');
+        this._stmts.saveWorkspace = this.db.prepare('INSERT INTO workspaces (name, data_json, saved_at) VALUES (?, ?, ?)');
+        this._stmts.updateWorkspace = this.db.prepare('UPDATE workspaces SET name = ?, data_json = ?, updated_at = ? WHERE id = ?');
+        this._stmts.deleteWorkspace = this.db.prepare('DELETE FROM workspaces WHERE id = ?');
+        this._stmts.renameWorkspace = this.db.prepare('UPDATE workspaces SET name = ?, updated_at = ? WHERE id = ?');
 
         // Ratings
         this._stmts.getRating = this.db.prepare('SELECT rating FROM file_ratings WHERE file_path = ?');
@@ -384,6 +405,33 @@ class AppDatabase {
 
     setMeta(key, value) {
         this._stmts.setMeta.run(key, String(value));
+    }
+
+    // ── Workspaces ──────────────────────────────────────────────────────
+
+    getAllWorkspaces() {
+        return this._stmts.getAllWorkspaces.all();
+    }
+
+    getWorkspace(id) {
+        return this._stmts.getWorkspace.get(id) || null;
+    }
+
+    saveWorkspace(name, dataJson) {
+        const info = this._stmts.saveWorkspace.run(name, dataJson, Date.now());
+        return info.lastInsertRowid;
+    }
+
+    updateWorkspace(id, name, dataJson) {
+        this._stmts.updateWorkspace.run(name, dataJson, Date.now(), id);
+    }
+
+    deleteWorkspace(id) {
+        this._stmts.deleteWorkspace.run(id);
+    }
+
+    renameWorkspace(id, newName) {
+        this._stmts.renameWorkspace.run(newName, Date.now(), id);
     }
 
     // ── Ratings ──────────────────────────────────────────────────────────

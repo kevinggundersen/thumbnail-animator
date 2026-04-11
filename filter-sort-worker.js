@@ -32,6 +32,7 @@ let itemNamesLower = [];        // pre-lowercased names for fast includes()
 let ratings = {};               // path -> 1..5
 let normalizedRatings = {};     // normalizedPath -> 1..5 (mirror for path variations)
 let pins = new Set();           // normalized paths
+let pluginSortKeys = null;      // { normalizedPath: sortKey } or null
 let tagFilteredPaths = null;    // Set<normalizedPath> or null
 let embeddings = new Map();     // path -> Float32Array (L2-normalized)
 let textEmbedding = null;       // Float32Array
@@ -427,6 +428,15 @@ function runFilterPipeline(state) {
                 const bR = getRating(ib.path);
                 c = bR - aR; // rating sort is desc by default
                 if (c === 0) c = nameCmp(a, b);
+            } else if (sortType.startsWith('plugin:') && pluginSortKeys) {
+                const aKey = pluginSortKeys[normalizePath(ia.path)];
+                const bKey = pluginSortKeys[normalizePath(ib.path)];
+                if (aKey !== undefined && bKey !== undefined) {
+                    c = typeof aKey === 'number'
+                        ? aKey - bKey
+                        : _nameCollator.compare(String(aKey), String(bKey));
+                }
+                if (c === 0) c = nameCmp(a, b);
             }
             return sortOrder === 'ascending' ? c : -c;
         };
@@ -670,6 +680,17 @@ self.onmessage = (e) => {
                 for (let i = 0; i < removed.length; i++) {
                     embeddings.delete(removed[i]);
                 }
+            }
+            break;
+        }
+        case 'setPluginSortKeys': {
+            if (msg.keys) {
+                pluginSortKeys = {};
+                for (const p of Object.keys(msg.keys)) {
+                    pluginSortKeys[normalizePath(p)] = msg.keys[p];
+                }
+            } else {
+                pluginSortKeys = null;
             }
             break;
         }

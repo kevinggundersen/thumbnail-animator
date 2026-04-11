@@ -47,6 +47,8 @@ class PluginRegistry {
         this._lightboxRenderersByExt = new Map();
         // Map<pluginId, Array<tooltipSection>> — tooltip sections
         this._tooltipSectionsByPlugin = new Map();
+        // Array<{pluginId, comparatorId, name, method}> — sort comparators
+        this._sortComparators = [];
         // Set of plugin IDs that came from builtin directories
         this._builtinPluginIds = new Set();
         // Global plugin ordering — controls execution priority
@@ -232,6 +234,18 @@ class PluginRegistry {
                         mimeType: renderer.mimeType || null,
                     });
                 }
+            }
+        }
+
+        // Index sort comparators (plugin-contributed sort functions)
+        if (Array.isArray(capabilities.sortComparators)) {
+            for (const comp of capabilities.sortComparators) {
+                this._sortComparators.push({
+                    pluginId: id,
+                    comparatorId: comp.id,
+                    name: comp.name,
+                    method: comp.method,
+                });
             }
         }
 
@@ -479,6 +493,45 @@ class PluginRegistry {
             }
         }
         return ops;
+    }
+
+    // --- Sort Comparators ---
+
+    /**
+     * Returns all plugin-contributed sort comparators as a flat array.
+     * Each entry has { pluginId, comparatorId, name }.
+     */
+    getAllSortComparators() {
+        return this._sortComparators
+            .filter(c => !this._disabledPlugins.has(c.pluginId))
+            .map(({ pluginId, comparatorId, name }) => ({ pluginId, comparatorId, name }));
+    }
+
+    /**
+     * Compute sort keys for all file paths using a plugin's sort comparator.
+     * Returns { [filePath]: sortKey } where sortKey is a number or string.
+     */
+    async computeSortKeys(pluginId, comparatorId, filePaths) {
+        const manifest = this._manifests.get(pluginId);
+        if (!manifest) throw new Error(`Unknown plugin: ${pluginId}`);
+        const caps = manifest.capabilities || {};
+        const compDef = (caps.sortComparators || []).find(c => c.id === comparatorId);
+        if (!compDef) throw new Error(`Unknown sort comparator "${comparatorId}" in plugin "${pluginId}"`);
+        const instance = await this._loadPlugin(pluginId);
+        if (typeof instance[compDef.method] !== 'function') {
+            throw new Error(`Plugin "${pluginId}" does not export method "${compDef.method}"`);
+        }
+        const result = await callWithTimeout(
+            () => instance[compDef.method](filePaths),
+            30000 // 30s for large folders
+        );
+        // Normalize Map to plain object for IPC serialization
+        if (result instanceof Map) {
+            const obj = {};
+            for (const [k, v] of result) obj[k] = v;
+            return obj;
+        }
+        return result;
     }
 
     /**

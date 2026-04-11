@@ -2706,6 +2706,66 @@ function setFolderSortPref(folderPath, type, order) {
     deferLocalStorageWrite('folderSortPrefs', JSON.stringify(folderSortPrefs));
 }
 
+// ── Plugin sort comparators ──────────────────────────────────────────────────
+let pluginSortComparators = []; // [{pluginId, comparatorId, name}]
+let pluginSortKeys = null;      // {path: sortKey} or null
+let pluginSortKeysFolderPath = null;
+
+async function loadPluginSortComparators() {
+    try {
+        const result = await window.electronAPI.getPluginSortComparators();
+        pluginSortComparators = result && result.ok ? (result.value || []) : [];
+    } catch { pluginSortComparators = []; }
+    populateSortDropdownPluginOptions();
+}
+
+function populateSortDropdownPluginOptions() {
+    for (const select of [sortTypeSelect]) {
+        if (!select) continue;
+        // Remove previously added plugin options
+        select.querySelectorAll('option[data-plugin]').forEach(opt => opt.remove());
+        // Add plugin comparators
+        for (const comp of pluginSortComparators) {
+            const opt = document.createElement('option');
+            opt.value = `plugin:${comp.pluginId}:${comp.comparatorId}`;
+            opt.textContent = comp.name;
+            opt.dataset.plugin = comp.pluginId;
+            select.appendChild(opt);
+        }
+    }
+}
+
+async function computeAndApplyPluginSort(sortTypeValue) {
+    const [, pluginId, comparatorId] = sortTypeValue.split(':');
+    const filePaths = currentItems
+        .filter(i => i.type !== 'folder')
+        .map(i => i.path);
+
+    try {
+        setStatusActivity('Computing sort keys...');
+        const result = await window.electronAPI.computePluginSortKeys(pluginId, comparatorId, filePaths);
+        setStatusActivity('');
+
+        if (!result || !result.ok) {
+            showToast(`Plugin sort failed: ${result ? result.error : 'unknown'}`, 'error');
+            sortType = 'name';
+            sortTypeSelect.value = 'name';
+            applySorting();
+            return;
+        }
+
+        pluginSortKeys = result.value;
+        pluginSortKeysFolderPath = currentFolderPath;
+        applySorting();
+    } catch (err) {
+        setStatusActivity('');
+        showToast(`Plugin sort failed: ${err.message}`, 'error');
+        sortType = 'name';
+        sortTypeSelect.value = 'name';
+        applySorting();
+    }
+}
+
 // Track thumbnail quality
 let thumbnailQuality = 'medium'; // 'low', 'medium', 'high'
 
@@ -7230,6 +7290,14 @@ function updateSorting() {
     // Save per-folder sort preference
     setFolderSortPref(currentFolderPath, sortType, sortOrder);
 
+    // Plugin sort: compute keys asynchronously, then apply
+    if (sortType.startsWith('plugin:')) {
+        computeAndApplyPluginSort(sortType);
+        return;
+    }
+    // Clear stale plugin keys when switching to built-in sort
+    pluginSortKeys = null;
+
     // Apply sorting to current folder
     applySorting();
 }
@@ -8589,6 +8657,7 @@ window.__filterBridgeHost = {
     get dateGroupGranularity()  { return dateGroupGranularity; },
     get collapsedDateGroups()   { return collapsedDateGroups; },
     get vsStateEnabled()        { return vsState.enabled; },
+    get pluginSortKeys()        { return pluginSortKeys; },
 
     // Callbacks
     vsUpdateItems:              (items, opts) => vsUpdateItems(items, opts),
@@ -13357,6 +13426,7 @@ if (typeof CommandPalette !== 'undefined') {
                     if (typeof _pluginInfoSections !== 'undefined') _pluginInfoSections = null;
                     if (typeof InspectorPanel !== 'undefined') InspectorPanel._pluginInfoSectionsCache = null;
                     _pluginTooltipSectionsCache = null;
+                    loadPluginSortComparators();
                 } else {
                     showToast(`Reload failed: ${result ? result.error : 'Unknown error'}`, 'error');
                 }
@@ -14379,6 +14449,10 @@ if (tagsTabBtn) {
 
 // Initialize tags on startup
 refreshTagsCache();
+
+// Load plugin sort comparators on startup
+loadPluginSortComparators();
+
 console.log('[Tags] renderer.js fully loaded, end of file reached');
 
 

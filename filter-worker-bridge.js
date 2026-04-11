@@ -30,6 +30,7 @@ class FilterWorkerBridge {
         this._clusteringStatusTimer = null;
         this._dedupVersion = 0;
         this._dedupSyncedVersion = -1;
+        this._lastPluginSortKeys = undefined;
     }
 
     // ── Public API ────────────────────────────────────────────────────
@@ -216,6 +217,16 @@ class FilterWorkerBridge {
         this._dedupSyncedVersion = this._dedupVersion;
     }
 
+    _syncPluginSortKeys() {
+        const w = this._getOrSpawnWorker();
+        if (!w) return;
+        const h = this._host;
+        const keys = h.pluginSortKeys;
+        if (this._lastPluginSortKeys === keys) return;
+        w.postMessage({ type: 'setPluginSortKeys', keys: keys || null });
+        this._lastPluginSortKeys = keys;
+    }
+
     // ── Worker dispatch ───────────────────────────────────────────────
 
     _applyFiltersViaWorker() {
@@ -231,6 +242,7 @@ class FilterWorkerBridge {
         this._syncTextEmbedding();
         this._syncFindSimilarEmbedding();
         this._syncDedup();
+        this._syncPluginSortKeys();
 
         if (h.aiSearchActive || h.aiClusteringMode === 'similarity' || h.findSimilarState.active) {
             if (h.aiClusteringMode === 'similarity' && this._embSyncedSize !== h.currentEmbeddings.size) {

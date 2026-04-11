@@ -5321,6 +5321,18 @@ ipcMain.handle('render-plugin-info-section', async (event, pluginId, sectionId, 
 
 wrapIpc('get-plugin-batch-operations', () => pluginRegistry.getAllBatchOperations());
 
+wrapIpc('get-plugin-sort-comparators', () => pluginRegistry.getAllSortComparators());
+
+ipcMain.handle('compute-plugin-sort-keys', async (event, pluginId, comparatorId, filePaths) => {
+    try {
+        const keys = await pluginRegistry.computeSortKeys(pluginId, comparatorId, filePaths);
+        return { ok: true, value: keys };
+    } catch (err) {
+        console.warn(`[Plugin sort] ${pluginId}/${comparatorId} failed:`, err.message);
+        return { ok: false, error: err.message };
+    }
+});
+
 ipcMain.handle('execute-plugin-batch-operation', async (event, pluginId, operationId, filePaths, options) => {
     try {
         const result = await pluginRegistry.executeBatchOperation(pluginId, operationId, filePaths, options || {});

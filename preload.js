@@ -106,6 +106,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     renderPluginTooltipSection: (pluginId, sectionId, filePath, pluginMetadata) =>
         ipcRenderer.invoke('render-plugin-tooltip-section', pluginId, sectionId, filePath, pluginMetadata),
     getPluginBatchOperations: () => ipcRenderer.invoke('get-plugin-batch-operations'),
+    getPluginSortComparators: () => ipcRenderer.invoke('get-plugin-sort-comparators'),
+    computePluginSortKeys: (pluginId, comparatorId, filePaths) => ipcRenderer.invoke('compute-plugin-sort-keys', pluginId, comparatorId, filePaths),
     executePluginBatchOperation: (pluginId, operationId, filePaths, options) =>
         ipcRenderer.invoke('execute-plugin-batch-operation', pluginId, operationId, filePaths, options),
     getPluginSettingsPanels: () => ipcRenderer.invoke('get-plugin-settings-panels'),

@@ -932,6 +932,11 @@ function vsUpdateDOM(startIndex, endIndex) {
  * Reset a recycled card to a blank state.
  */
 function vsResetCard(card) {
+    // Cancel inline rename if this card is being edited
+    if (inlineEditSession && inlineEditSession.card === card) {
+        inlineEditSession = null; // skip restore — card is about to be wiped
+    }
+
     // Remove hover upgrade listeners before clearing children
     if (card._hoverEnter) {
         card.removeEventListener('mouseenter', card._hoverEnter);
@@ -2535,6 +2540,143 @@ let includeMovingImages = true; // Default to true
 // Track whether to pause thumbnails on lightbox open and window blur
 let pauseOnLightbox = true;
 let pauseOnBlur = true;
+
+// ── Inline rename state ──────────────────────────────────────────────────────
+// Single global session — only one card can be renamed at a time.
+let inlineEditSession = null; // { card, inputEl, originalName, extension, filePath, infoEl, confirmed }
+let _inlineRenameClickTimer = null; // disambiguates single-click (lightbox) from double-click (rename)
+
+function startInlineRename(card) {
+    if (!card || card.classList.contains('folder-card')) return;
+    // Cancel any existing session first
+    cancelInlineRename();
+
+    const filePath = card.dataset.path;
+    const fullName = card.dataset.name;
+    if (!filePath || !fullName) return;
+
+    // Split filename into stem and extension
+    const lastDot = fullName.lastIndexOf('.');
+    const stem = lastDot > 0 ? fullName.substring(0, lastDot) : fullName;
+    const extension = lastDot > 0 ? fullName.substring(lastDot) : '';
+
+    const infoEl = card.querySelector('.video-info');
+    if (!infoEl) return;
+
+    // Build the inline edit UI
+    const inputEl = document.createElement('input');
+    inputEl.type = 'text';
+    inputEl.className = 'inline-rename-input';
+    inputEl.value = stem;
+
+    const extSpan = document.createElement('span');
+    extSpan.className = 'inline-rename-ext';
+    extSpan.textContent = extension;
+
+    // Clear existing content and insert input + extension label
+    infoEl.textContent = '';
+    infoEl.appendChild(inputEl);
+    infoEl.appendChild(extSpan);
+    card.classList.add('inline-editing');
+
+    inlineEditSession = { card, inputEl, originalName: fullName, extension, filePath, infoEl, confirmed: false };
+
+    // Focus and select the stem text
+    inputEl.focus();
+    inputEl.select();
+
+    // Prevent clicks on the input from bubbling to grid click handler
+    inputEl.addEventListener('click', e => e.stopPropagation());
+    inputEl.addEventListener('dblclick', e => e.stopPropagation());
+    inputEl.addEventListener('mousedown', e => e.stopPropagation());
+
+    inputEl.addEventListener('keydown', (e) => {
+        e.stopPropagation(); // prevent grid keyboard shortcuts from firing
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            confirmInlineRename();
+        } else if (e.key === 'Escape') {
+            e.preventDefault();
+            cancelInlineRename();
+        }
+    });
+
+    // Cancel on blur (click-away), but not if we're confirming
+    inputEl.addEventListener('blur', () => {
+        // Use a short delay so confirm's click doesn't race with blur
+        setTimeout(() => {
+            if (inlineEditSession && inlineEditSession.inputEl === inputEl && !inlineEditSession.confirmed) {
+                cancelInlineRename();
+            }
+        }, 100);
+    });
+}
+
+async function confirmInlineRename() {
+    if (!inlineEditSession) return;
+    const { inputEl, originalName, extension, filePath, card, infoEl } = inlineEditSession;
+    inlineEditSession.confirmed = true; // guard against blur handler
+
+    const newStem = inputEl.value.trim();
+    if (!newStem) {
+        showToast('Filename cannot be empty', 'error');
+        cancelInlineRename();
+        return;
+    }
+
+    const newName = newStem + extension;
+    if (newName === originalName) {
+        cancelInlineRename();
+        return;
+    }
+
+    // Clean up the inline UI immediately
+    card.classList.remove('inline-editing');
+    setCardFilenameContent(infoEl, newName);
+    inlineEditSession = null;
+
+    try {
+        setStatusActivity(`Renaming to ${newName}...`);
+        const result = await window.electronAPI.renameFile(filePath, newName);
+        setStatusActivity('');
+        if (result.ok) {
+            showToast(`Renamed to "${newName}"`, 'success');
+            await Promise.all([loadRatings(), loadPins()]);
+            if (currentFolderPath) {
+                invalidateFolderCache(currentFolderPath);
+                const previousScrollTop = gridContainer.scrollTop;
+                await loadVideos(currentFolderPath, false, previousScrollTop);
+            }
+            // Update lightbox if open
+            if (isLightboxOpen) {
+                const dir = filePath.substring(0, filePath.lastIndexOf(filePath.includes('/') ? '/' : '\\') + 1);
+                const newPath = dir + newName;
+                const newUrl = pathToFileUrl(newPath);
+                const idx = lightboxItems.findIndex(it => it.path === filePath);
+                if (idx !== -1) {
+                    lightboxItems[idx].path = newPath;
+                    lightboxItems[idx].name = newName;
+                    lightboxItems[idx].url = newUrl;
+                }
+            }
+        } else {
+            showToast(`Could not rename: ${friendlyError(result.error)}`, 'error');
+            // Revert the displayed name
+            setCardFilenameContent(infoEl, originalName);
+        }
+    } catch (error) {
+        setStatusActivity('');
+        showToast(`Could not rename: ${friendlyError(error)}`, 'error');
+    }
+}
+
+function cancelInlineRename() {
+    if (!inlineEditSession) return;
+    const { card, infoEl, originalName } = inlineEditSession;
+    inlineEditSession = null;
+    card.classList.remove('inline-editing');
+    setCardFilenameContent(infoEl, originalName);
+}
 
 // Track sorting preferences
 let sortType = 'name'; // 'name' or 'date'
@@ -8709,6 +8851,9 @@ gridContainer.addEventListener('click', (e) => {
         return;
     }
 
+    // If clicking inside an inline rename input, let the input handle it
+    if (e.target.closest('.inline-rename-input')) return;
+
     // Media card click
     const mediaCard = e.target.closest('.video-card');
     if (mediaCard) {
@@ -8729,9 +8874,19 @@ gridContainer.addEventListener('click', (e) => {
             return;
         }
 
-        // Normal click — clear selection, open lightbox
+        // Normal click — clear selection, open lightbox.
+        // When clicking on the filename label, delay to disambiguate from double-click rename.
         selection.clear();
-        openLightbox(mediaCard.dataset.src, mediaCard.dataset.path, mediaCard.dataset.name);
+        if (e.target.closest('.video-info')) {
+            if (_inlineRenameClickTimer) clearTimeout(_inlineRenameClickTimer);
+            const src = mediaCard.dataset.src, path = mediaCard.dataset.path, name = mediaCard.dataset.name;
+            _inlineRenameClickTimer = setTimeout(() => {
+                _inlineRenameClickTimer = null;
+                openLightbox(src, path, name);
+            }, 250);
+        } else {
+            openLightbox(mediaCard.dataset.src, mediaCard.dataset.path, mediaCard.dataset.name);
+        }
         return;
     }
 
@@ -8745,6 +8900,24 @@ gridContainer.addEventListener('click', (e) => {
             });
         }, 0);
     }
+});
+
+// Double-click on filename label → inline rename
+gridContainer.addEventListener('dblclick', (e) => {
+    if (window.CG && window.CG.isEnabled()) return;
+    if (inlineEditSession) return; // already editing
+    const card = e.target.closest('.video-card');
+    if (!card) return;
+    const info = e.target.closest('.video-info');
+    if (!info) return;
+    e.preventDefault();
+    e.stopPropagation();
+    // Cancel the delayed single-click lightbox open
+    if (_inlineRenameClickTimer) {
+        clearTimeout(_inlineRenameClickTimer);
+        _inlineRenameClickTimer = null;
+    }
+    startInlineRename(card);
 });
 
 // Hover prefetch for folder cards in the grid

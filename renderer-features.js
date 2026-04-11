@@ -374,20 +374,12 @@ function initKeyboardShortcuts() {
             }
         }
 
-        // Rename focused file
+        // Rename focused file (inline on-card editing)
         if (matchesShortcut(e, 'rename') && focusedCardIndex >= 0) {
             e.preventDefault();
             const card = visibleCards[focusedCardIndex];
             if (card && !card.classList.contains('folder-card')) {
-                const path = card.dataset.path;
-                const name = card.querySelector('.video-info')?.textContent || '';
-                if (path) {
-                    renamePendingFile = { filePath: path, fileName: name };
-                    renameInput.value = name;
-                    renameDialog.classList.remove('hidden');
-                    renameInput.focus();
-                    renameInput.select();
-                }
+                startInlineRename(card);
             }
             return;
         }

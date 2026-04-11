@@ -366,12 +366,27 @@ contextMenu.addEventListener('click', async (e) => {
             break;
             
         case 'rename':
-            // Show rename dialog
-            renamePendingFile = { filePath, fileName };
-            renameInput.value = fileName;
-            renameDialog.classList.remove('hidden');
-            renameInput.focus();
-            renameInput.select();
+            if (contextMenuSource === 'lightbox') {
+                // Lightbox has no card — use the modal dialog
+                renamePendingFile = { filePath, fileName };
+                renameInput.value = fileName;
+                renameDialog.classList.remove('hidden');
+                renameInput.focus();
+                renameInput.select();
+            } else {
+                // Grid — find the card and use inline rename
+                const renameCard = gridContainer.querySelector(`.video-card[data-path="${CSS.escape(filePath)}"]`);
+                if (renameCard) {
+                    startInlineRename(renameCard);
+                } else {
+                    // Card not visible (scrolled out) — fall back to modal
+                    renamePendingFile = { filePath, fileName };
+                    renameInput.value = fileName;
+                    renameDialog.classList.remove('hidden');
+                    renameInput.focus();
+                    renameInput.select();
+                }
+            }
             break;
 
         case 'batch-rename': {

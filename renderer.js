@@ -2308,6 +2308,8 @@ const hoverScrubToggle = document.getElementById('hover-scrub-toggle');
 const hoverScrubLabel = document.getElementById('hover-scrub-label');
 const gifHoverScrubToggle = document.getElementById('gif-hover-scrub-toggle');
 const gifHoverScrubLabel = document.getElementById('gif-hover-scrub-label');
+const hoverPreviewStripToggle = document.getElementById('hover-preview-strip-toggle');
+const hoverPreviewStripLabel = document.getElementById('hover-preview-strip-label');
 const lightboxZoomToFitToggle = document.getElementById('lightbox-zoom-to-fit-toggle');
 const zoomSlider = document.getElementById('zoom-slider');
 const zoomValue = document.getElementById('zoom-value');
@@ -3115,6 +3117,9 @@ let playbackControlsEnabled = true;
 let zoomToFit = true;
 let hoverScrubEnabled = true;
 let gifHoverScrubEnabled = true;
+let hoverPreviewStripEnabled = true;
+const _previewStripCache = new Map(); // Map<cacheKey, string[]> (file:// URLs)
+const _previewStripPending = new Map(); // Map<cacheKey, Promise> (in-flight IPC dedup)
 let lightboxFilmstripEnabled = localStorage.getItem('lightboxFilmstripEnabled') !== 'false';
 
 // Track progress
@@ -8844,6 +8849,7 @@ gridContainer.addEventListener('mouseover', (e) => {
     if (card && card !== currentHoveredCard) {
         if (card.dataset.mediaType === 'video') {
             currentHoveredCard = card;
+            showPreviewStrip(card);
             const video = card.querySelector('video');
             if (video) {
                 card._scrubVideo = video; // Perf: cache for mousemove handler (avoids querySelector per frame)
@@ -8857,6 +8863,7 @@ gridContainer.addEventListener('mouseover', (e) => {
             }
         } else if (card.dataset.gifDuration && Number(card.dataset.gifDuration) > 0) {
             currentHoveredCard = card;
+            showPreviewStrip(card);
             showGifProgress(card);
             if (gifHoverScrubEnabled) {
                 initGifScrub(card);
@@ -8868,6 +8875,7 @@ gridContainer.addEventListener('mouseover', (e) => {
             const srcLower = card.dataset.src.toLowerCase();
             if (srcLower.endsWith('.gif') || srcLower.endsWith('.webp')) {
                 currentHoveredCard = card;
+                showPreviewStrip(card);
                 initGifScrub(card);
             }
         }
@@ -9070,6 +9078,7 @@ gridContainer.addEventListener('mouseout', (e) => {
         const staticOvl = currentHoveredCard.querySelector('.gif-static-overlay');
         if (staticOvl) staticOvl.classList.remove('visible');
         _gifScrubGeneration++; // abort any in-flight initGifScrub
+        hidePreviewStrip(currentHoveredCard);
         hideScrubber(currentHoveredCard);
         hideGifProgress(currentHoveredCard);
         currentHoveredCard = null;

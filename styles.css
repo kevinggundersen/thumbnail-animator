@@ -1915,6 +1915,39 @@ header {
     will-change: width;
 }
 
+/* ── Hover Preview Strip ─────────────────────────────────────────── */
+/* Filmstrip of 5 keyframes shown at the bottom of video cards on hover. */
+
+.hover-preview-strip {
+    position: absolute;
+    bottom: 22px;
+    left: 4px;
+    right: 4px;
+    height: 36px;
+    display: flex;
+    gap: 2px;
+    justify-content: center;
+    align-items: flex-end;
+    z-index: 3;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity var(--duration-fast, 150ms) var(--ease-out, ease-out);
+}
+
+.hover-preview-strip.visible {
+    opacity: 1;
+}
+
+.hover-preview-frame {
+    flex: 0 1 auto;
+    max-height: 100%;
+    max-width: 19%;
+    object-fit: contain;
+    border-radius: 2px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+    min-width: 0;
+}
+
 .nav-buttons {
     display: flex;
     gap: var(--space-1);

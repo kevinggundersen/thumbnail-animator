@@ -2645,6 +2645,175 @@ function formatTime(seconds) {
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 }
 
+// ==================== HOVER PREVIEW STRIP ====================
+// Shows a filmstrip of 5 evenly-spaced keyframes at the bottom of video cards on hover.
+// Frames are extracted lazily on first hover and cached both on disk (via main process)
+// and in-memory (URL strings only) for instant repeat hovers.
+
+const PREVIEW_STRIP_CACHE_MAX = 500;
+
+function showPreviewStrip(card) {
+    if (!hoverPreviewStripEnabled) return;
+    if (card.querySelector('.hover-preview-strip')) return; // already showing
+
+    const mediaType = card.dataset.mediaType;
+    const isAnimated = mediaType !== 'video' && _isAnimatedCard(card);
+    if (mediaType !== 'video' && !isAnimated) return;
+
+    const filePath = card.dataset.path;
+    const mtime = card.dataset.mtime || '0';
+    const cacheKey = filePath + '|' + mtime;
+
+    // Create the container immediately (invisible until populated)
+    const strip = document.createElement('div');
+    strip.className = 'hover-preview-strip';
+    // Insert before .video-info so it appears above the filename label
+    const info = card.querySelector('.video-info');
+    if (info) {
+        card.insertBefore(strip, info);
+    } else {
+        card.appendChild(strip);
+    }
+
+    // Fast path: in-memory cache hit (works for both video URLs and animated data URLs)
+    if (_previewStripCache.has(cacheKey)) {
+        _populateStrip(strip, _previewStripCache.get(cacheKey));
+        return;
+    }
+
+    if (isAnimated) {
+        // GIF/WebP: decode frames client-side via AnimatedImagePlaybackController
+        _generateAnimatedStrip(card, strip, cacheKey);
+    } else {
+        // Video: extract frames via FFmpeg in main process
+        _generateVideoStrip(card, strip, cacheKey, filePath);
+    }
+}
+
+function _isAnimatedCard(card) {
+    // Has a known GIF duration, or is a GIF/WebP by extension (not static WebP)
+    if (card.dataset.gifDuration && Number(card.dataset.gifDuration) > 0) return true;
+    if (card.dataset.isStaticWebp === 'true') return false;
+    const src = (card.dataset.src || '').toLowerCase();
+    return src.endsWith('.gif') || src.endsWith('.webp');
+}
+
+async function _generateAnimatedStrip(card, strip, cacheKey) {
+    const FRAME_COUNT = 5;
+    const mediaUrl = card.dataset.src;
+    if (!mediaUrl) { strip.remove(); return; }
+
+    try {
+        const response = await fetch(mediaUrl);
+        if (!card.isConnected || !card.contains(strip)) return;
+        const buffer = await response.arrayBuffer();
+        if (!card.isConnected || !card.contains(strip)) return;
+
+        const ctrlCanvas = document.createElement('canvas');
+        const controller = new AnimatedImagePlaybackController(ctrlCanvas, buffer);
+        await controller.ready;
+
+        if (!card.isConnected || !card.contains(strip)) {
+            controller.destroy();
+            return;
+        }
+
+        if (controller.frameCount < 2) {
+            controller.destroy();
+            if (strip.isConnected) strip.remove();
+            return;
+        }
+
+        // Sample 5 evenly-spaced frames and convert to data URLs
+        const dataUrls = [];
+        for (let i = 0; i < FRAME_COUNT; i++) {
+            const frameIdx = Math.floor((i + 0.5) * controller.frameCount / FRAME_COUNT);
+            const frameCanvas = controller.getFrameAtIndex(frameIdx);
+            if (frameCanvas) {
+                // Draw to a small thumbnail canvas
+                const thumb = document.createElement('canvas');
+                const scale = Math.min(1, 120 / Math.max(frameCanvas.width, frameCanvas.height));
+                thumb.width = Math.round(frameCanvas.width * scale);
+                thumb.height = Math.round(frameCanvas.height * scale);
+                const ctx = thumb.getContext('2d');
+                ctx.drawImage(frameCanvas, 0, 0, thumb.width, thumb.height);
+                dataUrls.push(thumb.toDataURL('image/jpeg', 0.7));
+            }
+        }
+        controller.destroy();
+
+        if (dataUrls.length > 0) {
+            // LRU eviction
+            if (_previewStripCache.size > PREVIEW_STRIP_CACHE_MAX) {
+                const iter = _previewStripCache.keys();
+                for (let i = 0; i < Math.floor(PREVIEW_STRIP_CACHE_MAX / 2); i++) {
+                    _previewStripCache.delete(iter.next().value);
+                }
+            }
+            _previewStripCache.set(cacheKey, dataUrls);
+            if (card.isConnected && card.contains(strip)) {
+                _populateStrip(strip, dataUrls);
+            }
+        } else {
+            if (strip.isConnected) strip.remove();
+        }
+    } catch {
+        if (strip.isConnected) strip.remove();
+    }
+}
+
+function _generateVideoStrip(card, strip, cacheKey, filePath) {
+    // Deduplicate in-flight IPC calls for the same video
+    let pending = _previewStripPending.get(cacheKey);
+    if (!pending) {
+        pending = window.electronAPI.generatePreviewStrip(filePath);
+        _previewStripPending.set(cacheKey, pending);
+    }
+
+    pending.then(result => {
+        _previewStripPending.delete(cacheKey);
+        if (result && result.ok && result.value && result.value.urls && result.value.urls.length > 0) {
+            // LRU eviction for in-memory cache
+            if (_previewStripCache.size > PREVIEW_STRIP_CACHE_MAX) {
+                const iter = _previewStripCache.keys();
+                for (let i = 0; i < Math.floor(PREVIEW_STRIP_CACHE_MAX / 2); i++) {
+                    _previewStripCache.delete(iter.next().value);
+                }
+            }
+            _previewStripCache.set(cacheKey, result.value.urls);
+            // Card may have been recycled or mouse left while we waited
+            if (card.isConnected && card.contains(strip)) {
+                _populateStrip(strip, result.value.urls);
+            }
+        } else {
+            if (strip.isConnected) strip.remove();
+        }
+    }).catch(() => {
+        _previewStripPending.delete(cacheKey);
+        if (strip.isConnected) strip.remove();
+    });
+}
+
+function _populateStrip(strip, urls) {
+    for (const url of urls) {
+        const img = document.createElement('img');
+        img.className = 'hover-preview-frame';
+        img.src = url;
+        img.draggable = false;
+        strip.appendChild(img);
+    }
+    // Trigger fade-in after a frame so the CSS transition fires
+    requestAnimationFrame(() => {
+        if (strip.isConnected) strip.classList.add('visible');
+    });
+}
+
+function hidePreviewStrip(card) {
+    if (!card) return;
+    const strip = card.querySelector('.hover-preview-strip');
+    if (strip) strip.remove();
+}
+
 // ==================== GIF PROGRESS BAR ====================
 
 function showGifProgress(card) {
@@ -5443,6 +5612,7 @@ function initPreferences() {
     restoreToggle('playbackControls', v => { playbackControlsEnabled = v; }, playbackControlsToggle, playbackControlsLabel);
     restoreToggle('hoverScrub', v => { hoverScrubEnabled = v; }, hoverScrubToggle, hoverScrubLabel);
     restoreToggle('gifHoverScrub', v => { gifHoverScrubEnabled = v; }, gifHoverScrubToggle, gifHoverScrubLabel);
+    restoreToggle('hoverPreviewStrip', v => { hoverPreviewStripEnabled = v; }, hoverPreviewStripToggle, hoverPreviewStripLabel);
     restoreToggle('zoomToFit', v => { zoomToFit = v; }, zoomToFitToggle, zoomToFitLabel, v => {
         if (lightboxZoomToFitToggle) lightboxZoomToFitToggle.checked = v;
     });

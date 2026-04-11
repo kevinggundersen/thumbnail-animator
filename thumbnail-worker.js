@@ -94,6 +94,35 @@ async function generateVideoThumbnail(filePath, thumbPath) {
     }
 }
 
+async function generatePreviewStripFrames(filePath, thumbPaths, positions) {
+    if (!ffmpegPath) return { success: false, thumbPaths: [] };
+    const results = [];
+    for (let i = 0; i < positions.length; i++) {
+        const outPath = thumbPaths[i];
+        // Check if this frame is already cached on disk
+        try {
+            await fs.promises.access(outPath);
+            results.push(outPath);
+            continue;
+        } catch { /* not cached */ }
+
+        await fs.promises.mkdir(path.dirname(outPath), { recursive: true });
+        const success = await runFfmpegBounded([
+            '-ss', String(positions[i]),
+            '-i', filePath,
+            '-vframes', '1',
+            '-q:v', '6',
+            '-vf', 'scale=120:-2',
+            '-y',
+            outPath
+        ]);
+        if (success) {
+            results.push(outPath);
+        }
+    }
+    return { success: results.length > 0, thumbPaths: results };
+}
+
 async function generateImageThumbnail(filePath, thumbPath, maxSize = 512) {
     if (!sharp) return { success: false, dHash: null };
     try {
@@ -153,6 +182,12 @@ async function computeDHashForFile(filePath) {
 
 module.exports = async function(item) {
     try {
+        // Preview-strip has its own per-frame caching — handle before the single-thumb path
+        if (item.type === 'preview-strip') {
+            const result = await generatePreviewStripFrames(item.filePath, item.thumbPaths, item.positions);
+            return { success: result.success, thumbPaths: result.thumbPaths };
+        }
+
         // Check if already cached
         let alreadyCached = false;
         try {

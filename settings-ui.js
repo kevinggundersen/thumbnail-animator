@@ -951,6 +951,12 @@ gifHoverScrubToggle.addEventListener('change', () => {
     deferLocalStorageWrite('gifHoverScrub', gifHoverScrubEnabled.toString());
 });
 
+hoverPreviewStripToggle.addEventListener('change', () => {
+    hoverPreviewStripEnabled = hoverPreviewStripToggle.checked;
+    hoverPreviewStripLabel.textContent = hoverPreviewStripEnabled ? 'On' : 'Off';
+    deferLocalStorageWrite('hoverPreviewStrip', hoverPreviewStripEnabled.toString());
+});
+
 // Lightbox filmstrip toggle
 const lightboxFilmstripToggleEl = document.getElementById('lightbox-filmstrip-toggle');
 const lightboxFilmstripLabelEl = document.getElementById('lightbox-filmstrip-label');

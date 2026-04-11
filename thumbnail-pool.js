@@ -25,7 +25,8 @@ class ThumbnailWorkerPool {
      * Returns { success, thumbPath, dHash? } with in-flight deduplication.
      * Pass computeDHash: true to compute perceptual hash from the thumbnail.
      */
-    async generate({ type, filePath, thumbPath, maxSize, computeDHash }) {
+    async generate(item) {
+        const { thumbPath } = item;
         // In-flight deduplication by thumbPath
         if (this._pendingJobs.has(thumbPath)) {
             return this._pendingJobs.get(thumbPath);
@@ -35,7 +36,7 @@ class ThumbnailWorkerPool {
         const timeout = setTimeout(() => controller.abort(), 30000);
 
         const promise = this.pool.run(
-            { type, filePath, thumbPath, maxSize, computeDHash },
+            item,
             { signal: controller.signal }
         ).catch(() => ({ success: false, thumbPath: null, dHash: null }))
          .finally(() => clearTimeout(timeout));

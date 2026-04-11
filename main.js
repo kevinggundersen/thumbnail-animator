@@ -3245,6 +3245,56 @@ ipcMain.handle('generate-video-thumbnail', async (event, filePath) => {
     }
 });
 
+// Generate a preview strip of 5 evenly-spaced keyframes for a video file.
+// Returns file:// URLs to cached JPEGs. Used for hover preview filmstrip on cards.
+ipcMain.handle('generate-preview-strip', async (event, filePath) => {
+    const FRAME_POSITIONS = [0.1, 0.3, 0.5, 0.7, 0.9]; // fractions of duration
+
+    try {
+        if (!ffmpegPath || !videoThumbDir) return { ok: false, error: 'ffmpeg unavailable' };
+        if (!thumbnailPool) return { ok: false, error: 'thumbnail pool unavailable' };
+
+        const stats = await fs.promises.stat(filePath);
+        const stripDir = path.join(videoThumbDir, 'preview-strips');
+
+        // Build cache paths for each frame
+        const thumbPaths = FRAME_POSITIONS.map((_, i) =>
+            path.join(stripDir, `${createThumbCacheKey(filePath, stats.mtimeMs, `strip:${i}`)}.jpg`)
+        );
+
+        // Fast path: if all frames already cached on disk, return immediately
+        const existChecks = await Promise.all(
+            thumbPaths.map(p => fs.promises.access(p).then(() => true).catch(() => false))
+        );
+        if (existChecks.every(Boolean)) {
+            return { ok: true, value: { urls: thumbPaths.map(p => pathToFileUrl(p)) } };
+        }
+
+        // Get duration to compute seek times
+        const duration = await getVideoDuration(filePath);
+        if (!duration || duration < 1) return { ok: false, error: 'video too short' };
+
+        const positions = FRAME_POSITIONS.map(f => f * duration);
+
+        // Route through the thumbnail worker pool.
+        // thumbPath (first frame path) is used by the pool for in-flight deduplication.
+        const result = await thumbnailPool.generate({
+            type: 'preview-strip',
+            filePath,
+            thumbPath: thumbPaths[0],
+            thumbPaths,
+            positions
+        });
+
+        if (result.success && result.thumbPaths && result.thumbPaths.length > 0) {
+            return { ok: true, value: { urls: result.thumbPaths.map(p => pathToFileUrl(p)) } };
+        }
+        return { ok: false, error: 'frame extraction failed' };
+    } catch (error) {
+        return { ok: false, error: error.message };
+    }
+});
+
 // Generate an image thumbnail. Prefers native Rust (rayon-parallel `image` crate) when
 // available; falls back to the worker-pool + sharp path. Returns file:// URL to cached PNG.
 ipcMain.handle('generate-image-thumbnail', async (event, filePath, maxSize = 512) => {

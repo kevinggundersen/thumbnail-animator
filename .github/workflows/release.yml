@@ -27,12 +27,19 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
       - uses: dtolnay/rust-toolchain@stable
 
-      - run: npm ci
+      - name: Install deps (with retry on Windows EPERM flakes)
+        shell: bash
+        run: |
+          npm ci || (echo "npm ci failed, retrying once..." && rm -rf node_modules && npm ci)
       - name: Build native scanner
-        run: cd native-scanner && npm ci && npm run build
+        shell: bash
+        run: |
+          cd native-scanner
+          npm ci || (echo "native-scanner npm ci failed, retrying once..." && rm -rf node_modules && npm ci)
+          npm run build
       - run: ${{ matrix.build_cmd }}
 
       - name: Upload to Release

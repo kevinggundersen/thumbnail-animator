@@ -1,5 +1,10 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
+// Listener callbacks used to receive the raw IpcRendererEvent, whose .sender is
+// the ipcRenderer itself. Page code only ever used the payload arguments, so a
+// frozen placeholder keeps the (event, ...args) signature without the capability.
+const IPC_EVENT = Object.freeze({});
+
 contextBridge.exposeInMainWorld('electronAPI', {
     platform: process.platform,
     getPathForFile: (file) => webUtils.getPathForFile(file),
@@ -7,7 +12,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     scanFolder: (path, options) => ipcRenderer.invoke('scan-folder', path, options),
     scanFolderStream: (path, options) => ipcRenderer.invoke('scan-folder-stream', path, options),
     cancelScan: (scanId) => ipcRenderer.invoke('cancel-scan', scanId),
-    onScanFolderChunk: (callback) => ipcRenderer.on('scan-folder-chunk', callback),
+    onScanFolderChunk: (callback) => ipcRenderer.on('scan-folder-chunk', (_e, ...args) => callback(IPC_EVENT, ...args)),
     removeScanFolderChunkListener: () => ipcRenderer.removeAllListeners('scan-folder-chunk'),
     triggerGC: () => ipcRenderer.invoke('trigger-gc'),
     getStartupTimeline: () => ipcRenderer.invoke('get-startup-timeline'),
@@ -18,7 +23,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     revealInExplorer: (filePath) => ipcRenderer.invoke('reveal-in-explorer', filePath),
     renameFile: (filePath, newName) => ipcRenderer.invoke('rename-file', filePath, newName),
     batchRename: (filePaths, patternType, patternOptions) => ipcRenderer.invoke('batch-rename', filePaths, patternType, patternOptions),
-    onBatchRenameProgress: (callback) => ipcRenderer.on('batch-rename-progress', callback),
+    onBatchRenameProgress: (callback) => ipcRenderer.on('batch-rename-progress', (_e, ...args) => callback(IPC_EVENT, ...args)),
     removeBatchRenameProgressListener: () => ipcRenderer.removeAllListeners('batch-rename-progress'),
     deleteFile: (filePath) => ipcRenderer.invoke('delete-file', filePath),
     openUrl: (url) => ipcRenderer.invoke('open-url', url),
@@ -28,8 +33,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     startDragFiles: (paths) => ipcRenderer.send('start-drag-files', paths),
     getDrives: () => ipcRenderer.invoke('get-drives'),
     listSubdirectories: (folderPath) => ipcRenderer.invoke('list-subdirectories', folderPath),
-    onWindowMinimized: (callback) => ipcRenderer.on('window-minimized', callback),
-    onWindowRestored: (callback) => ipcRenderer.on('window-restored', callback),
+    onWindowMinimized: (callback) => ipcRenderer.on('window-minimized', (_e, ...args) => callback(IPC_EVENT, ...args)),
+    onWindowRestored: (callback) => ipcRenderer.on('window-restored', (_e, ...args) => callback(IPC_EVENT, ...args)),
     removeWindowMinimizedListener: () => ipcRenderer.removeAllListeners('window-minimized'),
     removeWindowRestoredListener: () => ipcRenderer.removeAllListeners('window-restored'),
     // New IPC handlers
@@ -58,7 +63,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // FFmpeg-backed video trimming & conversion
     runFfmpeg: (job) => ipcRenderer.invoke('ffmpeg-run', job),
     cancelFfmpeg: (jobId) => ipcRenderer.invoke('ffmpeg-cancel', jobId),
-    onFfmpegProgress: (callback) => ipcRenderer.on('ffmpeg-progress', callback),
+    onFfmpegProgress: (callback) => ipcRenderer.on('ffmpeg-progress', (_e, ...args) => callback(IPC_EVENT, ...args)),
     removeFfmpegProgressListener: (callback) => {
         if (callback) ipcRenderer.removeListener('ffmpeg-progress', callback);
         else ipcRenderer.removeAllListeners('ffmpeg-progress');
@@ -72,14 +77,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     regroupDuplicates: (hashData, threshold) => ipcRenderer.invoke('regroup-duplicates', hashData, threshold),
     deleteFilesBatch: (filePaths) => ipcRenderer.invoke('delete-files-batch', filePaths),
     setUseSystemTrash: (enabled) => ipcRenderer.invoke('set-use-system-trash', enabled),
-    onBatchDeleteProgress: (callback) => ipcRenderer.on('batch-delete-progress', callback),
+    onBatchDeleteProgress: (callback) => ipcRenderer.on('batch-delete-progress', (_e, ...args) => callback(IPC_EVENT, ...args)),
     removeBatchDeleteProgressListener: () => ipcRenderer.removeAllListeners('batch-delete-progress'),
     undoFileOperation: () => ipcRenderer.invoke('undo-file-operation'),
     redoFileOperation: () => ipcRenderer.invoke('redo-file-operation'),
-    onDuplicateScanProgress: (callback) => ipcRenderer.on('duplicate-scan-progress', callback),
+    onDuplicateScanProgress: (callback) => ipcRenderer.on('duplicate-scan-progress', (_e, ...args) => callback(IPC_EVENT, ...args)),
     removeDuplicateScanProgressListener: () => ipcRenderer.removeAllListeners('duplicate-scan-progress'),
     // WebGPU hamming-distance offload (main → renderer request/response)
-    onWebgpuHammingRequest: (callback) => ipcRenderer.on('webgpu-hamming-request', callback),
+    onWebgpuHammingRequest: (callback) => ipcRenderer.on('webgpu-hamming-request', (_e, ...args) => callback(IPC_EVENT, ...args)),
     sendWebgpuHammingResponse: (data) => ipcRenderer.send('webgpu-hamming-response', data),
     toggleMenuBar: () => ipcRenderer.send('toggle-menu-bar'),
     updateTitleBarOverlay: (overlay) => ipcRenderer.send('update-titlebar-overlay', overlay),
@@ -92,16 +97,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     clipTerminate: () => ipcRenderer.invoke('clip-terminate'),
     clipGpuReset: () => ipcRenderer.invoke('clip-gpu-reset'),
     clipGpuStatus: () => ipcRenderer.invoke('clip-gpu-status'),
-    onClipProgress: (callback) => ipcRenderer.on('clip-progress', callback),
+    onClipProgress: (callback) => ipcRenderer.on('clip-progress', (_e, ...args) => callback(IPC_EVENT, ...args)),
     removeClipProgressListener: () => ipcRenderer.removeAllListeners('clip-progress'),
-    onClipDownloadProgress: (callback) => ipcRenderer.on('clip-download-progress', callback),
+    onClipDownloadProgress: (callback) => ipcRenderer.on('clip-download-progress', (_e, ...args) => callback(IPC_EVENT, ...args)),
     removeClipDownloadProgressListener: () => ipcRenderer.removeAllListeners('clip-download-progress'),
-    onClipGpuFallback: (callback) => ipcRenderer.on('clip-gpu-fallback', callback),
+    onClipGpuFallback: (callback) => ipcRenderer.on('clip-gpu-fallback', (_e, ...args) => callback(IPC_EVENT, ...args)),
     removeClipGpuFallbackListener: () => ipcRenderer.removeAllListeners('clip-gpu-fallback'),
     // Collections
     resolveFilePaths: (filePaths, options) => ipcRenderer.invoke('resolve-file-paths', filePaths, options),
     scanFoldersForSmartCollection: (folderPaths, options, rules, scanId) => ipcRenderer.invoke('scan-folders-for-smart-collection', folderPaths, options, rules, scanId),
-    onSmartCollectionProgress: (callback) => ipcRenderer.on('smart-collection-scan-progress', callback),
+    onSmartCollectionProgress: (callback) => ipcRenderer.on('smart-collection-scan-progress', (_e, ...args) => callback(IPC_EVENT, ...args)),
     removeSmartCollectionProgressListener: () => ipcRenderer.removeAllListeners('smart-collection-scan-progress'),
     // Plugin system
     getPluginManifests: () => ipcRenderer.invoke('get-plugin-manifests'),
@@ -142,7 +147,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Auto-updater
     onUpdateAvailable: (callback) => ipcRenderer.on('update-available', (_e, info) => callback(info)),
     onUpdateDownloadProgress: (callback) => ipcRenderer.on('update-download-progress', (_e, progress) => callback(progress)),
-    onUpdateDownloaded: (callback) => ipcRenderer.on('update-downloaded', callback),
+    onUpdateDownloaded: (callback) => ipcRenderer.on('update-downloaded', (_e, ...args) => callback(IPC_EVENT, ...args)),
     onUpdateError: (callback) => ipcRenderer.on('update-error', (_e, message) => callback(message)),
     removeUpdateListeners: () => {
         ipcRenderer.removeAllListeners('update-available');

@@ -2674,12 +2674,23 @@ ipcMain.handle('delete-file', async (event, filePath) => {
     }
 });
 
-wrapIpc('open-url', (url) => shell.openExternal(url));
+// Only web and mail links leave the app; file:, javascript:, custom protocols
+// and anything a plugin or metadata string could smuggle in are refused.
+wrapIpc('open-url', (url) => {
+    let parsed;
+    try { parsed = new URL(String(url)); } catch { throw new Error('invalid URL'); }
+    if (!['http:', 'https:', 'mailto:'].includes(parsed.protocol)) throw new Error(`refusing to open ${parsed.protocol} URL`);
+    return shell.openExternal(parsed.href);
+});
 
 ipcMain.handle('open-with-default', async (event, filePath) => {
     try {
-        // shell.openPath opens the file with the system's default application
-        await shell.openPath(filePath);
+        // shell.openPath hands the string to the OS; only an existing regular file
+        // or directory may go through (no URLs, no protocol handlers, no missing paths).
+        const target = validateUserPath(filePath, { mustExist: true });
+        const st = await fs.promises.stat(target);
+        if (!st.isFile() && !st.isDirectory()) throw new Error('not a file or folder');
+        await shell.openPath(target);
         return { ok: true, value: null };
     } catch (error) {
         console.error('Error opening file with default app:', error);

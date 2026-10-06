@@ -18,7 +18,7 @@ A desktop application built with Electron for browsing and viewing media files (
 - **Breadcrumb Navigation**: See and click through your current folder path
 
 ### Filtering & Search
-- **File Filtering**: Filter by type (All, Videos, Images, Audio)
+- **File Filtering**: Filter by type (All, Videos, Images)
 - **Quick Search**: Filter files by name in real time
 - **Advanced Search**: Filter by file size, date range, dimensions, aspect ratio, and star ratings
 
@@ -59,7 +59,8 @@ A desktop application built with Electron for browsing and viewing media files (
 
 ## Requirements
 
-- **Node.js** (v14 or higher recommended)
+- **Node.js** 22 or newer
+- **Rust** (stable) to build the native scanner (`npm run build:native`)
 - **npm** (comes with Node.js)
 - **Windows** (currently configured for Windows x64 builds)
 
@@ -110,7 +111,7 @@ npm run dist
 
 1. **Select a Folder**: Click the "Select Folder" button to choose a folder containing your media files
 2. **Browse**: Click on folders to navigate, or use the back/forward buttons
-3. **Filter**: Use the filter buttons (All, Videos, Images, Audio) to show only specific file types
+3. **Filter**: Use the filter buttons (All, Videos, Images) to show only specific file types
 4. **Search**: Type in the search box to filter files by name
 5. **View Media**: Click on any video or image thumbnail to view it in the lightbox
 6. **Manage Files**: Right-click on any file for context menu options (rename, delete, open, etc.)
@@ -134,7 +135,10 @@ thumnail-animator/
 
 ### Scripts
 
-- `npm start` - Run the application in development mode
+- `npm start` - Run the application in development mode (builds the renderer bundles first)
+- `npm test` - Unit tests (vitest); `npm run lint` - ESLint; `npm run typecheck` - JSDoc type check (advisory)
+- `npm run build:renderer` - Bundle and minify the renderer scripts into `dist-renderer/` (`--dev` for a readable build)
+- `node scripts/perf-smoke.js <folder>` - Launch the app on an isolated profile and measure first render, scroll frame pacing, playback budget and background CPU
 - `npm run build` - Build the application
 - `npm run build:win` - Build Windows installer
 - `npm run dist` - Create distribution build without publishing

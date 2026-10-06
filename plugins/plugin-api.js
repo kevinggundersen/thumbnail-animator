@@ -40,7 +40,8 @@ function createPluginAPI(pluginId, cacheBaseDir) {
             writeFile(subPath, data, options) {
                 const pluginCacheDir = path.join(cacheBaseDir, pluginId);
                 const resolved = path.resolve(pluginCacheDir, subPath);
-                if (!resolved.startsWith(pluginCacheDir)) {
+                // Trailing separator: "<dir>-other" must not pass as inside "<dir>".
+                if (resolved !== pluginCacheDir && !resolved.startsWith(pluginCacheDir + path.sep)) {
                     throw new Error(`[Plugin ${pluginId}] writeFile path escapes plugin cache directory`);
                 }
                 fs.mkdirSync(path.dirname(resolved), { recursive: true });

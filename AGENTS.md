@@ -27,8 +27,9 @@ DISPLAY=:1 npx electron . --no-sandbox
 
 ### Lint / Test
 
-- **No ESLint or linter** is configured in this project.
-- **No automated tests** exist (`npm test` just echoes an error and exits 1).
+- `npm run lint` (ESLint flat config; the shared renderer globals are generated from `scripts/renderer-manifest.js`).
+- `npm test` runs the vitest suite (`test/`); `npm run typecheck` is an advisory JSDoc type check.
+- `npm start` builds `dist-renderer/` first; after editing a renderer script, restart (or run `npm run build:renderer`).
 - The user has noted: **do not run .NET projects** — this is a pure JavaScript/Electron app, so this doesn't apply here.
 
 ### Gotchas

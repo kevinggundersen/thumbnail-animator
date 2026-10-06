@@ -270,10 +270,7 @@ const ThemeManager = {
             document.body.classList.remove('theme-transitioning');
         }, 300);
 
-        // Invalidate style caches if available (defined in renderer.js)
-        if (typeof invalidateMasonryStyleCache === 'function') {
-            invalidateMasonryStyleCache();
-        }
+        // Invalidate the virtual-scroll style cache if available (defined in renderer.js)
         if (typeof invalidateVsStyleCache === 'function') {
             invalidateVsStyleCache();
         }

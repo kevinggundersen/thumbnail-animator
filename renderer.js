@@ -4714,7 +4714,6 @@ let _mediaDirty = true;
 let cleanupCheckInterval;
 let cleanupScrollTimeout = null;
 let cleanupAnimationFrame = null;
-let cleanupScrollListenerAttached = false;
 
 function runCleanupCycle() {
     if (isWindowMinimized) return;
@@ -4741,28 +4740,8 @@ function invalidateScrollCaches() {
     if (currentHoveredCard) delete currentHoveredCard._scrubRect;
 }
 
-function scheduleScrollCleanup() {
-    invalidateScrollCaches();
-    scheduleCleanupCycle();
 
-    clearTimeout(cleanupScrollTimeout);
-    cleanupScrollTimeout = setTimeout(() => {
-        invalidateScrollCaches();
-        runCleanupCycle();
-    }, SCROLL_DEBOUNCE_MS);
-}
 
-function handleGridScroll() {
-    if (isWindowMinimized) return;
-
-    scheduleScrollCleanup();
-}
-
-function ensureCleanupScrollListener() {
-    if (cleanupScrollListenerAttached || vsState.enabled) return;
-    gridContainer.addEventListener('scroll', handleGridScroll, { passive: true });
-    cleanupScrollListenerAttached = true;
-}
 
 function performCleanupCheck() {
     const perfStart = perfTest.start();
@@ -4975,8 +4954,6 @@ function performCleanupCheck() {
 }
 
 function startPeriodicCleanup() {
-    ensureCleanupScrollListener();
-    
     if (!cleanupCheckInterval) {
         const scheduleIdleCleanup = () => {
             cleanupCheckInterval = requestIdleCallback(() => {
@@ -5007,10 +4984,6 @@ function stopPeriodicCleanup() {
     if (cleanupAnimationFrame !== null) {
         cancelAnimationFrame(cleanupAnimationFrame);
         cleanupAnimationFrame = null;
-    }
-    if (cleanupScrollListenerAttached) {
-        gridContainer.removeEventListener('scroll', handleGridScroll);
-        cleanupScrollListenerAttached = false;
     }
 }
 
@@ -6237,327 +6210,16 @@ function applyAspectRatioToCard(card, aspectRatioName, aspectRatioSource) {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// MASONRY LAYOUT
-// ═══════════════════════════════════════════════════════════════════════════
-let columnHeights = [];
 let resizeTimeout;
-let masonryResizeObserver = null;
-let masonryMutationObserver = null;
-let masonryResizeHandler = null;
-let masonryLayoutAnimationFrame = null;
-let isApplyingMasonryLayout = false;
 
-// Cached computed style values for masonry — invalidated on zoom/theme change
-let cachedMasonryStyles = null;
-function invalidateMasonryStyleCache() { cachedMasonryStyles = null; }
-function getMasonryStyles() {
-    if (cachedMasonryStyles) return cachedMasonryStyles;
-    const rootStyles = getComputedStyle(document.documentElement);
-    const gridStyles = getComputedStyle(gridContainer);
-    cachedMasonryStyles = {
-        gap: (() => { const v = parseInt(rootStyles.getPropertyValue('--gap')); return isNaN(v) ? 16 : v; })(),
-        paddingLeft: parseInt(gridStyles.paddingLeft) || 0,
-        paddingTop: parseInt(gridStyles.paddingTop) || 0,
-        paddingBottom: parseInt(gridStyles.paddingBottom) || 0,
-    };
-    return cachedMasonryStyles;
-}
 
-function scheduleMasonryLayout() {
-    if (masonryLayoutAnimationFrame !== null) return;
-    
-    masonryLayoutAnimationFrame = requestAnimationFrame(() => {
-        masonryLayoutAnimationFrame = null;
-        if (layoutMode === 'masonry' && gridContainer.classList.contains('masonry') && !isApplyingMasonryLayout) {
-            layoutMasonry();
-        }
-    });
-}
 
-function getShortestColumnIndex(heights) {
-    let shortestIndex = 0;
-    let shortestHeight = heights[0] ?? 0;
-    
-    for (let i = 1; i < heights.length; i++) {
-        if (heights[i] < shortestHeight) {
-            shortestHeight = heights[i];
-            shortestIndex = i;
-        }
-    }
-    
-    return shortestIndex;
-}
 
-function calculateMasonryColumns() {
-    const styles = getMasonryStyles();
-    const containerWidth = gridContainer.clientWidth - (styles.paddingLeft * 2);
-    const gap = styles.gap;
-    const baseMinColumnWidth = 250;
-    const minColumnWidth = baseMinColumnWidth * (zoomLevel / 100);
-    const columns = Math.max(1, Math.floor((containerWidth + gap) / (minColumnWidth + gap)));
-    return columns;
-}
 
-function layoutMasonry() {
-    if (!gridContainer.classList.contains('masonry') || layoutMode !== 'masonry' || isApplyingMasonryLayout) return;
 
-    isApplyingMasonryLayout = true;
-    // Disconnect MutationObserver to avoid redundant re-triggers from our own style/DOM changes
-    if (masonryMutationObserver) masonryMutationObserver.disconnect();
 
-    try {
-        const cards = Array.from(gridContainer.querySelectorAll('.video-card, .folder-card'));
-        
-        const existingSpacer = gridContainer.querySelector('.masonry-spacer');
-        if (existingSpacer) {
-            existingSpacer.remove();
-        }
-        
-        if (cards.length === 0) {
-            gridContainer.style.height = 'auto';
-            gridContainer.style.minHeight = '0px';
-            return;
-        }
-        
-        const styles = getMasonryStyles();
-        const gap = styles.gap;
-        const containerPaddingLeft = styles.paddingLeft;
-        const containerPaddingTop = styles.paddingTop;
-        const containerPaddingBottom = styles.paddingBottom;
-        const containerWidth = gridContainer.clientWidth - (containerPaddingLeft * 2);
-        const columns = calculateMasonryColumns();
-        
-        if (columns === 0) return;
-        
-        gridContainer.style.setProperty('--columns', columns);
-        columnHeights = new Array(columns).fill(0);
-        
-        const columnWidth = (containerWidth - gap * (columns - 1)) / columns;
-        
-        cards.forEach((card) => {
-            if (card.style.display === 'none') {
-                return;
-            }
 
-            let cardHeight;
-            if (card.classList.contains('folder-card')) {
-                cardHeight = columnWidth;
-            } else {
-                let aspectRatioName = card.dataset.aspectRatio;
-                
-                if (!aspectRatioName) {
-                    for (const ar of ASPECT_RATIOS) {
-                        if (card.classList.contains(`aspect-${ar.name.replace(':', '-')}`)) {
-                            aspectRatioName = ar.name;
-                            break;
-                        }
-                    }
-                }
-                
-                if (!aspectRatioName) {
-                    aspectRatioName = '16:9';
-                }
-                
-                const aspectRatioValue = vsGetAspectRatioValue(aspectRatioName);
-                
-                cardHeight = columnWidth / aspectRatioValue;
-                
-                if (!cardHeight || cardHeight <= 0 || !isFinite(cardHeight)) {
-                    console.warn('Invalid card height calculated:', cardHeight, 'for aspect ratio:', aspectRatioName, 'using default');
-                    cardHeight = columnWidth / (16 / 9);
-                }
-            }
-            
-            if (cardHeight < 50) {
-                cardHeight = 50;
-            }
-            
-            const shortestColumnIndex = getShortestColumnIndex(columnHeights);
-            const left = shortestColumnIndex * (columnWidth + gap);
-            const top = columnHeights[shortestColumnIndex];
 
-            // Batch all style writes into a single cssText assignment
-            card.style.cssText = `position:absolute;width:${columnWidth}px;height:${cardHeight}px;padding-bottom:0;opacity:1;visibility:visible;left:${left}px;top:${top}px`;
-            columnHeights[shortestColumnIndex] += cardHeight + gap;
-        });
-        
-        const maxHeight = Math.max(...columnHeights, 0);
-        if (maxHeight > 0) {
-            const contentHeight = maxHeight + containerPaddingTop + containerPaddingBottom;
-            
-            const spacer = document.createElement('div');
-            spacer.className = 'masonry-spacer';
-            spacer.style.width = '1px';
-            spacer.style.height = `${contentHeight}px`;
-            spacer.style.position = 'static';
-            spacer.style.pointerEvents = 'none';
-            spacer.style.visibility = 'hidden';
-            spacer.style.margin = '0';
-            spacer.style.padding = '0';
-            gridContainer.appendChild(spacer);
-        } else {
-            gridContainer.style.minHeight = '0px';
-        }
-    } finally {
-        isApplyingMasonryLayout = false;
-        // Reconnect MutationObserver after layout is done
-        if (masonryMutationObserver) {
-            masonryMutationObserver.observe(gridContainer, {
-                childList: true,
-                subtree: false
-            });
-        }
-    }
-}
-
-function cleanupMasonry() {
-    if (masonryLayoutAnimationFrame !== null) {
-        cancelAnimationFrame(masonryLayoutAnimationFrame);
-        masonryLayoutAnimationFrame = null;
-    }
-    
-    // Clean up resize observer
-    if (masonryResizeObserver) {
-        masonryResizeObserver.disconnect();
-        masonryResizeObserver = null;
-    }
-    
-    // Clean up mutation observer
-    if (masonryMutationObserver) {
-        masonryMutationObserver.disconnect();
-        masonryMutationObserver = null;
-    }
-    
-    // Clean up resize event listener
-    if (masonryResizeHandler) {
-        window.removeEventListener('resize', masonryResizeHandler);
-        masonryResizeHandler = null;
-    }
-}
-
-/** Clear inline position/size styles applied by masonry or virtual scroll. */
-function resetCardPositionStyles(card) {
-    card.style.position = '';
-    card.style.left = '';
-    card.style.top = '';
-    card.style.translate = '';
-    card.style.width = '';
-    card.style.height = '';
-    card.style.opacity = '';
-    card.style.visibility = '';
-}
-
-function initMasonry() {
-    if (layoutMode !== 'masonry') return; // Don't initialize if not in masonry mode
-    
-    if (gridContainer.classList.contains('masonry')) return; // Already initialized
-    
-    // Clean up any existing observers first
-    cleanupMasonry();
-    
-    gridContainer.classList.add('masonry');
-    gridContainer.classList.remove('grid');
-    
-    // Reset card positioning styles
-    const cards = gridContainer.querySelectorAll('.video-card, .folder-card');
-    cards.forEach(resetCardPositionStyles);
-
-    // Initial layout after cards are rendered
-    scheduleMasonryLayout();
-    
-    // Recalculate on window resize (debounced)
-    masonryResizeHandler = () => {
-        // Invalidate viewport cache on resize
-        cachedViewportBounds = null;
-        viewportBoundsCacheTime = 0;
-        cardRectCacheGeneration++; // Invalidate rect cache on resize
-        
-        clearTimeout(resizeTimeout);
-        resizeTimeout = setTimeout(() => {
-            if (layoutMode === 'masonry') {
-                scheduleMasonryLayout();
-            }
-        }, 150);
-    };
-    
-    window.addEventListener('resize', masonryResizeHandler);
-    
-    // Use ResizeObserver to detect when card sizes change (e.g., aspect ratio updates)
-    masonryResizeObserver = new ResizeObserver(() => {
-        if (!isApplyingMasonryLayout) {
-            scheduleMasonryLayout();
-        }
-    });
-    
-    // Observe container for size changes
-    masonryResizeObserver.observe(gridContainer);
-    
-    // Recalculate when cards are added/removed (e.g. by filters)
-    // Only watch childList — aspect ratio class changes no longer trigger relayout
-    // since card dimensions are set upfront and media uses object-fit: cover
-    masonryMutationObserver = new MutationObserver((mutations) => {
-        let shouldRelayout = false;
-        for (const mutation of mutations) {
-            if (mutation.type === 'childList') {
-                for (const node of mutation.addedNodes) {
-                    if (node.nodeType === 1 && (node.classList.contains('video-card') || node.classList.contains('folder-card'))) {
-                        shouldRelayout = true;
-                        break;
-                    }
-                }
-                if (shouldRelayout) break;
-                for (const node of mutation.removedNodes) {
-                    if (node.nodeType === 1 && (node.classList.contains('video-card') || node.classList.contains('folder-card'))) {
-                        shouldRelayout = true;
-                        break;
-                    }
-                }
-                if (shouldRelayout) break;
-            }
-        }
-
-        if (shouldRelayout && layoutMode === 'masonry') {
-            scheduleMasonryLayout();
-        }
-    });
-
-    masonryMutationObserver.observe(gridContainer, {
-        childList: true,
-        subtree: false
-    });
-}
-
-function initGrid() {
-    if (layoutMode !== 'grid') return; // Don't initialize if not in grid mode
-    
-    // Clean up masonry observers
-    cleanupMasonry();
-    
-    gridContainer.classList.add('grid');
-    gridContainer.classList.remove('masonry');
-    
-    // Reset container height/style
-    gridContainer.style.height = '';
-    gridContainer.style.minHeight = '';
-    
-    // Remove masonry spacer if it exists
-    const spacer = gridContainer.querySelector('.masonry-spacer');
-    if (spacer) {
-        spacer.remove();
-    }
-    
-    // Reset card positioning styles for grid layout
-    const cards = gridContainer.querySelectorAll('.video-card, .folder-card');
-    cards.forEach(card => {
-        resetCardPositionStyles(card);
-        card.style.paddingBottom = ''; // Reset padding-bottom to use CSS aspect ratio classes
-        // Ensure card is visible (display is controlled by filters)
-        if (card.style.display !== 'none') {
-            card.style.display = '';
-        }
-    });
-}
 
 function switchLayoutMode() {
     // Toggle layout mode based on checkbox state
@@ -6569,17 +6231,8 @@ function switchLayoutMode() {
     // Save preference to localStorage
     deferLocalStorageWrite('layoutMode', layoutMode);
 
-    // With virtual scrolling, recalculate positions for new layout mode
-    if (vsState.enabled) {
-        vsRecalculate();
-    } else {
-        // Fallback for non-VS mode
-        if (layoutMode === 'masonry') {
-            initMasonry();
-        } else {
-            initGrid();
-        }
-    }
+    // Recalculate positions for the new layout mode
+    vsRecalculate();
 
     // Apply zoom after layout change
     applyZoom();

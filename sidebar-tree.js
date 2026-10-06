@@ -458,13 +458,7 @@ function scheduleDimensionHydrationRefresh(mode) {
 }
 
 function relayoutAfterSidebarWidthChange() {
-    if (vsState.enabled) {
-        vsRecalculate();
-        return;
-    }
-    if (layoutMode === 'masonry') {
-        scheduleMasonryLayout();
-    }
+    vsRecalculate();
 }
 
 function scheduleSidebarLayoutSync(delay = 0) {

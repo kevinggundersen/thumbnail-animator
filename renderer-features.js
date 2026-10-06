@@ -3216,7 +3216,6 @@ function initZoom() {
 }
 
 function applyZoom() {
-    invalidateMasonryStyleCache();
     if (typeof invalidateVsStyleCache === 'function') invalidateVsStyleCache();
     const scale = zoomLevel / 100;
     // Update CSS variable for zoom
@@ -3243,11 +3242,7 @@ function applyZoom() {
     }
     
     // Recalculate layout for new zoom level
-    if (vsState.enabled) {
-        vsRecalculate();
-    } else if (layoutMode === 'masonry') {
-        scheduleMasonryLayout();
-    }
+    vsRecalculate();
 }
 
 // ==================== THEME ====================

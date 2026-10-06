@@ -12432,7 +12432,7 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
                             }
                             scheduleStreamingLayoutRefresh();
                         },
-                        onComplete: (ok) => {
+                        onComplete: (ok, error) => {
                             _abortCurrentScan = null;
                             // Final refresh to pick up any lingering dimensions
                             scheduleStreamingLayoutRefresh();

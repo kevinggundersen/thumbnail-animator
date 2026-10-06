@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 const { MediaPlaybackController, VideoPlaybackController, AnimatedImagePlaybackController } = require('../playback-controller');
 
 // ── MediaPlaybackController (base class) ──────────────────────────────

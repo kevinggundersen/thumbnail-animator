@@ -14,7 +14,9 @@
     "build:mac": "electron-builder --mac",
     "build:linux": "electron-builder --linux",
     "dist": "electron-builder --publish=never",
-    "release": "electron-builder --publish=always"
+    "release": "electron-builder --publish=always",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix"
   },
   "keywords": [
     "electron",
@@ -43,10 +45,14 @@
   },
   "devDependencies": {
     "@electron/rebuild": "^4.0.3",
+    "@eslint/js": "^10.0.1",
     "@vitest/coverage-v8": "^4.1.2",
     "better-sqlite3-test": "npm:better-sqlite3@^12.8.0",
     "electron": "^39.2.3",
     "electron-builder": "^25.1.8",
+    "eslint": "^10.12.0",
+    "globals": "^17.13.0",
+    "happy-dom": "^20.14.5",
     "vitest": "^4.1.2"
   },
   "build": {
@@ -92,15 +98,30 @@
     },
     "mac": {
       "target": [
-        { "target": "dmg", "arch": ["arm64"] },
-        { "target": "zip", "arch": ["arm64"] }
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64"
+          ]
+        }
       ],
       "icon": "build/icon.icns",
       "category": "public.app-category.photography"
     },
     "linux": {
       "target": [
-        { "target": "AppImage", "arch": ["x64"] }
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        }
       ],
       "icon": "build/icons",
       "category": "Graphics"

@@ -2130,7 +2130,7 @@ ipcMain.handle('resolve-file-paths', async (event, filePaths, options = {}) => {
             const ext = path.extname(f.name).toLowerCase();
             f.animated = ext === '.webp'
                 ? await isAnimatedWebp(f.path)
-                : await isAnimatedGif(f.path);
+                : true; // GIFs are treated as animated unconditionally (matches scanFolderInternal)
         });
     }
 

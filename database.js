@@ -3,7 +3,7 @@
 const Database = require('better-sqlite3');
 const path = require('path');
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 
 class AppDatabase {
     constructor(dbPath) {
@@ -1227,4 +1227,5 @@ class AppDatabase {
     }
 }
 
+AppDatabase.SCHEMA_VERSION = SCHEMA_VERSION;
 module.exports = AppDatabase;

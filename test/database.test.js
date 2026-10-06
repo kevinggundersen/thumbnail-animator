@@ -13,8 +13,8 @@ afterEach(() => {
 // ── Schema & Meta ─────────────────────────────────────────────────────
 
 describe('schema & meta', () => {
-    it('initializes schema to version 3', () => {
-        expect(db.getMeta('schema_version')).toBe('3');
+    it('initializes schema to the current SCHEMA_VERSION', () => {
+        expect(db.getMeta('schema_version')).toBe(String(AppDatabase.SCHEMA_VERSION));
     });
 
     it('round-trips arbitrary meta key/value', () => {

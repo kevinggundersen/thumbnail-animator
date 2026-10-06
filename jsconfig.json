@@ -1,0 +1,38 @@
+{
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "commonjs",
+    "checkJs": true,
+    "allowJs": true,
+    "noEmit": true,
+    "strict": false,
+    "noImplicitAny": false,
+    "skipLibCheck": true,
+    "lib": [
+      "es2022",
+      "dom",
+      "dom.iterable",
+      "webworker"
+    ],
+    "types": [
+      "node"
+    ]
+  },
+  "include": [
+    "types/*.d.ts",
+    "*.js",
+    "plugins/**/*.js",
+    "scripts/*.js"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "dist-renderer",
+    "electron-cache",
+    "native-scanner",
+    "*.vendor.js",
+    "*-bundle.js",
+    "*.min.js",
+    "test"
+  ]
+}

@@ -19,7 +19,8 @@
     "lint:fix": "eslint . --fix",
     "build:renderer": "node scripts/build-renderer.js",
     "build:renderer:dev": "node scripts/build-renderer.js --dev",
-    "prestart": "node scripts/build-renderer.js"
+    "prestart": "node scripts/build-renderer.js",
+    "typecheck": "tsc -p jsconfig.json"
   },
   "keywords": [
     "electron",
@@ -58,6 +59,7 @@
     "globals": "^17.13.0",
     "happy-dom": "^20.14.5",
     "playwright-core": "^1.63.0",
+    "typescript": "^7.0.2",
     "vitest": "^4.1.2"
   },
   "build": {

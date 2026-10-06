@@ -157,10 +157,8 @@ function initKeyboardShortcuts() {
                 const p = window.currentLightboxFilePath;
                 if (p) openConvertDialog([p], { fromLightbox: true });
             } else {
-                const paths = (window.CG && window.CG.isEnabled())
-                    ? Array.from(selectedCardPaths).filter(Boolean)
-                    : Array.from(document.querySelectorAll('.video-card.selected'))
-                        .map(c => c.dataset.path).filter(Boolean);
+                const paths = Array.from(document.querySelectorAll('.video-card.selected'))
+                    .map(c => c.dataset.path).filter(Boolean);
                 if (paths.length) openConvertDialog(paths, { fromLightbox: false });
                 else showToast('Select one or more files to convert', 'info');
             }
@@ -330,8 +328,7 @@ function initKeyboardShortcuts() {
         // Ctrl+Shift+C: Copy file path of hovered > first-selected > focused card
         if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'c') {
             let targetPath = null;
-            const hoveredCard = document.querySelector('.video-card:hover, .folder-card:hover')
-                || (window.CG && window.CG.isEnabled() && window.CG.getHoveredDescriptor());
+            const hoveredCard = document.querySelector('.video-card:hover, .folder-card:hover');
             if (hoveredCard && hoveredCard.dataset.path) {
                 targetPath = hoveredCard.dataset.path;
             } else if (typeof selectedCardPaths !== 'undefined' && selectedCardPaths.size > 0) {
@@ -355,8 +352,7 @@ function initKeyboardShortcuts() {
         // Target priority matches rating shortcuts so no click is required.
         if (matchesShortcut(e, 'tagPicker')) {
             let tagPaths = [];
-            const hoveredCard = document.querySelector('.video-card:hover')
-                || (window.CG && window.CG.isEnabled() && window.CG.getHoveredDescriptor());
+            const hoveredCard = document.querySelector('.video-card:hover');
             if (hoveredCard && hoveredCard.dataset.path) {
                 tagPaths = [hoveredCard.dataset.path];
             } else if (typeof selectedCardPaths !== 'undefined' && selectedCardPaths.size > 0) {
@@ -425,8 +421,7 @@ function initKeyboardShortcuts() {
                 // Target priority: hovered card > selection > focused card.
                 // Hovered-first means shortcuts work without clicking first.
                 let targets = [];
-                const hoveredCard = document.querySelector('.video-card:hover')
-                    || (window.CG && window.CG.isEnabled() && window.CG.getHoveredDescriptor());
+                const hoveredCard = document.querySelector('.video-card:hover');
                 if (hoveredCard && hoveredCard.dataset.path) {
                     targets = [hoveredCard.dataset.path];
                 } else if (typeof selectedCardPaths !== 'undefined' && selectedCardPaths.size > 0) {
@@ -630,7 +625,6 @@ function showZoomPill(pct) {
 }
 
 function navigateCards(direction) {
-    if (window.CG && window.CG.isEnabled()) return; // canvas-grid has its own arrow-key handler
     const cards = Array.from(gridContainer.querySelectorAll('.video-card, .folder-card'))
         .filter(card => card.style.display !== 'none');
 
@@ -4084,7 +4078,6 @@ function setFileRating(filePath, rating) {
             updateCardRating(filePath, rating);
             for (const p of siblings) updateCardRating(p, rating);
             if (typeof bumpFilterWorkerRatingsVersion === 'function') bumpFilterWorkerRatingsVersion();
-            if (window.CG && window.CG.isEnabled()) window.CG.scheduleRender();
             if (prevHash !== rating) {
                 pushMetadataUndo(
                     `Rating ${rating || 0} (linked)`,
@@ -4095,7 +4088,6 @@ function setFileRating(filePath, rating) {
                         updateCardRating(filePath, prevHash);
                         for (const p of siblings) updateCardRating(p, prevHash);
                         if (typeof bumpFilterWorkerRatingsVersion === 'function') bumpFilterWorkerRatingsVersion();
-                        if (window.CG && window.CG.isEnabled()) window.CG.scheduleRender();
                     }
                 );
             }
@@ -4121,8 +4113,6 @@ function setFileRating(filePath, rating) {
 
     // Update all cards with the same path immediately - use updateCardRating which calls updateCardStars
     updateCardRating(filePath, rating);
-    // Canvas grid: schedule redraw so the star row updates on canvas-rendered cards
-    if (window.CG && window.CG.isEnabled()) window.CG.scheduleRender();
 
     // Push onto metadata undo stack unless we're *doing* an undo right now
     if (prev !== rating) {
@@ -4208,7 +4198,6 @@ function setFilePinned(filePath, pinned) {
             }
             window.electronAPI.dbSetHashPinned(hash, pinned);
             if (typeof bumpFilterWorkerPinsVersion === 'function') bumpFilterWorkerPinsVersion();
-            if (window.CG && window.CG.isEnabled()) window.CG.scheduleRender();
             if (prevPinned !== pinned) {
                 const name = filePath.split(/[\\/]/).pop();
                 pushMetadataUndo(
@@ -4238,8 +4227,6 @@ function setFilePinned(filePath, pinned) {
     if (typeof bumpFilterWorkerPinsVersion === 'function') bumpFilterWorkerPinsVersion();
     // Persist to SQLite (fire-and-forget)
     window.electronAPI.dbSetPinned(normalizedPath, pinned);
-    // Canvas grid: pin bar state changed, redraw affected card(s)
-    if (window.CG && window.CG.isEnabled()) window.CG.scheduleRender();
 
     // Push onto metadata undo stack
     if (prev !== pinned) {
@@ -4310,8 +4297,6 @@ async function loadInitDataBatched() {
 }
 
 function updateCardRating(filePath, rating) {
-    // Canvas grid: no DOM cards to update; CG.scheduleRender() is called by the rating setter
-    if (window.CG && window.CG.isEnabled()) return;
     // Normalize path for matching
     const normalizedPath = filePath.replace(/\\/g, '/');
 

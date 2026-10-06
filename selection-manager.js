@@ -59,10 +59,7 @@ class SelectionManager {
         if (this._paths.size === 0) return;
         this._paths.clear();
         this._lastIndex = -1;
-        // Skip DOM query when canvas grid is active (no DOM cards exist)
-        if (!(window.CG && window.CG.isEnabled())) {
-            document.querySelectorAll('.video-card.selected').forEach(c => c.classList.remove('selected'));
-        }
+        document.querySelectorAll('.video-card.selected').forEach(c => c.classList.remove('selected'));
         this._updateStatusBar();
         this._onSelectionChange();
     }
@@ -138,7 +135,7 @@ class SelectionManager {
     }
 
     /**
-     * Clear + select a single path (for canvas-grid 'none' modifier click).
+     * Clear + select a single path.
      */
     set(path, itemIndex) {
         this._paths.clear();

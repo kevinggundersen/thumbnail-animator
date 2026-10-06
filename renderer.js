@@ -754,11 +754,6 @@ function vsGetVisibleRange(scrollTop, viewportHeight) {
  */
 function vsUpdateDOM(startIndex, endIndex) {
     if (!vsState.enabled) return;
-    // Canvas grid owns rendering when enabled — skip DOM card recycling.
-    if (window.CG && window.CG.isEnabled()) {
-        window.CG.scheduleRender();
-        return;
-    }
 
     // Hoist hot-path state refs to locals for fast access
     const activeCards = vsState.activeCards;
@@ -1011,7 +1006,6 @@ function vsResetCard(card) {
  * Returns { card, isMedia } matching createCardFromItem's interface.
  */
 function vsPopulateExistingCard(card, item) {
-    if (window.CG && window.CG.isEnabled()) return { card, isMedia: false };
     if (item.type === 'group-header') {
         card.className = 'date-group-header';
         card.dataset.groupKey = item.groupKey;
@@ -1178,12 +1172,6 @@ function _vsScrollSettleCallback() {
 function vsOnScroll() {
     if (!vsState.enabled || isWindowMinimized) return;
 
-    // Canvas grid path: route scroll to canvas renderer, skip DOM recycling entirely
-    if (window.CG && window.CG.isEnabled()) {
-        window.CG.scheduleRender();
-        return;
-    }
-
     document.body.classList.add('is-scrolling'); // Perf: pause skeleton shimmer during scroll
 
     if (vsState.scrollRafId) return; // Already scheduled
@@ -1270,9 +1258,6 @@ function vsInit(items) {
     const result = vsCalculatePositions(items, containerWidth, layoutMode, zoomLevel);
     vsState.positions = result.positions;
     vsState.totalHeight = result.totalHeight;
-
-    // Notify canvas grid that the items + positions changed
-    if (window.CG) window.CG.invalidateData();
 
     // Set up container for absolute positioning
     gridContainer.classList.add('masonry'); // Always use block+absolute for virtual scroll
@@ -1449,9 +1434,6 @@ function vsUpdateItems(items, options = {}) {
     const result = vsCalculatePositions(items, containerWidth, layoutMode, zoomLevel);
     vsState.positions = result.positions;
     vsState.totalHeight = result.totalHeight;
-
-    // Notify canvas grid that positions changed
-    if (window.CG) window.CG.invalidateData();
 
     // Update spacer
     if (vsState.spacer) {
@@ -4812,9 +4794,6 @@ function ensureCleanupScrollListener() {
 }
 
 function performCleanupCheck() {
-    // Canvas grid: no DOM cards to clean up; skip entirely
-    if (window.CG && window.CG.isEnabled()) return;
-
     const perfStart = perfTest.start();
 
     // Use vsState.activeCards when virtual scrolling is active (avoids full DOM traversal)
@@ -7212,14 +7191,7 @@ function renderItems(items, preservedScrollTop = null) {
         spacer.remove();
     }
 
-    // Clear container (preserve canvas-grid infrastructure elements)
-    {
-        const children = Array.from(gridContainer.children);
-        for (const child of children) {
-            if (child.id && child.id.startsWith('cg-')) continue;
-            gridContainer.removeChild(child);
-        }
-    }
+    gridContainer.replaceChildren();
     currentHoveredCard = null;
     focusedCardIndex = -1;
     _lastFocusedCard = null;
@@ -8916,9 +8888,6 @@ let currentHoveredCard = null;
 const selection = new SelectionManager({
     gridContainer,
     getVsState: () => vsState,
-    onSelectionChange: () => {
-        if (window.CG) window.CG.invalidateSelection();
-    }
 });
 window.selection = selection;
 
@@ -8941,9 +8910,6 @@ gridContainer.addEventListener('click', (e) => {
         selection.marqueeJustFinished = false;
         return;
     }
-    // Canvas grid has its own click handler (hit-test based)
-    if (window.CG && window.CG.isEnabled()) return;
-
     // Date group header click
     const groupHeader = e.target.closest('.date-group-header');
     if (groupHeader && groupHeader.dataset.groupKey) {
@@ -9021,7 +8987,6 @@ gridContainer.addEventListener('click', (e) => {
 
 // Double-click on filename label → inline rename
 gridContainer.addEventListener('dblclick', (e) => {
-    if (window.CG && window.CG.isEnabled()) return;
     if (inlineEditSession) return; // already editing
     const card = e.target.closest('.video-card');
     if (!card) return;
@@ -9040,7 +9005,6 @@ gridContainer.addEventListener('dblclick', (e) => {
 // Hover prefetch for folder cards in the grid
 let _gridPrefetchTimer = null;
 gridContainer.addEventListener('mouseover', (e) => {
-    if (window.CG && window.CG.isEnabled()) return; // canvas-grid handles folder prefetch
     const fc = e.target.closest('.folder-card');
     if (fc && fc.dataset.folderPath) {
         clearTimeout(_gridPrefetchTimer);
@@ -9050,7 +9014,6 @@ gridContainer.addEventListener('mouseover', (e) => {
     }
 });
 gridContainer.addEventListener('mouseout', (e) => {
-    if (window.CG && window.CG.isEnabled()) return; // canvas-grid handles folder prefetch
     if (e.target.closest('.folder-card')) {
         clearTimeout(_gridPrefetchTimer);
     }
@@ -9058,9 +9021,7 @@ gridContainer.addEventListener('mouseout', (e) => {
 
 // Prevent middle-click auto-scroll on cards + marquee drag-to-select
 gridContainer.addEventListener('mousedown', (e) => {
-    // Resolve whether click is on a card (DOM or canvas hit-test)
-    const _onCardDom = e.target.closest('.video-card, .folder-card, .date-group-header, .star');
-    const _onCard = _onCardDom || (window.CG && window.CG.isEnabled() && window.CG.targetFromEvent(e));
+    const _onCard = e.target.closest('.video-card, .folder-card, .date-group-header, .star');
     if (e.button === 1 && _onCard) {
         e.preventDefault();
         return;
@@ -9075,20 +9036,6 @@ gridContainer.addEventListener('mousedown', (e) => {
 gridContainer.addEventListener('auxclick', (e) => {
     if (e.button !== 1) return; // Only middle mouse button
     e.preventDefault();
-
-    // Canvas grid: use hit-test to resolve the card under the pointer
-    if (window.CG && window.CG.isEnabled()) {
-        const vcard = window.CG.targetFromEvent(e);
-        if (vcard && vcard.closest && vcard.closest('.folder-card')) {
-            const folderPath = vcard.dataset.folderPath;
-            if (folderPath) {
-                const displayName = folderPath.split(/[/\\]/).pop();
-                createTab(folderPath, displayName);
-            }
-        }
-        // Canvas draws its own focus ring — no DOM focus needed
-        return;
-    }
 
     // Middle-click folder card opens in new tab
     const folderCard = e.target.closest('.folder-card');
@@ -9134,7 +9081,6 @@ gridContainer.addEventListener('auxclick', (e) => {
 
 gridContainer.addEventListener('mouseover', (e) => {
     if (marqueeState.active) return;
-    if (window.CG && window.CG.isEnabled()) return; // canvas hover overlay handles preview
     const card = e.target.closest('.video-card');
     if (card && card !== currentHoveredCard) {
         if (card.dataset.mediaType === 'video') {
@@ -9291,7 +9237,6 @@ let _scrubRafPending = false;
 
 gridContainer.addEventListener('mousemove', (e) => {
     if (marqueeState.active) return;
-    if (window.CG && window.CG.isEnabled()) return; // no DOM scrub in canvas mode
     if (!currentHoveredCard) return;
     const card = currentHoveredCard;
 
@@ -9339,7 +9284,6 @@ gridContainer.addEventListener('mousemove', (e) => {
 });
 
 gridContainer.addEventListener('mouseout', (e) => {
-    if (window.CG && window.CG.isEnabled()) return; // canvas hover overlay manages its own cleanup
     if (!currentHoveredCard) return;
     const relatedCard = e.relatedTarget ? e.relatedTarget.closest('.video-card') : null;
     if (relatedCard !== currentHoveredCard) {
@@ -9553,23 +9497,12 @@ function _scheduleCardTooltip(card) {
 
 gridContainer.addEventListener('mouseover', (e) => {
     if (marqueeState.active) return;
-    let card = e.target.closest('.video-card');
-    // Canvas grid: resolve hovered card via CG descriptor
-    if (!card && window.CG && window.CG.isEnabled()) {
-        card = window.CG.getHoveredDescriptor();
-    }
+    const card = e.target.closest('.video-card');
     if (card) _scheduleCardTooltip(card);
     else _hideCardTooltip();
 });
 
 gridContainer.addEventListener('mouseout', (e) => {
-    // Canvas grid: hide tooltip when leaving the grid container entirely
-    if (window.CG && window.CG.isEnabled()) {
-        if (e.target === gridContainer || !gridContainer.contains(e.relatedTarget)) {
-            _hideCardTooltip();
-        }
-        return;
-    }
     const from = e.target.closest('.video-card');
     const to = e.relatedTarget ? e.relatedTarget.closest('.video-card') : null;
     if (from && from !== to) _hideCardTooltip();
@@ -9712,13 +9645,7 @@ function isDragWithFiles(e) {
 // Helper: resolve folder card under pointer for drag ops. Works for both
 // DOM grid (closest) and canvas grid (hit-test via CG).
 function _resolveDragFolderCard(e) {
-    const dom = e.target.closest('.folder-card');
-    if (dom) return dom;
-    if (window.CG && window.CG.isEnabled() && typeof window.CG.targetFromEvent === 'function') {
-        const vcard = window.CG.targetFromEvent(e);
-        if (vcard && vcard.closest && vcard.closest('.folder-card')) return vcard;
-    }
-    return null;
+    return e.target.closest('.folder-card');
 }
 
 // Delegated dragstart that bubbles from the <img>/<video> inside a card.
@@ -9729,7 +9656,6 @@ function _resolveDragFolderCard(e) {
 // Shift+drag keeps the legacy HTML drag so the existing folder-move behavior
 // (drop card onto a folder card in the grid) is preserved.
 gridContainer.addEventListener('dragstart', (e) => {
-    if (window.CG && window.CG.isEnabled()) return; // CG drag proxy handles this
     const card = e.target.closest('.video-card');
     if (!card || !card.dataset.path) return;
     const path = card.dataset.path;
@@ -9765,7 +9691,6 @@ gridContainer.addEventListener('dragstart', (e) => {
 });
 
 gridContainer.addEventListener('dragend', (e) => {
-    if (window.CG && window.CG.isEnabled()) return; // CG drag proxy handles cleanup
     const card = e.target.closest('.video-card');
     if (card) card.classList.remove('dragging');
     // Also clear any leftover drag-over highlights on collection rows
@@ -9821,10 +9746,7 @@ gridContainer.addEventListener('drop', async (e) => {
     hideDragLabel();
     gridContainer.classList.remove('drag-over-grid');
 
-    // Remove drag-over styling (DOM cards only; canvas-grid manages its own state)
-    if (!(window.CG && window.CG.isEnabled())) {
-        gridContainer.querySelectorAll('.folder-card.drag-over').forEach(c => c.classList.remove('drag-over'));
-    }
+    gridContainer.querySelectorAll('.folder-card.drag-over').forEach(c => c.classList.remove('drag-over'));
 
     const { paths, isInternal, unsupportedCount } = getDroppedFilePaths(e.dataTransfer);
     // Consumed — clear the native-drag tag so future external drops don't
@@ -11159,10 +11081,6 @@ document.addEventListener('mousedown', (e) => {
         e.target.closest('.duplicate-item') ||
         e.target.closest('.lb-insp-similar-card') ||
         e.target.closest('.mlt-result-card');
-    // Canvas grid: resolve card via hit-test
-    if (!card && window.CG && window.CG.isEnabled()) {
-        card = window.CG.targetFromEvent(e);
-    }
     if (!card) return;
 
     // Suppress ALL context menus while we're detecting hold vs quick click
@@ -16138,98 +16056,3 @@ window.saveCurrentFrame = saveCurrentFrame;
 
 // ═══ → settings-ui.js (keyboard shortcuts, settings handlers, CSS hydration) ═══
 
-// ═══════════════════════════════════════════════════════════════════════════
-// CANVAS GRID BRIDGE
-// ═══════════════════════════════════════════════════════════════════════════
-// Exposes the renderer's layout + state + actions to canvas-grid.js.
-// canvas-grid.js reads from this host to paint without owning any DOM.
-window.__cgHost = {
-    // State getters
-    get items() { return vsState.sortedItems; },
-    get positions() { return vsState.positions; },
-    get totalHeight() { return vsState.totalHeight; },
-    get layoutMode() { return layoutMode; },
-    get zoomLevel() { return zoomLevel; },
-    get cardInfoSettings() { return cardInfoSettings; },
-    get selection() { return selectedCardPaths; },
-    get currentFolderPath() { return currentFolderPath; },
-    get recursiveEnabled() { return recursiveSearchEnabled; },
-    get collapsedDateGroups() { return collapsedDateGroups; },
-    get gridContainer() { return gridContainer; },
-    get visibleRange() { return vsGetVisibleRange; },
-
-    // Helpers (exposed as functions)
-    isFilePinned: (p) => (typeof isFilePinned === 'function' ? isFilePinned(p) : false),
-    getFileRating: (p) => (typeof getFileRating === 'function' ? getFileRating(p) : 0),
-    getExtensionColor: (ext) => (typeof getExtensionColor === 'function' ? getExtensionColor(ext) : '#888'),
-    hexToRgba: (h, o) => (typeof hexToRgba === 'function' ? hexToRgba(h, o) : h),
-    normalizePath: (p) => (typeof normalizePath === 'function' ? normalizePath(p) : p),
-    getCachedBitmap: (url) => (typeof getCachedBitmap === 'function' ? getCachedBitmap(url) : null),
-    prefetchImageBitmap: (url, w, h) => (typeof prefetchImageBitmap === 'function' ? prefetchImageBitmap(url, w, h) : null),
-    evictBitmap: (url) => { if (typeof evictBitmapEntry === 'function') evictBitmapEntry(url); },
-    requestImageThumbnailUrl: (p, size) => (typeof requestImageThumbnailUrl === 'function' ? requestImageThumbnailUrl(p, size) : Promise.resolve(null)),
-    getClosestAspectRatio: (w, h) => (typeof getClosestAspectRatio === 'function' ? getClosestAspectRatio(w, h) : '16:9'),
-    formatBytesForCardLabel: (b) => (typeof formatBytesForCardLabel === 'function' ? formatBytesForCardLabel(b) : String(b)),
-    formatCardDate: (t) => (typeof formatCardDate === 'function' ? formatCardDate(t) : ''),
-    fileTagsGetter: (p) => {
-        // fileTagsCache lives in renderer-features.js
-        if (typeof fileTagsCache !== 'undefined' && fileTagsCache && fileTagsCache.get) {
-            return fileTagsCache.get(normalizePath(p)) || null;
-        }
-        return null;
-    },
-
-    // Actions (called back by canvas-grid on user interaction)
-    openLightbox: (idx) => {
-        const item = vsState.sortedItems[idx];
-        if (!item || item.type === 'folder' || item.type === 'group-header') return;
-        openLightbox(item.url, item.path, item.name);
-    },
-    navigateToFolder: (path) => {
-        if (typeof navigateToFolder === 'function') navigateToFolder(path);
-    },
-    toggleDateGroup: (key) => {
-        if (typeof toggleDateGroup === 'function') toggleDateGroup(key);
-    },
-    setFileRating: (path, rating) => {
-        if (typeof setFileRating === 'function') setFileRating(path, rating);
-    },
-    toggleSelection: (idx, modifier /* 'ctrl'|'shift'|'none' */) => {
-        const item = vsState.sortedItems[idx];
-        if (!item) return;
-        if (modifier === 'ctrl') {
-            selection.toggle(item.path, idx);
-        } else if (modifier === 'shift' && selection.lastIndex >= 0) {
-            selection.range(selection.lastIndex, idx);
-        } else {
-            selection.set(item.path, idx);
-        }
-        // onSelectionChange callback handles CG.invalidateSelection()
-    },
-    showContextMenu: (event, virtualCard) => {
-        if (typeof showContextMenu === 'function') showContextMenu(event, virtualCard);
-    },
-    destroyVideoElement: (v) => {
-        if (typeof destroyVideoElement === 'function') destroyVideoElement(v);
-    },
-    destroyImageElement: (img) => {
-        if (typeof destroyImageElement === 'function') destroyImageElement(img);
-    },
-    requestVideoPosterUrl: (p) => (typeof requestVideoPosterUrl === 'function' ? requestVideoPosterUrl(p) : Promise.resolve(null)),
-    prefetchFolder: (path) => { if (typeof prefetchFolderIfNeeded === 'function') prefetchFolderIfNeeded(path); },
-    requestFolderPreview: (folderPath) => (typeof requestFolderPreview === 'function' ? requestFolderPreview(folderPath) : Promise.resolve([])),
-    triggerDomRerender: () => {
-        // Force a full re-render of DOM cards when switching back from canvas mode
-        if (typeof vsRecalculate === 'function') vsRecalculate();
-    },
-    get maxVideos() { return typeof MAX_VIDEOS !== 'undefined' ? MAX_VIDEOS : 120; },
-    get isLightboxOpen() { return typeof isLightboxOpen !== 'undefined' ? isLightboxOpen : false; },
-    get pauseOnLightbox() { return typeof pauseOnLightbox !== 'undefined' ? pauseOnLightbox : false; },
-    get isWindowBlurred() { return typeof isWindowBlurred !== 'undefined' ? isWindowBlurred : false; },
-    get pauseOnBlur() { return typeof pauseOnBlur !== 'undefined' ? pauseOnBlur : false; }
-};
-
-// Tell canvas-grid to start listening now that the host is ready
-if (window.CG && typeof window.CG.attachHost === 'function') {
-    window.CG.attachHost(window.__cgHost);
-}

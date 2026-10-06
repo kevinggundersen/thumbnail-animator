@@ -7,11 +7,8 @@
 const CLIP_SUPPORTED_EXTS = ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif', 'mp4', 'webm', 'ogg', 'mov'];
 const folderContextMenu = document.getElementById('folder-context-menu');
 
-/** Helper: get selected file paths, works in both DOM and canvas-grid modes. */
+/** Helper: get selected file paths. */
 function _getSelectedPaths() {
-    if (window.CG && window.CG.isEnabled()) {
-        return Array.from(selectedCardPaths).filter(Boolean);
-    }
     return Array.from(document.querySelectorAll('.video-card.selected'))
         .map(c => c.dataset.path).filter(Boolean);
 }
@@ -687,10 +684,6 @@ document.addEventListener('contextmenu', (e) => {
     }
 
     let card = e.target.closest('.video-card') || e.target.closest('.folder-card');
-    // Canvas grid: resolve card via hit-test when no DOM card is found
-    if (!card && window.CG && window.CG.isEnabled()) {
-        card = window.CG.targetFromEvent(e);
-    }
     if (card) {
         showContextMenu(e, card);
     }

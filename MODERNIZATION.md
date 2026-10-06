@@ -1,5 +1,7 @@
 # Modernization proposal
 
+> **Status (end of the modernization pass):** Phases 0-4 and 6 are done; Phase 5 is partial (dead code, settings schema, esbuild bundle and type-check baseline done; the ES-module split of the big files, the renderer.js domain split, the event bus, and the Phase 4 deferrals, namely `@layer`, `<dialog>`, the schema-driven settings UI and `light-dark()`, remain). Every decision, measurement and deferral is in `DECISIONS.md`. Verification tools: `npm run lint`, `npm test`, `npm run typecheck` (advisory), `node scripts/perf-smoke.js <folder>`.
+
 Deep-dive review of the codebase as of commit `fc3edd6` (v1.11.3). Four parallel reviews covered the renderer core, the main process and backend, the CSS/HTML, and the feature modules. Every finding marked **verified** was confirmed by reading the code directly or by running the app; the rest came from the reviews and were spot-checked.
 
 ## 1. Verdict

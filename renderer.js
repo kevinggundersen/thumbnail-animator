@@ -12186,6 +12186,10 @@ let _activeScanId = null;
 let _streamChunkHandler = null;
 
 function cancelActiveStream() {
+    if (_activeScanId) {
+        // Tell main to stop sending chunks (and skip remaining dimension passes).
+        try { window.electronAPI.cancelScan(_activeScanId).catch(() => {}); } catch {}
+    }
     _activeScanId = null;
     if (_streamChunkHandler) {
         try { window.electronAPI.removeScanFolderChunkListener(); } catch {}
@@ -12201,9 +12205,16 @@ function scanFolderStreaming(folderPath, options, callbacks) {
     // Cancel any previous stream
     cancelActiveStream();
 
+    // The renderer owns the id: the invoke below only resolves after the whole
+    // scan, so an id assigned from its result would arrive after every chunk
+    // (and stale-chunk filtering could never work).
+    const scanId = `scan-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    _activeScanId = scanId;
+    options = { ...(options || {}), scanId };
+
     const handler = (_event, chunk) => {
         // Drop chunks from stale streams (user switched folders)
-        if (chunk.scanId && _activeScanId && chunk.scanId !== _activeScanId) return;
+        if (chunk.scanId !== _activeScanId) return;
 
         if (chunk.phase === 'items') {
             if (callbacks.onItems) callbacks.onItems(chunk.folders || [], chunk.items || []);
@@ -12220,9 +12231,9 @@ function scanFolderStreaming(folderPath, options, callbacks) {
 
     // Fire the IPC; the returned scanId binds subsequent chunks.
     window.electronAPI.scanFolderStream(folderPath, options).then(result => {
-        if (result && result.ok && result.value && result.value.scanId) {
-            _activeScanId = result.value.scanId;
-        } else if (!result || !result.ok) {
+        if (result && result.ok) {
+            // chunks (including 'complete') have already been delivered to the handler
+        } else if (_activeScanId === scanId) {
             console.error('scanFolderStream failed:', result?.error || 'Unknown error');
             cancelActiveStream();
             if (callbacks.onComplete) callbacks.onComplete(false, result?.error || 'Stream failed to start');

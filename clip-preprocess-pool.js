@@ -11,8 +11,9 @@ class ClipPreprocessPool {
     constructor() {
         this.pool = new Piscina({
             filename: path.join(__dirname, 'clip-preprocess-worker.js'),
-            minThreads: 2,
+            minThreads: 0,            // nothing stays alive while idle (background mode)
             maxThreads: Math.min(Math.max(os.cpus().length, 2), 4),
+            idleTimeout: 60000,
             concurrentTasksPerWorker: 2
         });
     }

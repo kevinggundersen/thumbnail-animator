@@ -36,3 +36,26 @@ Harness: `node scripts/perf-smoke.js <fixtures/mixed-1700> --profile <isolated>`
 - **Chromium switch A/B (Phase 1, corrected harness that clears localStorage each run).** Frames over 33 ms in the 30-page scroll test, two trials each, Phase 1 code: no switches 13-19; all five legacy raster switches 3-7; `disable-partial-raster,disable-zero-copy` 3-9; **`enable-low-res-tiling` alone 1-1** (baseline commit: 0). Kept `enable-low-res-tiling`, dropped the rest. The flags' original comment attributed them to a VRAM leak; the measurable effect is scroll smoothness, and it comes from low-res tiling only. `THUMBNAIL_ANIMATOR_EXTRA_SWITCHES` env hook added so future flag experiments need no code edits.
 - **Scroll parity accepted (Phase 1 close-out).** With `--trials 6` in-session repeats, baseline medians were 0 frames over 33 ms per 30-page scroll (one 10-frame outlier) and Phase 1 medians 0-2 (one noisy series of 24/4/9/5 while other trials in the same session were 0-1). The test's resolution is roughly ±3 frames; Phase 1 is at parity. The visibility observer is now lazy (only attached when a consumer needs the visible set), which removes the one per-scroll cost Phase 1 had added.
 - **Open observation for Phase 3**: time to first cards is ~1.1-1.6 s on a freshly cleared profile but ~0.3-0.6 s once localStorage has been populated by one run, for both baseline and Phase 1. Something in the first-run path (tab restore, sidebar drive listing, or cache trust) costs ~0.8 s; find it when the loading pipeline is reworked.
+
+## Phase 2 (main process never blocks)
+
+- **Native addon made asynchronous with napi-rs `AsyncTask`** rather than calling the sync exports from Piscina workers. Same outcome for the main thread, no extra JS worker boundary or data copies, and rayon parallelism inside the task is unchanged. The ten heavy exports keep the same JS names (now returning promises) and the sync versions stay exported as `*Sync` for tests and tiny inputs. Verified: `hashFiles([])` returns a Promise.
+- **Thumbnail cache switched to WebP** (lossy q82, alpha kept) via the `webp` crate (libwebp) in Rust and `sharp().webp()` in the worker fallback. Alternative was JPEG (built into the `image` crate, no new dependency) but it drops alpha; lossless WebP via `image` would only be ~30% smaller than PNG. Old `.png` entries are not migrated; they are never looked up again and age out through eviction, which now also runs every 15 minutes during a session instead of only at startup.
+- **Scan ids are owned by the renderer.** The old main-generated id was returned from the invoke, which only resolves after the whole scan, so every chunk arrived before the renderer knew the id and stale-chunk filtering never applied. The renderer now generates the id, passes it in options, filters strictly, and can cancel through the new `cancel-scan` IPC. Cancellation is checkpoint-based: a native call already running completes but its chunks are dropped.
+- **chokidar depth 10 → 1.** Deeper events only ever invalidated cached listings of nested subfolders; depth 1 keeps that for direct subfolders and avoids walking whole libraries on every navigation. `$RECYCLE.BIN`, `System Volume Information` and `node_modules` are ignored. Watcher batches are now one IPC message; preload fans them out so the renderer handler is unchanged.
+- **Worker pools idle to zero threads** (Piscina `minThreads: 0` with 30-60 s `idleTimeout`) and the hash pool is created on first use. Startup RSS of the main process went from ~241 MB to ~121 MB.
+- **`siblingTags` prefix match is now a case-sensitive index range** (`>= prefix AND < prefix + U+FFFF`) instead of `LIKE`. Paths are normalized before storage in this app, so the case-insensitive LIKE was only ever masking inconsistent input; the range scan uses the index.
+- **auto-hash on folder load** is deferred to an idle callback after render, hashed in chunks of 64 in main, and superseded by the next navigation on both sides.
+
+### Phase 2 measurements (same harness, `--trials 6`, isolated profile, warm run)
+
+| metric | phase 1 | phase 2 |
+|---|---|---|
+| time to first cards (ms) | 1153-1654 | 1085-1230 |
+| scroll median frames over 33 ms | 0-2 | 0-1 |
+| renderer CPU during scroll (%) | 4.8-5.7 | 4.5-5.0 |
+| main process memory (MB) | 341-349 | 268-280 |
+| renderer memory (MB) | 427-428 | 502-511 |
+| CPU while minimized, 10 s (%) | 0.8-1.1 | 0.9-1.0 |
+
+Renderer memory is up ~80 MB; most likely the WebP decode cache for the same number of thumbnails, worth checking in Phase 3's memory pass.

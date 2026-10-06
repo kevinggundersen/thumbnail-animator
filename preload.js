@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     selectFolder: (defaultPath) => ipcRenderer.invoke('select-folder', defaultPath),
     scanFolder: (path, options) => ipcRenderer.invoke('scan-folder', path, options),
     scanFolderStream: (path, options) => ipcRenderer.invoke('scan-folder-stream', path, options),
+    cancelScan: (scanId) => ipcRenderer.invoke('cancel-scan', scanId),
     onScanFolderChunk: (callback) => ipcRenderer.on('scan-folder-chunk', callback),
     removeScanFolderChunkListener: () => ipcRenderer.removeAllListeners('scan-folder-chunk'),
     triggerGC: () => ipcRenderer.invoke('trigger-gc'),
@@ -40,7 +41,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     copyFile: (sourcePath, destFolder, fileName, conflictResolution) => ipcRenderer.invoke('copy-file', sourcePath, destFolder, fileName, conflictResolution),
     watchFolder: (folderPath) => ipcRenderer.invoke('watch-folder', folderPath),
     unwatchFolder: (folderPath) => ipcRenderer.invoke('unwatch-folder', folderPath),
-    onFolderChanged: (callback) => ipcRenderer.on('folder-changed', callback),
+    // Main sends one message per watcher batch; fan it out to the per-event callback shape.
+    onFolderChanged: (callback) => ipcRenderer.on('folder-changed', (event, data) => {
+        if (data && Array.isArray(data.events)) {
+            for (const e of data.events) callback(event, { folderPath: data.folderPath, event: e.event, filePath: e.filePath });
+        } else {
+            callback(event, data);
+        }
+    }),
     removeFolderChangedListener: () => ipcRenderer.removeAllListeners('folder-changed'),
     generateVideoThumbnail: (filePath) => ipcRenderer.invoke('generate-video-thumbnail', filePath),
     generatePreviewStrip: (filePath) => ipcRenderer.invoke('generate-preview-strip', filePath),

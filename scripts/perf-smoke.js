@@ -52,8 +52,20 @@ async function metrics(app) {
 (async () => {
     const t0 = Date.now();
     fs.mkdirSync(profileDir, { recursive: true });
-    const app = await electron.launch({ args: [appDir], cwd: appDir, timeout: 60000, env: { ...process.env, THUMBNAIL_ANIMATOR_USER_DATA: profileDir } });
-    const page = await app.firstWindow({ timeout: 60000 });
+    // The app holds a single-instance lock; a launch right after a previous run
+    // can lose to the exiting instance, so retry once.
+    let app, page;
+    for (let attempt = 0; ; attempt++) {
+        try {
+            app = await electron.launch({ args: [appDir], cwd: appDir, timeout: 60000, env: { ...process.env, THUMBNAIL_ANIMATOR_USER_DATA: profileDir } });
+            page = await app.firstWindow({ timeout: 30000 });
+            break;
+        } catch (e) {
+            try { if (app) await app.close(); } catch {}
+            if (attempt >= 1) throw e;
+            await sleep(3000);
+        }
+    }
     await page.waitForLoadState('domcontentloaded');
 
     // Point the app at the folder and restart the renderer.

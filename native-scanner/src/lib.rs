@@ -1,4 +1,5 @@
 use napi::bindgen_prelude::*;
+use napi::{Env, Task};
 use napi_derive::napi;
 use std::collections::HashSet;
 #[cfg(windows)]
@@ -36,7 +37,7 @@ pub struct SubdirEntry {
 /// Fast directory scan using Windows FindFirstFileExW (zero separate stat calls).
 /// Returns folders and media files separately, filtered by supported extensions.
 #[napi]
-pub fn scan_directory(
+pub fn scan_directory_sync(
     folder_path: String,
     image_exts: Vec<String>,
     video_exts: Vec<String>,
@@ -88,7 +89,7 @@ pub fn scan_directory(
 
 /// List subdirectories with hasChildren flag, filtering system/hidden folders.
 #[napi]
-pub fn list_subdirectories(folder_path: String) -> Result<Vec<SubdirEntry>> {
+pub fn list_subdirectories_sync(folder_path: String) -> Result<Vec<SubdirEntry>> {
     let skip_names: HashSet<&str> = [
         "System Volume Information",
         "$Recycle.Bin",
@@ -120,7 +121,7 @@ pub fn list_subdirectories(folder_path: String) -> Result<Vec<SubdirEntry>> {
 /// Replaces the JS getSubdirectoriesRecursive + per-folder scanFolderInternal loop.
 /// Deduplicates by lowercase path. Returns only files (no folder entries).
 #[napi]
-pub fn scan_directory_recursive(
+pub fn scan_directory_recursive_sync(
     root_paths: Vec<String>,
     image_exts: Vec<String>,
     video_exts: Vec<String>,
@@ -215,7 +216,7 @@ pub struct HashResult {
 /// Hash multiple files in parallel using BLAKE3 + rayon threadpool.
 /// Returns one HashResult per input path.
 #[napi]
-pub fn hash_files(file_paths: Vec<String>) -> Vec<HashResult> {
+pub fn hash_files_sync(file_paths: Vec<String>) -> Vec<HashResult> {
     use rayon::prelude::*;
 
     file_paths
@@ -253,7 +254,7 @@ pub struct DimensionResult {
 /// Parses PNG, JPEG, GIF, WebP, BMP headers directly (no external library).
 /// Returns one DimensionResult per input path. SVGs and unsupported formats get None.
 #[napi]
-pub fn read_image_dimensions(file_paths: Vec<String>) -> Vec<DimensionResult> {
+pub fn read_image_dimensions_sync(file_paths: Vec<String>) -> Vec<DimensionResult> {
     use rayon::prelude::*;
 
     file_paths
@@ -461,7 +462,7 @@ pub struct CacheEvictionPlan {
 
 /// Scan a cache directory and return total size and file count.
 #[napi]
-pub fn get_cache_info(dir_path: String) -> CacheInfo {
+pub fn get_cache_info_sync(dir_path: String) -> CacheInfo {
     let mut total_size: u64 = 0;
     let mut file_count: u32 = 0;
 
@@ -485,7 +486,7 @@ pub fn get_cache_info(dir_path: String) -> CacheInfo {
 /// Plan cache eviction: scan directory, sort by mtime (oldest first),
 /// return files to delete to bring total size under max_size_bytes.
 #[napi]
-pub fn plan_cache_eviction(dir_path: String, max_size_bytes: f64) -> CacheEvictionPlan {
+pub fn plan_cache_eviction_sync(dir_path: String, max_size_bytes: f64) -> CacheEvictionPlan {
     use std::time::UNIX_EPOCH;
 
     let max_bytes = max_size_bytes as u64;
@@ -546,7 +547,7 @@ pub fn plan_cache_eviction(dir_path: String, max_size_bytes: f64) -> CacheEvicti
 
 /// Delete files from a list of paths. Returns number of files successfully deleted.
 #[napi]
-pub fn delete_files(file_paths: Vec<String>) -> u32 {
+pub fn delete_files_sync(file_paths: Vec<String>) -> u32 {
     let mut deleted: u32 = 0;
     for p in &file_paths {
         if std::fs::remove_file(p).is_ok() {
@@ -788,15 +789,24 @@ fn generate_one_thumbnail(src: &str, dst: &str, max_size: u32) -> bool {
         img.thumbnail(new_w, new_h)
     };
 
-    // Save as PNG (to match existing cache key convention: `.png` extension).
-    match resized.save(dst) {
-        Ok(()) => true,
-        Err(_) => {
-            let _ = std::fs::remove_file(dst);
-            false
-        }
+    // Encode by destination extension. `.webp` is the cache default (lossy,
+    // alpha preserved, a fraction of PNG's bytes); anything else goes through
+    // the `image` crate's encoder chosen from the extension.
+    let ok = if dst.to_ascii_lowercase().ends_with(".webp") {
+        let rgba = resized.to_rgba8();
+        let (rw, rh) = (rgba.width(), rgba.height());
+        let encoded = webp::Encoder::from_rgba(rgba.as_raw(), rw, rh).encode(THUMB_WEBP_QUALITY);
+        std::fs::write(dst, &*encoded).is_ok()
+    } else {
+        resized.save(dst).is_ok()
+    };
+    if !ok {
+        let _ = std::fs::remove_file(dst);
     }
+    ok
 }
+
+const THUMB_WEBP_QUALITY: f32 = 82.0;
 
 // ── Native perceptual hashing (dHash) ──────────────────────────────────────
 // Computes 64-bit dHash for each input path in parallel using rayon.
@@ -838,7 +848,7 @@ fn compute_dhash_single(path: &str) -> Option<String> {
 /// Compute perceptual (dHash) hashes for a batch of image paths in parallel.
 /// Returns one result per input path in the same order.
 #[napi]
-pub fn compute_perceptual_hashes(paths: Vec<String>) -> Vec<PerceptualHashResult> {
+pub fn compute_perceptual_hashes_sync(paths: Vec<String>) -> Vec<PerceptualHashResult> {
     use rayon::prelude::*;
     paths
         .par_iter()
@@ -855,7 +865,7 @@ pub fn compute_perceptual_hashes(paths: Vec<String>) -> Vec<PerceptualHashResult
 /// - Decodes + resizes + encodes using the `image` crate (pure Rust, no external deps).
 /// - Output format is PNG, matching the existing cache path convention.
 #[napi]
-pub fn generate_image_thumbnails(requests: Vec<ThumbnailRequest>) -> Vec<ThumbnailResult> {
+pub fn generate_image_thumbnails_sync(requests: Vec<ThumbnailRequest>) -> Vec<ThumbnailResult> {
     use rayon::prelude::*;
 
     requests
@@ -1342,3 +1352,60 @@ pub fn clip_embed_text_tokens(
 
     Ok(napi::bindgen_prelude::Float32Array::new(out))
 }
+
+// ── Async wrappers ───────────────────────────────────────────────────────────
+//
+// Every heavy export runs on libuv's thread pool through AsyncTask, so the
+// Electron main process never blocks on scanning, hashing, decoding or
+// encoding (rayon still parallelises inside the task). The `*_sync`
+// functions above remain exported for tests and for callers with tiny inputs.
+
+macro_rules! async_export {
+    ($task:ident, $js:ident, $sync:ident, $out:ty, { $($field:ident : $ty:ty),* $(,)? }) => {
+        pub struct $task { $(pub $field: Option<$ty>,)* }
+        impl Task for $task {
+            type Output = $out;
+            type JsValue = $out;
+            fn compute(&mut self) -> Result<Self::Output> {
+                $sync($(self.$field.take().expect("task input consumed twice"),)*)
+            }
+            fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+                Ok(output)
+            }
+        }
+        #[napi]
+        pub fn $js($($field: $ty),*) -> AsyncTask<$task> {
+            AsyncTask::new($task { $($field: Some($field),)* })
+        }
+    };
+}
+
+// Infallible sync functions are wrapped so every task body returns Result.
+fn hash_files_r(p: Vec<String>) -> Result<Vec<HashResult>> { Ok(hash_files_sync(p)) }
+fn read_image_dimensions_r(p: Vec<String>) -> Result<Vec<DimensionResult>> { Ok(read_image_dimensions_sync(p)) }
+fn get_cache_info_r(d: String) -> Result<CacheInfo> { Ok(get_cache_info_sync(d)) }
+fn plan_cache_eviction_r(d: String, m: f64) -> Result<CacheEvictionPlan> { Ok(plan_cache_eviction_sync(d, m)) }
+fn delete_files_r(p: Vec<String>) -> Result<u32> { Ok(delete_files_sync(p)) }
+fn compute_perceptual_hashes_r(p: Vec<String>) -> Result<Vec<PerceptualHashResult>> { Ok(compute_perceptual_hashes_sync(p)) }
+fn generate_image_thumbnails_r(r: Vec<ThumbnailRequest>) -> Result<Vec<ThumbnailResult>> { Ok(generate_image_thumbnails_sync(r)) }
+
+async_export!(ScanDirectoryTask, scan_directory, scan_directory_sync, ScanResult,
+    { folder_path: String, image_exts: Vec<String>, video_exts: Vec<String>, skip_stats: bool, smart_collection_mode: bool });
+async_export!(ListSubdirectoriesTask, list_subdirectories, list_subdirectories_sync, Vec<SubdirEntry>,
+    { folder_path: String });
+async_export!(ScanDirectoryRecursiveTask, scan_directory_recursive, scan_directory_recursive_sync, Vec<FileEntry>,
+    { root_paths: Vec<String>, image_exts: Vec<String>, video_exts: Vec<String> });
+async_export!(HashFilesTask, hash_files, hash_files_r, Vec<HashResult>,
+    { file_paths: Vec<String> });
+async_export!(ReadImageDimensionsTask, read_image_dimensions, read_image_dimensions_r, Vec<DimensionResult>,
+    { file_paths: Vec<String> });
+async_export!(GetCacheInfoTask, get_cache_info, get_cache_info_r, CacheInfo,
+    { dir_path: String });
+async_export!(PlanCacheEvictionTask, plan_cache_eviction, plan_cache_eviction_r, CacheEvictionPlan,
+    { dir_path: String, max_size_bytes: f64 });
+async_export!(DeleteFilesTask, delete_files, delete_files_r, u32,
+    { file_paths: Vec<String> });
+async_export!(ComputePerceptualHashesTask, compute_perceptual_hashes, compute_perceptual_hashes_r, Vec<PerceptualHashResult>,
+    { paths: Vec<String> });
+async_export!(GenerateImageThumbnailsTask, generate_image_thumbnails, generate_image_thumbnails_r, Vec<ThumbnailResult>,
+    { requests: Vec<ThumbnailRequest> });

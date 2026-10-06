@@ -11,8 +11,9 @@ class HashWorkerPool {
         this.workerCount = Math.min(Math.max(os.cpus().length, 2), 8);
         this.pool = new Piscina({
             filename: path.join(__dirname, 'hash-worker.js'),
-            minThreads: this.workerCount,
+            minThreads: 0,            // nothing stays alive while idle (background mode)
             maxThreads: this.workerCount,
+            idleTimeout: 30000,
             concurrentTasksPerWorker: 1
         });
     }

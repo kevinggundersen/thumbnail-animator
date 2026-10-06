@@ -329,13 +329,21 @@ class AppDatabase {
         this._stmts.updateCollectionFilesPath = this.db.prepare('UPDATE collection_files SET file_path = ? WHERE file_path = ?');
         this._stmts.updateFileHashesPath = this.db.prepare('UPDATE file_hashes SET file_path = ? WHERE file_path = ?');
         this._stmts.getFileCountForTag = this.db.prepare('SELECT COUNT(*) AS count FROM file_tags WHERE tag_id = ?');
+        // json_each keeps this a single prepared statement for any batch size (the
+        // old dynamic IN (?,?,...) re-prepared per call and hit SQLite's 32k variable cap)
+        this._stmts.getTagsForFiles = this.db.prepare(`
+            SELECT ft.file_path, t.id, t.name, t.color
+            FROM file_tags ft JOIN tags t ON t.id = ft.tag_id
+            WHERE ft.file_path IN (SELECT value FROM json_each(?))
+            ORDER BY t.name COLLATE NOCASE
+        `);
 
         // Auto-suggest: sibling co-occurrence
         this._stmts.siblingTags = this.db.prepare(`
             SELECT t.id, t.name, t.color, COUNT(*) AS occurrences
             FROM file_tags ft
             JOIN tags t ON t.id = ft.tag_id
-            WHERE ft.file_path LIKE ? AND ft.file_path != ?
+            WHERE ft.file_path >= ? AND ft.file_path < ? AND ft.file_path != ?
             GROUP BY t.id
             ORDER BY occurrences DESC
             LIMIT 10
@@ -696,13 +704,7 @@ class AppDatabase {
 
     getTagsForFiles(filePaths) {
         if (!filePaths.length) return {};
-        const placeholders = filePaths.map(() => '?').join(',');
-        const rows = this.db.prepare(`
-            SELECT ft.file_path, t.id, t.name, t.color
-            FROM file_tags ft JOIN tags t ON t.id = ft.tag_id
-            WHERE ft.file_path IN (${placeholders})
-            ORDER BY t.name COLLATE NOCASE
-        `).all(...filePaths);
+        const rows = this._stmts.getTagsForFiles.all(JSON.stringify(filePaths));
         const result = {};
         for (const row of rows) {
             (result[row.file_path] ||= []).push({ id: row.id, name: row.name, color: row.color });
@@ -822,7 +824,8 @@ class AppDatabase {
         }
 
         // 2. Sibling co-occurrence (already SQL-based — no change needed)
-        const siblingResults = this._stmts.siblingTags.all(dirPrefix + '%', filePath);
+        // Range scan on the path index instead of LIKE (which cannot use it)
+        const siblingResults = this._stmts.siblingTags.all(dirPrefix, dirPrefix + '￿', filePath);
         for (const row of siblingResults) {
             if (seenTagIds.has(row.id)) continue;
             seenTagIds.add(row.id);

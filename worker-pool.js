@@ -10,8 +10,9 @@ class DimensionWorkerPool {
     constructor(ffprobePath) {
         this.pool = new Piscina({
             filename: path.join(__dirname, 'dimension-worker.js'),
-            minThreads: 2,
+            minThreads: 0,            // nothing stays alive while idle (background mode)
             maxThreads: Math.min(Math.max(os.cpus().length, 2), 8),
+            idleTimeout: 60000,
             workerData: { ffprobePath },
             concurrentTasksPerWorker: 4
         });

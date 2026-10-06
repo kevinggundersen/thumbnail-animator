@@ -124,7 +124,7 @@ Pure bug fixes and flag removals. No structural change.
 9. Remove the per-event timing `console.log`s and the `new Error().stack` in navigation (F8). Gate remaining diagnostics behind the perf dashboard flag.
 10. Do **not** lower `MAX_VIDEOS` (the project goal is maximum animated thumbnails on screen). Add a zero-margin visibility observer so the renderer knows which cards are truly on screen, and let `resumeThumbnailVideos` go through one `playCardVideoIfVisible` policy function. Done; measured: pausing buffered videos hurt scroll smoothness, so it is opt-in only (see DECISIONS.md). The adaptive budget lands in Phase 3.
 
-### Phase 2: Main process never blocks (medium)
+### Phase 2: Main process never blocks (medium) — DONE (see DECISIONS.md)
 
 1. **Make the native scanner async** (M1). In napi-rs, wrap each heavy export in `AsyncTask` (implement the `Task` trait: `compute` runs on the libuv threadpool, `resolve` marshals the result) or mark them `#[napi] async fn` with the tokio feature. Keep the sync versions exported under a `*Sync` name for the few call sites that are genuinely tiny (single-file header reads). Rayon parallelism inside stays as is. Update every call site in main.js to `await`.
 2. **Scan cancellation** (M3): give every streaming handler an `AbortController` keyed by `scanId`, expose `cancel-scan(scanId)` in preload, and have the renderer cancel the previous scan on navigation. Same for smart-collection scans and `auto-hash-folder`.

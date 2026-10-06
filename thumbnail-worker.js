@@ -123,6 +123,12 @@ async function generatePreviewStripFrames(filePath, thumbPaths, positions) {
     return { success: results.length > 0, thumbPaths: results };
 }
 
+// Encoder follows the destination extension: the cache uses .webp (lossy, alpha kept,
+// a fraction of PNG's bytes); PNG remains available for callers that ask for it.
+function encodeThumb(pipeline, thumbPath) {
+    return thumbPath.toLowerCase().endsWith('.webp') ? pipeline.webp({ quality: 82 }) : pipeline.png();
+}
+
 async function generateImageThumbnail(filePath, thumbPath, maxSize = 512) {
     if (!sharp) return { success: false, dHash: null };
     try {
@@ -132,17 +138,16 @@ async function generateImageThumbnail(filePath, thumbPath, maxSize = 512) {
 
         const longestEdge = Math.max(metadata.width, metadata.height);
         if (longestEdge <= maxSize) {
-            // Image is already small enough, just copy as PNG
-            await sharp(filePath).png().toFile(thumbPath);
+            // Image is already small enough, just re-encode
+            await encodeThumb(sharp(filePath), thumbPath).toFile(thumbPath);
         } else {
             const scale = maxSize / longestEdge;
-            await sharp(filePath)
+            await encodeThumb(sharp(filePath)
                 .resize(
                     Math.max(1, Math.round(metadata.width * scale)),
                     Math.max(1, Math.round(metadata.height * scale)),
                     { fit: 'inside', withoutEnlargement: true }
-                )
-                .png()
+                ), thumbPath)
                 .toFile(thumbPath);
         }
         return { success: true, dHash: null };

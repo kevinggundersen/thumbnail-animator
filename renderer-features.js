@@ -4024,8 +4024,16 @@ function buildResolvedPins() {
 }
 
 /** Trigger auto-hashing for the current folder's files, then update the linked index. */
+let _autoHashGeneration = 0;
 async function autoHashCurrentFolder(items) {
     if (!_linkedDuplicatesEnabled) return;
+    // Hashing every file in a folder is background work: wait for an idle slot
+    // after the grid has rendered, and let a newer navigation supersede this call.
+    const generation = ++_autoHashGeneration;
+    await new Promise(resolve => (typeof requestIdleCallback === 'function'
+        ? requestIdleCallback(resolve, { timeout: 3000 })
+        : setTimeout(resolve, 1000)));
+    if (generation !== _autoHashGeneration) return;
     const filePaths = [];
     for (const item of items) {
         if (item.type !== 'folder' && item.path) filePaths.push(item.path);
@@ -4033,6 +4041,7 @@ async function autoHashCurrentFolder(items) {
     if (filePaths.length === 0) return;
     try {
         const result = await window.electronAPI.autoHashFolder(filePaths);
+        if (generation !== _autoHashGeneration) return; // user moved on; a newer call merges its own result
         if (result && result.ok && result.value) {
             _mergePathToHash(result.value);
             // _pathToHash changed — resolved ratings/pins depend on it, so force re-sync

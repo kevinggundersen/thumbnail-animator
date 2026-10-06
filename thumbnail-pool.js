@@ -12,8 +12,9 @@ class ThumbnailWorkerPool {
         // Use fewer workers than dimension pool since thumbnail generation is I/O + CPU heavy
         this.pool = new Piscina({
             filename: path.join(__dirname, 'thumbnail-worker.js'),
-            minThreads: 1,
+            minThreads: 0,            // nothing stays alive while idle (background mode)
             maxThreads: Math.min(Math.max(Math.floor(os.cpus().length / 2), 1), 4),
+            idleTimeout: 60000,
             workerData: { ffmpegPath, ffprobePath },
             concurrentTasksPerWorker: 2
         });

@@ -185,7 +185,13 @@ let thumbnailPool = null;
     markStartup('fftools-detected');
     console.log(`[startup] fftools detection complete (async) — ffprobe: ${!!ffprobePath}, ffmpeg: ${!!ffmpegPath}`);
 })();
-let hashPool = new HashWorkerPool();
+// Created on first use (duplicate scans, JS hashing fallback) instead of at boot:
+// it used to spawn up to 8 threads, each loading sharp, before the window existed.
+let hashPool = null;
+function getHashPool() {
+    if (!hashPool) hashPool = new HashWorkerPool();
+    return hashPool;
+}
 markStartup('worker-pools-created');
 // CLIP model state — loaded directly in main process (no worker threads)
 let clipModel = null; // { visionModel, textModel, processor, tokenizer, RawImage, ort }
@@ -433,7 +439,9 @@ function getThumbCachePath(filePath, mtimeMs) {
 }
 
 function getImageThumbCachePath(filePath, mtimeMs, maxSize) {
-    return path.join(imageThumbDir, `${createThumbCacheKey(filePath, mtimeMs, `img:${maxSize}`)}.png`);
+    // WebP: lossy, keeps alpha, a fraction of PNG's bytes to write, read and decode.
+    // Old .png entries are simply never looked up again and age out via eviction.
+    return path.join(imageThumbDir, `${createThumbCacheKey(filePath, mtimeMs, `img:${maxSize}`)}.webp`);
 }
 
 // pathToFileUrl, fileUrlToPath — imported from main-utils.js
@@ -543,7 +551,7 @@ async function generateImageThumbnail(filePath, maxSize = 512) {
 
             if (nativeScanner && nativeScanner.generateImageThumbnails) {
                 try {
-                    const results = nativeScanner.generateImageThumbnails([{ filePath, thumbPath, maxSize }]);
+                    const results = await nativeScanner.generateImageThumbnails([{ filePath, thumbPath, maxSize }]);
                     if (results && results[0] && results[0].success) {
                         logPerf('generate-image-thumbnail', perfStart, { cached: 0, success: 1, native: 1 });
                         return thumbPath;
@@ -752,9 +760,15 @@ const _cacheLimitsReady = fs.promises.readFile(cacheLimitsFile, 'utf8').then(dat
     if (typeof saved.imageCacheMB === 'number') IMAGE_CACHE_MAX_BYTES = saved.imageCacheMB * 1024 * 1024;
 }).catch(() => { /* no saved limits, use defaults */ });
 
-// Run cache eviction on startup (non-blocking, waits for async cache limits)
-if (nativeScanner && nativeScanner.planCacheEviction) {
-    setTimeout(async () => {
+// Thumbnail cache eviction. Runs once shortly after startup and then
+// periodically for as long as the app is open, so a long session cannot grow
+// the cache without bound (it used to be startup-only).
+const CACHE_EVICTION_INTERVAL_MS = 15 * 60 * 1000;
+let _evictionRunning = false;
+async function evictThumbnailCaches() {
+    if (_evictionRunning || !nativeScanner || !nativeScanner.planCacheEviction) return;
+    _evictionRunning = true;
+    try {
         await _cacheLimitsReady; // Ensure user-configured limits are loaded before evicting
         for (const [dir, maxBytes, label] of [
             [videoThumbDir, VIDEO_CACHE_MAX_BYTES, 'video'],
@@ -762,17 +776,21 @@ if (nativeScanner && nativeScanner.planCacheEviction) {
         ]) {
             if (maxBytes === 0) continue; // 0 = unlimited
             try {
-                const plan = nativeScanner.planCacheEviction(dir, maxBytes);
+                const plan = await nativeScanner.planCacheEviction(dir, maxBytes);
                 if (plan.filesToDelete.length > 0) {
-                    const deleted = nativeScanner.deleteFiles(plan.filesToDelete);
+                    const deleted = await nativeScanner.deleteFiles(plan.filesToDelete);
                     console.log(`[cache] Evicted ${deleted} ${label} thumbnails (freed ${(plan.bytesToFree / 1024 / 1024).toFixed(1)}MB, was ${(plan.currentSize / 1024 / 1024).toFixed(1)}MB)`);
                 }
             } catch (e) {
                 console.warn(`[cache] ${label} eviction failed:`, e.message);
             }
         }
-    }, 3000); // Delay 3s after startup to not compete with initial folder load
+    } finally {
+        _evictionRunning = false;
+    }
 }
+setTimeout(evictThumbnailCaches, 3000).unref(); // after startup, not competing with the first folder load
+setInterval(evictThumbnailCaches, CACHE_EVICTION_INTERVAL_MS).unref();
 
 // Undo/Redo: app-managed staging folder for deleted files
 const undoTrashDir = path.join(userDataPath, 'undo-trash');
@@ -854,6 +872,24 @@ app.commandLine.appendSwitch('enable-low-res-tiling');
 //   not the foreground window, so Chromium's normal throttling is wanted.
 
 let mainWindow = null;
+
+// Window-level messages. Registered once at module level; they used to be
+// registered inside createWindow, which stacked a duplicate listener every
+// time the window was re-created (macOS activate).
+ipcMain.on('toggle-menu-bar', (event) => {
+    const sender = BrowserWindow.fromWebContents(event.sender);
+    if (sender) {
+        const menu = Menu.getApplicationMenu();
+        if (menu) menu.popup({ window: sender, x: 0, y: 38 });
+    }
+});
+ipcMain.on('update-titlebar-overlay', (event, overlay) => {
+    if (process.platform !== 'win32') return;
+    const sender = BrowserWindow.fromWebContents(event.sender);
+    if (sender) {
+        try { sender.setTitleBarOverlay(overlay); } catch {}
+    }
+});
 
 // Window position persistence
 const windowStateFile = path.join(userDataPath, 'window-state.json');
@@ -1011,25 +1047,6 @@ async function createWindow() {
         win.setMenuBarVisibility(false);
     });
 
-    // Show application menu as popup (native menu bar is suppressed by titleBarOverlay)
-    ipcMain.on('toggle-menu-bar', (event) => {
-        const sender = BrowserWindow.fromWebContents(event.sender);
-        if (sender) {
-            const menu = Menu.getApplicationMenu();
-            if (menu) {
-                menu.popup({ window: sender, x: 0, y: 38 });
-            }
-        }
-    });
-    
-    // Update title bar overlay colors when theme changes (Windows only)
-    ipcMain.on('update-titlebar-overlay', (event, overlay) => {
-        if (process.platform !== 'win32') return;
-        const sender = BrowserWindow.fromWebContents(event.sender);
-        if (sender) {
-            try { sender.setTitleBarOverlay(overlay); } catch {}
-        }
-    });
 
     // Track window minimize/maximize events to reduce resource usage
     win.on('minimize', () => {
@@ -1476,28 +1493,30 @@ ipcMain.handle('get-memory-info', () => {
     } };
 });
 
-ipcMain.handle('get-cache-info', () => {
-    if (!nativeScanner || !nativeScanner.getCacheInfo) return { ok: true, value: null };
-    const video = nativeScanner.getCacheInfo(videoThumbDir || '');
-    const image = nativeScanner.getCacheInfo(imageThumbDir || '');
-    const folder = nativeScanner.getCacheInfo(folderPreviewDir || '');
-    return { ok: true, value: {
+wrapIpc('get-cache-info', async () => {
+    if (!nativeScanner || !nativeScanner.getCacheInfo) return null;
+    const [video, image, folder] = await Promise.all([
+        nativeScanner.getCacheInfo(videoThumbDir || ''),
+        nativeScanner.getCacheInfo(imageThumbDir || ''),
+        nativeScanner.getCacheInfo(folderPreviewDir || ''),
+    ]);
+    return {
         video: { size: video.totalSize, files: video.fileCount, maxSize: VIDEO_CACHE_MAX_BYTES },
         image: { size: image.totalSize, files: image.fileCount, maxSize: IMAGE_CACHE_MAX_BYTES },
         folder: { size: folder.totalSize, files: folder.fileCount },
-    } };
+    };
 });
 
-ipcMain.handle('evict-cache', (event, cacheType) => {
-    if (!nativeScanner || !nativeScanner.planCacheEviction) return { ok: true, value: { deleted: 0, freed: 0 } };
+wrapIpc('evict-cache', async (cacheType) => {
+    if (!nativeScanner || !nativeScanner.planCacheEviction) return { deleted: 0, freed: 0 };
     const dir = cacheType === 'video' ? videoThumbDir : imageThumbDir;
     const maxBytes = cacheType === 'video' ? VIDEO_CACHE_MAX_BYTES : IMAGE_CACHE_MAX_BYTES;
-    if (maxBytes === 0) return { ok: true, value: { deleted: 0, freed: 0 } }; // unlimited
+    if (maxBytes === 0) return { deleted: 0, freed: 0 }; // unlimited
     // Force evict to 80% of max to avoid re-evicting on every call
-    const plan = nativeScanner.planCacheEviction(dir, Math.floor(maxBytes * 0.8));
-    if (plan.filesToDelete.length === 0) return { ok: true, value: { deleted: 0, freed: 0 } };
-    const deleted = nativeScanner.deleteFiles(plan.filesToDelete);
-    return { ok: true, value: { deleted, freed: plan.bytesToFree } };
+    const plan = await nativeScanner.planCacheEviction(dir, Math.floor(maxBytes * 0.8));
+    if (plan.filesToDelete.length === 0) return { deleted: 0, freed: 0 };
+    const deleted = await nativeScanner.deleteFiles(plan.filesToDelete);
+    return { deleted, freed: plan.bytesToFree };
 });
 
 ipcMain.handle('set-cache-limits', (event, videoCacheMB, imageCacheMB) => {
@@ -1552,14 +1571,14 @@ async function scanFolderInternal(folderPath, options = {}) {
             const nativeStart = performance.now();
             const imageExts = [...imageExtensions];
             const videoExts = [...videoExtensions];
-            const nativeFiles = nativeScanner.scanDirectoryRecursive([folderPath], imageExts, videoExts);
+            const nativeFiles = await nativeScanner.scanDirectoryRecursive([folderPath], imageExts, videoExts);
             logPerf('scan-folder.native-recursive', nativeStart, { files: nativeFiles.length });
             for (const f of nativeFiles) {
                 const isImage = f.fileType === 'image';
                 const relativePath = path.relative(folderPath, f.path);
                 fileObjs.push({
                     name: f.name, path: f.path,
-                    url: isWindows ? `file:///${f.path.replace(/\\/g, '/')}` : `file://${f.path}`,
+                    url: pathToFileUrl(f.path),
                     type: f.fileType, isImage,
                     mtime: f.mtime, size: f.size,
                     width: undefined, height: undefined,
@@ -1592,7 +1611,7 @@ async function scanFolderInternal(folderPath, options = {}) {
                         }
                         fileObjs.push({
                             name: entry.name, path: fullPath,
-                            url: isWindows ? `file:///${fullPath.replace(/\\/g, '/')}` : `file://${fullPath}`,
+                            url: pathToFileUrl(fullPath),
                             type: isImage ? 'image' : 'video', isImage,
                             mtime, size,
                             width: undefined, height: undefined,
@@ -1643,7 +1662,7 @@ async function scanFolderInternal(folderPath, options = {}) {
         const nativeStart = performance.now();
         const imageExts = [...imageExtensions];
         const videoExts = [...videoExtensions];
-        const result = nativeScanner.scanDirectory(folderPath, imageExts, videoExts, skipStats, smartCollectionMode);
+        const result = await nativeScanner.scanDirectory(folderPath, imageExts, videoExts, skipStats, smartCollectionMode);
         logPerf('scan-folder.native', nativeStart, { folders: result.folders.length, files: result.mediaFiles.length });
 
         // Add url + type:'folder' + isImage fields to match expected shape
@@ -1653,7 +1672,7 @@ async function scanFolderInternal(folderPath, options = {}) {
             return {
                 name: f.name,
                 path: f.path,
-                url: isWindows ? `file:///${f.path.replace(/\\/g, '/')}` : `file://${f.path}`,
+                url: pathToFileUrl(f.path),
                 type: f.fileType,
                 isImage,
                 mtime: f.mtime,
@@ -1685,7 +1704,7 @@ async function scanFolderInternal(folderPath, options = {}) {
                 const isImage = imageExtensions.has(ext);
                 fileObjs.push({
                     name, path: itemPath,
-                    url: isWindows ? `file:///${itemPath.replace(/\\/g, '/')}` : `file://${itemPath}`,
+                    url: pathToFileUrl(itemPath),
                     type: isImage ? 'image' : 'video', isImage,
                     mtime: 0, size: 0, width: undefined, height: undefined,
                 });
@@ -1736,7 +1755,7 @@ async function scanFolderInternal(folderPath, options = {}) {
                 .map(f => f.path);
             if (nativeImagePaths.length > 0) {
                 const dimStart = performance.now();
-                const nativeResults = nativeScanner.readImageDimensions(nativeImagePaths);
+                const nativeResults = await nativeScanner.readImageDimensions(nativeImagePaths);
                 const dimMap = new Map();
                 for (const r of nativeResults) {
                     if (r.width && r.height) dimMap.set(r.path, { width: r.width, height: r.height });
@@ -1971,8 +1990,12 @@ ipcMain.handle('scan-folder', async (event, folderPath, options = {}) => {
  */
 ipcMain.handle('scan-folder-stream', async (event, folderPath, options = {}) => {
     const sender = event.sender;
-    const scanId = `scan-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    // The renderer supplies the id so it can filter chunks and cancel before
+    // this call returns (the invoke only resolves after the whole scan).
+    const scanId = (options && typeof options.scanId === 'string' && options.scanId)
+        || `scan-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const DIM_CHUNK_SIZE = 500;
+    const scan = registerScan(scanId);
 
     const send = (payload) => {
         if (!sender.isDestroyed()) sender.send('scan-folder-chunk', payload);
@@ -1995,6 +2018,10 @@ ipcMain.handle('scan-folder-stream', async (event, folderPath, options = {}) => 
             folders: folders.length, files: mediaFiles.length
         });
 
+        if (scan.cancelled) {
+            send({ scanId, phase: 'complete', cancelled: true });
+            return { ok: true, value: { scanId, cancelled: true } };
+        }
         // Emit items immediately — renderer can show grid now
         send({ scanId, phase: 'items', folders, items: mediaFiles });
 
@@ -2007,10 +2034,10 @@ ipcMain.handle('scan-folder-stream', async (event, folderPath, options = {}) => 
                 && nativeScanner && nativeScanner.readImageDimensions) {
                 const phaseBStart = performance.now();
                 // Stream in chunks so renderer updates progressively
-                for (let i = 0; i < imageFiles.length; i += DIM_CHUNK_SIZE) {
+                for (let i = 0; i < imageFiles.length && !scan.cancelled; i += DIM_CHUNK_SIZE) {
                     const chunk = imageFiles.slice(i, i + DIM_CHUNK_SIZE);
                     const paths = chunk.map(f => f.path);
-                    const results = nativeScanner.readImageDimensions(paths);
+                    const results = await nativeScanner.readImageDimensions(paths);
                     const dims = [];
                     for (const r of results) {
                         if (r.width && r.height) {
@@ -2042,7 +2069,7 @@ ipcMain.handle('scan-folder-stream', async (event, folderPath, options = {}) => 
             }
             if (workerScan.length > 0 && dimensionPool) {
                 // Process in chunks through the pool
-                for (let i = 0; i < workerScan.length; i += DIM_CHUNK_SIZE) {
+                for (let i = 0; i < workerScan.length && !scan.cancelled; i += DIM_CHUNK_SIZE) {
                     const chunk = workerScan.slice(i, i + DIM_CHUNK_SIZE);
                     const dimMap = await dimensionPool.scanDimensions(chunk);
                     const dims = [];
@@ -2056,11 +2083,11 @@ ipcMain.handle('scan-folder-stream', async (event, folderPath, options = {}) => 
             }
         }
 
-        send({ scanId, phase: 'complete' });
+        send({ scanId, phase: 'complete', cancelled: scan.cancelled || undefined });
         if (!sender.isDestroyed()) {
             sender.send('scan-progress', { status: 'complete', count: mediaFiles.length });
         }
-        return { ok: true, value: { scanId, totalFolders: folders.length, totalFiles: mediaFiles.length } };
+        return { ok: true, value: { scanId, totalFolders: folders.length, totalFiles: mediaFiles.length, cancelled: scan.cancelled || undefined } };
     } catch (error) {
         console.error('Error streaming folder scan:', error);
         send({ scanId, phase: 'complete', error: error.message });
@@ -2068,7 +2095,24 @@ ipcMain.handle('scan-folder-stream', async (event, folderPath, options = {}) => 
             sender.send('scan-progress', { status: 'complete', count: 0 });
         }
         return { ok: false, error: error.message };
+    } finally {
+        activeScans.delete(scanId);
     }
+});
+
+// Cancellation registry for streaming scans (folder streams, smart-collection
+// scans). A cancelled scan stops sending chunks at its next checkpoint; work
+// already running inside the native addon finishes but its result is dropped.
+const activeScans = new Map(); // scanId -> { cancelled }
+function registerScan(scanId) {
+    const entry = { cancelled: false };
+    activeScans.set(scanId, entry);
+    return entry;
+}
+wrapIpc('cancel-scan', (scanId) => {
+    const entry = activeScans.get(scanId);
+    if (entry) entry.cancelled = true;
+    return !!entry;
 });
 
 // Resolve an array of absolute file paths into item objects (same shape as scan-folder results).
@@ -2098,7 +2142,7 @@ ipcMain.handle('resolve-file-paths', async (event, filePaths, options = {}) => {
             const fileObj = {
                 name,
                 path: filePath,
-                url: isWindows ? `file:///${filePath.replace(/\\/g, '/')}` : `file://${filePath}`,
+                url: pathToFileUrl(filePath),
                 type: isImage ? 'image' : 'video',
                 isImage,
                 mtime: stats.mtime.getTime(),
@@ -2183,6 +2227,7 @@ ipcMain.handle('scan-folders-for-smart-collection', async (event, folderEntries,
     const scanStart = performance.now();
     const errors = [];
     const sender = event.sender;
+    const scan = scanId ? registerScan(scanId) : null; // cancellable via 'cancel-scan'
     const isWindows = process.platform === 'win32';
     const imageExtensions = pluginRegistry.getImageExtensions();
     const videoExtensions = pluginRegistry.getVideoExtensions();
@@ -2218,12 +2263,12 @@ ipcMain.handle('scan-folders-for-smart-collection', async (event, folderEntries,
             try {
                 const imageExts = [...imageExtensions];
                 const videoExts = [...videoExtensions];
-                const nativeFiles = nativeScanner.scanDirectoryRecursive(recursiveRoots, imageExts, videoExts);
+                const nativeFiles = await nativeScanner.scanDirectoryRecursive(recursiveRoots, imageExts, videoExts);
                 for (const f of nativeFiles) {
                     const file = {
                         name: f.name,
                         path: f.path,
-                        url: isWindows ? `file:///${f.path.replace(/\\/g, '/')}` : `file://${f.path}`,
+                        url: pathToFileUrl(f.path),
                         type: f.fileType,
                         mtime: f.mtime,
                         size: f.size,
@@ -2241,15 +2286,16 @@ ipcMain.handle('scan-folders-for-smart-collection', async (event, folderEntries,
 
         // Non-recursive entries: single-level native scan per folder
         for (const fp of flatRoots) {
+            if (scan && scan.cancelled) break;
             try {
                 const imageExts = [...imageExtensions];
                 const videoExts = [...videoExtensions];
-                const result = nativeScanner.scanDirectory(fp, imageExts, videoExts, false, true);
+                const result = await nativeScanner.scanDirectory(fp, imageExts, videoExts, false, true);
                 for (const f of result.mediaFiles) {
                     const file = {
                         name: f.name,
                         path: f.path,
-                        url: isWindows ? `file:///${f.path.replace(/\\/g, '/')}` : `file://${f.path}`,
+                        url: pathToFileUrl(f.path),
                         type: f.fileType,
                         mtime: f.mtime,
                         size: f.size,
@@ -2314,6 +2360,7 @@ ipcMain.handle('scan-folders-for-smart-collection', async (event, folderEntries,
         const totalFolders = allFoldersToScan.length;
 
         const folderResults = await asyncPool(FOLDER_SCAN_CONCURRENCY, allFoldersToScan, async (fp) => {
+            if (scan && scan.cancelled) return [];
             try {
                 const { mediaFiles } = await scanFolderInternal(fp, smartOptions);
                 foldersScanned++;
@@ -2361,7 +2408,7 @@ ipcMain.handle('scan-folders-for-smart-collection', async (event, folderEntries,
                 .map(f => f.path);
             if (nativeImagePaths.length > 0) {
                 const dimStart = performance.now();
-                const nativeResults = nativeScanner.readImageDimensions(nativeImagePaths);
+                const nativeResults = await nativeScanner.readImageDimensions(nativeImagePaths);
                 for (const r of nativeResults) {
                     if (r.width && r.height) {
                         const fileObj = uncachedFiles.find(f => f.path === r.path);
@@ -2873,7 +2920,7 @@ ipcMain.handle('list-subdirectories', async (event, folderPath) => {
     const listStart = performance.now();
     try {
         if (nativeScanner) {
-            const results = nativeScanner.listSubdirectories(folderPath);
+            const results = await nativeScanner.listSubdirectories(folderPath);
             logPerf('list-subdirectories', listStart, { count: results.length, native: 1 });
             return { ok: true, value: results };
         }
@@ -3142,11 +3189,16 @@ ipcMain.handle('watch-folder', async (event, folderPath) => {
             await existingWatcher.close();
         }
 
+        const requester = event.sender;
         const watcher = chokidar.watch(normalizedPath, {
-            ignored: /(^|[\/\\])\../, // ignore dotfiles
+            // dotfiles, and the Windows system folders that make a drive root unwatchable
+            ignored: [/(^|[\/\\])\../, /[\/\\](\$RECYCLE\.BIN|System Volume Information|node_modules)([\/\\]|$)/i],
             persistent: true,
             ignoreInitial: true,
-            depth: 10, // Watch recursively (10 levels covers virtually all real folder structures)
+            // The grid shows one folder. depth 1 still catches changes inside its
+            // direct subfolders (so their cached listings get invalidated) without
+            // walking a whole library or drive on every navigation.
+            depth: 1,
             awaitWriteFinish: {
                 stabilityThreshold: 100, // Wait 100ms after file stops changing
                 pollInterval: 100 // Check every 100ms
@@ -3164,9 +3216,9 @@ ipcMain.handle('watch-folder', async (event, folderPath) => {
             console.error('Watcher error for', normalizedPath, error);
         });
         watcher.on('ready', () => {
-            if (mainWindow && !mainWindow.isDestroyed()) {
-                mainWindow.webContents.send('watcher-ready', normalizedPath);
-            }
+            const target = requester && !requester.isDestroyed() ? requester
+                : (mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null);
+            if (target) target.send('watcher-ready', normalizedPath);
         });
 
         // Batch debounce: collect all watcher events into a single Map, fire one
@@ -3191,11 +3243,10 @@ ipcMain.handle('watch-folder', async (event, folderPath) => {
                     batchTimer = null;
                     watcher._batchTimer = null;
                     if (!mainWindow || mainWindow.isDestroyed()) { pendingEvents.clear(); return; }
-                    const sender = mainWindow.webContents;
-                    for (const entry of pendingEvents.values()) {
-                        sender.send('folder-changed', { folderPath: normalizedPath, event: entry.event, filePath: entry.filePath });
-                    }
+                    // One message per batch; preload fans it out to the existing per-event callback.
+                    const events = Array.from(pendingEvents.values());
                     pendingEvents.clear();
+                    mainWindow.webContents.send('folder-changed', { folderPath: normalizedPath, events });
                 }, WATCHER_DEBOUNCE_MS);
                 watcher._batchTimer = batchTimer;
             }
@@ -3319,7 +3370,7 @@ ipcMain.handle('generate-image-thumbnail', async (event, filePath, maxSize = 512
         // for future batches; overhead per call is negligible.
         if (nativeScanner && nativeScanner.generateImageThumbnails) {
             const nativeT0 = performance.now();
-            const results = nativeScanner.generateImageThumbnails([{ filePath, thumbPath, maxSize }]);
+            const results = await nativeScanner.generateImageThumbnails([{ filePath, thumbPath, maxSize }]);
             const nativeMs = performance.now() - nativeT0;
             if (results && results[0] && results[0].success) {
                 _bumpThumbStats(1, nativeMs, 0, 0, 0, 0);
@@ -3456,7 +3507,7 @@ ipcMain.handle('generate-thumbnails-batch', async (event, items) => {
                 maxSize: item.maxSize || 512
             }));
             const nativeT0 = performance.now();
-            const nativeResults = nativeScanner.generateImageThumbnails(nativeRequests);
+            const nativeResults = await nativeScanner.generateImageThumbnails(nativeRequests);
             nativeMs = performance.now() - nativeT0;
             for (let i = 0; i < nativeResults.length; i++) {
                 const r = nativeResults[i];
@@ -3546,7 +3597,7 @@ ipcMain.handle('scan-file-dimensions', async (event, files) => {
             const nativeImages = sanitizedFiles
                 .filter(f => f.isImage && !f.path.toLowerCase().endsWith('.svg'));
             if (nativeImages.length > 0) {
-                const nativeResults = nativeScanner.readImageDimensions(nativeImages.map(f => f.path));
+                const nativeResults = await nativeScanner.readImageDimensions(nativeImages.map(f => f.path));
                 const nativeMap = new Map();
                 for (const r of nativeResults) {
                     if (r.width && r.height) nativeMap.set(r.path, { width: r.width, height: r.height });
@@ -3696,7 +3747,7 @@ ipcMain.handle('scan-duplicates', async (event, folderPath, options = {}) => {
         let exactHashMap;
         if (staleFiles.length > 0 && nativeScanner && nativeScanner.hashFiles) {
             const hashStart = performance.now();
-            const results = nativeScanner.hashFiles(staleFiles.map(f => f.path));
+            const results = await nativeScanner.hashFiles(staleFiles.map(f => f.path));
             exactHashMap = new Map();
             for (const r of results) {
                 exactHashMap.set(r.path, r.hash || null);
@@ -3787,7 +3838,7 @@ ipcMain.handle('scan-duplicates', async (event, folderPath, options = {}) => {
                 if (missing.length > 0) {
                     const t = performance.now();
                     try {
-                        nativeScanner.generateImageThumbnails(missing);
+                        await nativeScanner.generateImageThumbnails(missing);
                         // Mark newly generated thumbnails as existing
                         for (const m of missing) existingPaths.add(m.thumbPath);
                         console.log(`[scan-duplicates] pre-generated ${missing.length} thumbnails in ${(performance.now() - t).toFixed(0)}ms`);
@@ -3816,7 +3867,7 @@ ipcMain.handle('scan-duplicates', async (event, folderPath, options = {}) => {
             }
             if (inputs.length > 0) {
                 const phStart = performance.now();
-                const results = nativeScanner.computePerceptualHashes(inputs);
+                const results = await nativeScanner.computePerceptualHashes(inputs);
                 console.log(`[scan-duplicates] native perceptual hashes: ${inputs.length} files in ${(performance.now() - phStart).toFixed(0)}ms`);
 
                 for (let k = 0; k < results.length; k++) {
@@ -3879,7 +3930,7 @@ ipcMain.handle('scan-duplicates', async (event, folderPath, options = {}) => {
                 return dHash ? { ...f, perceptualHash: dHash } : f;
             });
 
-            freshHashMap = await hashPool.scanHashes(hashFiles, (completed, total) => {
+            freshHashMap = await getHashPool().scanHashes(hashFiles, (completed, total) => {
                 if (!exactHashMap) {
                     if (!event.sender.isDestroyed()) event.sender.send('duplicate-scan-progress', {
                         current: cachedHashMap.size + completed, total: files.length, phase: 'hashing'
@@ -5021,7 +5072,7 @@ ipcMain.handle('clip-embed-images', async (event, files) => {
         if (missing.length > 0) {
             const t = performance.now();
             try {
-                nativeScanner.generateImageThumbnails(missing);
+                await nativeScanner.generateImageThumbnails(missing);
                 console.log(`[clip-scan] pre-generated ${missing.length}/${staticFiles.length} thumbnails in ${(performance.now() - t).toFixed(0)}ms`);
             } catch (e) {
                 console.warn('[clip-scan] thumbnail pre-gen failed:', e.message);
@@ -6039,9 +6090,11 @@ wrapIpc('db-resolve-linked-conflicts', () => appDb.resolveLinkedConflicts());
 // Auto-hash files for linked duplicates (background, after folder load)
 // Mirrors the hashing approach from scan-duplicates: native BLAKE3 when available,
 // JS hash pool (SHA256) as fallback, native overwrites pool results for consistency.
+const AUTO_HASH_CHUNK = 64;
+let _autoHashGeneration = 0;
 ipcMain.handle('auto-hash-folder', async (event, filePaths) => {
     try {
-        if (!filePaths || filePaths.length === 0 || !hashPool) {
+        if (!filePaths || filePaths.length === 0) {
             return { ok: true, value: {} };
         }
 
@@ -6079,10 +6132,18 @@ ipcMain.handle('auto-hash-folder', async (event, filePaths) => {
         let nativeSuccess = false;
         if (nativeScanner && nativeScanner.hashFiles) {
             try {
-                const results = nativeScanner.hashFiles(needHash.map(f => f.path));
+                // Hash in small chunks so a folder of large videos never pins the
+                // thread pool for seconds, and stop early when the renderer has
+                // moved on to another folder (a newer call supersedes this one).
+                const generation = ++_autoHashGeneration;
                 freshResults = new Map();
-                for (const r of results) {
-                    if (r.hash) freshResults.set(r.path, { exactHash: r.hash, perceptualHash: null });
+                const paths = needHash.map(f => f.path);
+                for (let i = 0; i < paths.length; i += AUTO_HASH_CHUNK) {
+                    if (generation !== _autoHashGeneration) break;
+                    const results = await nativeScanner.hashFiles(paths.slice(i, i + AUTO_HASH_CHUNK));
+                    for (const r of results) {
+                        if (r.hash) freshResults.set(r.path, { exactHash: r.hash, perceptualHash: null });
+                    }
                 }
                 nativeSuccess = true;
             } catch (e) {
@@ -6092,7 +6153,7 @@ ipcMain.handle('auto-hash-folder', async (event, filePaths) => {
 
         // JS pool fallback: only runs when native is unavailable or failed
         if (!nativeSuccess) {
-            freshResults = await hashPool.scanHashes(needHash);
+            freshResults = await getHashPool().scanHashes(needHash);
         }
 
         // Save to DB (reuse upfront stats — no redundant stat pass)

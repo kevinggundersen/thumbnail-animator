@@ -27,7 +27,8 @@ const trials = parseInt(opt('--trials', '1'), 10);
 const keepSettings = args.includes('--keep-settings');
 const steadySeconds = parseInt(opt('--steady', '6'), 10);
 const cpuProfileFile = opt('--cpuprofile', null); // write a .cpuprofile of the first scroll trial
-const cpuProfileLoadFile = opt('--cpuprofile-load', null); // write a .cpuprofile of the folder load (reload -> cards + settle)
+const cpuProfileLoadFile = opt('--cpuprofile-load', null);
+const cpuProfileHoverFile = opt('--cpuprofile-hover', null); // write a .cpuprofile of the hover test // write a .cpuprofile of the folder load (reload -> cards + settle)
 const profileDir = path.resolve(opt('--profile', path.join(require('os').tmpdir(), 'thumbnail-animator-perf', path.basename(appDir))));
 const appVersion = JSON.parse(fs.readFileSync(path.join(appDir, 'package.json'), 'utf8')).version;
 // Renderer settings pinned for every run so that app versions are compared on equal terms.
@@ -223,6 +224,8 @@ async function metrics(app) {
     // sampling frame intervals. Hover work must not stall the frame.
     await page.evaluate(() => { const gc = document.getElementById('grid-container'); gc.scrollTop = 0; });
     await sleep(1500);
+    let hoverCdp = null;
+    if (cpuProfileHoverFile) { hoverCdp = await page.context().newCDPSession(page); await hoverCdp.send('Profiler.enable'); await hoverCdp.send('Profiler.setSamplingInterval', { interval: 250 }); await hoverCdp.send('Profiler.start'); }
     const hover = await page.evaluate(async () => {
         const cards = [...document.querySelectorAll('#grid-container .video-card')].slice(0, 16);
         const frames = []; let last = performance.now(), running = true;
@@ -246,6 +249,7 @@ async function metrics(app) {
         const s = [...f].sort((a, b) => a - b);
         return { cards: cards.length, frames: f.length, p95FrameMs: Math.round(s[Math.floor(s.length * 0.95)] * 10) / 10, maxFrameMs: Math.round(s[s.length - 1]), framesOver33ms: f.filter(x => x > 33).length, longTasks: lt.length, longTaskMs: lt.reduce((a, b) => a + b, 0) };
     });
+    if (hoverCdp) { const { profile } = await hoverCdp.send('Profiler.stop'); fs.writeFileSync(cpuProfileHoverFile, JSON.stringify(profile)); await hoverCdp.detach(); }
 
     // Steady state: sit still for a few seconds with everything playing and see
     // what the budget settles on and how many frames the decoders drop.

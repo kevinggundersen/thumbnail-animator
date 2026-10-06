@@ -46,7 +46,7 @@ module.exports = [
         languageOptions: {
             ecmaVersion: 'latest',
             sourceType: 'script',
-            globals: { ...globals.browser, ...sharedRendererGlobals, module: 'readonly', require: 'readonly', process: 'readonly', setImmediate: 'readonly', WebPXMux: 'readonly', gifuctJs: 'readonly', Fuse: 'readonly' },
+            globals: { ...globals.browser, ...sharedRendererGlobals, module: 'readonly', require: 'readonly', process: 'readonly', setImmediate: 'readonly', WebPXMux: 'readonly', gifuctJs: 'readonly', Fuse: 'readonly', PlaybackBudget: 'readonly' },
         },
         rules: common,
     },

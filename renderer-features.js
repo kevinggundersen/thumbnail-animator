@@ -5969,18 +5969,10 @@ function initWindowLifecycleHandlers() {
         if (isWindowBlurred || isWindowMinimized) return;
         isWindowBlurred = true;
         if (!pauseOnBlur) return;
+        playbackBudget.schedule(); // canAutoplayNow() is false now: pauses the playing set
         // Perf: use VS active cards when available instead of querySelectorAll
-        if (vsState.enabled) {
-            for (const [, card] of vsState.activeCards) {
-                const v = card._mediaEl;
-                if (v && v.tagName === 'VIDEO') v.pause();
-                const overlay = card.querySelector('.gif-static-overlay');
-                if (overlay) overlay.classList.add('visible');
-            }
-        } else {
-            gridContainer.querySelectorAll('video').forEach(v => v.pause());
-            gridContainer.querySelectorAll('.gif-static-overlay').forEach(o => o.classList.add('visible'));
-        }
+        gridContainer.querySelectorAll('video').forEach(v => v.pause());
+        freezeAnimatedImages(gridContainer);
         // Pause MLT overlay media (videos + animated images)
         const mltOverlay = document.getElementById('mlt-overlay');
         if (mltOverlay && !mltOverlay.classList.contains('hidden')) {
@@ -5994,20 +5986,9 @@ function initWindowLifecycleHandlers() {
         isWindowBlurred = false;
         if (!pauseOnBlur) return;
         if (isLightboxOpen && pauseOnLightbox) return;
+        playbackBudget.schedule(); // resumes up to the budget's limit, closest first
         // Perf: use VS active cards when available instead of querySelectorAll
-        if (vsState.enabled) {
-            for (const [, card] of vsState.activeCards) {
-                const v = card._mediaEl;
-                if (v && v.tagName === 'VIDEO') { const p = v.play(); if (p !== undefined) p.catch(() => {}); }
-                const overlay = card.querySelector('.gif-static-overlay');
-                if (overlay) overlay.classList.remove('visible');
-            }
-        } else {
-            gridContainer.querySelectorAll('video').forEach(v => {
-                const p = v.play(); if (p !== undefined) p.catch(() => {});
-            });
-            gridContainer.querySelectorAll('.gif-static-overlay').forEach(o => o.classList.remove('visible'));
-        }
+        unfreezeAnimatedImages(gridContainer);
         // Resume MLT overlay media on focus
         const mltOverlayFocus = document.getElementById('mlt-overlay');
         if (mltOverlayFocus && !mltOverlayFocus.classList.contains('hidden')) {

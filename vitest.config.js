@@ -18,6 +18,7 @@ module.exports = defineConfig({
                 'hash-pool.js',
                 'ipc-result.js',
                 'playback-controller.js',
+                'playback-budget.js',
                 'command-palette.js',
                 'filmstrip-scrubber.js',
                 'themes.js',

@@ -4,7 +4,7 @@
 // time to first cards, scroll frame pacing, playing-video count, long tasks,
 // per-process CPU/memory, and CPU while minimized (background mode).
 //
-// Usage: node scripts/perf-smoke.js <folder> [--app <dir>] [--profile <dir>] [--out result.json] [--scrolls 30] [--trials 1] [--bg 10] [--set key=value]...
+// Usage: node scripts/perf-smoke.js <folder> [--app <dir>] [--profile <dir>] [--out result.json] [--scrolls 30] [--trials 1] [--steady 6] [--bg 10] [--set key=value]... [--cpuprofile out.cpuprofile]
 // The app runs on an isolated profile (--profile, default under the OS temp dir) with pinned settings;
 // run it twice and read the second result so the thumbnail cache is warm.
 // Requires: npm i -D playwright-core (no browser download needed; drives Electron).
@@ -22,6 +22,8 @@ const outFile = opt('--out', null);
 const scrolls = parseInt(opt('--scrolls', '30'), 10);
 const bgSeconds = parseInt(opt('--bg', '10'), 10);
 const trials = parseInt(opt('--trials', '1'), 10);
+const steadySeconds = parseInt(opt('--steady', '6'), 10);
+const cpuProfileFile = opt('--cpuprofile', null); // write a .cpuprofile of the first scroll trial
 const profileDir = path.resolve(opt('--profile', path.join(require('os').tmpdir(), 'thumbnail-animator-perf', path.basename(appDir))));
 const appVersion = JSON.parse(fs.readFileSync(path.join(appDir, 'package.json'), 'utf8')).version;
 // Renderer settings pinned for every run so that app versions are compared on equal terms.
@@ -38,9 +40,32 @@ for (let i = 0; i < args.length; i++) {
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const pct = (arr, p) => { if (!arr.length) return 0; const s = [...arr].sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.floor(p * s.length))]; };
 
+// Grid video state: how many exist/play and what the decoders report.
+async function videoStats(page) {
+    return page.evaluate(() => {
+        const vids = [...document.querySelectorAll('#grid-container video')];
+        let total = 0, dropped = 0;
+        for (const v of vids) {
+            try { const q = v.getVideoPlaybackQuality(); total += q.totalVideoFrames; dropped += q.droppedVideoFrames; } catch {}
+        }
+        const budget = window.__playbackBudget ? window.__playbackBudget.status() : null;
+        return { videos: vids.length, playing: vids.filter(v => !v.paused).length, decodedFrames: total, droppedFrames: dropped, budget };
+    });
+}
+
+// electronApplication.evaluate occasionally fails with "Resulting promise was
+// garbage collected" when the app forces a GC in the main process; retry.
+async function mainEval(app, fn, arg) {
+    let last;
+    for (let i = 0; i < 3; i++) {
+        try { return await app.evaluate(fn, arg); } catch (e) { last = e; await sleep(300); }
+    }
+    throw last;
+}
+
 async function metrics(app) {
     // percentCPUUsage is measured since the previous call per process.
-    const m = await app.evaluate(({ app }) => app.getAppMetrics());
+    const m = await mainEval(app, ({ app }) => app.getAppMetrics());
     const rows = m.map(p => ({ type: p.type, cpu: p.cpu.percentCPUUsage, memMB: Math.round((p.memory.workingSetSize || 0) / 1024) }));
     return {
         cpuTotal: Math.round(rows.reduce((a, r) => a + r.cpu, 0) * 10) / 10,
@@ -59,11 +84,12 @@ async function metrics(app) {
         try {
             app = await electron.launch({ args: [appDir], cwd: appDir, timeout: 60000, env: { ...process.env, THUMBNAIL_ANIMATOR_USER_DATA: profileDir } });
             page = await app.firstWindow({ timeout: 30000 });
+            global.__perfApp = app;
             break;
         } catch (e) {
             try { if (app) await app.close(); } catch {}
-            if (attempt >= 1) throw e;
-            await sleep(3000);
+            if (attempt >= 3) throw e;
+            await sleep(4000);
         }
     }
     await page.waitForLoadState('domcontentloaded');
@@ -74,9 +100,16 @@ async function metrics(app) {
         localStorage.setItem('lastFolderPath', f);
         for (const [k, v] of Object.entries(pinned)) localStorage.setItem(k, v);
     }, { f: folder, pinned: PINNED_SETTINGS });
-    await app.evaluate(({ BrowserWindow }) => {
+    await mainEval(app, ({ BrowserWindow }) => {
         const w = BrowserWindow.getAllWindows()[0];
         w.unmaximize(); w.setSize(1600, 1000); w.center(); w.show(); w.focus();
+        return true; // a primitive result avoids Playwright's "promise was garbage collected" flake
+    });
+    // Renderer console lines that look like diagnostics ("[nav] ...", "[loadVideos] ...").
+    const consoleLines = [];
+    page.on('console', (m) => {
+        const t = m.text();
+        if (t.startsWith('[') && consoleLines.length < 400) consoleLines.push({ t: Date.now() - t0, text: t.slice(0, 200) });
     });
     const tReload = Date.now();
     await page.reload();
@@ -105,6 +138,7 @@ async function metrics(app) {
             images: document.querySelectorAll('#grid-container img.media-thumbnail').length,
         };
     });
+    stateAfterLoad.video = await videoStats(page);
     const loadLongTasks = await page.evaluate(() => { const r = window.__lt.slice(); window.__lt.length = 0; return r; });
     await metrics(app); // prime the CPU counters
 
@@ -113,7 +147,14 @@ async function metrics(app) {
     // so run-to-run variance can be judged without paying the launch cost.
     const trialResults = [];
     let scroll, scrollLongTasks;
+    let cdp = null;
     for (let t = 0; t < trials; t++) {
+    if (t === 0 && cpuProfileFile) {
+        cdp = await page.context().newCDPSession(page);
+        await cdp.send('Profiler.enable');
+        await cdp.send('Profiler.setSamplingInterval', { interval: 500 });
+        await cdp.send('Profiler.start');
+    }
     if (t > 0) {
         await page.evaluate(async () => { const gc = document.getElementById('grid-container'); gc.scrollTop = 0; await new Promise(r => setTimeout(r, 2000)); });
         await page.evaluate(() => { window.__lt.length = 0; });
@@ -135,10 +176,34 @@ async function metrics(app) {
         return { frames, playing: vids.filter(v => !v.paused).length, videos: vids.length, scrollTop: gc.scrollTop, scrollHeight: gc.scrollHeight };
     }, scrolls);
     scrollLongTasks = await page.evaluate(() => { const r = window.__lt.slice(); window.__lt.length = 0; return r; });
+    if (t === 0 && cdp) {
+        const { profile } = await cdp.send('Profiler.stop');
+        fs.writeFileSync(cpuProfileFile, JSON.stringify(profile));
+        await cdp.detach();
+        cdp = null;
+    }
     const fr = scroll.frames.slice(1);
     trialResults.push({ avgFrameMs: Math.round(fr.reduce((a, b) => a + b, 0) / Math.max(1, fr.length) * 10) / 10, p95FrameMs: Math.round(pct(fr, 0.95) * 10) / 10, p99FrameMs: Math.round(pct(fr, 0.99) * 10) / 10, framesOver33ms: fr.filter(f => f > 33).length, framesOver100ms: fr.filter(f => f > 100).length, longTaskMs: scrollLongTasks.reduce((a, b) => a + b, 0), playing: scroll.playing });
     }
     const activeMetrics = await metrics(app);
+    const videoAfterScroll = await videoStats(page);
+
+    // Steady state: sit still for a few seconds with everything playing and see
+    // what the budget settles on and how many frames the decoders drop.
+    await metrics(app);
+    const steadyBefore = await videoStats(page);
+    await sleep(steadySeconds * 1000);
+    const steadyAfter = await videoStats(page);
+    const steadyMetrics = await metrics(app);
+    const steady = {
+        seconds: steadySeconds,
+        playing: steadyAfter.playing,
+        videos: steadyAfter.videos,
+        decodedFrames: steadyAfter.decodedFrames - steadyBefore.decodedFrames,
+        droppedFrames: steadyAfter.droppedFrames - steadyBefore.droppedFrames,
+        budget: steadyAfter.budget,
+        cpuTotal: steadyMetrics.cpuTotal,
+    };
 
     const frames = scroll.frames.slice(1);
     const result = {
@@ -156,26 +221,52 @@ async function metrics(app) {
             framesOver100ms: frames.filter(f => f > 100).length,
             longTasks: { count: scrollLongTasks.length, totalMs: scrollLongTasks.reduce((a, b) => a + b, 0), maxMs: Math.max(0, ...scrollLongTasks) },
             playingAfter: scroll.playing, videosAfter: scroll.videos,
+            video: videoAfterScroll,
             trials: trialResults,
             medianOver33: pct(trialResults.map(r => r.framesOver33ms), 0.5),
         },
         active: activeMetrics,
+        steady,
     };
+
+    // Blurred: the window stays visible but another window has focus (alt-tab
+    // to a game on another monitor). Playwright emulates page focus, so OS-level
+    // focus changes never reach the page; dispatch the DOM events the app
+    // listens to instead and measure CPU and whether playback paused.
+    if (bgSeconds > 0) {
+        await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+        await sleep(2000);
+        await metrics(app);
+        await sleep(bgSeconds * 1000);
+        result.blurred = await metrics(app);
+        result.blurred.seconds = bgSeconds;
+        result.blurred.simulated = true;
+        result.blurred.video = await videoStats(page);
+        await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+        await sleep(1500);
+        result.blurred.videoAfterFocus = await videoStats(page);
+    }
 
     // Background mode: minimize, wait, measure CPU over the window.
     if (bgSeconds > 0) {
-        await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].minimize());
+        await mainEval(app, ({ BrowserWindow }) => { BrowserWindow.getAllWindows()[0].minimize(); return true; });
         await sleep(1500);
         await metrics(app); // reset counters after the transition settles
         await sleep(bgSeconds * 1000);
         result.minimized = await metrics(app);
         result.minimized.seconds = bgSeconds;
-        result.minimized.playing = await page.evaluate(() => [...document.querySelectorAll('#grid-container video')].filter(v => !v.paused).length);
-        await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].restore());
+        result.minimized.video = await videoStats(page);
+        result.minimized.playing = result.minimized.video.playing;
+        await mainEval(app, ({ BrowserWindow }) => { BrowserWindow.getAllWindows()[0].restore(); return true; });
     }
 
+    result.console = consoleLines;
     await app.close();
     const json = JSON.stringify(result, null, 2);
     if (outFile) fs.writeFileSync(outFile, json);
     console.log(json);
-})().catch((e) => { console.error(e); process.exit(1); });
+})().catch(async (e) => {
+    console.error(e);
+    try { if (global.__perfApp) await global.__perfApp.close(); } catch {}
+    process.exit(1);
+});

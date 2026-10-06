@@ -3890,16 +3890,11 @@ function renderMoreLikeThisOverlay() {
                             const h = Math.round((img.naturalHeight || 1) * scale);
                             createImageBitmap(img, { resizeWidth: w, resizeHeight: h }).then(bitmap => {
                                 if (!card.isConnected) { bitmap.close(); return; }
-                                const offscreen = new OffscreenCanvas(w, h);
-                                offscreen.getContext('2d').drawImage(bitmap, 0, 0);
-                                bitmap.close();
-                                return offscreen.convertToBlob({ type: 'image/jpeg', quality: 0.7 });
-                            }).then(blob => {
-                                if (!blob || !card.isConnected) return;
-                                const ovl = document.createElement('img');
+                                const ovl = document.createElement('canvas');
+                                ovl.width = w; ovl.height = h;
                                 ovl.className = 'gif-static-overlay';
-                                ovl.draggable = false;
-                                ovl.src = URL.createObjectURL(blob);
+                                ovl.getContext('2d').drawImage(bitmap, 0, 0);
+                                bitmap.close();
                                 card.appendChild(ovl);
                             }).catch(() => {});
                         } catch { /* ignore */ }
@@ -4725,15 +4720,11 @@ const BLANK_VIDEO = (() => {
     return URL.createObjectURL(new Blob([bytes], { type: 'video/webm' }));
 })();
 
-// --- Manual GC Helper ---
-let gcTimeout;
-function scheduleGC() {
-    clearTimeout(gcTimeout);
-    gcTimeout = setTimeout(() => {
-        // console.log('Triggering Manual GC');
-        window.electronAPI.triggerGC();
-    }, 1000); // Wait 1s after last action to trigger GC
-}
+// Forced garbage collection used to be requested from the main process after
+// every media cleanup. A full GC pauses the main thread (and collected
+// Playwright's evaluate handles in the perf harness); V8 reclaims detached
+// media on its own. Only the minimize path still asks for an explicit GC.
+function scheduleGC() {}
 
 // --- Track all video cards for periodic cleanup check ---
 const videoCards = new WeakSet();
@@ -4741,6 +4732,10 @@ const videoCards = new WeakSet();
 // ═══════════════════════════════════════════════════════════════════════════
 // MEDIA CLEANUP & LOADING
 // ═══════════════════════════════════════════════════════════════════════════
+// Set by scroll, observer entries and media creation; the idle loop below skips
+// its cycle when nothing changed and no retries are pending (it used to run a
+// full cleanup pass five times a second whether or not anything happened).
+let _mediaDirty = true;
 let cleanupCheckInterval;
 let cleanupScrollTimeout = null;
 let cleanupAnimationFrame = null;
@@ -4754,6 +4749,7 @@ function runCleanupCycle() {
 }
 
 function scheduleCleanupCycle() {
+    _mediaDirty = true;
     if (cleanupAnimationFrame !== null) return;
     
     cleanupAnimationFrame = requestAnimationFrame(() => {
@@ -5009,7 +5005,10 @@ function startPeriodicCleanup() {
     if (!cleanupCheckInterval) {
         const scheduleIdleCleanup = () => {
             cleanupCheckInterval = requestIdleCallback(() => {
-                runCleanupCycle();
+                if (_mediaDirty || mediaToRetry.size > 0) {
+                    _mediaDirty = false;
+                    runCleanupCycle();
+                }
                 if (cleanupCheckInterval) {
                     scheduleIdleCleanup();
                 }
@@ -5162,6 +5161,61 @@ function resumeWhenRestored() {
     retryPendingVideos();
 }
 
+// ── GIF freeze overlays ────────────────────────────────────────────────────
+// An animated <img> cannot be paused, so a still of its first frame is laid
+// over it while playback is suspended. The still used to be produced for every
+// animated card as it loaded (createImageBitmap + JPEG encode + blob URL), which
+// was ~15% of main-thread time in a GIF-heavy scroll. It is now built only the
+// first time a card actually needs to freeze, and drawn straight onto a
+// <canvas> (no encode, no blob URL).
+const GIF_OVERLAY_MAX_DIM = 400;
+function ensureGifOverlay(card) {
+    const existing = card.querySelector('.gif-static-overlay');
+    if (existing) return Promise.resolve(existing);
+    if (card._gifOverlayPending) return card._gifOverlayPending;
+    const img = card._mediaEl;
+    if (!img || img.tagName !== 'IMG' || !img.dataset.animatedSrc || !img.naturalWidth) return Promise.resolve(null);
+    const scale = Math.min(1, GIF_OVERLAY_MAX_DIM / Math.max(img.naturalWidth, img.naturalHeight));
+    const w = Math.max(1, Math.round(img.naturalWidth * scale));
+    const h = Math.max(1, Math.round(img.naturalHeight * scale));
+    const p = createImageBitmap(img, { resizeWidth: w, resizeHeight: h }).then(bitmap => {
+        if (!card.isConnected || card._mediaEl !== img) { bitmap.close(); return null; }
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        canvas.className = 'gif-static-overlay';
+        canvas.getContext('2d').drawImage(bitmap, 0, 0);
+        bitmap.close();
+        img.dataset.hasOverlay = 'true';
+        card.insertBefore(canvas, card.querySelector('.video-info'));
+        return canvas;
+    }).catch(() => null).finally(() => { card._gifOverlayPending = null; });
+    card._gifOverlayPending = p;
+    return p;
+}
+function _animatedCards(root) {
+    const out = [];
+    if (root === gridContainer && vsState.enabled) {
+        for (const card of vsState.activeCards.values()) {
+            const el = card._mediaEl;
+            if (el && el.tagName === 'IMG' && el.dataset.animatedSrc) out.push(card);
+        }
+    } else {
+        root.querySelectorAll('.video-card').forEach(card => {
+            const el = card._mediaEl;
+            if (el && el.tagName === 'IMG' && el.dataset.animatedSrc) out.push(card);
+        });
+    }
+    return out;
+}
+function freezeAnimatedImages(root = gridContainer) {
+    for (const card of _animatedCards(root)) {
+        ensureGifOverlay(card).then(o => { if (o && !canAutoplayNow()) o.classList.add('visible'); });
+    }
+}
+function unfreezeAnimatedImages(root = gridContainer) {
+    root.querySelectorAll('.gif-static-overlay.visible').forEach(o => o.classList.remove('visible'));
+}
+
 // Pause all grid thumbnail videos and freeze GIFs when lightbox is open
 function pauseThumbnailVideos() {
     isLightboxOpen = true;
@@ -5170,18 +5224,18 @@ function pauseThumbnailVideos() {
     allVideos.forEach(video => {
         video.pause();
     });
-    // Freeze animated GIFs by showing static overlay
-    const allOverlays = gridContainer.querySelectorAll('.gif-static-overlay');
-    allOverlays.forEach(overlay => overlay.classList.add('visible'));
+    // Freeze animated GIFs by showing the static overlay (built on demand)
+    freezeAnimatedImages(gridContainer);
 }
 
 // Resume all grid thumbnail videos and unfreeze GIFs when lightbox is closed
 function resumeThumbnailVideos() {
     isLightboxOpen = false;
     if (isWindowMinimized || isWindowBlurred) return;
-    for (const card of _visibleCards) playCardVideoIfVisible(card);
+    playbackBudget.schedule();
     // Restore animated GIFs by hiding static overlay
-    const allOverlays = gridContainer.querySelectorAll('.gif-static-overlay');
+    unfreezeAnimatedImages(gridContainer);
+    const allOverlays = [];
     allOverlays.forEach(overlay => overlay.classList.remove('visible'));
 }
 
@@ -5688,6 +5742,14 @@ async function loadFolderPreview(card) {
 // Optimized function to check if card is in preload zone
 // Uses the grid viewport plus a small warm buffer.
 function isCardInPreloadZone(card) {
+    if (vsState.enabled && vsState.positions && card._vsItemIndex != null) {
+        const i = card._vsItemIndex * 4;
+        const buffer = getEffectiveMediaBufferPx();
+        const top = gridContainer.scrollTop - buffer;
+        const bottom = gridContainer.scrollTop + gridContainer.clientHeight + buffer;
+        const cardTop = vsState.positions[i + 1];
+        return cardTop < bottom && cardTop + vsState.positions[i + 3] > top;
+    }
     const cardRect = getCachedCardRect(card);
     const bounds = getViewportBounds();
     
@@ -5697,6 +5759,16 @@ function isCardInPreloadZone(card) {
         cardRect.left < bounds.right &&
         cardRect.right > bounds.left
     );
+}
+
+// Card size from the virtual-scroll layout array: no layout flush. Falls back
+// to the rect cache for non-virtualized cards.
+function getCardSizeFast(card) {
+    if (vsState.enabled && vsState.positions && card._vsItemIndex != null) {
+        const i = card._vsItemIndex * 4;
+        return { width: vsState.positions[i + 2], height: vsState.positions[i + 3] };
+    }
+    return getCachedCardRect(card);
 }
 
 // Cache getBoundingClientRect results (with very short TTL to avoid stale positions)
@@ -7363,7 +7435,8 @@ function createMediaForCard(card, mediaUrl) {
     if (isMediaAtCapacity(card, mediaUrl, fileType)) return false;
     
     pendingMediaCreations.add(card);
-    
+    _mediaDirty = true;
+
     if (fileType === 'image') {
         return createImageForCard(card, mediaUrl);
     } else {
@@ -7377,7 +7450,7 @@ function createImageForCard(card, imageUrl) {
     cachedMediaCounts.timestamp = 0;
     
     // Calculate card size to limit image resolution based on quality setting
-    const rect = getCachedCardRect(card);
+    const rect = getCardSizeFast(card);
     const qualityMultiplier = getThumbnailQualityMultiplier();
     const isOriginalQuality = qualityMultiplier === 0;
     const decodeWidth = isOriginalQuality ? 0 : Math.max(1, Math.floor(rect.width * qualityMultiplier));
@@ -7475,45 +7548,11 @@ function createImageForCard(card, imageUrl) {
                 }]).catch(() => {});
             }
         }
-        // Capture first frame for GIF freezing (only once).
-        // Uses createImageBitmap + OffscreenCanvas to move the drawImage + toBlob
-        // work off the main thread (3-5x less main-thread blocking when many GIFs
-        // load concurrently, e.g. scrolling through a GIF-heavy folder).
-        if (isGif && !card.querySelector('.gif-static-overlay')) {
-            try {
-                const MAX_OVERLAY_DIM = 400;
-                const scale = Math.min(1, MAX_OVERLAY_DIM / Math.max(img.naturalWidth, img.naturalHeight));
-                const w = Math.round(img.naturalWidth * scale);
-                const h = Math.round(img.naturalHeight * scale);
-
-                // createImageBitmap is async and non-blocking
-                createImageBitmap(img, { resizeWidth: w, resizeHeight: h }).then(bitmap => {
-                    if (!card.isConnected) { bitmap.close(); return; }
-                    const offscreen = new OffscreenCanvas(w, h);
-                    const ctx = offscreen.getContext('2d');
-                    ctx.drawImage(bitmap, 0, 0);
-                    bitmap.close();
-                    return offscreen.convertToBlob({ type: 'image/jpeg', quality: 0.7 });
-                }).then(blob => {
-                    if (!blob || !card.isConnected) return;
-                    const overlay = document.createElement('img');
-                    overlay.className = 'gif-static-overlay';
-                    overlay.draggable = false;
-                    const blobUrl = URL.createObjectURL(blob);
-                    overlay.src = blobUrl;
-                    overlay._blobUrl = blobUrl; // Track for cleanup
-                    // Mark the card as having an animated image with overlay
-                    img.dataset.hasOverlay = 'true';
-                    const info = card.querySelector('.video-info');
-                    card.insertBefore(overlay, info);
-                    // If lightbox or blur pausing is active, show overlay immediately
-                    if ((isLightboxOpen && pauseOnLightbox) || (isWindowBlurred && pauseOnBlur)) {
-                        overlay.classList.add('visible');
-                    }
-                }).catch(() => {}); // Ignore cross-origin or other canvas errors
-            } catch (e) {
-                // Ignore cross-origin or other canvas errors
-            }
+        // The freeze overlay (first frame, shown while paused) is created on
+        // demand by ensureGifOverlay(); only when a pause policy is already
+        // active does it need to exist right now.
+        if (isGif && !canAutoplayNow()) {
+            ensureGifOverlay(card).then(o => { if (o) o.classList.add('visible'); });
         }
         // Parse GIF/animated WebP duration for progress bar
         if (isGif) {
@@ -7679,7 +7718,7 @@ function createVideoForCard(card, videoUrl) {
     cachedMediaCounts.timestamp = 0;
     
     // Calculate card size to limit video resolution based on quality setting
-    const rect = getCachedCardRect(card);
+    const rect = getCardSizeFast(card);
     const qualityMultiplier = getThumbnailQualityMultiplier();
     const decodeWidth = Math.max(1, Math.floor(rect.width * qualityMultiplier));
     const decodeHeight = Math.max(1, Math.floor(rect.height * qualityMultiplier));
@@ -7773,7 +7812,7 @@ function createVideoForCard(card, videoUrl) {
         }
 
         // After metadata loads, ensure video dimensions are constrained
-        const rect = getCachedCardRect(card);
+        const rect = getCardSizeFast(card);
         const maxWidth = rect.width;
         const maxHeight = rect.height;
         if (video.videoWidth > maxWidth || video.videoHeight > maxHeight) {
@@ -7867,6 +7906,7 @@ function createVideoForCard(card, videoUrl) {
 }
 
 function processEntries(entries) {
+    _mediaDirty = true;
     const perfStart = perfTest.start();
     let changed = false;
     const now = Date.now();
@@ -8150,6 +8190,7 @@ function destroyVideoElement(video) {
     if (!video) return;
     // See destroyImageElement: clearing src fires 'error'; the listener must ignore it.
     video._destroyed = true;
+    if (typeof playbackBudget !== 'undefined') playbackBudget.schedule();
 
     // Store parent reference before we start cleanup
     const parent = video.parentNode;
@@ -8354,43 +8395,52 @@ function createMediaObserver() {
 
 let observer = createMediaObserver();
 
-// Second observer with no margin: tracks which cards are actually inside the
-// viewport. The media observer above (with its preload buffer) decides which
-// cards *have* a <video>; this one decides which of those are *playing*.
-// Decoding only what can be seen is what lets the visible count go high.
-const _visibleCards = new Set();
-// Measured (DECISIONS.md, Phase 1): pausing videos that sit in the preload buffer
-// made scrolling worse, because decoders restart as cards enter the viewport.
-// Buffered videos therefore keep playing by default; the visible set is kept so
-// the Phase 3 playback budget can pause the least visible videos first.
-// localStorage.setItem('playOnlyVisible', '1') opts into visible-only playback.
-const PLAY_ONLY_VISIBLE = (() => { try { return localStorage.getItem('playOnlyVisible') === '1'; } catch { return false; } })();
-// The observer costs a callback per card per scroll step, so it only runs when
-// something consumes the visible set (today: the opt-in policy above; later:
-// the Phase 3 playback budget, which will flip this on at runtime).
-let visibilityTrackingEnabled = PLAY_ONLY_VISIBLE;
+// ── Adaptive playback budget ───────────────────────────────────────────────
+// Every loaded grid <video> is a candidate; the budget (playback-budget.js)
+// decides how many of them actually play, closest to the viewport centre
+// first, and lowers that number only when the decoder reports dropped frames
+// or the main thread stalls. Videos past the limit stay loaded but paused.
 function canAutoplayNow() {
-    return !(isLightboxOpen && pauseOnLightbox) && !(isWindowBlurred && pauseOnBlur) && !isWindowMinimized;
+    return !(isLightboxOpen && pauseOnLightbox) && !(isWindowBlurred && pauseOnBlur) && !isWindowMinimized && !document.hidden;
 }
-function playCardVideoIfVisible(card) {
-    const el = card && card._mediaEl;
-    if (!el || el.tagName !== 'VIDEO' || el._destroyed) return;
-    const visible = !visibilityTrackingEnabled || _visibleCards.has(card);
-    if ((!PLAY_ONLY_VISIBLE || visible) && canAutoplayNow()) {
-        if (el.paused) { const p = el.play(); if (p && p.catch) p.catch(() => {}); }
-    } else if (!el.paused) {
-        el.pause();
+function getPlaybackCandidates() {
+    const out = [];
+    const centerY = gridContainer.scrollTop + gridContainer.clientHeight / 2;
+    const centerX = (gridContainer.scrollLeft || 0) + gridContainer.clientWidth / 2;
+    const positions = vsState.enabled ? vsState.positions : null;
+    const cards = vsState.enabled ? vsState.activeCards.values() : gridContainer.querySelectorAll('.video-card');
+    for (const card of cards) {
+        const el = card._mediaEl;
+        if (!el || el.tagName !== 'VIDEO' || el._destroyed) continue;
+        let distance;
+        if (positions && card._vsItemIndex != null) {
+            const i = card._vsItemIndex * 4;
+            // Content coordinates straight from the layout array: no layout reads.
+            distance = Math.abs(positions[i + 1] + positions[i + 3] / 2 - centerY) * 2
+                + Math.abs(positions[i] + positions[i + 2] / 2 - centerX);
+        } else {
+            distance = Math.abs(card.offsetTop + card.offsetHeight / 2 - centerY);
+        }
+        out.push({ video: el, distance });
     }
+    return out;
 }
-const visibilityObserver = new IntersectionObserver((entries) => {
-    for (const entry of entries) {
-        if (entry.isIntersecting) _visibleCards.add(entry.target);
-        else _visibleCards.delete(entry.target);
-        playCardVideoIfVisible(entry.target);
-    }
-}, { root: gridContainer, rootMargin: '0px', threshold: 0 });
-function observeCard(card) { observer.observe(card); if (visibilityTrackingEnabled) visibilityObserver.observe(card); }
-function unobserveCard(card) { observer.unobserve(card); visibilityObserver.unobserve(card); _visibleCards.delete(card); }
+const playbackBudget = new PlaybackBudget({
+    getCandidates: getPlaybackCandidates,
+    canPlay: canAutoplayNow,
+    isScrolling: () => document.body.classList.contains('is-scrolling'),
+    persistHint: (n) => deferLocalStorageWrite('playbackBudgetHint', String(n)),
+}, {
+    ceiling: MAX_VIDEOS,
+    growAfter: 3,
+    initialLimit: (() => { try { const n = parseInt(localStorage.getItem('playbackBudgetHint'), 10); return n > 0 ? n : undefined; } catch { return undefined; } })(),
+});
+playbackBudget.start();
+window.__playbackBudget = playbackBudget; // perf dashboard and scripts/perf-smoke.js read status()
+// Kept for the existing call sites: any change that may affect what should play.
+function playCardVideoIfVisible() { playbackBudget.schedule(); }
+function observeCard(card) { observer.observe(card); }
+function unobserveCard(card) { observer.unobserve(card); }
 
 function refreshMediaObserver() {
     const cardsToObserve = vsState.enabled

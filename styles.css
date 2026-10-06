@@ -31,6 +31,15 @@
     --scrim-medium: rgba(0, 0, 0, 0.6);
     --scrim-strong: rgba(0, 0, 0, 0.7);
     --scrim-opaque: rgba(0, 0, 0, 0.85);
+    /* Media viewing surfaces stay black in every theme (lightbox, slideshow, compare) */
+    --media-backdrop: #000000;
+    --media-backdrop-soft: #111111;
+    --media-backdrop-deep: #080808;
+    --media-backdrop-raised: #1a1a1e;
+    --tag-default: #6366f1;
+    --marker-in: #3ddc84;
+    --marker-out: #ff5a5a;
+    --star-filled: #ffc94a;
 
     /* Perf indicator status colors (material palette, distinct from
        semantic --success/--warning/--danger used elsewhere) */
@@ -194,7 +203,7 @@ body {
 .organize-confirm-btn:focus-visible,
 #confirm-dialog-ok.confirm-danger:focus-visible,
 .collection-dialog-save:focus-visible {
-    outline-color: #fff;
+    outline-color: var(--text-inverse);
 }
 
 /* ===== Button Press Feedback ===== */
@@ -1887,7 +1896,6 @@ header {
     height: 100%;
     width: 0%;
     background: var(--accent);
-    will-change: width;
 }
 
 /* Video Scrub Progress Bar */
@@ -1912,7 +1920,6 @@ header {
     height: 100%;
     width: 0%;
     background: var(--accent);
-    will-change: width;
 }
 
 /* ── Hover Preview Strip ─────────────────────────────────────────── */
@@ -2283,7 +2290,8 @@ header {
     justify-content: center;
     align-items: center;
     z-index: var(--z-modal);
-    backdrop-filter: blur(4px);
+    /* No backdrop-filter: blurring the whole grid (with videos playing under it)
+       re-rendered the viewport every frame; the scrim alone reads the same. */
 }
 
 .settings-modal.hidden {
@@ -3034,19 +3042,18 @@ button:hover {
 #grid-container.grid .folder-card {
     position: relative;
     width: 100% !important;
-    height: 0 !important;
+    height: auto !important;
     left: auto !important;
     top: auto !important;
     margin: 0;
-    /* Maintain aspect ratio via padding-bottom */
+    /* Height follows aspect-ratio */
 }
 
 .video-card {
     background-color: var(--bg-secondary);
     border-radius: var(--radius-lg);
     overflow: hidden;
-    height: 0;
-    padding-bottom: 56.25%; /* Default 16:9 Aspect Ratio */
+    aspect-ratio: 16 / 9; /* default; the virtual grid sets explicit heights inline */
     position: relative;
     left: 0;
     top: 0;
@@ -3056,6 +3063,10 @@ button:hover {
     contain: layout style paint;
     content-visibility: auto;
     contain-intrinsic-size: auto 300px;
+}
+/* A compositor layer per card is only worth it while the card is moving */
+.video-card:hover, .video-card.dragging, .video-card.drag-over,
+.folder-card:hover, .folder-card.drag-over {
     will-change: transform;
 }
 
@@ -3076,8 +3087,7 @@ button:hover {
     background-color: var(--bg-secondary);
     border-radius: var(--radius-lg);
     overflow: hidden;
-    height: 0;
-    padding-bottom: 100%; /* Square aspect ratio for folders */
+    aspect-ratio: 1; /* square */
     position: relative;
     left: 0;
     top: 0;
@@ -3092,7 +3102,6 @@ button:hover {
     contain: layout style paint;
     content-visibility: auto;
     contain-intrinsic-size: auto 200px;
-    will-change: transform;
 }
 
 .folder-card:hover {
@@ -3206,35 +3215,35 @@ button:hover {
 
 /* Aspect ratio classes */
 .video-card.aspect-1-2 {
-    padding-bottom: 200%; /* 1:2 (portrait) */
+    aspect-ratio: 1 / 2; /* 1:2 (portrait) */
 }
 
 .video-card.aspect-9-16 {
-    padding-bottom: 177.78%; /* 9:16 (vertical video) */
+    aspect-ratio: 9 / 16; /* 9:16 (vertical video) */
 }
 
 .video-card.aspect-1-1 {
-    padding-bottom: 100%; /* 1:1 (square) */
+    aspect-ratio: 1; /* 1:1 (square) */
 }
 
 .video-card.aspect-4-3 {
-    padding-bottom: 75%; /* 4:3 (classic) */
+    aspect-ratio: 4 / 3; /* 4:3 (classic) */
 }
 
 .video-card.aspect-3-2 {
-    padding-bottom: 66.67%; /* 3:2 (photo) */
+    aspect-ratio: 3 / 2; /* 3:2 (photo) */
 }
 
 .video-card.aspect-16-9 {
-    padding-bottom: 56.25%; /* 16:9 (widescreen) */
+    aspect-ratio: 16 / 9; /* 16:9 (widescreen) */
 }
 
 .video-card.aspect-21-9 {
-    padding-bottom: 42.86%; /* 21:9 (ultrawide) */
+    aspect-ratio: 21 / 9; /* 21:9 (ultrawide) */
 }
 
 .video-card.aspect-2-1 {
-    padding-bottom: 50%; /* 2:1 (panoramic) */
+    aspect-ratio: 2 / 1; /* 2:1 (panoramic) */
 }
 
 .video-card:hover {
@@ -3473,119 +3482,119 @@ button:hover {
 /* ==================== ZOOM-TIER PROGRESSIVE CONTENT HIDING ==================== */
 
 /* --- zoom-md (75-99%): Slight shrink of all labels --- */
-:root.zoom-md .video-card .extension-label {
+#grid-container.zoom-md .video-card .extension-label {
     font-size: 9px;
     padding: 2px 5px;
 }
-:root.zoom-md .video-card .sound-label {
+#grid-container.zoom-md .video-card .sound-label {
     font-size: 10px;
     padding: 3px 6px;
 }
-:root.zoom-md .video-card .video-time-label.show {
+#grid-container.zoom-md .video-card .video-time-label.show {
     font-size: 10px;
     padding: 3px 6px;
 }
-:root.zoom-md .video-card .star-rating {
+#grid-container.zoom-md .video-card .star-rating {
     padding: 3px var(--space-1);
 }
-:root.zoom-md .video-card .star-rating .star {
+#grid-container.zoom-md .video-card .star-rating .star {
     font-size: 13px;
 }
-:root.zoom-md .video-card .card-meta-chip {
+#grid-container.zoom-md .video-card .card-meta-chip {
     font-size: 9px;
     padding: 1px 5px;
 }
-:root.zoom-md .video-card .video-info {
+#grid-container.zoom-md .video-card .video-info {
     font-size: 11px;
     padding: var(--space-1) var(--space-2);
 }
-:root.zoom-md .video-card .tag-badge {
+#grid-container.zoom-md .video-card .tag-badge {
     font-size: 9px;
     padding: 1px 5px;
     line-height: 14px;
 }
-:root.zoom-md .video-card:hover .card-tags.tags-shifted {
+#grid-container.zoom-md .video-card:hover .card-tags.tags-shifted {
     bottom: 23px;
 }
 
 /* --- zoom-sm (60-74%): Hide secondary info, shrink remaining --- */
-:root.zoom-sm .video-card .card-meta-row {
+#grid-container.zoom-sm .video-card .card-meta-row {
     display: none !important;
 }
-:root.zoom-sm .video-card .star-rating {
+#grid-container.zoom-sm .video-card .star-rating {
     display: none !important;
 }
-:root.zoom-sm .video-card .extension-label {
+#grid-container.zoom-sm .video-card .extension-label {
     font-size: 8px;
     padding: 2px var(--space-1);
     letter-spacing: 0.3px;
 }
-:root.zoom-sm .video-card .sound-label {
+#grid-container.zoom-sm .video-card .sound-label {
     font-size: 9px;
     padding: 2px 5px;
 }
-:root.zoom-sm .video-card .video-time-label.show {
+#grid-container.zoom-sm .video-card .video-time-label.show {
     font-size: 9px;
     padding: 2px 5px;
 }
-:root.zoom-sm .video-card .video-info {
+#grid-container.zoom-sm .video-card .video-info {
     font-size: 10px;
     padding: 3px 6px;
 }
-:root.zoom-sm .video-card .tag-badge {
+#grid-container.zoom-sm .video-card .tag-badge {
     font-size: 8px;
     padding: 1px var(--space-1);
     line-height: 12px;
     max-width: 70px;
 }
-:root.zoom-sm .video-card:hover .card-tags.tags-shifted {
+#grid-container.zoom-sm .video-card:hover .card-tags.tags-shifted {
     bottom: 19px;
 }
 
 /* --- zoom-xs (<60%): Minimal overlay --- */
-:root.zoom-xs .video-card .card-meta-row {
+#grid-container.zoom-xs .video-card .card-meta-row {
     display: none !important;
 }
-:root.zoom-xs .video-card .star-rating {
+#grid-container.zoom-xs .video-card .star-rating {
     display: none !important;
 }
-:root.zoom-xs .video-card .sound-label {
+#grid-container.zoom-xs .video-card .sound-label {
     display: none !important;
 }
-:root.zoom-xs .video-card .video-time-label.show {
+#grid-container.zoom-xs .video-card .video-time-label.show {
     display: none !important;
 }
-:root.zoom-xs .video-card .extension-label {
+#grid-container.zoom-xs .video-card .extension-label {
     font-size: 7px;
     padding: 1px 3px;
     letter-spacing: 0.2px;
 }
-:root.zoom-xs .video-card .video-info {
+#grid-container.zoom-xs .video-card .video-info {
     font-size: 9px;
     padding: 2px 5px;
 }
 
 /* Hover restoration at zoom-xs: bring back key labels on hover */
-:root.zoom-xs .video-card:not(.ci-no-audio):hover .sound-label {
+#grid-container.zoom-xs .video-card:not(.ci-no-audio):hover .sound-label {
     display: block !important;
     font-size: 9px;
     padding: 2px 5px;
 }
-:root.zoom-xs .video-card:hover .video-time-label.show {
+#grid-container.zoom-xs .video-card:hover .video-time-label.show {
     display: block !important;
     font-size: 9px;
     padding: 2px 5px;
 }
 
-:root.zoom-xs .video-card .card-tags {
+#grid-container.zoom-xs .video-card .card-tags {
     display: none !important;
 }
-:root.zoom-xs .video-card:hover .card-tags {
+#grid-container.zoom-xs .video-card:hover .card-tags {
     display: flex !important;
     gap: 2px;
     padding: 1px 3px 2px;
 }
-:root.zoom-xs .video-card:hover .tag-badge {
+#grid-container.zoom-xs .video-card:hover .tag-badge {
     font-size: 7px;
     padding: 1px 3px;
     line-height: 11px;
@@ -3711,7 +3720,7 @@ button:hover {
 }
 
 video.blow-up-media {
-    background: #000;
+    background: var(--media-backdrop);
 }
 
 .blow-up-label {
@@ -3754,9 +3763,6 @@ video.blow-up-media {
     contain: strict;
 }
 
-#lightbox:not(.hidden) {
-    backdrop-filter: blur(4px);
-}
 
 #lightbox.hidden {
     display: none;
@@ -3775,7 +3781,7 @@ video.blow-up-media {
     justify-content: center;
     align-items: center;
     transform: scale(1);
-    transition: transform var(--duration-normal) cubic-bezier(0.175, 0.885, 0.32, 1.275), margin-right var(--duration-normal) var(--ease-out);
+    transition: transform var(--duration-normal) cubic-bezier(0.175, 0.885, 0.32, 1.275);
     /* Pop effect */
     padding-bottom: 80px; /* Space for file info below */
     overflow: visible;
@@ -3803,7 +3809,6 @@ video.blow-up-media {
     height: 100%;
     width: 0%;
     background: var(--accent);
-    will-change: width;
 }
 
 .lightbox-gif-time {
@@ -3881,7 +3886,6 @@ video.blow-up-media {
     right: calc(60px + var(--lb-inspector-width, 0px));
     border-radius: 0 0 var(--radius-md) var(--radius-md);
     border-top: none;
-    transition: right var(--duration-normal) var(--ease-out);
 }
 
 .lightbox-zoom-controls[data-placement="docked"] {
@@ -5229,7 +5233,6 @@ video.blow-up-media {
 
 #lightbox-next {
     right: calc(var(--space-5) + var(--lb-inspector-width, 0px));
-    transition: right var(--duration-normal) var(--ease-out);
 }
 
 .lightbox-nav-btn:hover,
@@ -6576,9 +6579,6 @@ video.blow-up-media {
     animation: modal-enter var(--modal-enter-duration) var(--ease-out-expo);
 }
 
-.duplicate-compare-lightbox:not(.hidden) {
-    backdrop-filter: blur(4px);
-}
 
 .duplicate-compare-lightbox.hidden {
     display: none;
@@ -8672,7 +8672,7 @@ video.blow-up-media {
     width: 100%;
     padding: 6px var(--space-2);
     background: var(--accent, #4a90d9);
-    color: #fff;
+    color: var(--text-inverse);
     border: none;
     border-radius: var(--radius-sm, 4px);
     font-size: 12px;
@@ -8815,7 +8815,7 @@ video.blow-up-media {
     white-space: nowrap;
 }
 .card-hover-tooltip .cht-tag-more {
-    background: #555;
+    background: var(--text-tertiary);
 }
 .card-hover-tooltip .cht-plugin-section {
     margin-top: var(--space-2);
@@ -9346,7 +9346,7 @@ video.blow-up-media {
     line-height: 16px;
     font-weight: 500;
     color: var(--text-inverse);
-    background: #6366f1;
+    background: var(--tag-default);
     white-space: nowrap;
     max-width: 100px;
     overflow: hidden;
@@ -9387,7 +9387,7 @@ video.blow-up-media {
     font-size: 11px;
     line-height: 18px;
     color: var(--text-inverse);
-    background: #6366f1;
+    background: var(--tag-default);
     cursor: pointer;
     transition: opacity var(--duration-normal);
 }
@@ -9886,7 +9886,7 @@ video.blow-up-media {
     color: var(--text-primary);
 }
 .tag-list-item-btn.danger:hover {
-    color: #f87171;
+    color: var(--danger);
 }
 .tag-edit-row {
     display: flex;
@@ -10024,7 +10024,7 @@ video.blow-up-media {
     position: fixed;
     inset: 0;
     z-index: var(--z-overlay);
-    background: #080808;
+    background: var(--media-backdrop-deep);
     display: flex;
     flex-direction: column;
     contain: layout style paint;
@@ -10109,12 +10109,12 @@ video.blow-up-media {
     display: grid;
     gap: 2px;
     overflow: hidden;
-    background: #111;
+    background: var(--media-backdrop-soft);
 }
 .cmo-panel {
     position: relative;
     overflow: hidden;
-    background: #0a0a0a;
+    background: var(--media-backdrop-deep);
     display: flex;
     flex-direction: column;
 }
@@ -10453,7 +10453,7 @@ video.cmo-media {
     top: var(--space-1);
     right: var(--space-1);
     background: var(--scrim-strong);
-    color: #fff;
+    color: var(--text-inverse);
     font-size: 11px;
     font-weight: 600;
     padding: 2px 6px;
@@ -10474,7 +10474,7 @@ video.cmo-media {
     background: var(--scrim-strong);
     border: none;
     border-radius: var(--radius-sm);
-    color: #fff;
+    color: var(--text-inverse);
     font-size: 14px;
     line-height: 1;
     cursor: pointer;
@@ -10573,7 +10573,7 @@ video.cmo-media {
     position: fixed;
     inset: 0;
     z-index: var(--z-overlay);
-    background: #000;
+    background: var(--media-backdrop);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -10741,7 +10741,7 @@ video.ss-media {
     height: 36px;
 }
 .ss-speed-select option {
-    background: #1a1a1e;
+    background: var(--media-backdrop-raised);
     color: var(--text-inverse);
 }
 
@@ -10846,7 +10846,7 @@ video.ss-media {
 }
 .shortcut-conflict-warning {
     font-size: 11px;
-    color: #ff6b6b;
+    color: var(--danger);
     padding: var(--space-1) var(--space-2);
     background: rgba(255, 107, 107, 0.1);
     border-radius: 4px;
@@ -10957,14 +10957,14 @@ body.reduce-motion *::after {
     cursor: pointer;
     border-radius: 5px;
     overflow: hidden;
-    background: #000;
+    background: var(--media-backdrop);
 }
 .lb-filmstrip-track canvas {
     flex: 1 1 0;
     min-width: 0;
     height: 100%;
     display: block;
-    background: #222;
+    background: var(--bg-hover);
 }
 
 .lb-filmstrip-playhead {
@@ -10987,8 +10987,8 @@ body.reduce-motion *::after {
     z-index: 2;
     transform: translateX(-1px);
 }
-.lb-filmstrip-marker-in { background: #3ddc84; box-shadow: 0 0 6px rgba(61, 220, 132, 0.8); }
-.lb-filmstrip-marker-out { background: #ff5a5a; box-shadow: 0 0 6px rgba(255, 90, 90, 0.8); }
+.lb-filmstrip-marker-in { background: var(--marker-in); box-shadow: 0 0 6px rgba(61, 220, 132, 0.8); }
+.lb-filmstrip-marker-out { background: var(--marker-out); box-shadow: 0 0 6px rgba(255, 90, 90, 0.8); }
 .lb-filmstrip-marker::before {
     content: '';
     position: absolute;
@@ -11038,7 +11038,7 @@ body.reduce-motion *::after {
     display: block;
     width: 160px;
     height: 90px;
-    background: #000;
+    background: var(--media-backdrop);
     border-radius: 3px;
 }
 .lb-filmstrip-tooltip-time {
@@ -11167,11 +11167,11 @@ body.reduce-motion *::after {
 .lb-insp-rating .star {
     cursor: pointer;
     font-size: 20px;
-    color: #555;
+    color: var(--text-tertiary);
     transition: color var(--duration-fast), transform var(--duration-fast);
     user-select: none;
 }
-.lb-insp-rating .star.filled { color: #ffc94a; }
+.lb-insp-rating .star.filled { color: var(--star-filled); }
 .lb-insp-rating .star:hover { transform: scale(1.15); }
 
 .lb-insp-tags {
@@ -11330,7 +11330,7 @@ body.reduce-motion *::after {
 .lb-insp-similar-card {
     position: relative;
     aspect-ratio: 1;
-    background: #000;
+    background: var(--media-backdrop);
     border-radius: 4px;
     overflow: hidden;
     cursor: pointer;

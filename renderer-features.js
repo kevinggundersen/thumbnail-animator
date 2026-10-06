@@ -3322,12 +3322,13 @@ function applyZoom() {
     // Update CSS variable for zoom
     document.documentElement.style.setProperty('--zoom-level', zoomLevel);
 
-    // Apply zoom-tier classes for progressive card content hiding
-    const root = document.documentElement;
-    root.classList.toggle('zoom-lg', zoomLevel >= 100);
-    root.classList.toggle('zoom-md', zoomLevel >= 75 && zoomLevel < 100);
-    root.classList.toggle('zoom-sm', zoomLevel >= 60 && zoomLevel < 75);
-    root.classList.toggle('zoom-xs', zoomLevel < 60);
+    // Zoom-tier classes for progressive card content hiding. They live on the
+    // grid so a zoom change invalidates card styles only, not the whole document.
+    const zoomTarget = gridContainer;
+    zoomTarget.classList.toggle('zoom-lg', zoomLevel >= 100);
+    zoomTarget.classList.toggle('zoom-md', zoomLevel >= 75 && zoomLevel < 100);
+    zoomTarget.classList.toggle('zoom-sm', zoomLevel >= 60 && zoomLevel < 75);
+    zoomTarget.classList.toggle('zoom-xs', zoomLevel < 60);
 
     // Adjust grid container gap and card sizes
     const baseGap = 16;

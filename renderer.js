@@ -79,15 +79,12 @@ function getEffectiveLoadLimit() {
 const CLEANUP_COOLDOWN_MS = 5; // Cooldown between cleanup operations (ms)
 const CLEANUP_IDLE_INTERVAL_MS = 200; // Low-frequency safety cleanup while idle (ms)
 const VIEWPORT_CACHE_TTL = 300; // Cache viewport bounds for N ms (invalidated on scroll/resize via generation counter)
-const MEDIA_COUNT_CACHE_TTL = 50; // Cache media counts for N ms
 const CARD_RECT_CACHE_TTL = 300; // Rect cache for scroll/cleanup paths (invalidated on scroll/resize via generation counter)
 let IMAGE_THUMBNAIL_MAX_EDGE = 768; // Cap cached image thumbs to a practical grid size
 const BACKGROUND_DIMENSION_SCAN_CHUNK_SIZE = 2000; // Larger chunks = fewer layout recalculations
 
 // Progressive Rendering Configuration
 let PROGRESSIVE_RENDER_THRESHOLD = 1000; // Use progressive rendering for N+ items
-const PROGRESSIVE_RENDER_CHUNK_SIZE = 50; // Render N items per frame
-const PROGRESSIVE_RENDER_INITIAL_CHUNK = 100; // Render first N items immediately
 
 // Scroll & Observer Configuration
 let SCROLL_DEBOUNCE_MS = 150; // Debounce cleanup after scroll stops (ms)
@@ -1493,19 +1490,7 @@ function vsCleanup() {
     vsState.spacer = null;
 }
 
-/**
- * Get the item index for a given card element (used by features that reference cards).
- */
-function vsGetItemIndex(card) {
-    return card._vsItemIndex;
-}
 
-/**
- * Get the card element for a given item index (if currently rendered).
- */
-function vsGetCardForIndex(index) {
-    return vsState.activeCards.get(index) || null;
-}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // STORAGE, NOTIFICATIONS & DIALOGS
@@ -1541,7 +1526,6 @@ const searchClearBtn = document.getElementById('search-clear-btn');
 const itemCountEl = document.getElementById('item-count');
 const searchResultCountEl = document.getElementById('search-result-count');
 const searchDebounceDotEl = document.getElementById('search-debounce-dot');
-const searchBoxContainerEl = searchBox ? searchBox.parentElement : null;
 
 // Status bar elements
 const statusActivity = document.getElementById('status-activity');
@@ -2376,9 +2360,7 @@ const favContextMenu = document.getElementById('fav-context-menu');
 const recentFilesList = document.getElementById('recent-files-list');
 const clearRecentBtn = document.getElementById('clear-recent-btn');
 const tabsContainer = document.getElementById('tabs-container');
-const videoScrubber = document.getElementById('video-scrubber');
 const scrubberCanvas = document.getElementById('scrubber-canvas');
-const scrubberTime = document.getElementById('scrubber-time');
 const loadingIndicator = document.getElementById('loading-indicator');
 const folderSidebar = document.getElementById('folder-sidebar');
 const sidebarTree = document.getElementById('sidebar-tree');
@@ -4632,7 +4614,6 @@ let visibleCards = [];
 let _lastFocusedCard = null; // Perf: O(1) outline clear instead of O(n) forEach
 
 // Video scrubber state
-let scrubberCard = null;
 
 // Navigation history for back/forward functionality (per-tab)
 const navigationHistory = {
@@ -4713,13 +4694,6 @@ const renameConfirmBtn = document.getElementById('rename-confirm-btn');
 let renamePendingFile = null;
 
 // Tiny 1x1 WebM to flush the decoder - converted to Blob URL once to avoid repeated base64 decoding
-const BLANK_VIDEO = (() => {
-    const b64 = 'GkXfo0AgQoaBAUL3gQFC8oEEQvOBCEKCQAR3ZWJtQoeBAkKFgQIYU4BnQI0VSalmQCgq17FAAw9CQE2AQAZ3aGFtbXlXQUAGd2hhbW15RIlACECPQAAAAAAAFlSua0AxrkAu14EBY8WBAZyBACK1nEADdW5khkAFVl9WUDglhohAA1ZQOIOBAeWBAOGHgQfBQAAAAAAAAEe4gQKGhkACLMhkAGw=';
-    const bin = atob(b64);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    return URL.createObjectURL(new Blob([bytes], { type: 'video/webm' }));
-})();
 
 // Forced garbage collection used to be requested from the main process after
 // every media cleanup. A full GC pauses the main thread (and collected
@@ -5491,34 +5465,8 @@ function decodeImageOffThread(url, maxWidth = 0, maxHeight = 0) {
 
 // Stats for diagnostics
 let _bitmapStats = { hits: 0, misses: 0, decodes: 0, decodeMs: 0, evictions: 0, lastPrint: 0 };
-function _bitmapDiag() {
-    const total = _bitmapStats.hits + _bitmapStats.misses;
-    if (total - _bitmapStats.lastPrint < 50) return;
-    _bitmapStats.lastPrint = total;
-    const avgMs = _bitmapStats.decodes ? (_bitmapStats.decodeMs / _bitmapStats.decodes).toFixed(1) : 'n/a';
-    console.log(
-        `[bitmap-cache] cached=${_bitmapCacheSize}/${BITMAP_CACHE_MAX} ` +
-        `hits=${_bitmapStats.hits} misses=${_bitmapStats.misses} ` +
-        `decodes=${_bitmapStats.decodes} (avg ${avgMs}ms) evictions=${_bitmapStats.evictions}`
-    );
-}
 
-function evictBitmapEntry(url) {
-    const node = _bitmapCacheMap.get(url);
-    if (!node) return;
-    try { node.bitmap.close(); } catch {}
-    _lruRemoveNode(node);
-    _bitmapCacheMap.delete(url);
-}
 
-function getCachedBitmap(url) {
-    const node = _bitmapCacheMap.get(url);
-    if (!node) { _bitmapStats.misses++; _bitmapDiag(); return null; }
-    _bitmapStats.hits++;
-    _bitmapDiag();
-    _lruPromoteNode(node); // O(1) move to head
-    return node;
-}
 
 /** Clear all cached bitmaps (called on folder navigation to free GPU memory). */
 function clearBitmapCache() {
@@ -5574,32 +5522,6 @@ function prefetchImageBitmap(url, maxWidth = 0, maxHeight = 0) {
     }).catch(() => null);
 }
 
-/**
- * Draw a cached or freshly-decoded bitmap to a canvas context.
- * Returns true if drawn synchronously (cache hit), false if drawing async.
- */
-function drawBitmapToCanvas(canvas, url, onDrawn) {
-    const cached = getCachedBitmap(url);
-    const ctx = canvas.getContext('2d', { alpha: false });
-    if (cached) {
-        ctx.drawImage(cached.bitmap, 0, 0, canvas.width, canvas.height);
-        if (onDrawn) onDrawn(true, cached.w, cached.h);
-        return true;
-    }
-    // Async path
-    decodeImageOffThread(url, canvas.width, canvas.height).then(bitmap => {
-        if (!bitmap) { if (onDrawn) onDrawn(false, 0, 0); return; }
-        putCachedBitmap(url, bitmap);
-        // Redraw if still connected (card may have been recycled)
-        if (canvas.isConnected) {
-            ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-            if (onDrawn) onDrawn(true, bitmap.width, bitmap.height);
-        } else {
-            if (onDrawn) onDrawn(false, bitmap.width, bitmap.height);
-        }
-    }).catch(() => { if (onDrawn) onDrawn(false, 0, 0); });
-    return false;
-}
 
 function requestImageThumbnailUrl(filePath, maxSize) {
     const key = getImageThumbnailCacheKey(filePath, maxSize);
@@ -6318,7 +6240,6 @@ function applyAspectRatioToCard(card, aspectRatioName, aspectRatioSource) {
 // ═══════════════════════════════════════════════════════════════════════════
 // MASONRY LAYOUT
 // ═══════════════════════════════════════════════════════════════════════════
-let masonryColumns = 0;
 let columnHeights = [];
 let resizeTimeout;
 let masonryResizeObserver = null;
@@ -7039,190 +6960,6 @@ function createCardFromItem(item, skipAnimation = false) {
     }
 }
 
-// Progressive rendering function for large lists
-function renderItemsProgressive(items) {
-    cardAnimIndex = 0; // Reset card animation stagger
-    setStatusActivity(`Rendering ${items.length} items...`);
-    const cardsToObserve = [];
-    let currentIndex = 0;
-    
-    // Render initial chunk immediately for perceived performance
-    const initialFragment = document.createDocumentFragment();
-    const initialEnd = Math.min(PROGRESSIVE_RENDER_INITIAL_CHUNK, items.length);
-    
-    for (let i = 0; i < initialEnd; i++) {
-        const { card, isMedia } = createCardFromItem(items[i]);
-        initialFragment.appendChild(card);
-        if (isMedia) {
-            cardsToObserve.push(card);
-            videoCards.add(card);
-        } else if (card.classList.contains('folder-card')) {
-            cardsToObserve.push(card);
-        }
-    }
-
-    gridContainer.appendChild(initialFragment);
-    updateItemCount();
-    currentIndex = initialEnd;
-    
-    // Initialize layout mode class (but don't calculate layout yet for better performance)
-    if (layoutMode === 'masonry') {
-        gridContainer.classList.add('masonry');
-        gridContainer.classList.remove('grid');
-    } else {
-        gridContainer.classList.add('grid');
-        gridContainer.classList.remove('masonry');
-    }
-    
-    // Batch observer registration for initial chunk AFTER layout is ready (single RAF)
-    // In masonry mode, defer layout until ALL cards are in the DOM (single pass)
-    requestAnimationFrame(() => {
-        for (let i = 0; i < cardsToObserve.length; i++) {
-            observeCard(cardsToObserve[i]);
-        }
-        cardsToObserve.length = 0; // Perf: release initial batch references
-
-        // Only trigger masonry layout here for small lists that won't have more chunks
-        if (layoutMode === 'masonry' && currentIndex >= items.length) {
-            scheduleMasonryLayout();
-        }
-
-        // Start proactive loading for initial chunk
-        scheduleProactiveLoadForChunk();
-    });
-
-    // Continue rendering remaining items in chunks
-    function renderNextChunk() {
-        if (currentIndex >= items.length) {
-            // All items rendered, trigger final layout update
-            requestAnimationFrame(() => {
-                if (layoutMode === 'masonry') {
-                    scheduleMasonryLayout();
-                }
-                // Final proactive load after all rendered
-                scheduleProactiveLoadForChunk();
-            });
-            return;
-        }
-        
-        const chunkEnd = Math.min(currentIndex + PROGRESSIVE_RENDER_CHUNK_SIZE, items.length);
-        const fragment = document.createDocumentFragment();
-        const chunkCardsToObserve = [];
-        
-        for (let i = currentIndex; i < chunkEnd; i++) {
-            const { card, isMedia } = createCardFromItem(items[i]);
-            fragment.appendChild(card);
-            if (isMedia) {
-                chunkCardsToObserve.push(card);
-                videoCards.add(card);
-            } else if (card.classList.contains('folder-card')) {
-                chunkCardsToObserve.push(card);
-            }
-        }
-        
-        gridContainer.appendChild(fragment);
-        currentIndex = chunkEnd;
-        
-        // Wait for layout before observing and loading
-        requestAnimationFrame(() => {
-            // Batch observer registration for this chunk
-            chunkCardsToObserve.forEach(card => {
-                observeCard(card);
-                // Perf: removed cardsToObserve.push(card) — outer array not needed per-chunk
-            });
-
-            // No per-chunk masonry relayout — single pass after all cards are in DOM
-            // Perf: removed per-chunk scheduleProactiveLoadForChunk() — IntersectionObserver
-            // handles visibility-triggered loading; proactive pass runs on initial + final chunk only
-        });
-        
-        // Continue rendering next chunk after allowing UI to breathe
-        if ('requestIdleCallback' in window) {
-            requestIdleCallback(() => {
-                requestAnimationFrame(renderNextChunk);
-            }, { timeout: 50 });
-        } else {
-            setTimeout(() => {
-                requestAnimationFrame(renderNextChunk);
-            }, 16); // ~60fps fallback
-        }
-    }
-    
-    // Start rendering remaining chunks after initial render settles
-    if ('requestIdleCallback' in window) {
-        requestIdleCallback(() => {
-            requestAnimationFrame(renderNextChunk);
-        }, { timeout: 100 });
-    } else {
-        setTimeout(() => {
-            requestAnimationFrame(renderNextChunk);
-        }, 50); // Fallback delay
-    }
-    
-    // Helper function to schedule proactive loading for current chunk
-    function scheduleProactiveLoadForChunk() {
-        // Use requestIdleCallback to avoid blocking UI
-        if ('requestIdleCallback' in window) {
-            requestIdleCallback(() => {
-                loadVisibleMedia();
-            }, { timeout: 50 });
-        } else {
-            setTimeout(() => {
-                loadVisibleMedia();
-            }, 0);
-        }
-    }
-    
-    // Function to load media for cards currently visible/in preload zone
-    function loadVisibleMedia() {
-        // Use vsState.activeCards when virtual scroll is active (avoids full DOM traversal).
-        // Iterates ~50-100 rendered cards instead of scanning the entire DOM tree (5-10x faster).
-        const cardSource = vsState.enabled && vsState.activeCards.size > 0
-            ? vsState.activeCards.values()
-            : gridContainer.querySelectorAll('.video-card');
-
-        const cardsToCheck = [];
-        for (const card of cardSource) {
-            if (card.classList.contains('folder-card')) continue;
-            if (card.dataset.hasMedia || pendingMediaCreations.has(card)) continue;
-            cardsToCheck.push(card);
-        }
-
-        if (cardsToCheck.length === 0) return;
-        
-        // Use the same grid-viewport bounds as the media observer/cleanup logic.
-        const bounds = getViewportBounds();
-        const cardsToLoadNow = [];
-        
-        // Check each card's position relative to viewport
-        cardsToCheck.forEach(card => {
-            if (isCardInPreloadZone(card)) {
-                const cardRect = getCachedCardRect(card);
-                const cardCenterY = cardRect.top + (cardRect.height / 2);
-                const distance = Math.abs(cardCenterY - bounds.centerY);
-                cardsToLoadNow.push({ card, mediaUrl: card.dataset.src, distance });
-            }
-        });
-        
-        // Sort by distance and load closest items first
-        cardsToLoadNow.sort((a, b) => a.distance - b.distance);
-        // Perf: respect media capacity limit to avoid thrashing cleanup cycles
-        const { videos: cv, images: ci } = getMediaCounts();
-        const remainingCapacity = Math.max(0, MAX_TOTAL_MEDIA - cv - ci);
-        const maxToLoad = Math.min(remainingCapacity, PARALLEL_LOAD_LIMIT * 2);
-        cardsToLoadNow.slice(0, maxToLoad).forEach(({ card, mediaUrl }) => {
-            createMediaForCard(card, mediaUrl);
-        });
-    }
-    
-    // Apply filters after initial render
-    requestAnimationFrame(() => {
-        applyFilters();
-    });
-    
-    // Start periodic cleanup check
-    startPeriodicCleanup();
-}
 
 // Function to render items (extracted from loadVideos for re-use)
 function renderItems(items, preservedScrollTop = null) {
@@ -8761,7 +8498,6 @@ function bumpFilterWorkerPinsVersion() { filterBridge.bumpPinsVersion(); }
 function bumpFilterWorkerTagFilterVersion() { filterBridge.bumpTagFilterVersion(); }
 function bumpEmbeddingsVersion() { filterBridge.bumpEmbeddingsVersion(); }
 function bumpFilterWorkerDedupVersion() { filterBridge.bumpDedupVersion(); }
-function markFilterWorkerItemsStale() { filterBridge.markItemsStale(); }
 
 function performSearch(searchQuery) {
     // Debounce search to avoid excessive filtering while typing
@@ -8949,9 +8685,6 @@ const marqueeState = selection._marquee;
 // Forwarding functions — preserve global API
 function clearCardSelection() { selection.clear(); }
 function selectAllCards() { selection.selectAll(); }
-function toggleCardSelection(card, idx) { selection.toggle(card, idx); }
-function rangeSelectCards(from, to) { selection.range(from, to); }
-function updateSelectionStatusBar() { selection._updateStatusBar(); }
 function getItemIndexForCard(card) { return selection._getItemIndex(card); }
 function cancelMarquee() { selection.cancelMarquee(); }
 
@@ -11731,7 +11464,6 @@ function autoTagUpdateCounter() {
     autoTagApply.disabled = tagCount === 0;
 }
 
-function updateAutoTagApplyBtn() { autoTagUpdateCounter(); }
 
 function autoTagShowProgress(show) {
     autoTagProgressEl.classList.toggle('hidden', !show);
@@ -12626,8 +12358,6 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
 
 const collectionsListEl = document.getElementById('collections-list');
 const newCollectionBtn = document.getElementById('new-collection-btn');
-const savedSearchesListEl = document.getElementById('saved-searches-list');
-const saveCurrentSearchBtn = document.getElementById('save-current-search-btn');
 
 async function renderCollectionsSidebar() {
     await getAllCollections();
@@ -13658,10 +13388,6 @@ async function warmFileTagsCache(filePaths) {
     } catch {}
 }
 
-function invalidateFileTagsCache(filePath) {
-    if (filePath) fileTagsCache.delete(normalizePath(filePath));
-    else fileTagsCache.clear();
-}
 
 // ── Tag badges on cards ──────────────────────────────────────────────────────
 

@@ -49,8 +49,6 @@ let currentZoomLevel = 100;
 let cachedZoomValue = 1.0; // Cache zoom value to avoid recalculation during panning
 let cachedImgRemainingScale = null; // When non-null, <img> uses this scale instead of cachedZoomValue (hi-res zoom)
 let isDragging = false;
-let dragStartX = 0;
-let dragStartY = 0;
 let currentTranslateX = 0;
 let currentTranslateY = 0;
 let currentLightboxRotation = 0;
@@ -165,33 +163,7 @@ function getLightboxFlipString() {
     return `scale(${sx}, ${sy})`;
 }
 
-function getVisibleLightboxMediaElement() {
-    const imageDisplay = lightboxImage.style.display;
-    const videoDisplay = lightboxVideo.style.display;
-    const canvasDisplay = lightboxGifCanvas.style.display;
-    const isImageVisible = imageDisplay === 'block' ||
-                          (imageDisplay === '' && window.getComputedStyle(lightboxImage).display !== 'none');
-    const isVideoVisible = videoDisplay === 'block' ||
-                          (videoDisplay === '' && window.getComputedStyle(lightboxVideo).display !== 'none');
-    const isCanvasVisible = canvasDisplay === 'block' ||
-                          (canvasDisplay === '' && window.getComputedStyle(lightboxGifCanvas).display !== 'none');
-    if (isCanvasVisible) return lightboxGifCanvas;
-    if (isImageVisible) return lightboxImage;
-    if (isVideoVisible) return lightboxVideo;
-    return null;
-}
 
-function getVisibleLightboxMediaInfo() {
-    const el = getVisibleLightboxMediaElement();
-    if (!el) return null;
-    if (el === lightboxImage) {
-        return { element: el, width: lightboxImage.naturalWidth || 0, height: lightboxImage.naturalHeight || 0 };
-    }
-    if (el === lightboxGifCanvas) {
-        return { element: el, width: lightboxGifCanvas.width || activePlaybackController?.gifWidth || 0, height: lightboxGifCanvas.height || activePlaybackController?.gifHeight || 0 };
-    }
-    return { element: el, width: lightboxVideo.videoWidth || 0, height: lightboxVideo.videoHeight || 0 };
-}
 
 function getDisplayedUnrotatedMediaRect(element) {
     if (!element) return null;

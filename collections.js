@@ -15,9 +15,6 @@ function generateCollectionId() {
     return 'col_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
 }
 
-function generateCollectionFileId() {
-    return 'cf_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
-}
 
 async function getAllCollections() {
     try {
@@ -103,15 +100,6 @@ async function removeFileFromCollection(collectionId, filePath) {
     }
 }
 
-async function removeAllMissingFromCollection(collectionId, missingPaths) {
-    if (missingPaths.length === 0) return;
-    try {
-        const normalizedMissing = missingPaths.map(p => normalizePath(p));
-        await window.electronAPI.dbRemoveFilesFromCollection(collectionId, normalizedMissing);
-    } catch (e) {
-        console.error('Error cleaning missing files from collection:', e);
-    }
-}
 
 /**
  * Deduplicate collection items by content hash.

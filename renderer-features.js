@@ -1191,9 +1191,6 @@ async function loadRecentFiles() {
     }
 }
 
-function saveRecentFiles() {
-    // Legacy: kept as no-op for any stale call sites
-}
 
 function addRecentFile(path, name, url, type) {
     // Remove if already exists
@@ -1480,39 +1477,6 @@ function snapshotCurrentTabDom() {
     });
 }
 
-// Restore a tab's DOM snapshot if available. Returns true if restored.
-function restoreTabDomSnapshot(tabId) {
-    const snapshot = tabDomCache.get(tabId);
-    if (!snapshot) return false;
-    // Check if snapshot is still fresh (use same TTL as tab content cache)
-    if ((Date.now() - snapshot.timestamp) > FOLDER_CACHE_TTL) {
-        tabDomCache.delete(tabId);
-        return false;
-    }
-    // Clear current grid without destroying media (it belongs to old tab snapshot)
-    while (gridContainer.firstChild) {
-        gridContainer.removeChild(gridContainer.firstChild);
-    }
-    // Re-attach the cached fragment
-    gridContainer.appendChild(snapshot.fragment);
-    // Restore layout mode
-    if (snapshot.layoutMode === 'masonry') {
-        gridContainer.classList.add('masonry');
-        gridContainer.classList.remove('grid');
-    } else {
-        gridContainer.classList.add('grid');
-        gridContainer.classList.remove('masonry');
-    }
-    // Restore scroll position after DOM is attached
-    requestAnimationFrame(() => {
-        gridContainer.scrollTop = snapshot.scrollTop;
-        window.scrollTo(0, snapshot.scrollTop);
-        // Re-run cleanup cycle to manage media visibility
-        scheduleCleanupCycle();
-    });
-    tabDomCache.delete(tabId); // Consumed
-    return true;
-}
 
 function createTab(path, name, collectionId = null, groupId = null) {
     const tab = {
@@ -3217,70 +3181,6 @@ function hideGifProgress(card) {
 
 let _lightboxGifAnimId = null;
 
-async function startLightboxGifProgress(mediaUrl) {
-    stopLightboxGifProgress();
-
-    const progressBar = document.getElementById('lightbox-gif-progress');
-    const timeDisplay = document.getElementById('lightbox-gif-time');
-    if (!progressBar) return;
-
-    const fill = progressBar.querySelector('.lightbox-gif-progress-fill');
-
-    // Try to find duration from an existing card's dataset first
-    let totalDuration = 0;
-    const cards = document.querySelectorAll('.video-card');
-    for (const card of cards) {
-        const img = card.querySelector('img.media-thumbnail');
-        if (img && img.src === mediaUrl && card.dataset.gifDuration) {
-            totalDuration = Number(card.dataset.gifDuration);
-            break;
-        }
-    }
-
-    // If not found, parse the binary
-    if (!totalDuration) {
-        try {
-            const response = await fetch(mediaUrl);
-            const buffer = await response.arrayBuffer();
-            const urlLower = mediaUrl.toLowerCase();
-            let result = null;
-            if (urlLower.endsWith('.gif')) {
-                result = parseGifDuration(buffer);
-            } else if (urlLower.endsWith('.webp')) {
-                result = parseWebpDuration(buffer);
-            }
-            if (result) totalDuration = result.totalDuration;
-        } catch {
-            // Parsing failed
-        }
-    }
-
-    if (!totalDuration || totalDuration <= 0) {
-        progressBar.style.display = 'none';
-        if (timeDisplay) timeDisplay.style.display = 'none';
-        return;
-    }
-
-    progressBar.style.display = 'block';
-    if (timeDisplay) timeDisplay.style.display = 'block';
-
-    const startTime = performance.now();
-    const durationSec = totalDuration / 1000;
-    const durationFormatted = formatTime(durationSec);
-
-    const animate = () => {
-        const elapsed = performance.now() - startTime;
-        const currentMs = elapsed % totalDuration;
-        const progress = currentMs / totalDuration;
-        if (fill) fill.style.width = (progress * 100) + '%';
-        if (timeDisplay) {
-            timeDisplay.textContent = `${formatTime(currentMs / 1000)} / ${durationFormatted}`;
-        }
-        _lightboxGifAnimId = requestAnimationFrame(animate);
-    };
-
-    _lightboxGifAnimId = requestAnimationFrame(animate);
-}
 
 function stopLightboxGifProgress() {
     if (_lightboxGifAnimId) {
@@ -3355,11 +3255,6 @@ function initTheme() {
     // Theme is now managed by ThemeManager in themes.js
 }
 
-function applyTheme() {
-    // Theme is now managed by ThemeManager in themes.js
-    invalidateMasonryStyleCache();
-    if (typeof invalidateVsStyleCache === 'function') invalidateVsStyleCache();
-}
 
 // ==================== THUMBNAIL QUALITY ====================
 function initThumbnailQuality() {
@@ -3430,43 +3325,8 @@ function navigateLightbox(direction) {
     openLightbox(item.url, item.path, item.name);
 }
 
-// Video playback controls
-function setVideoPlaybackSpeed(speed) {
-    videoPlaybackSpeed = speed;
-    if (lightboxVideo) {
-        lightboxVideo.playbackRate = speed;
-    }
-    const speedBtn = document.getElementById('lightbox-speed-btn');
-    if (speedBtn) {
-        speedBtn.textContent = `${speed}x`;
-    }
-}
 
-function toggleVideoLoop() {
-    videoLoop = !videoLoop;
-    if (lightboxVideo) {
-        lightboxVideo.loop = videoLoop;
-    }
-    const loopBtn = document.getElementById('lightbox-loop-btn');
-    if (loopBtn) {
-        loopBtn.textContent = videoLoop ? 'On' : 'Off';
-        loopBtn.classList.toggle('active', videoLoop);
-    }
-}
 
-function toggleVideoRepeat() {
-    videoRepeat = !videoRepeat;
-    const repeatBtn = document.getElementById('lightbox-repeat-btn');
-    if (repeatBtn) {
-        repeatBtn.textContent = videoRepeat ? 'On' : 'Off';
-        repeatBtn.classList.toggle('active', videoRepeat);
-    }
-    if (videoRepeat && lightboxVideo) {
-        lightboxVideo.addEventListener('ended', handleVideoRepeat);
-    } else if (lightboxVideo) {
-        lightboxVideo.removeEventListener('ended', handleVideoRepeat);
-    }
-}
 
 function handleVideoRepeat() {
     if (videoRepeat && lightboxVideo) {
@@ -3475,331 +3335,7 @@ function handleVideoRepeat() {
     }
 }
 
-function stepVideoFrame(direction) {
-    if (!lightboxVideo || lightboxVideo.readyState < 2) return;
-    
-    const frameTime = 1 / 30; // Assume 30fps, could be improved with actual fps detection
-    if (direction === 'next') {
-        lightboxVideo.currentTime = Math.min(lightboxVideo.duration, lightboxVideo.currentTime + frameTime);
-    } else {
-        lightboxVideo.currentTime = Math.max(0, lightboxVideo.currentTime - frameTime);
-    }
-}
 
-// escapeHtml lives in renderer.js (single regex implementation shared by all scripts).
-
-// Extract common ComfyUI parameters from workflow
-function extractComfyUIParameters(workflow) {
-    if (!workflow || typeof workflow !== 'object') return null;
-    
-    const params = {
-        prompt: null,
-        negativePrompt: null,
-        cfgScale: null,
-        steps: null,
-        sampler: null,
-        seed: null,
-        model: null,
-        width: null,
-        height: null
-    };
-    
-    // ComfyUI workflow structure: workflow.prompt contains node data
-    // Each node has class_type and inputs
-    const promptData = workflow.prompt || workflow;
-    
-    if (typeof promptData === 'object') {
-        const clipTextNodes = [];
-        
-        // First pass: collect all CLIPTextEncode nodes
-        for (const nodeId in promptData) {
-            const node = promptData[nodeId];
-            if (!node || typeof node !== 'object') continue;
-            
-            const classType = node.class_type || '';
-            const inputs = node.inputs || {};
-            
-            // Collect CLIPTextEncode nodes
-            if (classType.includes('CLIPTextEncode') && inputs.text) {
-                const nodeTitle = (node.title || nodeId || '').toLowerCase();
-                const isNegative = nodeTitle.includes('negative') || 
-                                  nodeTitle.includes('neg') ||
-                                  nodeTitle.includes('n_prompt');
-                clipTextNodes.push({
-                    text: inputs.text,
-                    isNegative: isNegative,
-                    nodeId: nodeId
-                });
-            }
-            
-            // Find KSampler or Sampler nodes - these contain the actual generation parameters
-            // Only take the first instance of each parameter
-            if (classType === 'KSampler' || classType === 'KSamplerAdvanced' || classType.includes('KSampler')) {
-                // Only set CFG scale if not already set (first instance)
-                if (params.cfgScale === null && inputs.cfg !== undefined && inputs.cfg !== null) {
-                    params.cfgScale = inputs.cfg;
-                }
-                // Only set steps if not already set (first instance)
-                if (params.steps === null && inputs.steps !== undefined && inputs.steps !== null) {
-                    params.steps = inputs.steps;
-                }
-                // Seed in KSampler should be a large integer (typically 10+ digits), not a small float
-                // Only set seed if not already set (first instance)
-                if (params.seed === null && inputs.seed !== undefined && inputs.seed !== null) {
-                    const seedValue = inputs.seed;
-                    // Only accept if it's a very large integer (seeds are typically 10+ digits)
-                    if (typeof seedValue === 'number') {
-                        // Reject small numbers or floats (like 82.9)
-                        if (seedValue > 1000000 && Number.isInteger(seedValue)) {
-                            params.seed = seedValue;
-                        } else if (seedValue > 1000000) {
-                            // Large number but not integer - might be seed as float, floor it
-                            params.seed = Math.floor(seedValue);
-                        }
-                    } else if (typeof seedValue === 'string') {
-                        const parsed = parseInt(seedValue);
-                        // Only accept if it's a very large number
-                        if (!isNaN(parsed) && parsed > 1000000) {
-                            params.seed = parsed;
-                        }
-                    }
-                }
-                // Only set sampler name if not already set (first instance)
-                if (!params.sampler && inputs.sampler_name) {
-                    params.sampler = inputs.sampler_name;
-                }
-            }
-            
-            // Check for seed in CR Module Pipe Loader or other pipe loader nodes
-            // Only take the first instance
-            if (params.seed === null && (classType.includes('Pipe') || classType.includes('Module')) && inputs.seed !== undefined && inputs.seed !== null) {
-                const seedValue = inputs.seed;
-                // Only accept very large integers
-                if (typeof seedValue === 'number' && seedValue > 1000000) {
-                    params.seed = Math.floor(seedValue);
-                } else if (typeof seedValue === 'string') {
-                    const parsed = parseInt(seedValue);
-                    if (!isNaN(parsed) && parsed > 1000000) {
-                        params.seed = parsed;
-                    }
-                }
-            }
-            
-            // Find seed in RandomSeed node (often used for seed control) - prioritize this
-            // Only take the first instance
-            if (params.seed === null && (classType === 'RandomSeed' || classType === 'Seed')) {
-                if (inputs.seed !== undefined && inputs.seed !== null) {
-                    const seedValue = inputs.seed;
-                    // Only accept very large numbers (seeds are typically 10+ digits)
-                    if (typeof seedValue === 'number' && seedValue > 1000000) {
-                        params.seed = Math.floor(seedValue);
-                    } else if (typeof seedValue === 'string') {
-                        const parsed = parseInt(seedValue);
-                        if (!isNaN(parsed) && parsed > 1000000) {
-                            params.seed = parsed;
-                        }
-                    }
-                }
-                // Sometimes seed is in 'value' field
-                if (params.seed === null && inputs.value !== undefined && inputs.value !== null) {
-                    const seedValue = inputs.value;
-                    if (typeof seedValue === 'number' && seedValue > 1000000) {
-                        params.seed = Math.floor(seedValue);
-                    } else if (typeof seedValue === 'string') {
-                        const parsed = parseInt(seedValue);
-                        if (!isNaN(parsed) && parsed > 1000000) {
-                            params.seed = parsed;
-                        }
-                    }
-                }
-            }
-            
-            // Find model (CheckpointLoaderSimple, CheckpointLoader, etc.)
-            if (classType.includes('Checkpoint') || classType.includes('Model')) {
-                if (inputs.ckpt_name) params.model = inputs.ckpt_name;
-                if (inputs.model_name) params.model = inputs.model_name;
-            }
-            
-            // Find resolution from Resolution node (has longer_side and aspect_ratio)
-            if (classType === 'Resolution' || classType.includes('Resolution')) {
-                if (inputs.longer_side !== undefined && inputs.longer_side !== null) {
-                    const longerSide = typeof inputs.longer_side === 'string' ? parseInt(inputs.longer_side) : inputs.longer_side;
-                    if (longerSide && longerSide >= 100) {
-                        // Calculate dimensions from aspect ratio
-                        if (inputs.aspect_ratio) {
-                            const aspectRatio = inputs.aspect_ratio;
-                            // Parse aspect ratio like "2:3 (Portrait)" or "16:9"
-                            const ratioMatch = aspectRatio.match(/(\d+):(\d+)/);
-                            if (ratioMatch) {
-                                const ratioW = parseFloat(ratioMatch[1]);
-                                const ratioH = parseFloat(ratioMatch[2]);
-                                const ratio = ratioW / ratioH;
-                                
-                                // Check if portrait is mentioned
-                                const isPortrait = aspectRatio.toLowerCase().includes('portrait') || ratio < 1;
-                                
-                                if (isPortrait) {
-                                    // Portrait: height is longer, width is shorter
-                                    params.height = longerSide;
-                                    params.width = Math.round(longerSide * ratio);
-                                } else {
-                                    // Landscape: width is longer, height is shorter
-                                    params.width = longerSide;
-                                    params.height = Math.round(longerSide / ratio);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            
-            // Find resolution from ImageScaleToMaxDimension node
-            if (classType === 'ImageScaleToMaxDimension' || classType.includes('ImageScale')) {
-                if (inputs.largest_size !== undefined && inputs.largest_size !== null) {
-                    const largestSize = typeof inputs.largest_size === 'string' ? parseInt(inputs.largest_size) : inputs.largest_size;
-                    if (largestSize && largestSize >= 100) {
-                        // This gives us the longer side, but we need aspect ratio to calculate both dimensions
-                        // Store it for later if we don't have dimensions yet
-                        if (!params.width || !params.height) {
-                            // We'll need to calculate from aspect ratio if available
-                        }
-                    }
-                }
-            }
-            
-            // Find image dimensions (EmptyLatentImage is most common)
-            // Only accept reasonable dimensions (typically 64+ pixels, and usually multiples of 8 or 64)
-            // But be careful - these might be latent dimensions, not final image dimensions
-            if (classType === 'EmptyLatentImage' || classType.includes('EmptyLatentImage')) {
-                // Only use if we don't already have dimensions from Resolution node
-                if (!params.width || !params.height) {
-                    if (inputs.width !== undefined && inputs.width !== null) {
-                        const width = typeof inputs.width === 'string' ? parseInt(inputs.width) : inputs.width;
-                        // Only accept if it's a reasonable dimension (not tiny like 80)
-                        if (width && width >= 100 && Number.isInteger(width)) {
-                            params.width = width;
-                        }
-                    }
-                    if (inputs.height !== undefined && inputs.height !== null) {
-                        const height = typeof inputs.height === 'string' ? parseInt(inputs.height) : inputs.height;
-                        if (height && height >= 100 && Number.isInteger(height)) {
-                            params.height = height;
-                        }
-                    }
-                }
-            }
-            
-            // Check for dimensions in other node types, but be more selective
-            if ((!params.width || params.width < 100) || (!params.height || params.height < 100)) {
-                // Look for width/height in other nodes, but filter out small values
-                if (inputs.width !== undefined && inputs.height !== undefined) {
-                    const width = typeof inputs.width === 'string' ? parseInt(inputs.width) : inputs.width;
-                    const height = typeof inputs.height === 'string' ? parseInt(inputs.height) : inputs.height;
-                    // Only accept reasonable dimensions (reject tiny values like 80)
-                    if (width && height && width >= 100 && height >= 100 && Number.isInteger(width) && Number.isInteger(height)) {
-                        if (!params.width || params.width < 100) params.width = width;
-                        if (!params.height || params.height < 100) params.height = height;
-                    }
-                }
-            }
-        }
-        
-        // Determine positive and negative prompts from collected nodes
-        if (clipTextNodes.length > 0) {
-            // Sort by nodeId to get consistent order (but note: nodeId order may not match workflow order)
-            clipTextNodes.sort((a, b) => a.nodeId.localeCompare(b.nodeId, undefined, { numeric: true }));
-            
-            // If we have explicit negative markers, use those
-            const negativeNode = clipTextNodes.find(n => n.isNegative);
-            const positiveNodes = clipTextNodes.filter(n => !n.isNegative);
-            
-            if (negativeNode) {
-                params.negativePrompt = negativeNode.text;
-            }
-            
-            // First non-negative node is positive prompt
-            if (positiveNodes.length > 0) {
-                params.prompt = positiveNodes[0].text;
-            }
-            
-            // If we have 2 nodes and one is marked negative, the other is positive
-            if (clipTextNodes.length === 2) {
-                if (negativeNode && positiveNodes.length === 1) {
-                    params.prompt = positiveNodes[0].text;
-                } else if (!negativeNode) {
-                    // If neither is marked, swap the order (user reported they were swapped)
-                    // Second node is positive, first is negative
-                    params.prompt = clipTextNodes[1].text;
-                    params.negativePrompt = clipTextNodes[0].text;
-                }
-            }
-            
-            // If no explicit negative but we have 2+ unmarked nodes, swap order
-            if (!params.negativePrompt && clipTextNodes.length >= 2 && positiveNodes.length >= 2) {
-                // User says they're swapped, so reverse: last is positive, first is negative
-                params.prompt = positiveNodes[positiveNodes.length - 1].text;
-                params.negativePrompt = positiveNodes[0].text;
-            }
-            
-            // Fallback: if only one node found and no negative marker, assume it's positive
-            if (!params.prompt && clipTextNodes.length === 1) {
-                params.prompt = clipTextNodes[0].text;
-            }
-        }
-        
-        // Try to get dimensions from workflow metadata or extra data
-        if ((!params.width || params.width < 100) || (!params.height || params.height < 100)) {
-            // Check workflow.extra for dimensions
-            if (workflow.extra) {
-                if (workflow.extra.dworkflow) {
-                    const dworkflow = workflow.extra.dworkflow;
-                    if (dworkflow.width && dworkflow.width >= 100) params.width = dworkflow.width;
-                    if (dworkflow.height && dworkflow.height >= 100) params.height = dworkflow.height;
-                }
-                // Sometimes dimensions are directly in extra
-                if (workflow.extra.width && workflow.extra.width >= 100) params.width = workflow.extra.width;
-                if (workflow.extra.height && workflow.extra.height >= 100) params.height = workflow.extra.height;
-            }
-            
-            // Check workflow output or other metadata
-            if (workflow.output) {
-                if (workflow.output.width && workflow.output.width >= 100) params.width = workflow.output.width;
-                if (workflow.output.height && workflow.output.height >= 100) params.height = workflow.output.height;
-            }
-        }
-        
-        // Final check: look for seed in workflow.extra or other metadata (seeds are large integers, 10+ digits)
-        if (!params.seed || params.seed < 1000000) {
-            if (workflow.extra) {
-                if (workflow.extra.seed !== undefined && workflow.extra.seed !== null) {
-                    const seedValue = workflow.extra.seed;
-                    if (typeof seedValue === 'number' && seedValue > 1000000) {
-                        params.seed = Math.floor(seedValue);
-                    } else if (typeof seedValue === 'string') {
-                        const parsed = parseInt(seedValue);
-                        if (!isNaN(parsed) && parsed > 1000000) {
-                            params.seed = parsed;
-                        }
-                    }
-                }
-            }
-            // Also check workflow directly for seed
-            if ((!params.seed || params.seed < 1000000) && workflow.seed !== undefined && workflow.seed !== null) {
-                const seedValue = workflow.seed;
-                if (typeof seedValue === 'number' && seedValue > 1000000) {
-                    params.seed = Math.floor(seedValue);
-                } else if (typeof seedValue === 'string') {
-                    const parsed = parseInt(seedValue);
-                    if (!isNaN(parsed) && parsed > 1000000) {
-                        params.seed = parsed;
-                    }
-                }
-            }
-        }
-    }
-    
-    return params;
-}
 
 // Plugin info sections — lazily loaded list of section descriptors
 let _pluginInfoSections = null;
@@ -3814,76 +3350,6 @@ async function getPluginInfoSections() {
     return _pluginInfoSections;
 }
 
-/**
- * Calls each registered plugin info section and appends rendered HTML to the details container.
- * Plugins return { title, html, actions? } where actions is [{label, copyText}].
- */
-async function appendPluginInfoSections(detailsEl, filePath, pluginMetadata) {
-    const sections = await getPluginInfoSections();
-    for (const section of sections) {
-        try {
-            const res = await window.electronAPI.renderPluginInfoSection(
-                section.pluginId, section.id, filePath, pluginMetadata
-            );
-            if (!res || !res.ok) {
-                if (res && res.error) {
-                    showToastOnce(`plugin-info-err:${section.pluginId}:${section.id}`,
-                        `Plugin "${section.pluginId}" failed to render info section`, 'warning',
-                        { details: res.error, duration: 5000 });
-                }
-                continue;
-            }
-            if (!res.value) continue;
-            const { title, html, actions } = res.value;
-            if (!html) continue;
-
-            const wrapper = document.createElement('div');
-            wrapper.className = 'file-info-detail-row file-info-comfyui-section file-info-plugin-section';
-            wrapper.dataset.pluginSection = `${section.pluginId}:${section.id}`;
-
-            const headerEl = document.createElement('div');
-            headerEl.className = 'file-info-comfyui-header';
-            headerEl.innerHTML = `<span class="file-info-detail-label">${escapeHtml(title || section.title || 'Plugin Info')}:</span>
-                <button class="file-info-toggle-btn" data-toggle-plugin-section>▼</button>`;
-
-            const contentEl = document.createElement('div');
-            contentEl.className = 'file-info-comfyui-content';
-            contentEl.innerHTML = html;
-
-            if (Array.isArray(actions)) {
-                for (const action of actions) {
-                    if (!action.label || !action.copyText) continue;
-                    const btn = document.createElement('button');
-                    btn.className = 'file-info-copy-json-btn';
-                    btn.textContent = action.label;
-                    const textToCopy = action.copyText;
-                    btn.addEventListener('click', function() {
-                        navigator.clipboard.writeText(textToCopy).then(() => {
-                            const orig = this.textContent;
-                            this.textContent = 'Copied!';
-                            setTimeout(() => { this.textContent = orig; }, 2000);
-                        });
-                    });
-                    contentEl.appendChild(btn);
-                }
-            }
-
-            headerEl.querySelector('[data-toggle-plugin-section]').addEventListener('click', function() {
-                contentEl.classList.toggle('hidden');
-                this.textContent = this.textContent === '▼' ? '▶' : '▼';
-            });
-
-            wrapper.appendChild(headerEl);
-            wrapper.appendChild(contentEl);
-            detailsEl.appendChild(wrapper);
-        } catch (err) {
-            console.warn(`[Plugin info section] ${section.pluginId}/${section.id} failed:`, err.message);
-            showToastOnce(`plugin-info-err:${section.pluginId}:${section.id}`,
-                `Plugin "${section.pluginId}" encountered an error`, 'warning',
-                { details: err.message, duration: 5000 });
-        }
-    }
-}
 
 // ==================== LINKED DUPLICATES ====================
 // Non-destructive dual-layer metadata: per-file (existing) + per-hash (shared overlay).
@@ -4177,9 +3643,6 @@ function updateCardStars(card, rating, filePath) {
     }
 }
 
-function saveRatings() {
-    // Legacy: kept as no-op for any stale call sites
-}
 
 async function loadRatings() {
     try {
@@ -4259,9 +3722,6 @@ function setFilePinned(filePath, pinned) {
     }
 }
 
-function savePins() {
-    // Legacy: kept as no-op for any stale call sites
-}
 
 async function loadPins() {
     try {
@@ -5623,11 +5083,6 @@ function renderCompareInfo(side, fileIndex) {
     actionsContainer.appendChild(deleteBtn);
 }
 
-function updateShowAllGrid() {
-    const grid = document.getElementById('compare-show-all-grid');
-    if (!grid || !compareShowAll) return;
-    renderShowAllGrid();
-}
 
 function renderShowAllGrid() {
     const grid = document.getElementById('compare-show-all-grid');

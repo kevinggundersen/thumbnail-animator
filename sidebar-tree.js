@@ -158,7 +158,7 @@ async function loadTreeNodeChildren(node, depth, isDrive = false, { forceReload 
         const _ipcT0 = performance.now();
         const _subRes = await window.electronAPI.listSubdirectories(nodePath);
         const subdirs = _subRes && _subRes.ok ? (_subRes.value || []) : [];
-        console.log(`[sidebar] listSubdirectories "${nodePath.split(/[\\/]/).pop()}" (${subdirs.length} dirs): ${(performance.now() - _ipcT0).toFixed(1)}ms`);
+        perfLog(`[sidebar] listSubdirectories "${nodePath.split(/[\\/]/).pop()}" (${subdirs.length} dirs): ${(performance.now() - _ipcT0).toFixed(1)}ms`);
         children.innerHTML = '';
         children.dataset.loaded = '1';
 
@@ -175,7 +175,7 @@ async function loadTreeNodeChildren(node, depth, isDrive = false, { forceReload 
         for (const { childNode, name } of toExpand) {
             const _reT0 = performance.now();
             await toggleTreeNode(childNode, depth + 1);
-            console.log(`[sidebar] re-expand "${name}": ${(performance.now() - _reT0).toFixed(1)}ms`);
+            perfLog(`[sidebar] re-expand "${name}": ${(performance.now() - _reT0).toFixed(1)}ms`);
         }
         if (subdirs.length === 0) {
             toggle.classList.remove('expanded');
@@ -377,7 +377,7 @@ async function sidebarExpandToPath(folderPath) {
         if (i < parts.length - 1 && !childContainer.classList.contains('expanded')) {
             const _tT0 = performance.now();
             await toggleTreeNode(found, i);
-            console.log(`[sidebar] toggleTreeNode "${parts[i]}": ${(performance.now() - _tT0).toFixed(1)}ms`);
+            perfLog(`[sidebar] toggleTreeNode "${parts[i]}": ${(performance.now() - _tT0).toFixed(1)}ms`);
         }
         parentContainer = childContainer;
 
@@ -392,7 +392,7 @@ async function sidebarExpandToPath(folderPath) {
             }
         }
     }
-    console.log(`[sidebar] sidebarExpandToPath complete: ${(performance.now() - _seT0).toFixed(1)}ms`);
+    perfLog(`[sidebar] sidebarExpandToPath complete: ${(performance.now() - _seT0).toFixed(1)}ms`);
 }
 
 function initSidebarResize() {

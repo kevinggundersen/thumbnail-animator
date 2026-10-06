@@ -57,6 +57,10 @@ function pathToFileUrl(filePath) {
 // User-configurable values are `let` and hydrated from localStorage below.
 // ═══════════════════════════════════════════════════════════════════════════
 
+// Timing diagnostics. Off by default; enable with localStorage.setItem('perfLog', '1').
+const PERF_LOG_ENABLED = (() => { try { return localStorage.getItem('perfLog') === '1'; } catch { return false; } })();
+function perfLog(...args) { if (PERF_LOG_ENABLED) console.log(...args); }
+
 // Media Loading Configuration
 let MAX_VIDEOS = 120; // Max concurrent videos
 let MAX_IMAGES = 120; // Max concurrent images
@@ -791,7 +795,7 @@ function vsUpdateDOM(startIndex, endIndex) {
             pendingMediaCreations.delete(card);
             mediaToRetry.delete(card);
 
-            observer.unobserve(card);
+            unobserveCard(card);
             card.remove();
             activeCards.delete(itemIdx);
 
@@ -893,7 +897,7 @@ function vsUpdateDOM(startIndex, endIndex) {
 
         // Register new cards with IntersectionObserver for media loading
         requestAnimationFrame(() => {
-            newCards.forEach(card => observer.observe(card));
+            newCards.forEach(card => observeCard(card));
         });
 
         // Update tag badges on newly added cards
@@ -1397,7 +1401,7 @@ function vsUpdateItems(items, options = {}) {
                 }
                 pendingMediaCreations.delete(card);
                 mediaToRetry.delete(card);
-                observer.unobserve(card);
+                unobserveCard(card);
                 card.remove();
                 if (vsState.recyclePool.length < VS_MAX_POOL_SIZE) {
                     vsState.recyclePool.push(card);
@@ -1424,7 +1428,7 @@ function vsUpdateItems(items, options = {}) {
                     activeImageCount = Math.max(0, activeImageCount - 1);
                 }
             }
-            observer.unobserve(card);
+            unobserveCard(card);
             card.remove();
             if (vsState.recyclePool.length < VS_MAX_POOL_SIZE) {
                 vsState.recyclePool.push(card);
@@ -1491,7 +1495,7 @@ function vsCleanup() {
             if (mediaEl.tagName === 'VIDEO') destroyVideoElement(mediaEl);
             else destroyImageElement(mediaEl);
         }
-        observer.unobserve(card);
+        unobserveCard(card);
     }
     vsState.activeCards.clear();
     vsState.recyclePool = [];
@@ -1821,9 +1825,9 @@ if (window.electronAPI.onShowToast) {
 if (window.electronAPI.onScanProgress) {
     window.electronAPI.onScanProgress((data) => {
         if (data.status === 'scanning') {
-            console.log(`[scan] Scanning folder: ${data.folder}`);
+            perfLog(`[scan] Scanning folder: ${data.folder}`);
         } else if (data.status === 'complete') {
-            console.log(`[scan] Scan complete: ${data.count} files found`);
+            perfLog(`[scan] Scan complete: ${data.count} files found`);
         }
     });
 }
@@ -2471,6 +2475,22 @@ let aiVisualSearchEnabled = localStorage.getItem('aiVisualSearchEnabled') === 't
 let aiModelDownloadConfirmed = localStorage.getItem('aiModelDownloadConfirmed') === 'true';
 let aiAutoScan = localStorage.getItem('aiAutoScan') === 'true';
 // GPU acceleration mode: 'auto' (default, probe hardware) | 'on' (force) | 'off' (CPU only)
+// Resolve "is CLIP loaded, and if not load it" through one in-flight promise
+// so that concurrent callers (visual search, auto-tag, find-similar, MLT)
+// never trigger two model loads. Returns the IPC envelope {ok, value|error}.
+let _clipReadyPromise = null;
+function ensureClipReady() {
+    if (_clipReadyPromise) return _clipReadyPromise;
+    _clipReadyPromise = (async () => {
+        const status = await window.electronAPI.clipStatus();
+        if (status && status.ok && status.value && status.value.loaded) {
+            return { ok: true, value: status.value };
+        }
+        return window.electronAPI.clipInit(getClipGpuMode());
+    })().finally(() => { _clipReadyPromise = null; });
+    return _clipReadyPromise;
+}
+
 function getClipGpuMode() {
     const saved = localStorage.getItem('clipGpuMode');
     return (saved === 'on' || saved === 'off' || saved === 'auto') ? saved : 'auto';
@@ -3519,13 +3539,10 @@ async function activateFindSimilar(filePath, fileName) {
     if (!embedding) {
         showToast('Computing embedding for source image...', 'info', { duration: 2000 });
         try {
-            const status = await window.electronAPI.clipStatus();
-            if (!status.value?.loaded) {
-                const init = await window.electronAPI.clipInit(getClipGpuMode());
-                if (!init.ok) {
-                    showToast('Could not load AI model', 'error');
-                    return;
-                }
+            const init = await ensureClipReady();
+            if (!init.ok) {
+                showToast('Could not load AI model', 'error');
+                return;
             }
             // Find mtime for the source file
             const sourceItem = currentItems.find(i => i.path === filePath);
@@ -3689,13 +3706,10 @@ async function getOrComputeEmbedding(filePath) {
 
     // Compute on-the-fly
     try {
-        const status = await window.electronAPI.clipStatus();
-        if (!status.value?.loaded) {
-            const init = await window.electronAPI.clipInit(getClipGpuMode());
-            if (!init.ok) {
-                showToast('Could not load AI model', 'error');
-                return null;
-            }
+        const init = await ensureClipReady();
+        if (!init.ok) {
+            showToast('Could not load AI model', 'error');
+            return null;
         }
         const sourceItem = currentItems.find(i => i.path === filePath);
         const mtime = sourceItem ? (sourceItem.mtime || 0) : 0;
@@ -5101,7 +5115,7 @@ function pauseWhenMinimized() {
     // Disconnect IntersectionObserver to stop watching for visibility changes
     const allCards = gridContainer.querySelectorAll('.video-card, .folder-card');
     allCards.forEach(card => {
-        observer.unobserve(card);
+        unobserveCard(card);
     });
     
     // Trigger GC to free up memory
@@ -5124,7 +5138,7 @@ function resumeWhenRestored() {
     // This will automatically recreate videos for visible cards
     const allCards = gridContainer.querySelectorAll('.video-card, .folder-card');
     allCards.forEach(card => {
-        observer.observe(card);
+        observeCard(card);
     });
     
     // Trigger IntersectionObserver to check visibility immediately
@@ -5186,13 +5200,7 @@ function pauseThumbnailVideos() {
 function resumeThumbnailVideos() {
     isLightboxOpen = false;
     if (isWindowMinimized || isWindowBlurred) return;
-    const allVideos = gridContainer.querySelectorAll('video');
-    allVideos.forEach(video => {
-        const playPromise = video.play();
-        if (playPromise !== undefined) {
-            playPromise.catch(() => {}); // autoplay restrictions — intentional silent
-        }
-    });
+    for (const card of _visibleCards) playCardVideoIfVisible(card);
     // Restore animated GIFs by hiding static overlay
     const allOverlays = gridContainer.querySelectorAll('.gif-static-overlay');
     allOverlays.forEach(overlay => overlay.classList.remove('visible'));
@@ -7018,7 +7026,7 @@ function renderItemsProgressive(items) {
     // In masonry mode, defer layout until ALL cards are in the DOM (single pass)
     requestAnimationFrame(() => {
         for (let i = 0; i < cardsToObserve.length; i++) {
-            observer.observe(cardsToObserve[i]);
+            observeCard(cardsToObserve[i]);
         }
         cardsToObserve.length = 0; // Perf: release initial batch references
 
@@ -7067,7 +7075,7 @@ function renderItemsProgressive(items) {
         requestAnimationFrame(() => {
             // Batch observer registration for this chunk
             chunkCardsToObserve.forEach(card => {
-                observer.observe(card);
+                observeCard(card);
                 // Perf: removed cardsToObserve.push(card) — outer array not needed per-chunk
             });
 
@@ -7179,7 +7187,7 @@ function renderItems(items, preservedScrollTop = null) {
 
     // Batch unobserve and cleanup
     cardsArray.forEach(card => {
-        observer.unobserve(card);
+        unobserveCard(card);
         const mediaEl = card._mediaEl;
         if (mediaEl) {
             if (mediaEl.tagName === 'VIDEO') destroyVideoElement(mediaEl);
@@ -7243,7 +7251,7 @@ function renderItems(items, preservedScrollTop = null) {
                 ${emptyIcon.search}
                 <p class="grid-empty-title">No results found</p>
                 <p class="grid-empty-hint">${searchTerm
-                    ? `No files match "${searchTerm}"${filterLabel}. Try a different search term or clear filters.`
+                    ? `No files match "${escapeHtml(searchTerm)}"${escapeHtml(filterLabel)}. Try a different search term or clear filters.`
                     : `No files match the current filter. Try showing all files.`}</p>
             `;
         } else {
@@ -7545,6 +7553,7 @@ function createImageForCard(card, imageUrl) {
 
     // Add error handler - retry on error with exponential backoff
     img.addEventListener('error', () => {
+        if (img._destroyed) return;
         if (img.dataset.sourceMode === 'thumb') {
             setImageSource(imageUrl, 'original');
             return;
@@ -7844,6 +7853,7 @@ function createVideoForCard(card, videoUrl) {
 
     // Add error handler - retry on error with exponential backoff
     video.addEventListener('error', () => {
+        if (video._destroyed) return;
         scheduleMediaLoadSettle();
         destroyVideoElement(video);
         activeVideoCount = Math.max(0, activeVideoCount - 1);
@@ -7876,15 +7886,9 @@ function createVideoForCard(card, videoUrl) {
     card.dataset.hasMedia = '1';
     card._mediaEl = video;
 
-    // Don't auto-play if lightbox/blur pausing is active
-    if (!(isLightboxOpen && pauseOnLightbox) && !(isWindowBlurred && pauseOnBlur)) {
-        const playPromise = video.play();
-        if (playPromise !== undefined) {
-            playPromise.catch(() => {
-                // Ignore play errors
-            });
-        }
-    }
+    // Play only if the card is actually inside the viewport (not merely in the
+    // preload buffer) and no pause policy is active.
+    playCardVideoIfVisible(card);
 
     pendingMediaCreations.delete(card);
     return true;
@@ -8172,6 +8176,8 @@ function retryPendingVideos() {
 // Helper function to aggressively clean up video elements
 function destroyVideoElement(video) {
     if (!video) return;
+    // See destroyImageElement: clearing src fires 'error'; the listener must ignore it.
+    video._destroyed = true;
 
     // Store parent reference before we start cleanup
     const parent = video.parentNode;
@@ -8265,6 +8271,10 @@ function destroyVideoElement(video) {
 // Helper function to clean up image elements
 function destroyImageElement(img) {
     if (!img) return;
+    // Clearing src below fires 'error' on the element; the error listener must
+    // not treat that as a load failure (it would re-enter here, double-decrement
+    // the media counters and queue a pointless retry).
+    img._destroyed = true;
 
     const parent = img.parentNode;
     // Clear hasMedia flag if no other media remains in the card
@@ -8372,6 +8382,44 @@ function createMediaObserver() {
 
 let observer = createMediaObserver();
 
+// Second observer with no margin: tracks which cards are actually inside the
+// viewport. The media observer above (with its preload buffer) decides which
+// cards *have* a <video>; this one decides which of those are *playing*.
+// Decoding only what can be seen is what lets the visible count go high.
+const _visibleCards = new Set();
+// Measured (DECISIONS.md, Phase 1): pausing videos that sit in the preload buffer
+// made scrolling worse, because decoders restart as cards enter the viewport.
+// Buffered videos therefore keep playing by default; the visible set is kept so
+// the Phase 3 playback budget can pause the least visible videos first.
+// localStorage.setItem('playOnlyVisible', '1') opts into visible-only playback.
+const PLAY_ONLY_VISIBLE = (() => { try { return localStorage.getItem('playOnlyVisible') === '1'; } catch { return false; } })();
+// The observer costs a callback per card per scroll step, so it only runs when
+// something consumes the visible set (today: the opt-in policy above; later:
+// the Phase 3 playback budget, which will flip this on at runtime).
+let visibilityTrackingEnabled = PLAY_ONLY_VISIBLE;
+function canAutoplayNow() {
+    return !(isLightboxOpen && pauseOnLightbox) && !(isWindowBlurred && pauseOnBlur) && !isWindowMinimized;
+}
+function playCardVideoIfVisible(card) {
+    const el = card && card._mediaEl;
+    if (!el || el.tagName !== 'VIDEO' || el._destroyed) return;
+    const visible = !visibilityTrackingEnabled || _visibleCards.has(card);
+    if ((!PLAY_ONLY_VISIBLE || visible) && canAutoplayNow()) {
+        if (el.paused) { const p = el.play(); if (p && p.catch) p.catch(() => {}); }
+    } else if (!el.paused) {
+        el.pause();
+    }
+}
+const visibilityObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+        if (entry.isIntersecting) _visibleCards.add(entry.target);
+        else _visibleCards.delete(entry.target);
+        playCardVideoIfVisible(entry.target);
+    }
+}, { root: gridContainer, rootMargin: '0px', threshold: 0 });
+function observeCard(card) { observer.observe(card); if (visibilityTrackingEnabled) visibilityObserver.observe(card); }
+function unobserveCard(card) { observer.unobserve(card); visibilityObserver.unobserve(card); _visibleCards.delete(card); }
+
 function refreshMediaObserver() {
     const cardsToObserve = vsState.enabled
         ? Array.from(vsState.activeCards.values())
@@ -8379,7 +8427,7 @@ function refreshMediaObserver() {
 
     if (observer) observer.disconnect();
     observer = createMediaObserver();
-    cardsToObserve.forEach(card => observer.observe(card));
+    cardsToObserve.forEach(card => observeCard(card));
 }
 
 function scheduleObserverRefresh() {
@@ -10385,7 +10433,7 @@ let _lastNavCompleteTime = 0; // timestamp — watcher ignores events shortly af
 async function navigateToFolder(folderPath, addToHistory = true, forceReload = false, trustCache = false) {
     if (_navBusy) {
         // Queue the LATEST destination (overwrites any previous pending)
-        console.log(`[nav] QUEUED (busy): "${folderPath.split(/[\\/]/).pop()}" forceReload=${forceReload}`, new Error().stack.split('\n').slice(1, 3).join(' ← '));
+        perfLog(`[nav] QUEUED (busy): "${folderPath.split(/[\\/]/).pop()}" forceReload=${forceReload}`);
         _pendingNav = { folderPath, addToHistory, forceReload, trustCache };
         // Cancel the active scan so the current loadVideos resolves/rejects quickly
         if (typeof cancelActiveStream === 'function') cancelActiveStream();
@@ -10560,7 +10608,7 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
         // Mark navigation completion so the file watcher ignores the initial burst
         // of events from the watcher being set up on the new folder.
         _lastNavCompleteTime = Date.now();
-        console.log(`[nav] navigateToFolder total: ${(performance.now() - _navT0).toFixed(1)}ms (cached=${!forceReload})`);
+        perfLog(`[nav] navigateToFolder total: ${(performance.now() - _navT0).toFixed(1)}ms (cached=${!forceReload})`);
     } catch (error) {
         // Revert state for all errors (cancellation or real)
         currentFolderPath = previousFolderPath;
@@ -10805,11 +10853,8 @@ async function scheduleBackgroundEmbedding(items) {
 
     // Ensure model is loaded
     try {
-        const status = await window.electronAPI.clipStatus();
-        if (!status.value?.loaded) {
-            const init = await window.electronAPI.clipInit(getClipGpuMode());
-            if (!init.ok) { hideEmbedProgressUI(); return; }
-        }
+        const init = await ensureClipReady();
+        if (!init.ok) { hideEmbedProgressUI(); return; }
     } catch { hideEmbedProgressUI(); return; }
 
     showEmbedProgressUI(uncached.length);
@@ -11511,14 +11556,11 @@ async function openAutoTag(filePaths) {
 
     // Ensure CLIP is loaded
     try {
-        const status = await window.electronAPI.clipStatus();
-        if (!status.value?.loaded) {
-            autoTagStatus.textContent = 'Loading AI model...';
-            const init = await window.electronAPI.clipInit(getClipGpuMode());
-            if (!init.ok) {
-                autoTagStatus.textContent = 'Could not load AI model. Enable AI search in settings first.';
-                return;
-            }
+        autoTagStatus.textContent = 'Loading AI model...';
+        const init = await ensureClipReady();
+        if (!init.ok) {
+            autoTagStatus.textContent = 'Could not load AI model. Enable AI search in settings first.';
+            return;
         }
     } catch {
         autoTagStatus.textContent = 'AI model not available.';
@@ -12193,16 +12235,27 @@ function scanFolderStreaming(folderPath, options, callbacks) {
 }
 
 // Debounce layout recalcs triggered by dimension updates during streaming.
+// Dimension chunks arrive every few ms while a folder streams in. Each
+// refresh is a full masonry re-layout, so coalesce: at most one every
+// STREAMING_REFRESH_MS, aligned to a frame, and only if something changed.
+const STREAMING_REFRESH_MS = 250;
 let _streamingLayoutTimer = null;
-function scheduleStreamingLayoutRefresh() {
-    if (_streamingLayoutTimer) return;
+let _streamingLayoutDirty = false;
+function scheduleStreamingLayoutRefresh(force = false) {
+    _streamingLayoutDirty = true;
+    if (_streamingLayoutTimer && !force) return;
+    if (_streamingLayoutTimer) clearTimeout(_streamingLayoutTimer);
     _streamingLayoutTimer = setTimeout(() => {
         _streamingLayoutTimer = null;
-        if (vsState.enabled) {
-            vsState.layoutCache.itemCount = 0;
-            vsRecalculate();
-        }
-    }, 120);
+        if (!_streamingLayoutDirty) return;
+        _streamingLayoutDirty = false;
+        requestAnimationFrame(() => {
+            if (vsState.enabled) {
+                vsState.layoutCache.itemCount = 0;
+                vsRecalculate();
+            }
+        });
+    }, force ? 0 : STREAMING_REFRESH_MS);
 }
 
 // ── Hover prefetch ──────────────────────────────────────────────────────────
@@ -12310,7 +12363,7 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
         
         // Removed: window.electronAPI.triggerGC() — forced GC blocks the main process
         // (100-300ms) before the scan can start.  V8 schedules GC automatically.
-        console.log(`[loadVideos] setup done: ${(performance.now() - _lvT0).toFixed(1)}ms, useCache=${useCache}`);
+        perfLog(`[loadVideos] setup done: ${(performance.now() - _lvT0).toFixed(1)}ms, useCache=${useCache}`);
 
         // Check cache first
         let items = null;
@@ -12382,9 +12435,9 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
         // If not cached, scan folder via STREAMING path:
         // items arrive immediately, dimensions trickle in as background chunks.
         if (!items) {
-            console.log(`[loadVideos] cache MISS, starting scan: ${(performance.now() - _lvT0).toFixed(1)}ms`);
+            perfLog(`[loadVideos] cache MISS, starting scan: ${(performance.now() - _lvT0).toFixed(1)}ms`);
         } else {
-            console.log(`[loadVideos] cache HIT (${items.length} items): ${(performance.now() - _lvT0).toFixed(1)}ms`);
+            perfLog(`[loadVideos] cache HIT (${items.length} items): ${(performance.now() - _lvT0).toFixed(1)}ms`);
         }
         if (!items) {
             // Yield control before starting scan to keep UI responsive
@@ -12426,16 +12479,19 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
                         },
                         onDimensions: (dims) => {
                             if (!itemByPath) return;
+                            let changed = false;
                             for (const d of dims) {
                                 const item = itemByPath.get(d.path);
-                                if (item) { item.width = d.width; item.height = d.height; }
+                                if (item && (item.width !== d.width || item.height !== d.height)) {
+                                    item.width = d.width; item.height = d.height; changed = true;
+                                }
                             }
-                            scheduleStreamingLayoutRefresh();
+                            if (changed) scheduleStreamingLayoutRefresh();
                         },
                         onComplete: (ok, error) => {
                             _abortCurrentScan = null;
                             // Final refresh to pick up any lingering dimensions
-                            scheduleStreamingLayoutRefresh();
+                            scheduleStreamingLayoutRefresh(true);
                             if (ok && initialItems) {
                                 // Re-cache with complete dimensions
                                 const dimEntries = initialItems.filter(
@@ -12467,7 +12523,7 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
                 items = _scanRes.value || [];
             }
             perfTest.end('scanFolder (IPC stream)', scanPerfStart, { itemCount: items ? items.length : 0 });
-            console.log(`[loadVideos] scan done (${items ? items.length : 0} items): ${(performance.now() - _lvT0).toFixed(1)}ms`);
+            perfLog(`[loadVideos] scan done (${items ? items.length : 0} items): ${(performance.now() - _lvT0).toFixed(1)}ms`);
 
             // Yield control after initial chunk arrives
             await yieldToEventLoop();
@@ -12524,7 +12580,7 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
         currentItems = items;
 
         // Filter items based on current filter, then sort
-        console.log(`[loadVideos] filter/sort start: ${(performance.now() - _lvT0).toFixed(1)}ms`);
+        perfLog(`[loadVideos] filter/sort start: ${(performance.now() - _lvT0).toFixed(1)}ms`);
         const filteredItems = filterItems(items);
         const sortedItems = sortItems(filteredItems);
 
@@ -12538,9 +12594,9 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
         cancelEmbeddingScan();
         _cancelIdlePreEmbedding();
 
-        console.log(`[loadVideos] renderItems start: ${(performance.now() - _lvT0).toFixed(1)}ms`);
+        perfLog(`[loadVideos] renderItems start: ${(performance.now() - _lvT0).toFixed(1)}ms`);
         renderItems(sortedItems, preservedScrollTop);
-        console.log(`[loadVideos] renderItems done: ${(performance.now() - _lvT0).toFixed(1)}ms`);
+        perfLog(`[loadVideos] renderItems done: ${(performance.now() - _lvT0).toFixed(1)}ms`);
 
         // Show "Loading media..." while IntersectionObserver lazy-loads images/videos into cards
         const mediaItemCount = sortedItems.filter(i => i.type !== 'folder').length;
@@ -12570,9 +12626,9 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
         }
 
         // Start watching folder for changes (fire-and-forget — no need to block navigation)
-        console.log(`[loadVideos] startWatchingFolder: ${(performance.now() - _lvT0).toFixed(1)}ms`);
+        perfLog(`[loadVideos] startWatchingFolder: ${(performance.now() - _lvT0).toFixed(1)}ms`);
         startWatchingFolder(folderPath);
-        console.log(`[loadVideos] complete: ${(performance.now() - _lvT0).toFixed(1)}ms`);
+        perfLog(`[loadVideos] complete: ${(performance.now() - _lvT0).toFixed(1)}ms`);
     } finally {
         // Hide loading indicator
         hideLoadingIndicator();
@@ -13795,7 +13851,7 @@ async function renderTagPickerList(filter) {
         item.className = 'tag-picker-item' + stateClass;
         item.innerHTML = `
             <div class="tag-picker-item-check">${icon}</div>
-            <span class="tag-picker-item-dot" style="background:${tag.color || '#6366f1'}"></span>
+            <span class="tag-picker-item-dot" style="background:${escapeHtml(tag.color || '#6366f1')}"></span>
             <span class="tag-picker-item-name">${escapeHtml(tag.name)}</span>
         `;
         item.addEventListener('click', async () => {
@@ -14130,7 +14186,7 @@ async function renderTagsManagement() {
         item.dataset.tagId = tag.id;
         item.innerHTML = `
             <span class="tag-list-item-drag" title="Drag to group">&#8942;&#8942;</span>
-            <span class="tag-list-item-dot" style="background:${tag.color || '#6366f1'}"></span>
+            <span class="tag-list-item-dot" style="background:${escapeHtml(tag.color || '#6366f1')}"></span>
             <span class="tag-list-item-name">${escapeHtml(tag.name)}</span>
             <span class="tag-list-item-count">${countMap[tag.id] || 0} files</span>
             <div class="tag-list-item-actions">
@@ -14166,8 +14222,8 @@ async function renderTagsManagement() {
             const editRow = document.createElement('div');
             editRow.className = 'tag-edit-row';
             editRow.innerHTML = `
-                <input type="color" class="tag-color-picker" value="${tag.color || '#6366f1'}">
-                <input type="text" class="tag-create-input" value="${tag.name}">
+                <input type="color" class="tag-color-picker" value="${escapeHtml(tag.color || '#6366f1')}">
+                <input type="text" class="tag-create-input" value="${escapeHtml(tag.name)}">
                 <button class="tag-list-item-btn tag-edit-save" title="Save">&#10003;</button>
                 <button class="tag-list-item-btn tag-edit-cancel" title="Cancel">&#10005;</button>
             `;
@@ -14453,7 +14509,6 @@ refreshTagsCache();
 // Load plugin sort comparators on startup
 loadPluginSortComparators();
 
-console.log('[Tags] renderer.js fully loaded, end of file reached');
 
 
 // ═══════════════════════════════════════════════════════════════════════════

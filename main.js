@@ -635,7 +635,10 @@ function getVideoDimensions(filePath) {
 // This ensures Electron uses a location with proper write permissions
 // When packaged, __dirname points to app.asar which is read-only, so we need a different path
 let userDataPath;
-if (app.isPackaged) {
+if (process.env.THUMBNAIL_ANIMATOR_USER_DATA) {
+    // Test/perf harnesses point this at an isolated profile so they never touch real user data.
+    userDataPath = path.resolve(process.env.THUMBNAIL_ANIMATOR_USER_DATA);
+} else if (app.isPackaged) {
     // When packaged, use Electron's default userData directory
     userDataPath = app.getPath('userData');
 } else {
@@ -819,28 +822,36 @@ function pushUndoEntry(entry) {
 
 // safeMove, moveToStaging, restoreFromStaging — imported from main-utils.js
 
-// Fix for VRAM leak: Disable Hardware Acceleration
-// This forces software decoding which is often more stable for many simultaneous videos
-// app.disableHardwareAcceleration(); // Re-enabled per user request
-
 // Expose GC for manual memory management
 app.commandLine.appendSwitch('js-flags', '--expose-gc');
 
-// Additional cache-related command line switches to prevent cache errors
-app.commandLine.appendSwitch('disable-gpu-sandbox');
-app.commandLine.appendSwitch('disable-software-rasterizer');
-
-// VRAM management flags - help prevent video decoder leaks
+// Keep the GPU process alive across driver hiccups; many simultaneous video
+// decoders can trip the default crash limit.
 app.commandLine.appendSwitch('disable-gpu-process-crash-limit');
-app.commandLine.appendSwitch('disable-background-networking');
-app.commandLine.appendSwitch('disable-background-timer-throttling');
-app.commandLine.appendSwitch('disable-renderer-backgrounding');
 
-// Reduce VRAM usage per video
-app.commandLine.appendSwitch('disable-zero-copy'); // Prevent zero-copy which can hold VRAM
-app.commandLine.appendSwitch('enable-low-res-tiling'); // Use lower resolution tiling
-app.commandLine.appendSwitch('disable-partial-raster'); // Disable partial rasterization that can use VRAM
-app.commandLine.appendSwitch('disable-accelerated-2d-canvas'); // Reduce GPU memory for canvas operations
+// Dev/perf hook: THUMBNAIL_ANIMATOR_EXTRA_SWITCHES="switch-a,switch-b=value" appends
+// Chromium switches at launch so GPU/raster behaviour can be A/B tested without edits.
+if (process.env.THUMBNAIL_ANIMATOR_EXTRA_SWITCHES) {
+    for (const sw of process.env.THUMBNAIL_ANIMATOR_EXTRA_SWITCHES.split(',')) {
+        const [name, value] = sw.trim().split('=');
+        if (name) app.commandLine.appendSwitch(name, value);
+    }
+}
+
+// Low-resolution tiles while scrolling fast: the compositor paints a cheap tile
+// first instead of stalling the frame on a full raster. Measured with
+// scripts/perf-smoke.js (DECISIONS.md, Phase 1): this one switch takes the scroll
+// test from 13-19 frames over 33 ms down to 1; the other legacy raster switches
+// added nothing on top of it.
+app.commandLine.appendSwitch('enable-low-res-tiling');
+
+// Deliberately NOT set (see MODERNIZATION.md, Phase 1):
+// - disable-zero-copy / disable-partial-raster / disable-accelerated-2d-canvas /
+//   disable-software-rasterizer: measured no scroll benefit; they only force
+//   slower raster paths and more GPU memory traffic.
+// - disable-renderer-backgrounding / disable-background-timer-throttling /
+//   disable-background-networking: the app must idle to near-zero when it is
+//   not the foreground window, so Chromium's normal throttling is wanted.
 
 let mainWindow = null;
 
@@ -2448,6 +2459,7 @@ ipcMain.handle('rename-file', async (event, filePath, newName) => {
         }
         try {
             await appDb.updateFilePaths([{ oldPath: filePath, newPath }]);
+            invalidateIpcCaches();
         } catch (e) {
             console.error('Failed to update DB paths after rename:', e);
             // Revert the file rename to avoid DB/disk inconsistency
@@ -2576,7 +2588,7 @@ ipcMain.handle('batch-rename', async (event, filePaths, patternType, patternOpti
 
         // Update database references for successfully renamed files
         if (renamedPairs.length > 0) {
-            try { await appDb.updateFilePaths(renamedPairs); } catch (e) {
+            try { await appDb.updateFilePaths(renamedPairs); invalidateIpcCaches(); } catch (e) {
                 console.error('Failed to update DB paths after batch rename:', e);
             }
             pushUndoEntry({
@@ -3091,7 +3103,7 @@ ipcMain.handle('move-file', async (event, sourcePath, destFolderOrPath, fileName
 
         await safeMove(sourcePath, finalPath);
         if (path.normalize(sourcePath) !== path.normalize(finalPath)) {
-            try { await appDb.updateFilePaths([{ oldPath: sourcePath, newPath: finalPath }]); } catch (e) {
+            try { await appDb.updateFilePaths([{ oldPath: sourcePath, newPath: finalPath }]); invalidateIpcCaches(); } catch (e) {
                 console.error('Failed to update DB paths after move:', e);
             }
         }
@@ -4477,7 +4489,19 @@ ipcMain.handle('clip-check-cache', async () => {
     }
 });
 
-ipcMain.handle('clip-init', async (event, payload = {}) => {
+// Only one CLIP initialization may be in flight. The renderer has several
+// entry points (visual search, auto-tag, find-similar, more-like-this) that
+// each do "status? then init"; without this guard two of them racing would
+// load the model and spin up the preprocess pool twice.
+let _clipInitPromise = null;
+ipcMain.handle('clip-init', (event, payload = {}) => {
+    if (clipModel) return { ok: true, value: { gpuMode: _clipLastGpuProvider } };
+    if (_clipInitPromise) return _clipInitPromise;
+    _clipInitPromise = clipInitImpl(event, payload).finally(() => { _clipInitPromise = null; });
+    return _clipInitPromise;
+});
+
+async function clipInitImpl(event, payload) {
     try {
         if (clipModel) return { ok: true, value: { gpuMode: _clipLastGpuProvider } };
 
@@ -4598,7 +4622,7 @@ ipcMain.handle('clip-init', async (event, payload = {}) => {
         console.error('clip-init error:', err);
         return { ok: false, error:err.message };
     }
-});
+}
 
 // Helper: embed a single image file
 // Uses nativeImage as fallback; prefer clipPreprocessPool for batched work.
@@ -5811,7 +5835,7 @@ app.on('before-quit', async () => {
 
 // Migration
 wrapIpc('db-check-migration-status', () => appDb.checkMigrationStatus());
-wrapIpc('db-run-migration', (data) => appDb.runMigration(data));
+wrapIpc('db-run-migration', async (data) => { const r = await appDb.runMigration(data); invalidateIpcCaches(); return r; });
 wrapIpc('db-get-meta', (key) => appDb.getMeta(key));
 wrapIpc('db-set-meta', (key, value) => appDb.setMeta(key, value));
 
@@ -5825,6 +5849,11 @@ wrapIpc('db-rename-workspace', (id, newName) => appDb.renameWorkspace(id, newNam
 
 // IPC result caches for frequently-fetched full-table queries
 const _ipcCache = { ratings: null, pinned: null, tags: null, collections: null, hashRatings: null, hashPins: null };
+// Drop every cached table. Call after any write that is not a single-key
+// update handled inline below (renames, imports, migrations).
+function invalidateIpcCaches() {
+    for (const k of Object.keys(_ipcCache)) _ipcCache[k] = null;
+}
 
 // Ratings
 ipcMain.handle('db-get-all-ratings', async () => {
@@ -5961,7 +5990,7 @@ wrapIpc('db-rename-saved-search', (id, name) => appDb.renameSavedSearch(id, name
 wrapIpc('db-touch-saved-search', (id) => appDb.touchSavedSearch(id));
 wrapIpc('db-suggest-tags', (filePath) => appDb.suggestTagsForFile(filePath));
 wrapIpc('db-export-tags', () => appDb.exportTags());
-wrapIpc('db-import-tags', (data) => appDb.importTags(data));
+wrapIpc('db-import-tags', async (data) => { const r = await appDb.importTags(data); invalidateIpcCaches(); return r; });
 
 // ── Linked Duplicates (hash-keyed shared metadata) ─────────────────────────
 ipcMain.handle('db-get-all-hash-ratings', async () => {

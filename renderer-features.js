@@ -797,7 +797,7 @@ function renderFavorites() {
         header.className = 'fav-group-header';
         header.innerHTML = `
             <span class="fav-group-toggle ${group.collapsed ? '' : 'expanded'}">${icon('chevron-right', 12)}</span>
-            <span class="fav-group-name">${group.name}</span>
+            <span class="fav-group-name">${escapeHtml(group.name)}</span>
             <span class="fav-group-count">${group.items.length}</span>
         `;
         header.addEventListener('click', (e) => {
@@ -860,7 +860,7 @@ function renderFavorites() {
             item.className = 'quick-access-item';
             item.draggable = true;
             item.innerHTML = `
-                <span class="quick-access-item-name" title="${fav.path}">${fav.name}</span>
+                <span class="quick-access-item-name" title="${escapeHtml(fav.path)}">${escapeHtml(fav.name)}</span>
                 <span class="quick-access-item-remove" data-group="${group.id}" data-index="${index}">${icon('x', 14)}</span>
             `;
 
@@ -1230,7 +1230,7 @@ function renderRecentFiles() {
         item.className = 'recent-file-item quick-access-item';
         const timeAgo = getTimeAgo(file.timestamp);
         item.innerHTML = `
-            <span class="quick-access-item-name" title="${file.path}">${file.name}</span>
+            <span class="quick-access-item-name" title="${escapeHtml(file.path)}">${escapeHtml(file.name)}</span>
             <span style="font-size: 11px; opacity: 0.6;">${timeAgo}</span>
         `;
         
@@ -3471,13 +3471,7 @@ function stepVideoFrame(direction) {
     }
 }
 
-// Helper function to escape HTML
-function escapeHtml(text) {
-    if (typeof text !== 'string') return text;
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
+// escapeHtml lives in renderer.js (single regex implementation shared by all scripts).
 
 // Extract common ComfyUI parameters from workflow
 function extractComfyUIParameters(workflow) {

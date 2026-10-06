@@ -1712,6 +1712,7 @@ const _shownToastKeys = new Set();
 function showToastOnce(key, message, type = 'info', options = {}) {
     if (_shownToastKeys.has(key)) return null;
     _shownToastKeys.add(key);
+    if (_shownToastKeys.size > 200) _shownToastKeys.delete(_shownToastKeys.values().next().value); // bounded
     return showToast(message, type, options);
 }
 
@@ -4591,7 +4592,7 @@ function normalizePath(path) {
     let result = _normalizeCache.get(path);
     if (result !== undefined) return result;
     result = path.replace(/\\/g, '/').replace(/\/+$/, '') || path;
-    _normalizeCache.set(path, result);
+    setCachedUrl(_normalizeCache, path, result, 5000); // bounded
     if (_normalizeCache.size > NORMALIZE_CACHE_MAX_SIZE) _normalizeCache.clear();
     return result;
 }
@@ -15795,7 +15796,7 @@ class InspectorPanel {
 
         const colors = extractDominantColors(sourceCanvas, 5);
         if (colors.length === 0) return;
-        _lbPaletteCache.set(cacheKey, colors);
+        setCachedUrl(_lbPaletteCache, cacheKey, colors, 64); // bounded: palettes of recently viewed items
         if (path !== this._currentPath) return;
         this._renderPaletteSwatches(colors);
     }

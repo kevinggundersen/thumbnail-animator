@@ -1420,8 +1420,20 @@ function loadTabs() {
     }
 
     if (tabs.length === 0) {
-        // Create initial tab if none exist
-        createTab(null, 'Home');
+        if (currentFolderPath) {
+            // Startup has already navigated to the remembered folder: give the first
+            // tab that folder instead of a pathless "Home" tab, which would wipe the
+            // freshly rendered grid and trigger a second scan and render.
+            tabs.push({
+                id: tabIdCounter++, path: currentFolderPath,
+                name: currentFolderPath.split(/[/\\]/).filter(Boolean).pop() || 'Home',
+                sortType: sortType || 'name', sortOrder: sortOrder || 'ascending',
+                historyPaths: [currentFolderPath], historyIndex: 0, collectionId: null, groupId: null,
+            });
+        } else {
+            // Create initial tab if none exist
+            createTab(null, 'Home');
+        }
     }
     renderTabs();
     renderSavedTabGroupsSidebar();
@@ -1591,6 +1603,13 @@ function switchToTab(tabId) {
         }
 
         if (tab.path) {
+            // The grid already shows this folder (startup restore, or re-selecting the
+            // active tab): nothing to reload.
+            if (currentFolderPath && !currentCollectionId && normalizePath(tab.path) === normalizePath(currentFolderPath)) {
+                saveTabs();
+                renderTabs();
+                return;
+            }
             // Look up saved per-folder scroll position for this tab
             const savedScroll = getTabScrollMap(tabId).get(normalizePath(tab.path));
 
@@ -6042,6 +6061,17 @@ async function initTabRestoration() {
 
     if ((!activeTab || !activeTab.path) && rememberLastFolder) {
         const lastFolderPath = localStorage.getItem('lastFolderPath');
+        // Startup step 6 has usually navigated there already: just attach the folder
+        // to the tab. The old path re-scanned the whole folder over IPC and navigated
+        // a second time (a full re-render) on every fresh start.
+        if (lastFolderPath && activeTab && currentFolderPath && normalizePath(currentFolderPath) === normalizePath(lastFolderPath)) {
+            activeTab.path = lastFolderPath;
+            activeTab.name = lastFolderPath.split(/[/\\]/).pop();
+            if (!activeTab.historyPaths || activeTab.historyPaths.length === 0) { activeTab.historyPaths = [lastFolderPath]; activeTab.historyIndex = 0; }
+            saveTabs();
+            renderTabs();
+            return;
+        }
         if (lastFolderPath) {
             try {
                 const skipStats = sortType === 'name';

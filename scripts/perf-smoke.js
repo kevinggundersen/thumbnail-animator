@@ -126,7 +126,10 @@ async function metrics(app) {
 
     // Wait for the grid to populate.
     await page.waitForFunction(() => document.querySelectorAll('#grid-container .video-card').length >= 20, null, { timeout: 60000 });
-    const tFirstCards = Date.now() - tReload;
+    // Measured by the page itself (navigation start → the poll that saw the cards), so
+    // harness round trips do not inflate it; the Date.now() figure is kept for reference.
+    const tFirstCards = await page.evaluate(() => Math.round(performance.now()));
+    const tFirstCardsHarness = Date.now() - tReload;
     await sleep(2500); // let the initial wave of thumbnails/videos settle
 
     const stateAfterLoad = await page.evaluate(() => {
@@ -210,6 +213,7 @@ async function metrics(app) {
         app: appDir, profile: profileDir, folder, when: new Date().toISOString(),
         startupMs: tReload - t0,
         timeToFirstCardsMs: tFirstCards,
+        timeToFirstCardsHarnessMs: tFirstCardsHarness,
         afterLoad: stateAfterLoad,
         loadLongTasks: { count: loadLongTasks.length, totalMs: loadLongTasks.reduce((a, b) => a + b, 0), maxMs: Math.max(0, ...loadLongTasks) },
         scroll: {

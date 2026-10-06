@@ -81,6 +81,10 @@ const CLEANUP_IDLE_INTERVAL_MS = 200; // Low-frequency safety cleanup while idle
 const VIEWPORT_CACHE_TTL = 300; // Cache viewport bounds for N ms (invalidated on scroll/resize via generation counter)
 const CARD_RECT_CACHE_TTL = 300; // Rect cache for scroll/cleanup paths (invalidated on scroll/resize via generation counter)
 let IMAGE_THUMBNAIL_MAX_EDGE = 768; // Cap cached image thumbs to a practical grid size
+// "original" quality raises the cap so large cards stay sharp, but never means the file itself.
+function getThumbnailMaxEdge() {
+    return (typeof thumbnailQuality !== 'undefined' && thumbnailQuality === 'original') ? Math.max(IMAGE_THUMBNAIL_MAX_EDGE, 1536) : IMAGE_THUMBNAIL_MAX_EDGE;
+}
 const BACKGROUND_DIMENSION_SCAN_CHUNK_SIZE = 2000; // Larger chunks = fewer layout recalculations
 
 // Progressive Rendering Configuration
@@ -4574,7 +4578,7 @@ function normalizePath(path) {
     let result = _normalizeCache.get(path);
     if (result !== undefined) return result;
     result = path.replace(/\\/g, '/').replace(/\/+$/, '') || path;
-    setCachedUrl(_normalizeCache, path, result, 5000); // bounded
+    setCachedUrl(_normalizeCache, path, result, 50000); // bounded (a duplicate index can hold tens of thousands of paths)
     if (_normalizeCache.size > NORMALIZE_CACHE_MAX_SIZE) _normalizeCache.clear();
     return result;
 }
@@ -4996,7 +5000,9 @@ let isWindowBlurred = false;
 function pauseWhenMinimized() {
     if (isWindowMinimized) return; // Already paused
     isWindowMinimized = true;
-    
+    const _pt0 = performance.now();
+    perfLog(`[activity] hidden (visibilityState=${document.visibilityState}) at ${_pt0.toFixed(0)}ms`);
+
     // Destroy all videos in the grid to release VRAM
     // Simply pausing videos doesn't release GPU memory - we need to destroy them
     const allVideos = gridContainer.querySelectorAll('video');
@@ -5004,7 +5010,8 @@ function pauseWhenMinimized() {
         destroyVideoElement(video);
         activeVideoCount = Math.max(0, activeVideoCount - 1);
     });
-    
+    perfLog(`[activity] hidden: ${allVideos.length} videos destroyed in ${(performance.now() - _pt0).toFixed(1)}ms`);
+
     // Clear lightbox video src to release VRAM (but keep element for restoration)
     if (lightboxVideo && lightboxVideo.src) {
         // Store the URL in dataset before clearing so we can restore it
@@ -5043,7 +5050,8 @@ function pauseWhenMinimized() {
     allCards.forEach(card => {
         unobserveCard(card);
     });
-    
+    perfLog(`[activity] hidden: ${allCards.length} cards unobserved, total ${(performance.now() - _pt0).toFixed(1)}ms`);
+
     // Trigger GC to free up memory
     scheduleGC();
     
@@ -5059,6 +5067,7 @@ function pauseWhenMinimized() {
 function resumeWhenRestored() {
     if (!isWindowMinimized) return; // Already resumed
     isWindowMinimized = false;
+    perfLog(`[activity] visible at ${performance.now().toFixed(0)}ms`);
     
     // Reconnect IntersectionObserver for all cards
     // This will automatically recreate videos for visible cards
@@ -5351,150 +5360,6 @@ function _enqueueThumbnailRequest(type, filePath, maxSize) {
         }
     });
 }
-
-// ── Off-thread image decoder + ImageBitmap LRU cache ──────────────────
-// createImageBitmap runs in a worker, so decoding never blocks the main thread.
-// Decoded bitmaps are cached; scrolling back to previously-seen cards is instant.
-
-const BITMAP_CACHE_MAX = 300; // ~150MB at typical card sizes
-
-// ── O(1) LRU bitmap cache using doubly-linked list + Map ────────────
-// Each node: { url, bitmap, w, h, prev, next }
-// _lruHead = most recent, _lruTail = least recent (eviction candidate)
-const _bitmapCacheMap = new Map(); // url -> node
-let _lruHead = null;
-let _lruTail = null;
-let _bitmapCacheSize = 0;
-
-function _lruRemoveNode(node) {
-    if (node.prev) node.prev.next = node.next;
-    else _lruHead = node.next; // was head
-    if (node.next) node.next.prev = node.prev;
-    else _lruTail = node.prev; // was tail
-    node.prev = null;
-    node.next = null;
-    _bitmapCacheSize--;
-}
-
-function _lruPrependNode(node) {
-    node.prev = null;
-    node.next = _lruHead;
-    if (_lruHead) _lruHead.prev = node;
-    _lruHead = node;
-    if (!_lruTail) _lruTail = node;
-    _bitmapCacheSize++;
-}
-
-function _lruPromoteNode(node) {
-    if (node === _lruHead) return; // already most recent
-    _lruRemoveNode(node);
-    _lruPrependNode(node);
-}
-
-let _decodeWorker = null;
-let _decodeNextId = 0;
-const _decodePending = new Map(); // id -> {resolve, reject}
-const _decodeUrlInFlight = new Map(); // url -> Promise<ImageBitmap> (dedup concurrent requests)
-
-function getDecodeWorker() {
-    if (_decodeWorker) return _decodeWorker;
-    try {
-        _decodeWorker = new Worker('image-decode-worker.js');
-        _decodeWorker.onmessage = (e) => {
-            const msg = e.data;
-            if (!msg) return;
-            const entry = _decodePending.get(msg.id);
-            if (!entry) return;
-            _decodePending.delete(msg.id);
-            if (msg.type === 'decoded') entry.resolve(msg.bitmap);
-            else entry.reject(new Error(msg.error || 'decode failed'));
-        };
-        _decodeWorker.onerror = (err) => { console.error('image-decode-worker error:', err); };
-    } catch (e) {
-        console.warn('Failed to spawn image decode worker:', e);
-        _decodeWorker = null;
-    }
-    return _decodeWorker;
-}
-
-/** Decode an image URL to ImageBitmap off-thread. Returns Promise<ImageBitmap|null>. */
-function decodeImageOffThread(url, maxWidth = 0, maxHeight = 0) {
-    // Dedup concurrent decodes of the same URL
-    const existing = _decodeUrlInFlight.get(url);
-    if (existing) return existing;
-
-    const worker = getDecodeWorker();
-    if (!worker) return Promise.resolve(null);
-
-    const id = ++_decodeNextId;
-    const promise = new Promise((resolve, reject) => {
-        _decodePending.set(id, { resolve, reject });
-        worker.postMessage({ type: 'decode', id, url, maxWidth, maxHeight });
-    }).finally(() => { _decodeUrlInFlight.delete(url); });
-
-    _decodeUrlInFlight.set(url, promise);
-    return promise;
-}
-
-// Stats for diagnostics
-let _bitmapStats = { hits: 0, misses: 0, decodes: 0, decodeMs: 0, evictions: 0, lastPrint: 0 };
-
-
-
-/** Clear all cached bitmaps (called on folder navigation to free GPU memory). */
-function clearBitmapCache() {
-    for (const node of _bitmapCacheMap.values()) {
-        try { node.bitmap.close(); } catch {}
-    }
-    _bitmapCacheMap.clear();
-    _lruHead = null;
-    _lruTail = null;
-    _bitmapCacheSize = 0;
-}
-
-function putCachedBitmap(url, bitmap) {
-    if (!bitmap) return;
-    const existing = _bitmapCacheMap.get(url);
-    if (existing) {
-        // Close the old bitmap to free GPU memory, update node in-place
-        try { existing.bitmap.close(); } catch {}
-        existing.bitmap = bitmap;
-        existing.w = bitmap.width;
-        existing.h = bitmap.height;
-        _lruPromoteNode(existing); // move to head (most recent)
-        return;
-    }
-    // Create new node and prepend to head
-    const node = { url, bitmap, w: bitmap.width, h: bitmap.height, prev: null, next: null };
-    _bitmapCacheMap.set(url, node);
-    _lruPrependNode(node);
-    // Evict LRU tail if over limit — O(1)
-    if (_bitmapCacheSize > BITMAP_CACHE_MAX && _lruTail) {
-        const victim = _lruTail;
-        try { victim.bitmap.close(); } catch {}
-        _bitmapCacheMap.delete(victim.url);
-        _lruRemoveNode(victim);
-        _bitmapStats.evictions++;
-    }
-}
-
-/**
- * Prefetch an image into the bitmap cache without displaying it.
- * Idempotent; safe to call multiple times. Returns a promise that resolves when cached.
- */
-function prefetchImageBitmap(url, maxWidth = 0, maxHeight = 0) {
-    if (!url) return Promise.resolve(null);
-    // Don't touch stats here — this is prefetching, not a cache hit/miss query
-    if (_bitmapCacheMap.has(url)) return Promise.resolve(_bitmapCacheMap.get(url).bitmap);
-    const t0 = performance.now();
-    return decodeImageOffThread(url, maxWidth, maxHeight).then(bitmap => {
-        _bitmapStats.decodes++;
-        _bitmapStats.decodeMs += performance.now() - t0;
-        if (bitmap) putCachedBitmap(url, bitmap);
-        return bitmap;
-    }).catch(() => null);
-}
-
 
 function requestImageThumbnailUrl(filePath, maxSize) {
     const key = getImageThumbnailCacheKey(filePath, maxSize);
@@ -6840,16 +6705,21 @@ function createImageForCard(card, imageUrl) {
     // Invalidate media count cache since we're adding an image
     cachedMediaCounts.timestamp = 0;
     
-    // Calculate card size to limit image resolution based on quality setting
+    // The grid only ever shows a thumbnail sized for the card on this screen
+    // (card size x device pixel ratio x quality factor). Even "original" quality
+    // is a capped thumbnail: decoding a 30 MB photo for a 300 px card was what
+    // made scrolling and hover stall and the renderer grow past 3 GB.
     const rect = getCardSizeFast(card);
     const qualityMultiplier = getThumbnailQualityMultiplier();
-    const isOriginalQuality = qualityMultiplier === 0;
-    const decodeWidth = isOriginalQuality ? 0 : Math.max(1, Math.floor(rect.width * qualityMultiplier));
-    const decodeHeight = isOriginalQuality ? 0 : Math.max(1, Math.floor(rect.height * qualityMultiplier));
-    
+    const isOriginalQuality = false;
+    const dpr = Math.min(3, window.devicePixelRatio || 1);
+    const decodeWidth = Math.max(1, Math.floor(rect.width * dpr * qualityMultiplier));
+    const decodeHeight = Math.max(1, Math.floor(rect.height * dpr * qualityMultiplier));
+
     const img = document.createElement('img');
     img.className = 'media-thumbnail thumb-loading';
     img.loading = 'eager';
+    img.decoding = 'async';
     img.draggable = true;
 
     // Enable dragging images out of the app
@@ -6871,8 +6741,10 @@ function createImageForCard(card, imageUrl) {
     
     img.style.imageRendering = 'auto';
 
-    const requestedThumbSize = Math.max(256, Math.ceil(Math.max(decodeWidth, decodeHeight) * 1.5));
-    const thumbMaxSize = Math.min(IMAGE_THUMBNAIL_MAX_EDGE, requestedThumbSize);
+    // Thumbnail edge: enough for the hover scale, rounded up to a 256 px step so
+    // the cache does not fill with one size per zoom level.
+    const requestedThumbSize = Math.ceil(Math.max(decodeWidth, decodeHeight) * 1.25 / 256) * 256;
+    const thumbMaxSize = Math.max(256, Math.min(getThumbnailMaxEdge(), requestedThumbSize));
 
     const setImageSource = (src, mode) => {
         if (!img.isConnected) return;
@@ -7000,7 +6872,6 @@ function createImageForCard(card, imageUrl) {
                 if (!img.isConnected) return;
                 if (url) {
                     setImageSource(url, 'thumb');
-                    prefetchImageBitmap(url, decodeWidth, decodeHeight);
                     return;
                 }
                 // Batch returned null — try plugin thumbnail generator as fallback
@@ -7011,56 +6882,65 @@ function createImageForCard(card, imageUrl) {
                         const pluginResult = await window.electronAPI.pluginGenerateThumbnail(card.dataset.path, ext);
                         if (pluginResult?.ok && pluginResult.value && img.isConnected) {
                             setImageSource(pluginResult.value, 'thumb');
-                            prefetchImageBitmap(pluginResult.value, decodeWidth, decodeHeight);
                             return;
                         }
                     } catch { /* plugin fallback failed, continue to original */ }
                 }
                 if (!img.isConnected) return;
                 setImageSource(imageUrl, 'original');
-                prefetchImageBitmap(imageUrl, decodeWidth, decodeHeight);
             })
             .catch(() => {
                 if (!img.isConnected) return;
                 setImageSource(imageUrl, 'original');
-                prefetchImageBitmap(imageUrl, decodeWidth, decodeHeight);
             })
             .finally(() => {
                 pendingMediaCreations.delete(card);
             });
     } else {
         setImageSource(imageUrl, 'original');
-        if (!isGif) prefetchImageBitmap(imageUrl, decodeWidth, decodeHeight);
         pendingMediaCreations.delete(card);
     }
 
-    // Upgrade to full-quality image on hover — overlay on top to avoid flash
-    if (!isGif && !isOriginalQuality) {
+    // Hover upgrade: after a short dwell, overlay a sharper thumbnail (twice the
+    // card's edge, from the same cache pipeline). It used to decode the original
+    // file on every mouseenter, which is where hover lag came from.
+    if (!isGif && card.dataset.path) {
         let fullImg = null;
         let preload = null;
+        let dwell = null;
         const onEnter = () => {
             if (!img.isConnected || img.dataset.sourceMode !== 'thumb') return;
-            preload = new Image();
-            preload.decoding = 'async';
-            preload.onload = () => {
-                if (!img.isConnected || img.dataset.sourceMode !== 'thumb') return;
-                // Create a full-res overlay positioned on top of the thumbnail
-                fullImg = document.createElement('img');
-                fullImg.className = 'hover-full-res';
-                fullImg.draggable = true;
-                fullImg.src = imageUrl;
-                fullImg.style.position = 'absolute';
-                fullImg.style.inset = '0';
-                fullImg.style.width = '100%';
-                fullImg.style.height = '100%';
-                fullImg.style.objectFit = getComputedStyle(img).objectFit || 'cover';
-                fullImg.style.zIndex = '1';
-                img.dataset.sourceMode = 'full';
-                img.parentElement.insertBefore(fullImg, img.nextSibling);
-            };
-            preload.src = imageUrl;
+            clearTimeout(dwell);
+            dwell = setTimeout(() => {
+                dwell = null;
+                if (!img.isConnected || img.dataset.sourceMode !== 'thumb' || !card.matches(':hover')) return;
+                const sharpEdge = Math.min(getThumbnailMaxEdge() * 2, 2048, Math.ceil(thumbMaxSize * 2 / 256) * 256);
+                if (sharpEdge <= thumbMaxSize) return;
+                requestImageThumbnailUrl(card.dataset.path, sharpEdge).then(url => {
+                    if (!url || !img.isConnected || img.dataset.sourceMode !== 'thumb' || !card.matches(':hover')) return;
+                    preload = new Image();
+                    preload.decoding = 'async';
+                    preload.onload = () => {
+                        if (!img.isConnected || img.dataset.sourceMode !== 'thumb' || !card.matches(':hover')) return;
+                        fullImg = document.createElement('img');
+                        fullImg.className = 'hover-full-res';
+                        fullImg.draggable = true;
+                        fullImg.src = url;
+                        fullImg.style.position = 'absolute';
+                        fullImg.style.inset = '0';
+                        fullImg.style.width = '100%';
+                        fullImg.style.height = '100%';
+                        fullImg.style.objectFit = getComputedStyle(img).objectFit || 'cover';
+                        fullImg.style.zIndex = '1';
+                        img.dataset.sourceMode = 'full';
+                        img.parentElement.insertBefore(fullImg, img.nextSibling);
+                    };
+                    preload.src = url;
+                }).catch(() => {});
+            }, 250);
         };
         const onLeave = () => {
+            clearTimeout(dwell); dwell = null;
             if (preload) { preload.onload = null; preload.src = ''; preload = null; }
             if (fullImg) { fullImg.remove(); fullImg = null; }
             if (img.isConnected) img.dataset.sourceMode = 'thumb';
@@ -10188,7 +10068,7 @@ function hideEmbedProgressUI() {
     if (el) el.style.display = 'none';
 }
 
-async function scheduleBackgroundEmbedding(items) {
+async function scheduleBackgroundEmbedding(items, { cachedOnly = false } = {}) {
     cancelEmbeddingScan();
     embeddingScanAbortController = new AbortController();
     const signal = embeddingScanAbortController.signal;
@@ -10203,7 +10083,10 @@ async function scheduleBackgroundEmbedding(items) {
     } catch { /* ignore cache errors */ }
 
     const uncached = mediaItems.filter(i => !currentEmbeddings.has(i.path));
-    if (uncached.length === 0) {
+    // cachedOnly: folder load picks up what the cache has; embedding new files is
+    // left to the idle pre-embedding timer so inference never competes with the
+    // first render and scrolling for CPU.
+    if (uncached.length === 0 || cachedOnly) {
         hideEmbedProgressUI();
         // All embeddings loaded from cache — re-filter if clustering is active
         if (aiClusteringMode === 'similarity') applyFilters();
@@ -11684,8 +11567,7 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
     // Cancel any in-flight streaming scan from a previous folder
     if (typeof cancelActiveStream === 'function') cancelActiveStream();
     // Free bitmap cache from the previous folder — releases GPU memory
-    if (typeof clearBitmapCache === 'function') clearBitmapCache();
-    // Clear duplicate highlights from previous folder
+// Clear duplicate highlights from previous folder
     if (typeof clearDuplicateHighlights === 'function') clearDuplicateHighlights();
     
     // Show loading indicator if we need to scan
@@ -11977,9 +11859,10 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
             hydrateMissingDimensionsInBackground(folderPath, items).catch(() => {});
         }
 
-        // Trigger AI embedding scan in background if enabled
+        // AI: cached embeddings now (cheap); new files are embedded by the idle
+        // pre-embedding timer, never while the folder is still rendering.
         if (aiVisualSearchEnabled && aiAutoScan) {
-            scheduleBackgroundEmbedding(items);
+            scheduleBackgroundEmbedding(items, { cachedOnly: true });
         }
 
         // Reset idle pre-embedding timer so remaining files get embedded when idle

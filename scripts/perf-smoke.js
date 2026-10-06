@@ -1,5 +1,5 @@
 'use strict';
-/* global window, document, requestAnimationFrame */ // page.evaluate callbacks run in the renderer
+/* global window, document, requestAnimationFrame, vsState, MouseEvent, PerformanceObserver */ // page.evaluate callbacks run in the renderer
 // Launches the app on a folder and measures what the user feels:
 // time to first cards, scroll frame pacing, playing-video count, long tasks,
 // per-process CPU/memory, and CPU while minimized (background mode).
@@ -22,8 +22,12 @@ const outFile = opt('--out', null);
 const scrolls = parseInt(opt('--scrolls', '30'), 10);
 const bgSeconds = parseInt(opt('--bg', '10'), 10);
 const trials = parseInt(opt('--trials', '1'), 10);
+// --keep-settings: measure the profile exactly as the user has it (no clear, no pinned
+// settings); pass '-' as the folder to use the profile's remembered folder.
+const keepSettings = args.includes('--keep-settings');
 const steadySeconds = parseInt(opt('--steady', '6'), 10);
 const cpuProfileFile = opt('--cpuprofile', null); // write a .cpuprofile of the first scroll trial
+const cpuProfileLoadFile = opt('--cpuprofile-load', null); // write a .cpuprofile of the folder load (reload -> cards + settle)
 const profileDir = path.resolve(opt('--profile', path.join(require('os').tmpdir(), 'thumbnail-animator-perf', path.basename(appDir))));
 const appVersion = JSON.parse(fs.readFileSync(path.join(appDir, 'package.json'), 'utf8')).version;
 // Renderer settings pinned for every run so that app versions are compared on equal terms.
@@ -99,11 +103,19 @@ async function metrics(app) {
     await page.waitForLoadState('domcontentloaded');
 
     // Point the app at the folder and restart the renderer.
-    await page.evaluate(({ f, pinned }) => {
-        localStorage.clear(); // settings from earlier runs (including --set experiments) must not leak
-        localStorage.setItem('lastFolderPath', f);
-        for (const [k, v] of Object.entries(pinned)) localStorage.setItem(k, v);
-    }, { f: folder, pinned: PINNED_SETTINGS });
+    if (keepSettings) {
+        if (folder !== '-') await page.evaluate((f) => localStorage.setItem('lastFolderPath', f), folder);
+        const explicit = {};
+        for (let i = 0; i < args.length; i++) if (args[i] === '--set') { const [k, v] = String(args[i + 1]).split('='); explicit[k] = v; }
+        if (Object.keys(explicit).length) await page.evaluate((o) => { for (const [k, v] of Object.entries(o)) localStorage.setItem(k, v); }, explicit);
+    } else {
+        await page.evaluate(({ f, pinned }) => {
+            localStorage.clear(); // settings from earlier runs (including --set experiments) must not leak
+            localStorage.setItem('lastFolderPath', f);
+            for (const [k, v] of Object.entries(pinned)) localStorage.setItem(k, v);
+        }, { f: folder, pinned: PINNED_SETTINGS });
+    }
+    const settingsSnapshot = await page.evaluate(() => { const o = {}; for (const k of ['lastFolderPath','zoomLevel','perfProfile','thumbnailQuality','layoutMode','aiAutoScan','aiVisualSearchEnabled','linkedDuplicates','hoverScale','hoverScaleWithZoom','hoverScrub','gifHoverScrub','hoverPreviewStrip','groupByDate','includeMovingImages','recursiveSearch','imageCacheLimitMB','videoCacheLimitMB','playbackBudgetHint']) o[k] = localStorage.getItem(k); return o; });
     await mainEval(app, ({ BrowserWindow }) => {
         const w = BrowserWindow.getAllWindows()[0];
         w.unmaximize(); w.setSize(1600, 1000); w.center(); w.show(); w.focus();
@@ -115,6 +127,13 @@ async function metrics(app) {
         const t = m.text();
         if (t.startsWith('[') && consoleLines.length < 400) consoleLines.push({ t: Date.now() - t0, text: t.slice(0, 200) });
     });
+    let loadCdp = null;
+    if (cpuProfileLoadFile) {
+        loadCdp = await page.context().newCDPSession(page);
+        await loadCdp.send('Profiler.enable');
+        await loadCdp.send('Profiler.setSamplingInterval', { interval: 500 });
+        await loadCdp.send('Profiler.start');
+    }
     const tReload = Date.now();
     await page.reload();
     await page.waitForLoadState('domcontentloaded');
@@ -146,6 +165,11 @@ async function metrics(app) {
         };
     });
     stateAfterLoad.video = await videoStats(page);
+    if (loadCdp) {
+        const { profile } = await loadCdp.send('Profiler.stop');
+        fs.writeFileSync(cpuProfileLoadFile, JSON.stringify(profile));
+        await loadCdp.detach();
+    }
     const loadLongTasks = await page.evaluate(() => { const r = window.__lt.slice(); window.__lt.length = 0; return r; });
     await metrics(app); // prime the CPU counters
 
@@ -195,6 +219,34 @@ async function metrics(app) {
     const activeMetrics = await metrics(app);
     const videoAfterScroll = await videoStats(page);
 
+    // Hover test: move the pointer across the visible cards (dwelling on each),
+    // sampling frame intervals. Hover work must not stall the frame.
+    await page.evaluate(() => { const gc = document.getElementById('grid-container'); gc.scrollTop = 0; });
+    await sleep(1500);
+    const hover = await page.evaluate(async () => {
+        const cards = [...document.querySelectorAll('#grid-container .video-card')].slice(0, 16);
+        const frames = []; let last = performance.now(), running = true;
+        const tick = (t) => { frames.push(t - last); last = t; if (running) requestAnimationFrame(tick); };
+        requestAnimationFrame(tick);
+        const lt = []; let po = null;
+        try { po = new PerformanceObserver((l) => { for (const e of l.getEntries()) lt.push(Math.round(e.duration)); }); po.observe({ entryTypes: ['longtask'] }); } catch {}
+        for (const c of cards) {
+            const r = c.getBoundingClientRect();
+            const init = { bubbles: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+            c.dispatchEvent(new MouseEvent('mouseenter', init));
+            c.dispatchEvent(new MouseEvent('mouseover', init));
+            c.dispatchEvent(new MouseEvent('mousemove', init));
+            await new Promise(r2 => setTimeout(r2, 350));
+            c.dispatchEvent(new MouseEvent('mouseout', { ...init, relatedTarget: document.body }));
+            c.dispatchEvent(new MouseEvent('mouseleave', init));
+        }
+        await new Promise(r2 => setTimeout(r2, 500));
+        running = false; if (po) po.disconnect();
+        const f = frames.slice(1);
+        const s = [...f].sort((a, b) => a - b);
+        return { cards: cards.length, frames: f.length, p95FrameMs: Math.round(s[Math.floor(s.length * 0.95)] * 10) / 10, maxFrameMs: Math.round(s[s.length - 1]), framesOver33ms: f.filter(x => x > 33).length, longTasks: lt.length, longTaskMs: lt.reduce((a, b) => a + b, 0) };
+    });
+
     // Steady state: sit still for a few seconds with everything playing and see
     // what the budget settles on and how many frames the decoders drop.
     await metrics(app);
@@ -215,6 +267,8 @@ async function metrics(app) {
     const frames = scroll.frames.slice(1);
     const result = {
         app: appDir, profile: profileDir, folder, when: new Date().toISOString(),
+        settings: settingsSnapshot,
+        itemCount: await page.evaluate(() => (typeof vsState !== 'undefined' && vsState.sortedItems) ? vsState.sortedItems.length : null),
         startupMs: tReload - t0,
         timeToFirstCardsMs: tFirstCards,
         timeToFirstCardsHarnessMs: tFirstCardsHarness,
@@ -235,6 +289,7 @@ async function metrics(app) {
         },
         active: activeMetrics,
         steady,
+        hover,
     };
 
     // Blurred: the window stays visible but another window has focus (alt-tab

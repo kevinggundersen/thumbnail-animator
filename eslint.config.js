@@ -52,7 +52,7 @@ module.exports = [
     },
     // Web workers
     {
-        files: ['filter-sort-worker.js', 'image-decode-worker.js', 'filter-sort-helpers.js'],
+        files: ['filter-sort-worker.js', 'filter-sort-helpers.js'],
         languageOptions: { ecmaVersion: 'latest', sourceType: 'script', globals: { ...globals.worker, ...workerHelperGlobals, module: 'readonly', require: 'readonly' } },
         rules: common,
     },

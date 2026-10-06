@@ -3261,11 +3261,15 @@ function initThumbnailQuality() {
 }
 
 function getThumbnailQualityMultiplier() {
+    // Fraction of the card's size in device pixels that the thumbnail is
+    // rendered at. 1 = pixel-perfect at rest; above 1 stays sharp while the
+    // card scales on hover. "original" is a sharper thumbnail with a higher
+    // edge cap, never the file itself (see getThumbnailMaxEdge).
     switch (thumbnailQuality) {
-        case 'low': return 0.2;
-        case 'high': return 0.5;
-        case 'original': return 0; // skip thumbnail, use original file
-        default: return 0.3; // medium
+        case 'low': return 0.5;
+        case 'high': return 1.25;
+        case 'original': return 1.5;
+        default: return 1; // medium
     }
 }
 
@@ -4532,6 +4536,7 @@ function initNewFeatures() {
     const _sidebarRefreshTimers = new Map(); // debounce sidebar tree refreshes per parent path
     let _watcherNavTimer = null; // debounce watcher-triggered re-navigation
     window.electronAPI.onFolderChanged((event, data) => {
+        perfLog(`[watcher] ${data && data.event} ${data && data.filePath} (${_lastNavCompleteTime ? Date.now() - _lastNavCompleteTime : 'n/a'}ms after nav)`);
         if (!currentFolderPath) return;
         // Events that arrive within a second of a navigation (the watcher being set
         // up, or the refresh a previous event triggered) used to be dropped, which

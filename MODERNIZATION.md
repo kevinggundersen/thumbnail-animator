@@ -171,7 +171,7 @@ This is where the maintainability problem gets solved. Done incrementally, one m
 7. **Type checking via JSDoc + `tsc --checkJs`** (no TypeScript migration): add `jsconfig.json` with `checkJs: true` and fix errors module by module. This catches undeclared variables like R2 at build time without changing the language.
 8. **Tests**: with modules, the eight untestable files become testable. Add tests for `virtual-scroll`, `media-loader`, the settings store, and the shortcut dispatcher. Add one Playwright-for-Electron smoke test that opens a fixture folder, scrolls, opens the lightbox, and navigates.
 
-### Phase 6: Platform and security (small to medium)
+### Phase 6: Platform and security (small to medium) — DONE except plugin vm isolation (see DECISIONS.md)
 
 1. Upgrade Electron 39 → 44 (one major at a time, running the smoke test at each step), electron-builder 25 → 26, chokidar 3 → 5. Rebuild `sharp`, `better-sqlite3`, and the native scanner against each.
 2. Security hardening (M12): allowlist `http`/`https`/`mailto` in `open-url`; validate `open-with-default` paths against the current folder set; strip the `event` argument from every preload `on*` listener; run plugins in a `vm` context or utility process with an explicit API surface; fix the `startsWith` directory check with a trailing separator.

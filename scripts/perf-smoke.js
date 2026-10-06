@@ -75,6 +75,10 @@ async function metrics(app) {
 }
 
 (async () => {
+    // Renderer bundles must be current for the app under test.
+    if (fs.existsSync(path.join(appDir, "scripts", "build-renderer.js"))) {
+        require("child_process").execFileSync(process.execPath, [path.join(appDir, "scripts", "build-renderer.js")], { cwd: appDir, stdio: "inherit" });
+    }
     const t0 = Date.now();
     fs.mkdirSync(profileDir, { recursive: true });
     // The app holds a single-instance lock; a launch right after a previous run

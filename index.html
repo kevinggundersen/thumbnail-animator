@@ -2533,30 +2533,13 @@
         </div>
     </div>
 
-    <script src="settings.js"></script>
-    <script src="ipc-result.js"></script>
-    <script src="icons.js"></script>
+    <!-- First-party scripts are bundled by scripts/build-renderer.js (see scripts/renderer-manifest.js);
+         vendor libraries stay separate and deferred, between the sync and deferred bundles. -->
+    <script src="dist-renderer/app.sync.js"></script>
     <script defer src="webgpu-hamming.js"></script>
-    <script src="perf-dashboard.js"></script>
-    <script src="gif-duration-parser.js"></script>
     <script defer src="gifuct-js-bundle.js"></script>
     <script defer src="webpxmux.min.js"></script>
-    <script src="playback-budget.js"></script>
-    <script src="playback-controller.js"></script>
-    <script src="themes.js"></script>
     <script defer src="fuse.vendor.js"></script>
-    <script src="command-palette.js"></script>
-    <script src="filmstrip-scrubber.js"></script>
-    <script src="filter-worker-bridge.js"></script>
-    <script src="selection-manager.js"></script>
-    <script src="renderer.js"></script>
-    <script defer src="settings-ui.js"></script>
-    <script defer src="convert-dialog.js"></script>
-    <script defer src="lightbox.js"></script>
-    <script defer src="collections.js"></script>
-    <script defer src="duplicate-detection.js"></script>
-    <script defer src="context-menu.js"></script>
-    <script defer src="sidebar-tree.js"></script>
-    <script defer src="renderer-features.js"></script>
+    <script defer src="dist-renderer/app.deferred.js"></script>
 </body>
 </html>

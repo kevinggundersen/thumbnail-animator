@@ -10,12 +10,8 @@ const acorn = require('acorn');
 const ROOT = path.join(__dirname, '..');
 
 function rendererScripts() {
-    const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
-    const out = [];
-    const re = /<script[^>]*\ssrc="([^"]+)"/g;
-    let m;
-    while ((m = re.exec(html))) out.push(m[1]);
-    return out;
+    const m = require('./renderer-manifest');
+    return [...m.sync, ...m.vendorDeferred, ...m.deferred];
 }
 
 function topLevelNames(file) {

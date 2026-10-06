@@ -158,7 +158,7 @@ Pure bug fixes and flag removals. No structural change.
 9. Theme: derive the `dark` theme from `:root` instead of duplicating, use `light-dark()` for the default without JS, move the 38 literal colors to tokens (C8).
 10. Split `styles.css` into per-area files concatenated at build time (Phase 5 adds the build).
 
-### Phase 5: Modules and state (large, the actual modernization)
+### Phase 5: Modules and state (large, the actual modernization) — PARTIAL: dead code (5a/5b), settings schema (5c), esbuild bundle + manifest (5d) done; ES-module split, renderer.js domain split, event bus and the Phase 4 deferrals remain (see DECISIONS.md)
 
 This is where the maintainability problem gets solved. Done incrementally, one module at a time, with the app runnable at every step.
 

@@ -22,7 +22,7 @@ const common = {
 module.exports = [
     {
         ignores: [
-            'node_modules/**', 'dist/**', 'electron-cache/**', 'coverage/**',
+            'node_modules/**', 'dist/**', 'dist-renderer/**', 'electron-cache/**', 'coverage/**',
             'native-scanner/**', '*.vendor.js', '*-bundle.js', '*.min.js',
             '.claude/**', '.cursor/**',
         ],

@@ -4533,9 +4533,19 @@ function initNewFeatures() {
     let _watcherNavTimer = null; // debounce watcher-triggered re-navigation
     window.electronAPI.onFolderChanged((event, data) => {
         if (!currentFolderPath) return;
-        // Ignore the initial burst of events from the watcher being set up after navigation.
-        // The scan just completed — there's nothing to refresh yet.
-        if (_lastNavCompleteTime && (Date.now() - _lastNavCompleteTime) < 1000) return;
+        // Events that arrive within a second of a navigation (the watcher being set
+        // up, or the refresh a previous event triggered) used to be dropped, which
+        // lost any change made right after another one. Defer them instead: one
+        // coalesced refresh once the window has passed.
+        const sinceNav = _lastNavCompleteTime ? Date.now() - _lastNavCompleteTime : Infinity;
+        if (sinceNav < 1000) {
+            clearTimeout(_watcherNavTimer);
+            _watcherNavTimer = setTimeout(() => {
+                _watcherNavTimer = null;
+                if (currentFolderPath) navigateToFolder(currentFolderPath, false, true);
+            }, 1000 - sinceNav + 300);
+            return;
+        }
 
         // Normalize paths for consistent comparison (case-insensitive on Windows)
         const normalizedWatchedPath = normalizePath(data.folderPath).toLowerCase();

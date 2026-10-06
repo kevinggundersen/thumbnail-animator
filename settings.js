@@ -20,6 +20,7 @@ class Settings {
         this._schema = schema;
         this._store = new Map();
         this._listeners = new Map();       // settingName -> Set<Function>
+        this._writeListeners = new Map();  // storageKey -> Set<Function> (raw-key writes)
         this._pendingWrites = new Map();
         this._flushScheduled = false;
         this.hydrate();
@@ -112,6 +113,7 @@ class Settings {
             const key = desc.storageKey;
             switch (desc.type) {
                 case 'int':    this._store.set(name, _int(key, desc.default)); break;
+                case 'float':  { const v = localStorage.getItem(key); const n = v !== null ? parseFloat(v) : NaN; this._store.set(name, Number.isFinite(n) ? n : desc.default); break; }
                 case 'bool':   this._store.set(name, _bool(key, desc.default)); break;
                 case 'string': this._store.set(name, _str(key, desc.default)); break;
                 case 'json':   this._store.set(name, _json(key, desc.default)); break;
@@ -122,8 +124,31 @@ class Settings {
 
     // ── Deferred localStorage writes (batched via requestIdleCallback) ─
 
+    /**
+     * Subscribe to writes of a raw storage key (every deferLocalStorageWrite call
+     * goes through here), independent of whether the key is in the schema.
+     */
+    onWrite(key, fn) {
+        if (!this._writeListeners.has(key)) this._writeListeners.set(key, new Set());
+        this._writeListeners.get(key).add(fn);
+        return () => { const s = this._writeListeners.get(key); if (s) s.delete(fn); };
+    }
+
+    /** Storage keys to export, grouped by how they are stored (plain string vs JSON). */
+    exportKeys() {
+        const out = { string: [], json: [] };
+        for (const desc of Object.values(this._schema)) {
+            if (desc.export === false) continue;
+            if (desc.storageKeys) { out.string.push(...Object.values(desc.storageKeys)); continue; }
+            (desc.type === 'json' ? out.json : out.string).push(desc.storageKey);
+        }
+        return out;
+    }
+
     _deferWrite(key, value) {
         this._pendingWrites.set(key, value);
+        const ls = this._writeListeners.get(key);
+        if (ls) for (const fn of ls) { try { fn(value, key); } catch (e) { console.error(`[Settings] write listener error for "${key}":`, e); } }
         if (!this._flushScheduled) {
             this._flushScheduled = true;
             if ('requestIdleCallback' in window) {
@@ -152,6 +177,7 @@ class Settings {
         this.flush();
         const out = {};
         for (const [name, desc] of Object.entries(this._schema)) {
+            if (desc.export === false) continue;
             if (desc.storageKeys) {
                 for (const [, key] of Object.entries(desc.storageKeys)) {
                     const v = localStorage.getItem(key);
@@ -193,6 +219,7 @@ class Settings {
                 let val;
                 switch (desc.type) {
                     case 'int':    val = parseInt(raw, 10); break;
+                    case 'float':  val = parseFloat(raw); break;
                     case 'bool':   val = raw === 'true'; break;
                     case 'json':   try { val = JSON.parse(raw); } catch { val = desc.default; } break;
                     default:       val = raw;
@@ -263,6 +290,84 @@ const SETTINGS_SCHEMA = {
     folderPreviewCount:    { type: 'int', default: 4,   storageKey: 'folderPreviewCount' },
     folderPreviewSize:     { type: 'int', default: 192, storageKey: 'folderPreviewSize' },
 
+    // ── Everything else the renderer keeps in localStorage ────────────
+    // One schema is the source of truth for types, defaults and the export/import
+    // key list (settings-ui.js derives its lists from exportKeys()). Reads at the
+    // call sites still go through localStorage directly for now; each entry's
+    // default documents what a missing key means there.
+    // Preferences
+    rememberLastFolder:      { type: 'bool',   default: true,  storageKey: 'rememberLastFolder' },
+    lastFolderPath:          { type: 'string', default: '',    storageKey: 'lastFolderPath' },
+    includeMovingImages:     { type: 'bool',   default: true,  storageKey: 'includeMovingImages' },
+    autoRepeatVideos:        { type: 'bool',   default: true,  storageKey: 'autoRepeatVideos' },
+    pauseOnBlur:             { type: 'bool',   default: true,  storageKey: 'pauseOnBlur' },
+    pauseOnLightbox:         { type: 'bool',   default: true,  storageKey: 'pauseOnLightbox' },
+    hoverScrub:              { type: 'bool',   default: true,  storageKey: 'hoverScrub' },
+    gifHoverScrub:           { type: 'bool',   default: true,  storageKey: 'gifHoverScrub' },
+    hoverPreviewStrip:       { type: 'bool',   default: true,  storageKey: 'hoverPreviewStrip' },
+    lightboxFilmstripEnabled:{ type: 'bool',   default: true,  storageKey: 'lightboxFilmstripEnabled' },
+    playbackControls:        { type: 'bool',   default: true,  storageKey: 'playbackControls' },
+    zoomToFit:               { type: 'bool',   default: true,  storageKey: 'zoomToFit' },
+    thumbnailQuality:        { type: 'string', default: 'medium', storageKey: 'thumbnailQuality' },
+    useSystemTrash:          { type: 'bool',   default: false, storageKey: 'useSystemTrash' },
+    linkedDuplicates:        { type: 'bool',   default: false, storageKey: 'linkedDuplicates' },
+    recursiveSearch:         { type: 'bool',   default: false, storageKey: 'recursiveSearch' },
+    groupByDate:             { type: 'bool',   default: false, storageKey: 'groupByDate' },
+    dateGroupGranularity:    { type: 'string', default: 'month', storageKey: 'dateGroupGranularity' },
+    sortType:                { type: 'string', default: 'name', storageKey: 'sortType' },
+    sortOrder:               { type: 'string', default: 'ascending', storageKey: 'sortOrder' },
+    selectedTheme:           { type: 'string', default: 'dark', storageKey: 'selectedTheme' },
+    welcomeDismissedVersion: { type: 'string', default: '',    storageKey: 'welcomeDismissedVersion' },
+    lbInspectorCollapsed:    { type: 'string', default: '0',   storageKey: 'lbInspectorCollapsed' }, // '1' / '0'
+    videoCacheLimitMB:       { type: 'int',    default: 1024,  storageKey: 'videoCacheLimitMB' },
+    imageCacheLimitMB:       { type: 'int',    default: 1024,  storageKey: 'imageCacheLimitMB' },
+    controlBarHideDelay:     { type: 'int',    default: 3000,  storageKey: 'controlBarHideDelay' },
+    videoThumbSeekPct:       { type: 'int',    default: 25,    storageKey: 'videoThumbSeekPct' },
+    videoThumbWidth:         { type: 'int',    default: 512,   storageKey: 'videoThumbWidth' },
+    ioConcurrency:           { type: 'int',    default: 20,    storageKey: 'ioConcurrency' },
+    // Sidebar / tabs
+    sidebarWidth:            { type: 'int',    default: 260,   storageKey: 'sidebarWidth' },
+    sidebarCollapsed:        { type: 'bool',   default: false, storageKey: 'sidebarCollapsed' },
+    sidebarTabFilterActive:  { type: 'bool',   default: false, storageKey: 'sidebarTabFilterActive' },
+    sidebarTabFilterFlat:    { type: 'bool',   default: false, storageKey: 'sidebarTabFilterFlat' },
+    sidebarExpandedNodes:    { type: 'json',   default: [],    storageKey: 'sidebarExpandedNodes' },
+    tabs:                    { type: 'json',   default: [],    storageKey: 'tabs' },
+    activeTabId:             { type: 'string', default: '',    storageKey: 'activeTabId' },
+    tabGroups:               { type: 'json',   default: [],    storageKey: 'tabGroups' },
+    savedTabGroups:          { type: 'json',   default: [],    storageKey: 'savedTabGroups' },
+    folderSortPrefs:         { type: 'json',   default: {},    storageKey: 'folderSortPrefs' },
+    folderZoomPrefs:         { type: 'json',   default: {},    storageKey: 'folderZoomPrefs' },
+    // Cards, tags, shortcuts, themes, dialogs
+    cardInfoSettings:        { type: 'json',   default: {},    storageKey: 'cardInfoSettings' },
+    extensionColors:         { type: 'json',   default: {},    storageKey: 'extensionColors' },
+    tagGroups:               { type: 'json',   default: [],    storageKey: 'tagGroups' },
+    keyboardShortcuts:       { type: 'json',   default: {},    storageKey: 'keyboardShortcuts' },
+    customThemes:            { type: 'json',   default: [],    storageKey: 'customThemes' },
+    playbackSpeeds:          { type: 'json',   default: [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2], storageKey: 'playbackSpeeds' },
+    pluginStates:            { type: 'json',   default: {},    storageKey: 'pluginStates' },
+    commandPaletteRecents:   { type: 'json',   default: [],    storageKey: 'commandPaletteRecents' },
+    convertDefaults:         { type: 'json',   default: {},    storageKey: 'convertDefaults' },
+    autoTagLastView:         { type: 'string', default: '',    storageKey: 'autoTagLastView' },
+    // AI
+    aiVisualSearchEnabled:   { type: 'bool',   default: false, storageKey: 'aiVisualSearchEnabled' },
+    aiModelDownloadConfirmed:{ type: 'bool',   default: false, storageKey: 'aiModelDownloadConfirmed' },
+    aiAutoScan:              { type: 'bool',   default: false, storageKey: 'aiAutoScan' },
+    aiSimilarityThreshold:   { type: 'float',  default: 0.15,  storageKey: 'aiSimilarityThreshold' },
+    aiClusteringMode:        { type: 'string', default: 'off', storageKey: 'aiClusteringMode' },
+    aiIdleDelay:             { type: 'int',    default: 10000, storageKey: 'aiIdleDelay' },
+    aiBatchSize:             { type: 'int',    default: 8,     storageKey: 'aiBatchSize' },
+    aiVideoFrameCount:       { type: 'int',    default: 4,     storageKey: 'aiVideoFrameCount' },
+    clipGpuMode:             { type: 'string', default: 'auto', storageKey: 'clipGpuMode' },
+    clipWorkerCount:         { type: 'int',    default: 4,     storageKey: 'clipWorkerCount' },
+    // Pre-SQLite storage, read once by the migration in renderer-features.js and never exported
+    legacyFileRatings:       { type: 'json',   default: {},    storageKey: 'fileRatings', export: false },
+    legacyPinnedFiles:       { type: 'json',   default: [],    storageKey: 'pinnedFiles', export: false },
+    legacyFavorites:         { type: 'json',   default: [],    storageKey: 'favorites', export: false },
+    legacyRecentFiles:       { type: 'json',   default: [],    storageKey: 'recentFiles', export: false },
+    // Machine-local state: never exported
+    playbackBudgetHint:      { type: 'int',    default: 0,     storageKey: 'playbackBudgetHint', export: false },
+    perfLog:                 { type: 'string', default: '0',   storageKey: 'perfLog', export: false },
+
     // ── Hover scale (multi-key object) ────────────────────────────────
     hoverScaleState: {
         type: 'object',
@@ -278,4 +383,9 @@ const SETTINGS_SCHEMA = {
 };
 
 // ── Instantiate ───────────────────────────────────────────────────────
-window.appSettings = new Settings(SETTINGS_SCHEMA);
+if (typeof window !== 'undefined' && typeof localStorage !== 'undefined') {
+    window.appSettings = new Settings(SETTINGS_SCHEMA);
+}
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = { Settings, SETTINGS_SCHEMA };
+}

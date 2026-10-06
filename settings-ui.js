@@ -62,46 +62,9 @@ bindSettingsTabListeners();
 
 // ── Settings Export / Import ──
 // --- Settings Export / Import ---
-const SETTINGS_EXPORT_KEYS_STRING = [
-    'selectedTheme', 'sidebarWidth', 'sidebarCollapsed', 'layoutMode',
-    'zoomLevel', 'zoomToFit', 'thumbnailQuality', 'sortType', 'sortOrder',
-    'rememberLastFolder', 'lastFolderPath', 'includeMovingImages',
-    'autoRepeatVideos', 'pauseOnBlur', 'pauseOnLightbox', 'hoverScrub', 'gifHoverScrub', 'lightboxFilmstripEnabled',
-    'playbackControls', 'activeTabId',
-    'aiVisualSearchEnabled', 'aiModelDownloadConfirmed', 'aiAutoScan',
-    'aiSimilarityThreshold', 'aiClusteringMode',
-    'videoCacheLimitMB', 'imageCacheLimitMB',
-    'useSystemTrash', 'hoverScale', 'hoverScaleWithZoom',
-    'hoverScaleAt50', 'hoverScaleAt100', 'hoverScaleAt200',
-    'groupByDate', 'dateGroupGranularity', 'recursiveSearch',
-    // Phase 2: Grid layout
-    'gridGap', 'minCardWidth', 'cardAspectRatio',
-    // Phase 3: Animation
-    'animationSpeed', 'reduceMotion',
-    // Phase 5: Playback
-    'controlBarHideDelay', 'defaultSlideshowSpeed', 'videoThumbSeekPct',
-    // Phase 6: AI
-    'aiIdleDelay', 'aiBatchSize', 'aiVideoFrameCount',
-    // Phase 7: Performance
-    'perfProfile', 'maxMedia', 'parallelLoad', 'vsBuffer', 'vsPoolSize',
-    'scrollDebounce', 'progressiveThreshold',
-    'folderCacheTTL', 'idbCacheTTL',
-    'imageThumbMaxEdge', 'videoThumbWidth',
-    'lightboxMaxZoom', 'lightboxViewport', 'blowUpDelay',
-    'recentFilesLimit', 'maxUndoHistory', 'tagSuggestionsLimit', 'searchHistoryLimit',
-    // Phase 8: Niche
-    'ioConcurrency', 'clipWorkerCount',
-    'retryAttempts', 'retryInitialDelay', 'retryMaxDelay',
-    'sidebarMinWidth', 'sidebarMaxWidth',
-    'folderPreviewCount', 'folderPreviewSize',
-];
-const SETTINGS_EXPORT_KEYS_JSON = [
-    'cardInfoSettings', 'customThemes',
-    'tabs', 'sidebarExpandedNodes', 'pluginStates',
-    'folderSortPrefs',
-    'extensionColors', 'keyboardShortcuts', 'playbackSpeeds',
-    'tabGroups', 'savedTabGroups',
-];
+// The key lists come from the settings schema (settings.js): one place declares
+// every stored preference, its type and whether it belongs in an export.
+const { string: SETTINGS_EXPORT_KEYS_STRING, json: SETTINGS_EXPORT_KEYS_JSON } = window.appSettings.exportKeys();
 
 function showSettingsDataStatus(message, type) {
     const el = document.getElementById('settings-data-status');

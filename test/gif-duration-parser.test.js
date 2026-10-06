@@ -110,14 +110,14 @@ describe('parseGifDuration', () => {
         const result = parseGifDuration(
             buildGif({ frames: [{ delayCentiseconds: 50 }] }),
         );
-        expect(result).toEqual({ totalDuration: 500, frameCount: 1 });
+        expect(result).toMatchObject({ totalDuration: 500, frameCount: 1 });
     });
 
     it('treats 0cs delay as 10cs (100ms) per browser convention', () => {
         const result = parseGifDuration(
             buildGif({ frames: [{ delayCentiseconds: 0 }] }),
         );
-        expect(result).toEqual({ totalDuration: 100, frameCount: 1 });
+        expect(result).toMatchObject({ totalDuration: 100, frameCount: 1 });
     });
 
     it('sums delays across multiple frames', () => {
@@ -130,7 +130,9 @@ describe('parseGifDuration', () => {
                 ],
             }),
         );
-        expect(result).toEqual({ totalDuration: 350, frameCount: 3 });
+        expect(result).toMatchObject({ totalDuration: 350, frameCount: 3 });
+        expect(result.delays).toHaveLength(3);
+        expect(result.delays.reduce((a, b) => a + b, 0)).toBe(350);
     });
 
     it('handles GIF with Global Color Table', () => {
@@ -141,7 +143,7 @@ describe('parseGifDuration', () => {
                 frames: [{ delayCentiseconds: 10 }],
             }),
         );
-        expect(result).toEqual({ totalDuration: 100, frameCount: 1 });
+        expect(result).toMatchObject({ totalDuration: 100, frameCount: 1 });
     });
 
     it('skips non-GCE extension blocks (e.g. application extensions)', () => {
@@ -177,7 +179,7 @@ describe('parseGifDuration', () => {
         const buf = Buffer.concat(parts);
         const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
         const result = parseGifDuration(ab);
-        expect(result).toEqual({ totalDuration: 100, frameCount: 1 });
+        expect(result).toMatchObject({ totalDuration: 100, frameCount: 1 });
     });
 
     it('handles GIF with Local Color Table on a frame', () => {
@@ -211,7 +213,7 @@ describe('parseGifDuration', () => {
         const buf = Buffer.concat(parts);
         const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
         const result = parseGifDuration(ab);
-        expect(result).toEqual({ totalDuration: 200, frameCount: 1 });
+        expect(result).toMatchObject({ totalDuration: 200, frameCount: 1 });
     });
 
     it('handles truncated GIF gracefully (truncated at extension block)', () => {
@@ -280,14 +282,14 @@ describe('parseWebpDuration', () => {
         const result = parseWebpDuration(
             buildWebp({ frames: [{ durationMs: 200 }] }),
         );
-        expect(result).toEqual({ totalDuration: 200, frameCount: 1 });
+        expect(result).toMatchObject({ totalDuration: 200, frameCount: 1 });
     });
 
     it('treats 0ms duration as 100ms fallback', () => {
         const result = parseWebpDuration(
             buildWebp({ frames: [{ durationMs: 0 }] }),
         );
-        expect(result).toEqual({ totalDuration: 100, frameCount: 1 });
+        expect(result).toMatchObject({ totalDuration: 100, frameCount: 1 });
     });
 
     it('sums durations across multiple frames', () => {
@@ -300,6 +302,8 @@ describe('parseWebpDuration', () => {
                 ],
             }),
         );
-        expect(result).toEqual({ totalDuration: 500, frameCount: 3 });
+        expect(result).toMatchObject({ totalDuration: 500, frameCount: 3 });
+        expect(result.delays).toHaveLength(3);
+        expect(result.delays.reduce((a, b) => a + b, 0)).toBe(500);
     });
 });

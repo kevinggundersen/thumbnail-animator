@@ -6,7 +6,8 @@
 /**
  * Parse a GIF89a/GIF87a binary to extract total animation duration and frame count.
  * @param {ArrayBuffer} buffer
- * @returns {{ totalDuration: number, frameCount: number } | null}
+ * @returns {{ totalDuration: number, frameCount: number, delays: number[] } | null}
+ *   delays: per-frame delay in ms, in frame order (frames without a Graphic Control Extension get 100 ms)
  */
 function parseGifDuration(buffer) {
     const data = new DataView(buffer);
@@ -32,6 +33,8 @@ function parseGifDuration(buffer) {
 
     let totalDuration = 0;
     let frameCount = 0;
+    const delays = [];
+    let pendingDelay = null; // from the GCE that precedes an image descriptor
 
     while (offset < len) {
         const sentinel = data.getUint8(offset);
@@ -55,6 +58,7 @@ function parseGifDuration(buffer) {
                     let delay = data.getUint16(offset + 1, true); // little-endian, centiseconds
                     if (delay === 0) delay = 10; // browsers render 0-delay as ~10cs (~100ms)
                     totalDuration += delay * 10; // convert to milliseconds
+                    pendingDelay = delay * 10;
                     offset += blockSize;
                 }
                 // Skip block terminator
@@ -71,6 +75,9 @@ function parseGifDuration(buffer) {
         } else if (sentinel === 0x2C) {
             // Image Descriptor
             frameCount++;
+            if (pendingDelay === null) totalDuration += 100; // no GCE for this frame
+            delays.push(pendingDelay === null ? 100 : pendingDelay);
+            pendingDelay = null;
             if (offset + 9 > len) break;
             const imgPacked = data.getUint8(offset + 8);
             const hasLCT = (imgPacked >> 7) & 1;
@@ -99,14 +106,14 @@ function parseGifDuration(buffer) {
     }
 
     if (frameCount === 0) return null;
-    return { totalDuration, frameCount };
+    return { totalDuration, frameCount, delays };
 }
 
 /**
  * Parse an animated WebP (RIFF container) to extract total animation duration.
  * Returns null for static WebP files.
  * @param {ArrayBuffer} buffer
- * @returns {{ totalDuration: number, frameCount: number } | null}
+ * @returns {{ totalDuration: number, frameCount: number, delays: number[] } | null}
  */
 function parseWebpDuration(buffer) {
     const data = new DataView(buffer);
@@ -122,6 +129,7 @@ function parseWebpDuration(buffer) {
     let isAnimated = false;
     let totalDuration = 0;
     let frameCount = 0;
+    const delays = [];
 
     while (offset + 8 <= len) {
         const fourcc = data.getUint32(offset, false);
@@ -145,6 +153,9 @@ function parseWebpDuration(buffer) {
                 let duration = b0 | (b1 << 8) | (b2 << 16);
                 if (duration === 0) duration = 100; // same fallback as GIF
                 totalDuration += duration;
+                delays.push(duration);
+            } else {
+                delays.push(100);
             }
         }
 
@@ -153,7 +164,7 @@ function parseWebpDuration(buffer) {
     }
 
     if (!isAnimated || frameCount === 0) return null;
-    return { totalDuration, frameCount };
+    return { totalDuration, frameCount, delays };
 }
 
 if (typeof module !== 'undefined' && module.exports) {

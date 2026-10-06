@@ -9220,7 +9220,7 @@ async function initGifScrub(card) {
 
         // Create an offscreen canvas for the controller's internal compositing
         const ctrlCanvas = document.createElement('canvas');
-        const controller = new AnimatedImagePlaybackController(ctrlCanvas, buffer);
+        const controller = createAnimatedImageController(ctrlCanvas, buffer);
         await controller.ready;
         if (gen !== _gifScrubGeneration || currentHoveredCard !== card) {
             controller.destroy();

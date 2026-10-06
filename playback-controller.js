@@ -718,6 +718,9 @@ class AnimatedImagePlaybackController extends MediaPlaybackController {
         return this._getFrameAtTime(Math.max(0, seconds) * 1000);
     }
 
+    /** Legacy decoder composites on demand; frames are always available synchronously. */
+    whenFramesReady() { return Promise.resolve(); }
+
     destroy() {
         this.pause();
         this._frames = [];
@@ -729,6 +732,376 @@ class AnimatedImagePlaybackController extends MediaPlaybackController {
         this._tempCtx = null;
         super.destroy();
     }
+}
+
+// ==================== ANIMATED IMAGE CONTROLLER (WebCodecs ImageDecoder) ====================
+//
+// Same public surface as AnimatedImagePlaybackController, but decoding and
+// compositing happen inside Chromium's ImageDecoder (off the main thread,
+// random access by frame index) instead of gifuct-js / webpxmux on the main
+// thread. Decoded frames are copied to small canvases so the synchronous
+// getFrameAtIndex() API the filmstrip and hover previews rely on keeps working;
+// the cache is bounded by bytes and never evicts the evenly spaced sample
+// frames those consumers ask for.
+
+const IDC_CACHE_BUDGET_BYTES = 256 * 1024 * 1024;
+const IDC_EAGER_ALL_LIMIT = 128;   // decode every frame up front for animations up to this many frames
+const IDC_WINDOW_AHEAD = 24;       // otherwise keep this many frames decoded ahead of the playhead
+const IDC_SAMPLE_FRAMES = 16;      // and these evenly spaced frames, for filmstrips and strips
+
+function sniffAnimatedImageType(buffer) {
+    const b = new Uint8Array(buffer);
+    if (b.length >= 12 && b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 &&
+        b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return 'image/webp';
+    return 'image/gif';
+}
+
+class ImageDecoderPlaybackController extends MediaPlaybackController {
+    /**
+     * @param {HTMLCanvasElement} canvas — canvas element to render frames to
+     * @param {ArrayBuffer} buffer — raw GIF or animated WebP file bytes
+     * @param {{ type?: string, delays?: number[], decoderFactory?: Function, createCanvas?: Function, raf?: Function, caf?: Function }} [opts]
+     *   delays: per-frame delays in ms (from gif-duration-parser); when absent the
+     *   timeline is read from the decoded frames' durations.
+     */
+    constructor(canvas, buffer, opts = {}) {
+        super();
+        this._canvas = canvas;
+        this._ctx = canvas.getContext('2d');
+        this._type = opts.type || sniffAnimatedImageType(buffer);
+        this._format = this._type === 'image/webp' ? 'webp' : 'gif';
+        this._raf = opts.raf || ((cb) => requestAnimationFrame(cb));
+        this._caf = opts.caf || ((id) => cancelAnimationFrame(id));
+        this._createCanvas = opts.createCanvas || (() => document.createElement('canvas'));
+        this._Decoder = opts.decoderFactory || (typeof ImageDecoder !== 'undefined' ? ImageDecoder : null);
+        this._decoder = null;
+        this._frameCount = 0;
+        this._frameTimeline = [];   // cumulative ms at end of each frame
+        this._totalDuration = 0;
+        this._gifWidth = 0;
+        this._gifHeight = 0;
+        this._currentFrame = 0;
+        this._currentTime = 0;      // ms
+        this._playing = false;
+        this._animId = null;
+        this._lastTimestamp = null;
+        this._lastUIUpdate = 0;
+        this._destroyed = false;
+        this._canvases = new Map(); // frameIndex -> canvas
+        this._lastUse = new Map();  // frameIndex -> tick
+        this._tick = 0;
+        this._pending = new Map();  // frameIndex -> Promise<canvas|null>
+        this._sampleSet = new Set();
+        this._maxCanvases = 64;
+        this._framesReady = new Promise((resolve) => { this._resolveFramesReady = resolve; });
+        this.ready = this._init(buffer, opts.delays);
+    }
+
+    async _init(buffer, delays) {
+        try {
+            if (!this._Decoder) throw new Error('ImageDecoder unavailable');
+            this._decoder = new this._Decoder({ data: buffer, type: this._type });
+            await this._decoder.tracks.ready;
+            const track = this._decoder.tracks.selectedTrack;
+            if (!track) throw new Error('no image track');
+            // The whole file is in memory, so the frame count is final once completed resolves.
+            try { await this._decoder.completed; } catch { /* some decoders reject completed for static images */ }
+            this._frameCount = track.frameCount || 1;
+            if (this._destroyed) return;
+
+            // Sample frames the filmstrip / hover strips will ask for; never evicted.
+            const n = this._frameCount;
+            for (let k = 0; k < IDC_SAMPLE_FRAMES; k++) this._sampleSet.add(Math.min(n - 1, Math.floor((k + 0.5) * n / IDC_SAMPLE_FRAMES)));
+            this._sampleSet.add(0);
+
+            const first = await this._decodeToCanvas(0);
+            if (this._destroyed) return;
+            if (!first) throw new Error('first frame failed to decode');
+            this._gifWidth = first.width;
+            this._gifHeight = first.height;
+            this._canvas.width = this._gifWidth;
+            this._canvas.height = this._gifHeight;
+            const bytesPerFrame = Math.max(1, this._gifWidth * this._gifHeight * 4);
+            this._maxCanvases = Math.max(8, Math.min(512, Math.floor(IDC_CACHE_BUDGET_BYTES / bytesPerFrame)));
+
+            if (Array.isArray(delays) && delays.length === n) {
+                this._buildTimeline(delays);
+            } else {
+                // Durations come from the frames themselves: decode once in order.
+                const d = new Array(n);
+                d[0] = first._duration;
+                for (let i = 1; i < n; i++) {
+                    if (this._destroyed) return;
+                    const c = await this._decodeToCanvas(i);
+                    d[i] = c ? c._duration : 100;
+                }
+                this._buildTimeline(d);
+            }
+
+            this._showFrame(0);
+            this._emit('loadedmetadata', { duration: this.duration });
+            this._prefetch();
+        } catch (err) {
+            if (!this._destroyed) console.error('ImageDecoder controller init error:', err);
+            this._resolveFramesReady();
+            throw err;
+        }
+    }
+
+    _buildTimeline(delays) {
+        let cumulative = 0;
+        this._frameTimeline = delays.map((d) => { cumulative += (d > 0 ? d : 100); return cumulative; });
+        this._totalDuration = cumulative;
+    }
+
+    /** Decode one frame into a canvas (cached). Resolves null on failure. */
+    _decodeToCanvas(index) {
+        const cached = this._canvases.get(index);
+        if (cached) { this._lastUse.set(index, ++this._tick); return Promise.resolve(cached); }
+        const pending = this._pending.get(index);
+        if (pending) return pending;
+        if (!this._decoder || this._destroyed) return Promise.resolve(null);
+        const p = this._decoder.decode({ frameIndex: index }).then(({ image }) => {
+            if (this._destroyed) { try { image.close(); } catch {} return null; }
+            const c = this._createCanvas();
+            c.width = image.displayWidth || image.codedWidth;
+            c.height = image.displayHeight || image.codedHeight;
+            c.getContext('2d').drawImage(image, 0, 0);
+            // VideoFrame.duration is in microseconds
+            c._duration = image.duration ? Math.round(image.duration / 1000) : 100;
+            try { image.close(); } catch {}
+            this._store(index, c);
+            return c;
+        }).catch(() => null).finally(() => { this._pending.delete(index); });
+        this._pending.set(index, p);
+        return p;
+    }
+
+    _store(index, canvas) {
+        this._canvases.set(index, canvas);
+        this._lastUse.set(index, ++this._tick);
+        if (this._canvases.size > this._maxCanvases) this._evict();
+    }
+
+    _evict() {
+        // Drop least recently used frames outside the playhead window; samples stay.
+        const lo = this._currentFrame - 4, hi = this._currentFrame + IDC_WINDOW_AHEAD;
+        const candidates = [];
+        for (const [i, t] of this._lastUse) {
+            if (this._sampleSet.has(i)) continue;
+            if (i >= lo && i <= hi) continue;
+            candidates.push([i, t]);
+        }
+        candidates.sort((a, b) => a[1] - b[1]);
+        const excess = this._canvases.size - this._maxCanvases;
+        for (let k = 0; k < candidates.length && k < excess; k++) {
+            this._canvases.delete(candidates[k][0]);
+            this._lastUse.delete(candidates[k][0]);
+        }
+    }
+
+    /** Background decode: everything for small animations, a window plus samples for large ones. */
+    _prefetch() {
+        const n = this._frameCount;
+        const wanted = [];
+        if (n <= IDC_EAGER_ALL_LIMIT) {
+            for (let i = 0; i < n; i++) wanted.push(i);
+        } else {
+            for (let i = 0; i < Math.min(n, IDC_WINDOW_AHEAD); i++) wanted.push(i);
+            for (const i of this._sampleSet) wanted.push(i);
+        }
+        const run = async () => {
+            for (const i of wanted) {
+                if (this._destroyed) return;
+                if (!this._canvases.has(i)) await this._decodeToCanvas(i);
+            }
+            if (!this._destroyed) {
+                this._resolveFramesReady();
+                this._emit('framesready');
+            }
+        };
+        run();
+    }
+
+    _ensureWindow(index) {
+        if (this._frameCount <= IDC_EAGER_ALL_LIMIT) return;
+        for (let k = 1; k <= 4; k++) {
+            const i = (index + k) % this._frameCount;
+            if (!this._canvases.has(i) && !this._pending.has(i)) this._decodeToCanvas(i);
+        }
+    }
+
+    _showFrame(index) {
+        if (index < 0 || index >= this._frameCount) return;
+        this._currentFrame = index;
+        const c = this._canvases.get(index);
+        if (c) {
+            this._lastUse.set(index, ++this._tick);
+            this._ctx.drawImage(c, 0, 0);
+        } else {
+            this._decodeToCanvas(index).then((canvas) => {
+                if (canvas && !this._destroyed && this._currentFrame === index) this._ctx.drawImage(canvas, 0, 0);
+            });
+        }
+        this._ensureWindow(index);
+    }
+
+    _animate(timestamp) {
+        if (!this._playing) return;
+        if (this._lastTimestamp === null) this._lastTimestamp = timestamp;
+        const delta = (timestamp - this._lastTimestamp) * this._speed;
+        this._lastTimestamp = timestamp;
+        this._currentTime += delta;
+
+        if (this._abLoop && this._loop) {
+            const aMs = this._abLoop.a * 1000;
+            const bMs = this._abLoop.b * 1000;
+            if (this._currentTime >= bMs) {
+                this._currentTime = aMs + ((this._currentTime - aMs) % Math.max(1, bMs - aMs));
+            } else if (this._currentTime < aMs) {
+                this._currentTime = aMs;
+            }
+        }
+
+        if (this._currentTime >= this._totalDuration) {
+            if (this._loop) {
+                this._currentTime = this._currentTime % this._totalDuration;
+            } else if (this._repeat) {
+                this._currentTime = 0;
+                this._emit('ended');
+            } else {
+                this._currentTime = this._totalDuration;
+                this._playing = false;
+                this._emit('ended');
+                this._emit('pause');
+                return;
+            }
+        }
+
+        const targetFrame = this._getFrameAtTime(this._currentTime);
+        if (targetFrame !== this._currentFrame) this._showFrame(targetFrame);
+
+        if (timestamp - this._lastUIUpdate >= 66) {
+            this._lastUIUpdate = timestamp;
+            this._emit('timeupdate', { currentTime: this.currentTime, duration: this.duration });
+        }
+        this._animId = this._raf((ts) => this._animate(ts));
+    }
+
+    _getFrameAtTime(timeMs) {
+        const tl = this._frameTimeline;
+        let lo = 0, hi = tl.length;
+        while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            if (timeMs < tl[mid]) hi = mid; else lo = mid + 1;
+        }
+        return lo < tl.length ? lo : Math.max(0, this._frameCount - 1);
+    }
+
+    play() {
+        if (this._playing || this._frameCount === 0) return;
+        if (this._currentTime >= this._totalDuration) { this._currentTime = 0; this._showFrame(0); }
+        this._playing = true;
+        this._lastTimestamp = null;
+        this._animId = this._raf((ts) => this._animate(ts));
+        this._emit('play');
+    }
+
+    pause() {
+        if (!this._playing) return;
+        this._playing = false;
+        if (this._animId != null) { this._caf(this._animId); this._animId = null; }
+        this._lastTimestamp = null;
+        this._emit('pause');
+    }
+
+    seek(time) {
+        const timeMs = Math.max(0, Math.min(time * 1000, this._totalDuration));
+        this._currentTime = timeMs;
+        this._showFrame(this._getFrameAtTime(timeMs));
+        this._emit('timeupdate', { currentTime: this.currentTime, duration: this.duration });
+    }
+
+    seekPercent(pct) { this.seek((pct * this._totalDuration) / 1000); }
+
+    stepFrame(direction) {
+        if (this._playing) this.pause();
+        let target;
+        if (direction === 'next') {
+            target = this._currentFrame + 1;
+            if (target >= this._frameCount) { if (this._loop) target = 0; else return; }
+        } else {
+            target = this._currentFrame - 1;
+            if (target < 0) { if (this._loop) target = this._frameCount - 1; else return; }
+        }
+        this._currentTime = target > 0 ? this._frameTimeline[target - 1] : 0;
+        this._showFrame(target);
+        this._emit('timeupdate', { currentTime: this.currentTime, duration: this.duration });
+    }
+
+    get currentTime() { return this._currentTime / 1000; }
+    get duration() { return this._totalDuration / 1000; }
+    get isPlaying() { return this._playing; }
+    get hasAudio() { return false; }
+    get mediaType() { return this._format; }
+    get frameCount() { return this._frameCount; }
+    get currentFrameIndex() { return this._currentFrame; }
+    get gifWidth() { return this._gifWidth; }
+    get gifHeight() { return this._gifHeight; }
+
+    /** Cached canvas for frame i, or null (a decode is started so a later call succeeds). */
+    getFrameAtIndex(i) {
+        if (i < 0 || i >= this._frameCount) return null;
+        const c = this._canvases.get(i);
+        if (c) { this._lastUse.set(i, ++this._tick); return c; }
+        this._decodeToCanvas(i);
+        return null;
+    }
+
+    /** Resolves once the frames consumers sample (all, for small animations) are decoded. */
+    whenFramesReady() { return this._framesReady; }
+
+    getTimestampAtFrame(i) {
+        if (i < 0 || i >= this._frameTimeline.length) return 0;
+        return (this._frameTimeline[i] || 0) / 1000;
+    }
+
+    getFrameIndexAtTime(seconds) { return this._getFrameAtTime(Math.max(0, seconds) * 1000); }
+
+    destroy() {
+        this._destroyed = true;
+        this.pause();
+        if (this._decoder) { try { this._decoder.close(); } catch {} this._decoder = null; }
+        this._canvases.clear();
+        this._lastUse.clear();
+        this._pending.clear();
+        this._resolveFramesReady();
+        super.destroy();
+    }
+}
+
+/**
+ * Build the right animated-image controller for this runtime: ImageDecoder
+ * (Chromium 94+) when available, otherwise the JS decoders.
+ * @param {HTMLCanvasElement} canvas
+ * @param {ArrayBuffer} buffer
+ * @param {{ delays?: number[], forceLegacy?: boolean }} [opts]
+ */
+function createAnimatedImageController(canvas, buffer, opts = {}) {
+    if (!opts.forceLegacy && typeof ImageDecoder !== 'undefined') {
+        const type = sniffAnimatedImageType(buffer);
+        let delays = opts.delays;
+        if (!delays) {
+            try {
+                const parsed = type === 'image/webp'
+                    ? (typeof parseWebpDuration === 'function' ? parseWebpDuration(buffer) : null)
+                    : (typeof parseGifDuration === 'function' ? parseGifDuration(buffer) : null);
+                if (parsed && parsed.delays) delays = parsed.delays;
+            } catch { /* timeline will come from the decoder */ }
+        }
+        return new ImageDecoderPlaybackController(canvas, buffer, { type, delays });
+    }
+    return new AnimatedImagePlaybackController(canvas, buffer);
 }
 
 // ==================== CONTROL BAR MANAGER ====================
@@ -1121,5 +1494,5 @@ class MediaControlBar {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { MediaPlaybackController, VideoPlaybackController, AnimatedImagePlaybackController, MediaControlBar };
+    module.exports = { MediaPlaybackController, VideoPlaybackController, AnimatedImagePlaybackController, ImageDecoderPlaybackController, createAnimatedImageController, sniffAnimatedImageType, MediaControlBar };
 }

@@ -78,6 +78,12 @@ class FilmstripScrubber {
         // Render frame thumbnails
         if (isAnimated) {
             this._renderAnimatedTiles(controller);
+            // Decoder-backed controllers fill their frame cache in the background;
+            // re-render the tiles once the sampled frames exist.
+            if (typeof controller.on === 'function') {
+                this._framesReadyHandler = () => { if (this._controller === controller) this._renderAnimatedTiles(controller); };
+                controller.on('framesready', this._framesReadyHandler);
+            }
         } else if (isVideo) {
             this._renderVideoTiles(mediaUrl);
         }
@@ -87,6 +93,10 @@ class FilmstripScrubber {
         if (this._controller && this._timeupdateHandler) {
             this._controller.off('timeupdate', this._timeupdateHandler);
         }
+        if (this._controller && this._framesReadyHandler && typeof this._controller.off === 'function') {
+            this._controller.off('framesready', this._framesReadyHandler);
+        }
+        this._framesReadyHandler = null;
         this._timeupdateHandler = null;
         this._controller = null;
         if (this._offscreenVideo) {

@@ -3016,8 +3016,9 @@ async function _generateAnimatedStrip(card, strip, cacheKey) {
         if (!card.isConnected || !card.contains(strip)) return;
 
         const ctrlCanvas = document.createElement('canvas');
-        const controller = new AnimatedImagePlaybackController(ctrlCanvas, buffer);
+        const controller = createAnimatedImageController(ctrlCanvas, buffer);
         await controller.ready;
+        await controller.whenFramesReady(); // the strip samples frames across the whole animation
 
         if (!card.isConnected || !card.contains(strip)) {
             controller.destroy();

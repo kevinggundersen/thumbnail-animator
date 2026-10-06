@@ -715,6 +715,44 @@ function handleLightboxCropPointerEnd(e) {
     e.stopPropagation();
 }
 
+// Navigation list cache: valid while the grid's sorted item array is the same object with the same length.
+let _lbItemsSource = null;
+let _lbItemsSourceLen = -1;
+function refreshLightboxItems() {
+    lightboxItems = getFilteredMediaItems();
+    _lbItemsSource = (typeof vsState !== 'undefined' && vsState.enabled) ? vsState.sortedItems : null;
+    _lbItemsSourceLen = _lbItemsSource ? _lbItemsSource.length : -1;
+}
+function _lightboxItemsStillValid() {
+    if (!lightboxItems || lightboxItems.length === 0) return false;
+    if (!_lbItemsSource) return false;
+    return typeof vsState !== 'undefined' && vsState.enabled && vsState.sortedItems === _lbItemsSource && vsState.sortedItems.length === _lbItemsSourceLen;
+}
+
+// Warm the browser cache for the neighbours of the current item so arrow-key
+// navigation shows the next still image without a cold load. Videos and
+// animated images are not preloaded (their decode is the expensive part).
+const _lbPreloaded = [];
+function preloadLightboxNeighbours() {
+    if (!lightboxItems || lightboxItems.length < 2) return;
+    const n = lightboxItems.length;
+    _lbPreloaded.length = 0;
+    for (const idx of [(currentLightboxIndex + 1) % n, (currentLightboxIndex - 1 + n) % n]) {
+        const item = lightboxItems[idx];
+        if (!item || item.type !== 'image') continue;
+        const u = String(item.url).toLowerCase();
+        if (u.endsWith('.gif') || u.endsWith('.webp') || u.endsWith('.svg')) continue;
+        const im = new Image();
+        im.decoding = 'async';
+        im.src = item.url;
+        _lbPreloaded.push(im);
+    }
+}
+
+// Token for the asynchronous animated-image path: a decode that finishes after
+// the user has moved on must not replace the newer item's canvas.
+let _lbAnimatedToken = 0;
+
 function openLightbox(mediaUrl, filePath, fileName) {
     const perfStart = perfTest.start();
     const mediaType = getFileType(mediaUrl);
@@ -741,9 +779,16 @@ function openLightbox(mediaUrl, filePath, fileName) {
             if (currentLightboxIndex === -1) currentLightboxIndex = 0;
         }
     } else {
-        lightboxItems = getFilteredMediaItems();
-        currentLightboxIndex = lightboxItems.findIndex(item => item.path === filePath);
-        if (currentLightboxIndex === -1) currentLightboxIndex = 0;
+        // Rebuild the navigation list only when the grid's item array changed;
+        // arrow-key navigation used to re-filter and re-map every item per keypress.
+        if (!_lightboxItemsStillValid()) refreshLightboxItems();
+        const hint = _lightboxNextIndexHint;
+        if (hint != null && lightboxItems[hint] && lightboxItems[hint].path === filePath) {
+            currentLightboxIndex = hint;
+        } else {
+            currentLightboxIndex = lightboxItems.findIndex(item => item.path === filePath);
+            if (currentLightboxIndex === -1) currentLightboxIndex = 0;
+        }
     }
     _lightboxNextIndexHint = null; // consume hint
 
@@ -837,22 +882,26 @@ function openLightbox(mediaUrl, filePath, fileName) {
             lightboxImage.src = mediaUrl;
 
             // Fetch binary and swap to canvas controller once decoded
+            const animToken = ++_lbAnimatedToken;
             fetch(mediaUrl).then(r => r.arrayBuffer()).then(async buffer => {
+                if (animToken !== _lbAnimatedToken) return; // user navigated away meanwhile
                 // For WebP, check if it's actually animated before using canvas controller
                 if (isWebp) {
                     const parsed = parseWebpDuration(buffer);
                     if (!parsed || parsed.frameCount <= 1) {
-                        // Static WebP — already showing as <img>, just hide controls
+                        // Static WebP — already showing as <img> (and the inspector was
+                        // opened above), just hide controls
                         if (mediaControlBarInstance) mediaControlBarInstance.hide();
                         setLightboxCropAvailability(filePath, true);
-                        try { _enhancedLightboxOnOpen(filePath, null, mediaUrl); } catch (e) { console.warn('enhanced lightbox open failed:', e); }
                         return;
                     }
                 }
 
-                // Decode frames into canvas controller
-                const controller = new AnimatedImagePlaybackController(lightboxGifCanvas, buffer);
+                // Decode frames into canvas controller (ImageDecoder when available)
+                const parsedDelays = isWebp ? null : (() => { try { const g = parseGifDuration(buffer); return g && g.delays; } catch { return null; } })();
+                const controller = createAnimatedImageController(lightboxGifCanvas, buffer, { delays: parsedDelays || undefined });
                 await controller.ready;
+                if (animToken !== _lbAnimatedToken) { controller.destroy(); return; }
 
                 // Swap from <img> preview to canvas
                 lightboxImage.style.display = 'none';
@@ -985,7 +1034,8 @@ function openLightbox(mediaUrl, filePath, fileName) {
             lightboxVideo.addEventListener('loadedmetadata', handleVideoMeta);
         }
 
-        lightboxVideo.play();
+        const lbPlay = lightboxVideo.play();
+        if (lbPlay && typeof lbPlay.catch === 'function') lbPlay.catch(() => {}); // interrupted by fast navigation
 
         // Wire enhanced lightbox (inspector + filmstrip) for video
         try { _enhancedLightboxOnOpen(filePath, controller, mediaUrl); } catch (e) { console.warn('enhanced lightbox open failed:', e); }
@@ -1001,6 +1051,7 @@ function openLightbox(mediaUrl, filePath, fileName) {
     focusedCardIndex = -1;
     refreshLightboxCropButton();
     refreshLightboxRotationControls();
+    preloadLightboxNeighbours();
     perfTest.end('openLightbox', perfStart);
 }
 

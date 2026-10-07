@@ -2404,6 +2404,10 @@ let activeDimensionHydrationToken = 0;
 
 // Store current items for re-sorting without re-fetching
 let currentItems = [];
+// Normalized path of the folder currentItems was loaded from (null for search
+// results, collections and empty views). During a navigation currentFolderPath
+// already names the new folder while currentItems is still the old list.
+let _currentItemsFolder = null;
 let currentItemStatsCacheRef = null;
 let currentItemStatsCacheLen = -1;
 let currentItemStatsCache = { folders: 0, videos: 0, images: 0, total: 0 };
@@ -3615,6 +3619,7 @@ async function executeCrossFolderFindSimilar() {
 
     // Update grid with results
     currentItems = resultItems;
+    _currentItemsFolder = null;
     currentFolderPath = null;
     currentCollectionId = null;
 
@@ -4246,6 +4251,7 @@ function clearFindSimilar() {
     if (wasAllFolders && findSimilarState.previousItems) {
         // Restore previous view
         currentItems = findSimilarState.previousItems;
+        _currentItemsFolder = findSimilarState.previousFolder ? normalizePath(findSimilarState.previousFolder) : null;
         currentFolderPath = findSimilarState.previousFolder;
         findSimilarState.previousItems = null;
         findSimilarState.previousFolder = null;
@@ -4303,12 +4309,24 @@ function hasDimensionDependentFilters() {
         advancedSearchFilters.aspectRatio !== '';
 }
 
-function updateInMemoryFolderCaches(folderPath, items) {
+// Dimensions learned from a loaded <img>/<video> go back into the folder caches,
+// but only while currentItems really is currentFolderPath's list; otherwise the
+// previous grid's late load events file its items under the new folder.
+function cacheCurrentFolderDimensions() {
+    if (!currentFolderPath || _currentItemsFolder !== normalizePath(currentFolderPath)) return;
+    updateInMemoryFolderCaches(currentFolderPath, currentItems);
+}
+
+function updateInMemoryFolderCaches(folderPath, items, tabId = activeTabId) {
     const normalizedPath = normalizePath(folderPath);
     const timestamp = Date.now();
 
-    if (activeTabId != null) {
-        tabContentCache.set(activeTabId, {
+    // Only the tab whose path is this folder gets the entry. Completion-time
+    // writes keyed to whatever tab happened to be active handed one tab another
+    // folder's content ("the previous folder opens").
+    const owner = tabId != null ? tabs.find(t => t.id === tabId) : null;
+    if (owner && owner.path && normalizePath(owner.path) === normalizedPath) {
+        tabContentCache.set(owner.id, {
             items,
             path: normalizedPath,
             timestamp
@@ -4621,12 +4639,14 @@ let _lastFocusedCard = null; // Perf: O(1) outline clear instead of O(n) forEach
 
 // Navigation history for back/forward functionality (per-tab)
 const navigationHistory = {
-    _getTab() {
-        return tabs.find(t => t.id === activeTabId);
+    _getTab(tabId = activeTabId) {
+        return tabs.find(t => t.id === tabId);
     },
 
-    add(path) {
-        const tab = this._getTab();
+    // tabId: the tab that started the navigation. A load that finishes after the
+    // user switched tabs must not append to the new tab's history.
+    add(path, tabId = activeTabId) {
+        const tab = this._getTab(tabId);
         if (!tab) return;
         // Don't add duplicate if we're already at this path
         if (tab.historyIndex >= 0 && normalizePath(tab.historyPaths[tab.historyIndex]) === normalizePath(path)) {
@@ -4650,24 +4670,56 @@ const navigationHistory = {
         return tab ? tab.historyIndex < tab.historyPaths.length - 1 : false;
     },
 
-    goBack() {
-        const tab = this._getTab();
-        if (tab && tab.historyIndex > 0) {
-            tab.historyIndex--;
-            this.updateButtons();
-            return tab.historyPaths[tab.historyIndex];
-        }
-        return null;
+    // Back/forward are two-phase: peek the target, navigate, and only then move
+    // the index (navigateToFolder calls move() on success). Moving first meant a
+    // navigation dropped from the queue or cancelled left the index pointing at
+    // a folder the user never reached.
+    // The back/forward navigation currently loading for a tab ({ tabId, delta, gen }).
+    _inflight: null,
+
+    // Where the tab's index will be once the in-flight (or queued) back/forward
+    // navigation lands. A second press while the first is still loading steps
+    // from there, so two quick presses go two steps back.
+    _effectiveIndex(tab) {
+        let delta = 0;
+        if (_pendingNav && _pendingNav.tabId === tab.id) delta = _pendingNav.historyMove || 0;
+        else if (this._inflight && this._inflight.tabId === tab.id) delta = this._inflight.delta;
+        return tab.historyIndex + delta;
     },
 
-    goForward() {
+    // Returns { path, delta } where delta is relative to the committed index, or null.
+    peekBack() {
         const tab = this._getTab();
-        if (tab && tab.historyIndex < tab.historyPaths.length - 1) {
-            tab.historyIndex++;
-            this.updateButtons();
-            return tab.historyPaths[tab.historyIndex];
+        if (!tab) return null;
+        const target = this._effectiveIndex(tab) - 1;
+        return target >= 0 ? { path: tab.historyPaths[target], delta: target - tab.historyIndex } : null;
+    },
+
+    peekForward() {
+        const tab = this._getTab();
+        if (!tab) return null;
+        const target = this._effectiveIndex(tab) + 1;
+        return target < tab.historyPaths.length ? { path: tab.historyPaths[target], delta: target - tab.historyIndex } : null;
+    },
+
+    // Commit a back/forward step once its navigation succeeded. If the entry at
+    // the target no longer matches (history changed mid-flight), settle on the
+    // nearest entry for that path instead.
+    move(delta, tabId = activeTabId, expectedPath = null) {
+        const tab = this._getTab(tabId);
+        if (!tab || !delta) return;
+        let next = tab.historyIndex + delta;
+        if (expectedPath && (next < 0 || next >= tab.historyPaths.length || normalizePath(tab.historyPaths[next]) !== normalizePath(expectedPath))) {
+            const want = normalizePath(expectedPath);
+            let best = -1;
+            for (let i = 0; i < tab.historyPaths.length; i++) {
+                if (normalizePath(tab.historyPaths[i]) === want && (best < 0 || Math.abs(i - next) < Math.abs(best - next))) best = i;
+            }
+            next = best;
         }
-        return null;
+        if (next < 0 || next >= tab.historyPaths.length) return;
+        tab.historyIndex = next;
+        this.updateButtons();
     },
 
     updateButtons() {
@@ -6794,9 +6846,7 @@ function createImageForCard(card, imageUrl) {
             }
 
             if (updateItemDimensionsByPath(card.dataset.path, img.naturalWidth, img.naturalHeight)) {
-                if (currentFolderPath) {
-                    updateInMemoryFolderCaches(currentFolderPath, currentItems);
-                }
+                cacheCurrentFolderDimensions();
                 scheduleVsRecalculateForDimensions();
             }
 
@@ -7064,9 +7114,7 @@ function createVideoForCard(card, videoUrl) {
             createResolutionLabel(card, video.videoWidth, video.videoHeight);
 
             if (updateItemDimensionsByPath(card.dataset.path, video.videoWidth, video.videoHeight)) {
-                if (currentFolderPath) {
-                    updateInMemoryFolderCaches(currentFolderPath, currentItems);
-                }
+                cacheCurrentFolderDimensions();
                 scheduleVsRecalculateForDimensions();
             }
 
@@ -9669,11 +9717,12 @@ let _pendingNav = null;
 let _abortCurrentScan = null;
 let _lastNavCompleteTime = 0; // timestamp — watcher ignores events shortly after navigation
 // Function to navigate to a folder
-async function navigateToFolder(folderPath, addToHistory = true, forceReload = false, trustCache = false) {
+let _navGeneration = 0;
+async function navigateToFolder(folderPath, addToHistory = true, forceReload = false, trustCache = false, historyMove = 0) {
     if (_navBusy) {
         // Queue the LATEST destination (overwrites any previous pending)
         perfLog(`[nav] QUEUED (busy): "${folderPath.split(/[\\/]/).pop()}" forceReload=${forceReload}`);
-        _pendingNav = { folderPath, addToHistory, forceReload, trustCache };
+        _pendingNav = { folderPath, addToHistory, forceReload, trustCache, historyMove, tabId: activeTabId };
         // Cancel the active scan so the current loadVideos resolves/rejects quickly
         if (typeof cancelActiveStream === 'function') cancelActiveStream();
         if (_abortCurrentScan) _abortCurrentScan();
@@ -9681,6 +9730,22 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
     }
     _navBusy = true;
     const _navT0 = performance.now();
+    perfLog(`[nav] START "${folderPath.split(/[\\/]/).pop()}" tab=${activeTabId} addToHistory=${addToHistory} historyMove=${historyMove}`);
+    // Everything this navigation writes at completion belongs to the tab that
+    // started it, even if the user switched tabs while it loaded.
+    const navTabId = activeTabId;
+    const navTab = tabs.find(t => t.id === navTabId) || null;
+    const priorTabPath = navTab ? navTab.path : null;
+    const priorTabName = navTab ? navTab.name : null;
+    const navGen = ++_navGeneration;
+    if (historyMove) navigationHistory._inflight = { tabId: navTabId, delta: historyMove, gen: navGen };
+    // A navigation that never settles must not wedge every later one.
+    const navWatchdog = setTimeout(() => {
+        if (_navBusy && _navGeneration === navGen) {
+            console.error('[nav] watchdog: navigation did not settle in 90 s, releasing', folderPath);
+            _navBusy = false;
+        }
+    }, 90000);
     // Exit collection mode when navigating to a folder
     if (currentCollectionId) {
         // Hand off any in-flight foreground AI scan to the background scanner
@@ -9818,7 +9883,7 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
         }
 
         // Update UI chrome BEFORE the async load so navigation feels instant
-        updateCurrentTab(folderPath, folderName);
+        updateCurrentTab(folderPath, folderName, navTabId);
         updateBreadcrumb(folderPath);
 
         console.time('[nav] loadVideos');
@@ -9837,7 +9902,9 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
             deferLocalStorageWrite('lastFolderPath', folderPath);
         }
         if (addToHistory) {
-            navigationHistory.add(folderPath);
+            navigationHistory.add(folderPath, navTabId);
+        } else if (historyMove) {
+            navigationHistory.move(historyMove, navTabId, folderPath);
         }
 
         // Reset keyboard focus
@@ -9849,6 +9916,16 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
         _lastNavCompleteTime = Date.now();
         perfLog(`[nav] navigateToFolder total: ${(performance.now() - _navT0).toFixed(1)}ms (cached=${!forceReload})`);
     } catch (error) {
+        if (error && error.message === 'tab-changed') {
+            // The user switched tabs while this folder loaded. loadVideos cached the
+            // items for the originating tab, its path already points at the folder
+            // and its history advances; the grid belongs to the new tab now.
+            perfTest.end('navigateToFolder', perfStart);
+            perfLog(`[nav] tab changed during load of "${folderName}": kept for tab ${navTabId}`);
+            if (addToHistory) navigationHistory.add(folderPath, navTabId);
+            else if (historyMove) navigationHistory.move(historyMove, navTabId, folderPath);
+            return;
+        }
         // Revert state for all errors (cancellation or real)
         currentFolderPath = previousFolderPath;
         searchBox.value = previousSearchValue;
@@ -9867,26 +9944,35 @@ async function navigateToFolder(folderPath, addToHistory = true, forceReload = f
         perfTest.end('navigateToFolder', perfStart);
         // Don't show error toast for scan-cancelled (user clicked another folder)
         if (error && error.message === 'scan-cancelled') {
-            // Silently swallow — the queued navigation will take over
+            // A queued navigation replaces this one; put the tab's path back so it
+            // does not claim a folder that never loaded.
+            if (navTab && navTab.path !== priorTabPath) updateCurrentTab(priorTabPath, priorTabName, navTabId);
         } else {
             // Path doesn't exist or is invalid - show error and revert UI chrome
             console.error('Invalid path:', folderPath, error);
             // Revert breadcrumb, tab label, and sidebar to previous path
+            if (navTab && navTab.path !== priorTabPath) updateCurrentTab(priorTabPath, priorTabName, navTabId);
             if (previousFolderPath) {
-                const previousName = previousFolderPath.split(/[/\\]/).filter(Boolean).pop() || previousFolderPath;
                 updateBreadcrumb(previousFolderPath);
-                updateCurrentTab(previousFolderPath, previousName);
                 sidebarExpandToPath(previousFolderPath);
             }
             showToast(`Path not found: ${folderPath}`, 'error');
         }
     } finally {
+        clearTimeout(navWatchdog);
+        if (navigationHistory._inflight && navigationHistory._inflight.gen === navGen) navigationHistory._inflight = null;
         _navBusy = false;
         // Process the queued navigation (latest click wins)
         if (_pendingNav) {
             const p = _pendingNav;
             _pendingNav = null;
-            navigateToFolder(p.folderPath, p.addToHistory, p.forceReload, p.trustCache);
+            if (p.tabId != null && p.tabId !== activeTabId) {
+                // The user moved to another tab while this was queued; running it
+                // now would load the old tab's folder into the new tab.
+                perfLog(`[nav] dropped queued nav (tab changed): "${p.folderPath.split(/[\\/]/).pop()}"`);
+            } else {
+                navigateToFolder(p.folderPath, p.addToHistory, p.forceReload, p.trustCache, p.historyMove);
+            }
         }
     }
 }
@@ -9898,16 +9984,16 @@ async function goBack() {
         mltGoBack();
         return;
     }
-    const path = navigationHistory.goBack();
-    if (path) {
-        await navigateToFolder(path, false, false, true); // trustCache for instant back
+    const target = navigationHistory.peekBack();
+    if (target) {
+        await navigateToFolder(target.path, false, false, true, target.delta); // trustCache for instant back; index moves on success
     }
 }
 
 async function goForward() {
-    const path = navigationHistory.goForward();
-    if (path) {
-        await navigateToFolder(path, false, false, true); // trustCache for instant forward
+    const target = navigationHistory.peekForward();
+    if (target) {
+        await navigateToFolder(target.path, false, false, true, target.delta); // trustCache for instant forward; index moves on success
     }
 }
 
@@ -10005,6 +10091,7 @@ settingsBtn.addEventListener('click', (e) => {
                 // Restore previous view and use current-folder filter
                 if (findSimilarState.previousItems) {
                     currentItems = findSimilarState.previousItems;
+                    _currentItemsFolder = findSimilarState.previousFolder ? normalizePath(findSimilarState.previousFolder) : null;
                     currentFolderPath = findSimilarState.previousFolder;
                     findSimilarState.previousItems = null;
                     findSimilarState.previousFolder = null;
@@ -11458,7 +11545,10 @@ function scanFolderStreaming(folderPath, options, callbacks) {
         } else if (chunk.phase === 'dimensions') {
             if (callbacks.onDimensions) callbacks.onDimensions(chunk.dims || []);
         } else if (chunk.phase === 'complete') {
-            if (callbacks.onComplete) callbacks.onComplete(!chunk.error, chunk.error);
+            // A scan cancelled by main (navigation moved on) must not resolve as an
+            // empty folder: that rendered nothing and then cached the empty list.
+            const cancelled = !!chunk.cancelled;
+            if (callbacks.onComplete) callbacks.onComplete(!chunk.error && !cancelled, chunk.error || (cancelled ? 'scan-cancelled' : undefined));
             if (_activeScanId === chunk.scanId) cancelActiveStream();
         }
     };
@@ -11557,6 +11647,7 @@ function prefetchFolderIfNeeded(folderPath) {
 
 async function loadVideos(folderPath, useCache = true, preservedScrollTop = null) {
     const _lvT0 = performance.now();
+    const loadTabId = activeTabId; // the tab this load belongs to, for completion-time cache writes
     clearFindSimilarState();
     // Clear card selection on folder navigation
     clearCardSelection();
@@ -11748,7 +11839,7 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
                                 }));
                                 cacheDimensions(dimEntries).catch(() => {});
                                 storeFolderInIndexedDB(folderPath, initialItems).catch(() => {});
-                                updateInMemoryFolderCaches(folderPath, initialItems);
+                                updateInMemoryFolderCaches(folderPath, initialItems, loadTabId);
                             }
                             if (!ok && !initialItems) {
                                 safeReject(error || `Could not scan folder: ${folderPath}`);
@@ -11776,7 +11867,7 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
             await yieldToEventLoop();
 
             // Initial cache (dimensions may still be streaming; onComplete re-caches)
-            updateInMemoryFolderCaches(folderPath, items);
+            updateInMemoryFolderCaches(folderPath, items, loadTabId);
 
             // Initial dimension cache pass (best-effort; onComplete re-runs with full data)
             const dimensionEntries = items.filter(
@@ -11818,13 +11909,14 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
             }
         }
 
-        updateInMemoryFolderCaches(folderPath, items);
+        updateInMemoryFolderCaches(folderPath, items, loadTabId);
 
         // Yield control before sorting/rendering
         await yieldToEventLoop();
 
-        // Store items for re-sorting without re-fetching
-        currentItems = items;
+        // The user switched tabs while this folder loaded: the items are cached for
+        // the tab that asked for them (above) and nothing on screen changes.
+        if (activeTabId !== loadTabId) { perfLog('[nav] tab changed during load (before sort)'); throw new Error('tab-changed'); }
 
         // Filter items based on current filter, then sort
         perfLog(`[loadVideos] filter/sort start: ${(performance.now() - _lvT0).toFixed(1)}ms`);
@@ -11833,6 +11925,14 @@ async function loadVideos(folderPath, useCache = true, preservedScrollTop = null
 
         // Yield control before rendering
         await yieldToEventLoop();
+
+        // The yields above are the last places a tab switch can slip in; past
+        // this point the grid is ours.
+        if (activeTabId !== loadTabId) { perfLog('[nav] tab changed during load (before render)'); throw new Error('tab-changed'); }
+
+        // Store items for re-sorting without re-fetching
+        currentItems = items;
+        _currentItemsFolder = normalizePath(folderPath);
 
         // Render the filtered and sorted items
         // Clear embeddings from previous folder so stale data doesn't affect new folder
@@ -12296,6 +12396,7 @@ function showCollectionContextMenu(e, collection) {
                     if (currentCollectionId === collection.id) {
                         currentCollectionId = null;
                         currentItems = [];
+                        _currentItemsFolder = null;
                         renderItems([], null);
                         currentPathSpan.textContent = 'No folder selected';
                         itemCountEl.textContent = '';

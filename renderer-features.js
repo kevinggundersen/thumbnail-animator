@@ -1493,16 +1493,10 @@ function createTab(path, name, collectionId = null, groupId = null) {
     tabs.push(tab);
     saveTabs();
     renderTabs();
+    // switchToTab navigates to the new tab's folder (and records its first
+    // history entry); navigating here as well started two scans of which the
+    // first was cancelled.
     switchToTab(tab.id);
-    if (path) {
-        // Use setTimeout to yield control back to event loop, making button responsive
-        setTimeout(() => {
-            navigateToFolder(path).catch(err => {
-                console.error('Error navigating to tab folder:', err);
-                hideLoadingIndicator();
-            });
-        }, 0);
-    }
     onTabsChanged();
     return tab.id;
 }
@@ -1532,6 +1526,7 @@ function closeTab(tabId) {
 
 function switchToTab(tabId) {
     const previousTabId = activeTabId;
+    perfLog(`[nav] switchToTab ${previousTabId} -> ${tabId} (busy=${_navBusy})`);
 
     // Snapshot current tab's DOM before switching away (for instant restore later)
     if (previousTabId && previousTabId !== tabId) {
@@ -1542,6 +1537,15 @@ function switchToTab(tabId) {
     // Update back/forward buttons for this tab's history
     navigationHistory.updateButtons();
     const tab = tabs.find(t => t.id === tabId);
+    // Deferred so the tab strip paints first. If the user has moved to another
+    // tab by then, this navigation must not run (it would land in that tab).
+    const navigateTabLater = () => setTimeout(() => {
+        if (activeTabId !== tabId || !tab.path) { perfLog(`[nav] switchToTab ${tabId}: deferred navigation skipped (active=${activeTabId})`); return; }
+        navigateToFolder(tab.path, (tab.historyPaths || []).length === 0).catch(err => {
+            console.error('Error navigating to tab folder:', err);
+            hideLoadingIndicator();
+        });
+    }, 0);
     if (tab) {
         // Restore tab's sorting preferences
         sortType = tab.sortType || 'name';
@@ -1556,6 +1560,7 @@ function switchToTab(tabId) {
             currentCollectionId = tab.collectionId;
             currentFolderPath = null;
             setTimeout(() => {
+                if (activeTabId !== tabId) return;
                 loadCollectionIntoGrid(tab.collectionId).catch(err => {
                     console.error('Error loading collection tab:', err);
                     hideLoadingIndicator();
@@ -1599,6 +1604,8 @@ function switchToTab(tabId) {
                     }
                     currentFolderPath = tab.path;
                     currentItems = tabCache.items;
+                    _currentItemsFolder = normalizePath(tab.path);
+                    perfLog(`[nav] switchToTab ${tabId}: rendering from tab cache (${tabCache.items.length} items)`);
                     updateBreadcrumb(tab.path);
                     searchBox.value = '';
                     currentFilter = 'all';
@@ -1611,20 +1618,10 @@ function switchToTab(tabId) {
                     renderItems(sortedItems, savedScroll !== undefined ? savedScroll : null);
                     sidebarExpandToPath(tab.path);
                 } else {
-                    setTimeout(() => {
-                        navigateToFolder(tab.path, false).catch(err => {
-                            console.error('Error navigating to tab folder:', err);
-                            hideLoadingIndicator();
-                        });
-                    }, 0);
+                    navigateTabLater();
                 }
             } else {
-                setTimeout(() => {
-                    navigateToFolder(tab.path, false).catch(err => {
-                        console.error('Error navigating to tab folder:', err);
-                        hideLoadingIndicator();
-                    });
-                }, 0);
+                navigateTabLater();
                 }
 
         } else {
@@ -1638,6 +1635,7 @@ function switchToTab(tabId) {
             currentHoveredCard = null;
             currentFolderPath = null;
             currentItems = [];
+            _currentItemsFolder = null;
             updateBreadcrumb(null);
         }
     }
@@ -1645,9 +1643,9 @@ function switchToTab(tabId) {
     renderTabs();
 }
 
-function updateCurrentTab(path, name) {
-    if (activeTabId == null) return;
-    const tab = tabs.find(t => t.id === activeTabId);
+function updateCurrentTab(path, name, tabId = activeTabId) {
+    if (tabId == null) return;
+    const tab = tabs.find(t => t.id === tabId);
     if (tab) {
         tab.path = path;
         tab.name = name || (path ? path.split(/[/\\]/).filter(Boolean).pop() : 'Home');

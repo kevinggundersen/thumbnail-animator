@@ -139,6 +139,7 @@ thumnail-animator/
 - `npm test` - Unit tests (vitest); `npm run lint` - ESLint; `npm run typecheck` - JSDoc type check (advisory)
 - `npm run build:renderer` - Bundle and minify the renderer scripts into `dist-renderer/` (`--dev` for a readable build)
 - `node scripts/perf-smoke.js <folder>` - Launch the app on an isolated profile and measure first render, scroll frame pacing, playback budget and background CPU
+- `node scripts/nav-smoke.js <profile> <tree>` / `node scripts/nav-stress.js <profile> <tree>` - Navigation correctness: plain navigation, history, tabs, and adversarial timing (rapid clicks, double back, tab switches and closes while a folder is still scanning) checked against invariants
 - `npm run build` - Build the application
 - `npm run build:win` - Build Windows installer
 - `npm run dist` - Create distribution build without publishing

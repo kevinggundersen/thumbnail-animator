@@ -328,6 +328,7 @@ const SETTINGS_SCHEMA = {
     videoProxies:            { type: 'bool',   default: true,  storageKey: 'videoProxies' },
     videoProxyEdge:          { type: 'int',    default: 480,   storageKey: 'videoProxyEdge' },
     videoProxyMaxSeconds:    { type: 'int',    default: 120,   storageKey: 'videoProxyMaxSeconds' },
+    videoProxyFps:           { type: 'int',    default: 30,    storageKey: 'videoProxyFps' },
     proxyCacheLimitMB:       { type: 'int',    default: 4000,  storageKey: 'proxyCacheLimitMB' },
     ioConcurrency:           { type: 'int',    default: 20,    storageKey: 'ioConcurrency' },
     // Sidebar / tabs

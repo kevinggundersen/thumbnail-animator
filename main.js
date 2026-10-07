@@ -1580,6 +1580,7 @@ let mainVideoThumbSeekPct = 0.25;
 let mainVideoProxiesEnabled = true;
 let mainVideoProxyEdge = 480;
 let mainVideoProxyMaxSeconds = 120;
+let mainVideoProxyFps = 30;
 
 ipcMain.handle('update-main-setting', (event, key, value) => {
     switch (key) {
@@ -1589,6 +1590,7 @@ ipcMain.handle('update-main-setting', (event, key, value) => {
         case 'videoProxies': mainVideoProxiesEnabled = value === true || value === 'true'; break;
         case 'videoProxyEdge': mainVideoProxyEdge = Math.min(1080, Math.max(240, parseInt(value) || 480)); break;
         case 'videoProxyMaxSeconds': { const s = parseInt(value); mainVideoProxyMaxSeconds = Number.isFinite(s) && s >= 0 ? s : 120; break; }
+        case 'videoProxyFps': mainVideoProxyFps = Math.min(60, Math.max(10, parseInt(value) || 30)); break;
     }
     return { ok: true, value: null };
 });
@@ -3373,15 +3375,17 @@ const proxyWaitQueue = [];            // [{ proxyPath, start, resolve }] not sta
 const proxyCancelled = new Set();     // proxyPaths whose waiting request was cancelled
 let proxyRunning = 0;
 
-function getProxyCachePath(filePath, mtimeMs, edge, maxSeconds) {
-    return path.join(videoProxyDir, `${createThumbCacheKey(filePath, mtimeMs, `proxy:${edge}:${maxSeconds}`)}.mp4`);
+function getProxyCachePath(filePath, mtimeMs, edge, maxSeconds, fps) {
+    // 30 fps keeps the key from before the frame-rate setting so existing proxies stay valid.
+    return path.join(videoProxyDir, `${createThumbCacheKey(filePath, mtimeMs, `proxy:${edge}:${maxSeconds}${fps === 30 ? '' : ':' + fps}`)}.mp4`);
 }
 
 function proxyOptions(opts) {
     const edge = Math.min(1080, Math.max(240, parseInt(opts && opts.edge) || mainVideoProxyEdge));
     const s = opts && opts.maxSeconds != null ? parseInt(opts.maxSeconds) : mainVideoProxyMaxSeconds;
     const maxSeconds = Number.isFinite(s) && s >= 0 ? s : mainVideoProxyMaxSeconds;
-    return { edge, maxSeconds };
+    const fps = Math.min(60, Math.max(10, parseInt(opts && opts.fps) || mainVideoProxyFps));
+    return { edge, maxSeconds, fps };
 }
 
 function pumpProxyQueue() {
@@ -3397,9 +3401,9 @@ function pumpProxyQueue() {
 wrapIpc('get-video-proxy', async (filePath, opts) => {
     if (!mainVideoProxiesEnabled || !proxyEncoder || !thumbnailPool || !videoProxyDir) return { status: 'unavailable' };
     const p = validateUserPath(filePath, { mustExist: true });
-    const { edge, maxSeconds } = proxyOptions(opts);
+    const { edge, maxSeconds, fps } = proxyOptions(opts);
     const stats = await fs.promises.stat(p);
-    const proxyPath = getProxyCachePath(p, stats.mtimeMs, edge, maxSeconds);
+    const proxyPath = getProxyCachePath(p, stats.mtimeMs, edge, maxSeconds, fps);
     try {
         await fs.promises.access(proxyPath);
         return { status: 'ready', url: pathToFileUrl(proxyPath) };
@@ -3415,10 +3419,10 @@ wrapIpc('get-video-proxy', async (filePath, opts) => {
                 await fs.promises.mkdir(videoProxyDir, { recursive: true });
                 const result = await thumbnailPool.generate({
                     type: 'video-proxy', filePath: p, thumbPath: proxyPath,
-                    proxy: { edge, maxSeconds, maxFps: 30, encoder: proxyEncoder, animated: /\.(gif|webp|apng|png)$/i.test(p) },
+                    proxy: { edge, maxSeconds, maxFps: fps, encoder: proxyEncoder, animated: /\.(gif|webp|apng|png)$/i.test(p) },
                     timeoutMs: 600000,
                 });
-                logPerf('generate-video-proxy', t0, { success: result.success ? 1 : 0, edge, maxSeconds });
+                logPerf('generate-video-proxy', t0, { success: result.success ? 1 : 0, edge, maxSeconds, fps });
                 return result.success ? { status: 'ready', url: pathToFileUrl(proxyPath) } : { status: 'failed' };
             },
         });
@@ -3431,9 +3435,9 @@ wrapIpc('get-video-proxy', async (filePath, opts) => {
 wrapIpc('cancel-video-proxy', async (filePath, opts) => {
     try {
         const p = validateUserPath(filePath, { mustExist: true });
-        const { edge, maxSeconds } = proxyOptions(opts);
+        const { edge, maxSeconds, fps } = proxyOptions(opts);
         const stats = await fs.promises.stat(p);
-        const proxyPath = getProxyCachePath(p, stats.mtimeMs, edge, maxSeconds);
+        const proxyPath = getProxyCachePath(p, stats.mtimeMs, edge, maxSeconds, fps);
         if (proxyWaitQueue.some(j => j.proxyPath === proxyPath)) proxyCancelled.add(proxyPath);
     } catch { /* nothing to cancel */ }
     return null;

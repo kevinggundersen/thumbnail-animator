@@ -2129,6 +2129,20 @@
                                 </select>
                             </label>
                         </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Proxy Frame Rate</div>
+                                    <div class="settings-item-description">Frames per second of the grid rendition. Lower rates make each proxy cheaper to decode on machines where that is the limit; on a GPU-decoding machine the number of streams is the limit and the rate barely matters.</div>
+                                </div>
+                                <select id="video-proxy-fps" class="settings-select">
+                                    <option value="15">15 fps (most videos)</option>
+                                    <option value="20">20 fps</option>
+                                    <option value="24">24 fps</option>
+                                    <option value="30" selected>30 fps (smoothest)</option>
+                                </select>
+                            </label>
+                        </div>
 
                         <div class="settings-data-section-title" style="margin-top: 24px;">Lightbox</div>
                         <div class="settings-item">

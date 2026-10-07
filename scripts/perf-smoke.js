@@ -27,7 +27,9 @@ const trials = parseInt(opt('--trials', '1'), 10);
 const keepSettings = args.includes('--keep-settings');
 const steadySeconds = parseInt(opt('--steady', '6'), 10);
 const cpuProfileFile = opt('--cpuprofile', null); // write a .cpuprofile of the first scroll trial
-const traceFile = opt('--trace', null); // write a Chrome trace (JSON) of the first scroll trial; see scripts/trace-top.js
+const traceFile = opt('--trace', null);
+const tracePhase = opt('--trace-phase', 'scroll'); // 'scroll' (first trial) or 'steady'
+const windowSize = String(opt('--window', '1600x1000')).split('x').map(n => parseInt(n, 10)); // --window WxH: more or fewer cards on screen // write a Chrome trace (JSON) of the first scroll trial; see scripts/trace-top.js
 const cpuProfileLoadFile = opt('--cpuprofile-load', null);
 const cpuProfileHoverFile = opt('--cpuprofile-hover', null); // write a .cpuprofile of the hover test // write a .cpuprofile of the folder load (reload -> cards + settle)
 const profileDir = path.resolve(opt('--profile', path.join(require('os').tmpdir(), 'thumbnail-animator-perf', path.basename(appDir))));
@@ -127,11 +129,11 @@ async function metrics(app) {
         }, { f: folder, pinned: PINNED_SETTINGS });
     }
     const settingsSnapshot = await page.evaluate(() => { const o = {}; for (const k of ['lastFolderPath','zoomLevel','perfProfile','thumbnailQuality','layoutMode','aiAutoScan','aiVisualSearchEnabled','linkedDuplicates','hoverScale','hoverScaleWithZoom','hoverScrub','gifHoverScrub','hoverPreviewStrip','groupByDate','includeMovingImages','recursiveSearch','imageCacheLimitMB','videoCacheLimitMB','playbackBudgetHint']) o[k] = localStorage.getItem(k); return o; });
-    await mainEval(app, ({ BrowserWindow }) => {
+    await mainEval(app, ({ BrowserWindow }, ws) => {
         const w = BrowserWindow.getAllWindows()[0];
-        w.unmaximize(); w.setSize(1600, 1000); w.center(); w.show(); w.focus();
+        w.unmaximize(); w.setSize(ws[0], ws[1]); w.center(); w.show(); w.focus();
         return true; // a primitive result avoids Playwright's "promise was garbage collected" flake
-    });
+    }, windowSize);
     // Renderer console lines that look like diagnostics ("[nav] ...", "[loadVideos] ...").
     const consoleLines = [];
     page.on('console', (m) => {
@@ -200,7 +202,7 @@ async function metrics(app) {
     // --trace: a Chrome trace of the first scroll trial (what the native "(program)"
     // time in a CPU profile actually is: layout, media pipeline, GC ...). Read with scripts/trace-top.js.
     let traceCdp = null; const traceEvents = [];
-    if (t === 0 && traceFile) {
+    if (t === 0 && traceFile && tracePhase === 'scroll') {
         traceCdp = await page.context().newCDPSession(page);
         traceCdp.on('Tracing.dataCollected', (e) => { for (const ev of e.value) traceEvents.push(ev); });
         await traceCdp.send('Tracing.start', {
@@ -282,8 +284,72 @@ async function metrics(app) {
     // Steady state: sit still for a few seconds with everything playing and see
     // what the budget settles on and how many frames the decoders drop.
     await metrics(app);
+    let steadyTraceCdp = null; const steadyTraceEvents = [];
+    if (traceFile && tracePhase === 'steady') {
+        steadyTraceCdp = await page.context().newCDPSession(page);
+        steadyTraceCdp.on('Tracing.dataCollected', (e) => { for (const ev of e.value) steadyTraceEvents.push(ev); });
+        await steadyTraceCdp.send('Tracing.start', { transferMode: 'ReportEvents', categories: 'toplevel,media,v8,devtools.timeline,renderer.scheduler' });
+    }
     const steadyBefore = await videoStats(page);
-    await sleep(steadySeconds * 1000);
+    // Stutter as the eye sees it: page frame pacing (rAF intervals) and, per playing
+    // video, the interval between presented frames via requestVideoFrameCallback
+    // against the video's own frame interval. A video whose presented frames are
+    // late more than 10% of the time is counted as stuttering.
+    const stutterPromise = page.evaluate(async (seconds) => {
+        const vids = [...document.querySelectorAll('#grid-container video')].filter(v => !v.paused);
+        const per = new Map(); // video -> { intervals: [], mediaDeltas: [] }
+        const handles = [];
+        for (const v of vids) {
+            if (typeof v.requestVideoFrameCallback !== 'function') continue;
+            const rec = { lastT: 0, lastMedia: 0, late: 0, n: 0, maxGap: 0 };
+            per.set(v, rec);
+            const cb = (now, md) => {
+                if (rec.lastT) {
+                    const dt = md.expectedDisplayTime - rec.lastT;
+                    const dm = (md.mediaTime - rec.lastMedia) * 1000;
+                    rec.n++;
+                    if (dm > 0 && dt > dm * 1.5 + 8) rec.late++;
+                    if (dt > rec.maxGap) rec.maxGap = dt;
+                }
+                rec.lastT = md.expectedDisplayTime; rec.lastMedia = md.mediaTime;
+                handles.push(v.requestVideoFrameCallback(cb));
+            };
+            handles.push(v.requestVideoFrameCallback(cb));
+        }
+        // Media-clock progress: a decoder that cannot keep up stalls the video's clock
+        // (currentTime advances slower than wall time) rather than dropping frames.
+        const clock = vids.map(v => ({ v, t0: v.currentTime, w0: performance.now(), frames0: (() => { try { return v.getVideoPlaybackQuality().totalVideoFrames; } catch { return 0; } })() }));
+        const frames = []; let last = performance.now(); let running = true;
+        const tick = (t) => { frames.push(t - last); last = t; if (running) requestAnimationFrame(tick); };
+        requestAnimationFrame(tick);
+        await new Promise(r => setTimeout(r, seconds * 1000));
+        running = false;
+        for (const v of per.keys()) { try { for (const h of handles) v.cancelVideoFrameCallback(h); } catch {} }
+        const f = frames.slice(1).sort((a, b) => a - b);
+        let mediaAdvance = 0, wall = 0, decodedPerVideo = [];
+        for (const c of clock) { if (c.v.paused) continue; const dt = c.v.currentTime - c.t0; const dw = (performance.now() - c.w0) / 1000; if (dt >= 0 && dt <= dw * 1.5) { mediaAdvance += dt; wall += dw; } try { decodedPerVideo.push((c.v.getVideoPlaybackQuality().totalVideoFrames - c.frames0) / dw); } catch {} }
+        decodedPerVideo.sort((a, b) => a - b);
+        const recs = [...per.values()].filter(r => r.n >= 10);
+        const stuttering = recs.filter(r => r.late / r.n > 0.1).length;
+        const lateTotal = recs.reduce((a, r) => a + r.late, 0), nTotal = recs.reduce((a, r) => a + r.n, 0);
+        return {
+            measured: recs.length, stuttering, lateFrameRatio: nTotal ? Math.round(lateTotal / nTotal * 1000) / 1000 : 0,
+            mediaClockRatio: wall ? Math.round(mediaAdvance / wall * 100) / 100 : null, clockVideos: decodedPerVideo.length,
+            fpsPerVideoP50: Math.round(decodedPerVideo[Math.floor(decodedPerVideo.length / 2)] || 0), fpsPerVideoP10: Math.round(decodedPerVideo[Math.floor(decodedPerVideo.length * 0.1)] || 0),
+            worstGapMs: Math.round(Math.max(0, ...recs.map(r => r.maxGap))),
+            pageFrameP50Ms: Math.round((f[Math.floor(f.length * 0.5)] || 0) * 10) / 10,
+            pageFrameP95Ms: Math.round((f[Math.floor(f.length * 0.95)] || 0) * 10) / 10,
+            pageFramesOver33ms: f.filter(x => x > 33).length, pageFrames: f.length,
+        };
+    }, steadySeconds);
+    const stutter = await stutterPromise;
+    if (steadyTraceCdp) {
+        const done = new Promise((resolve) => steadyTraceCdp.once('Tracing.tracingComplete', resolve));
+        await steadyTraceCdp.send('Tracing.end');
+        await done;
+        fs.writeFileSync(traceFile, JSON.stringify({ traceEvents: steadyTraceEvents }));
+        await steadyTraceCdp.detach();
+    }
     const steadyAfter = await videoStats(page);
     const steadyMetrics = await metrics(app);
     const steady = {
@@ -295,11 +361,13 @@ async function metrics(app) {
         droppedFrames: steadyAfter.droppedFrames - steadyBefore.droppedFrames,
         budget: steadyAfter.budget,
         cpuTotal: steadyMetrics.cpuTotal,
+        stutter,
     };
 
     const frames = scroll.frames.slice(1);
+    let gpu = null; try { const gi = await mainEval(app, async ({ app: a }) => { const g = await a.getGPUInfo('basic'); const d = (g.gpuDevice || [])[0] || {}; return JSON.stringify({ vendorId: d.vendorId, deviceId: d.deviceId, active: d.active }); }); gpu = JSON.parse(gi); } catch {}
     const result = {
-        app: appDir, profile: profileDir, folder, when: new Date().toISOString(),
+        app: appDir, profile: profileDir, folder, when: new Date().toISOString(), gpu,
         settings: settingsSnapshot,
         itemCount: await page.evaluate(() => (typeof vsState !== 'undefined' && vsState.sortedItems) ? vsState.sortedItems.length : null),
         startupMs: tReload - t0,

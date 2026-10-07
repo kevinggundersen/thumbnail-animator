@@ -2777,7 +2777,10 @@ let hasProxyEncoder = false; // main found an H.264 encoder: grid video proxies 
 let videoProxiesEnabled = true;
 let videoProxyEdge = 480;
 let videoProxyMaxSeconds = 120;
+let videoProxyFps = 30;
 try {
+    const f = parseInt(localStorage.getItem('videoProxyFps'), 10);
+    if (f >= 10 && f <= 60) videoProxyFps = f;
     const e = parseInt(localStorage.getItem('videoProxyEdge'), 10);
     if (e > 0) videoProxyEdge = e;
     const s = parseInt(localStorage.getItem('videoProxyMaxSeconds'), 10);
@@ -5469,7 +5472,7 @@ function requestVideoProxyUrl(filePath) {
     if (cached !== undefined) return Promise.resolve(cached);
     if (videoProxyRequests.has(filePath)) return videoProxyRequests.get(filePath);
     if (!window.electronAPI || !window.electronAPI.getVideoProxy) return Promise.resolve(null);
-    const request = window.electronAPI.getVideoProxy(filePath, { edge: videoProxyEdge, maxSeconds: videoProxyMaxSeconds })
+    const request = window.electronAPI.getVideoProxy(filePath, { edge: videoProxyEdge, maxSeconds: videoProxyMaxSeconds, fps: videoProxyFps })
         .then(r => {
             const v = r && r.ok ? r.value : null;
             if (v && v.status === 'ready' && v.url) { setCachedUrl(videoProxyUrlCache, filePath, v.url, 2000); return v.url; }
@@ -7386,7 +7389,7 @@ function releaseVideoProxyWaiter(video) {
     if (n > 0) { videoProxyWaiters.set(filePath, n); return; }
     videoProxyWaiters.delete(filePath);
     if (video._destroyed && videoProxyRequests.has(filePath) && window.electronAPI && window.electronAPI.cancelVideoProxy) {
-        window.electronAPI.cancelVideoProxy(filePath, { edge: videoProxyEdge, maxSeconds: videoProxyMaxSeconds }).catch(() => {});
+        window.electronAPI.cancelVideoProxy(filePath, { edge: videoProxyEdge, maxSeconds: videoProxyMaxSeconds, fps: videoProxyFps }).catch(() => {});
     }
 }
 

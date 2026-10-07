@@ -102,10 +102,32 @@ describe('PlaybackBudget', () => {
         decodeFrames(host, 30, 10); b._sample();   // shrink to 15
         host.flushRaf();
         expect(b.limit).toBe(15);
-        for (let i = 0; i < 3; i++) { decodeFrames(host, 30, 0); b._sample(); host.flushRaf(); }
+        // The first sample after the playing set changed is not evidence (fresh decoders).
+        for (let i = 0; i < 4; i++) { decodeFrames(host, 30, 0); b._sample(); host.flushRaf(); }
         expect(b.limit).toBe(18);                   // 15 + max(2, ceil(15*0.15)=3)
-        for (let i = 0; i < 3; i++) { decodeFrames(host, 30, 0); b._sample(); host.flushRaf(); }
+        for (let i = 0; i < 4; i++) { decodeFrames(host, 30, 0); b._sample(); host.flushRaf(); }
         expect(b.limit).toBe(20);                   // capped at ceiling
+    });
+
+    it('probes upward from a remembered limit by doubling until the first overload', () => {
+        const host = makeHost(200);
+        const b = new PlaybackBudget(host, { ceiling: 200, floor: 4, growAfter: 3, minDecoded: 10, initialLimit: 13 });
+        b.start();
+        host.flushRaf();
+        expect(b.limit).toBe(13);
+        decodeFrames(host, 30, 0); b._sample(); host.flushRaf();   // first sample: counters only (and the set just changed)
+        decodeFrames(host, 30, 0); b._sample(); host.flushRaf();
+        expect(b.limit).toBe(26);                                   // doubled after one healthy sample
+        decodeFrames(host, 30, 0); b._sample(); host.flushRaf();   // 13 videos just started: not evidence
+        decodeFrames(host, 30, 0); b._sample(); host.flushRaf();
+        expect(b.limit).toBe(52);
+        decodeFrames(host, 30, 10); b._sample(); host.flushRaf();  // drops right after 26 more started: ignored
+        expect(b.limit).toBe(52);
+        decodeFrames(host, 30, 10); b._sample(); host.flushRaf();  // still dropping: overload, probing over
+        expect(b.limit).toBe(39);                                   // floor(52 * 0.75)
+        expect(b.status().probing).toBe(false);
+        for (let i = 0; i < 4; i++) { decodeFrames(host, 30, 0); b._sample(); host.flushRaf(); }
+        expect(b.limit).toBe(45);                                   // 39 + ceil(39 * 0.15) = 6: additive from here on
     });
 
     it('ignores main-thread stalls while scrolling but not decoder drops', () => {

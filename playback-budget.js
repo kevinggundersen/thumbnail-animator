@@ -9,6 +9,12 @@
  * toward the ceiling. Videos beyond the limit stay loaded (poster visible) but
  * paused, farthest from the viewport centre first.
  *
+ * A remembered limit (initialLimit) was learned under earlier conditions, so it
+ * is only a starting point: while every sample stays healthy the limit doubles
+ * each sample (slow start) until the first overload, after which growth is the
+ * conservative additive step. Without that, a limit learned on a bad day took
+ * half a minute to let a screen full of videos play.
+ *
  * The class is host-agnostic: the renderer hands it a host object that knows
  * how to enumerate candidate videos and whether playback is allowed at all
  * (lightbox open, window blurred, hidden). That keeps it unit-testable.
@@ -17,6 +23,7 @@
  *   getCandidates(): Array<{ video: HTMLVideoElement, distance: number }>,
  *   canPlay(): boolean,
  *   isScrolling(): boolean,           // frame drops during scroll are not the decoder's fault
+ *   isBusy(): boolean,                // optional: grid still loading/attaching media; samples are not evidence
  *   persistHint(limit): void,         // optional: remember the learned limit
  *   now(): number,                    // optional, for tests
  *   raf(cb): number, caf(id): void,   // optional, for tests
@@ -34,6 +41,7 @@
         longFrameMs: 50,        // a main-thread frame slower than this counts as a stall
         longFramesHigh: 3,      // stalls per sample that count as overloaded
         growAfter: 5,           // healthy samples in a row before raising the limit
+        probeGrowAfter: 1,      // ...while probing upward from a remembered limit (doubling)
         shrinkFactor: 0.75,
         growFactor: 0.15,
         minDecoded: 48,         // a sample with fewer decoded frames (start-up, tiny set) is not evidence
@@ -49,6 +57,8 @@
             if (Number.isFinite(opts.initialLimit)) {
                 this.limit = Math.min(this.ceiling, Math.max(this.opts.floor, Math.floor(opts.initialLimit)));
             }
+            // Probing: doubling growth until the first overload of this session.
+            this.probing = Number.isFinite(opts.initialLimit) && this.limit < this.ceiling;
             this.playing = new Set();
             this.healthyStreak = 0;
             this.lastSample = { dropRatio: 0, longFrames: 0, playing: 0, decoded: 0, dropped: 0 };
@@ -58,6 +68,7 @@
             this._frameLoop = null;
             this._longFrames = 0;
             this._lastFrameTs = 0;
+            this._playingChanged = false; // the playing set changed since the last sample
             this._running = false;
             this.changes = 0; // how many times the limit moved (diagnostics)
             this.history = []; // last limit changes: { t, from, to, reason, playing, dropRatio, longFrames }
@@ -91,6 +102,7 @@
                 limit: this.limit,
                 ceiling: this.ceiling,
                 playing: this.playing.size,
+                probing: this.probing,
                 dropRatio: this.lastSample.dropRatio,
                 longFrames: this.lastSample.longFrames,
                 changes: this.changes,
@@ -133,6 +145,9 @@
             }
             // Forget quality counters of videos that stopped playing or were destroyed.
             for (const v of this._quality.keys()) if (!stillPlaying.has(v)) this._quality.delete(v);
+            let changed = stillPlaying.size !== this.playing.size;
+            if (!changed) for (const v of stillPlaying) { if (!this.playing.has(v)) { changed = true; break; } }
+            if (changed) this._playingChanged = true;
             this.playing = stillPlaying;
             if (this.playing.size > 0) this._startFrameLoop(); else this._stopFrameLoop();
         }
@@ -176,9 +191,15 @@
             const dropRatio = decoded > 0 ? dropped / decoded : 0;
             const playing = this.playing.size;
             this.lastSample = { dropRatio, longFrames, playing, decoded, dropped };
+            const changed = this._playingChanged;
+            this._playingChanged = false;
 
             if (playing === 0) return; // nothing to learn from
             if (decoded < this.opts.minDecoded) return; // decoders still spinning up: not evidence either way
+            // Videos that just started drop their first frames, and a grid still
+            // loading or attaching media stalls for reasons pausing would not fix:
+            // neither sample is evidence about the decoders.
+            if (changed || (typeof this.host.isBusy === 'function' && this.host.isBusy())) return;
             const scrolling = typeof this.host.isScrolling === 'function' && this.host.isScrolling();
             // Decoder drops are always evidence. Main-thread stalls only count when
             // the playing set is at the limit: below it, stalls come from loading or
@@ -189,15 +210,16 @@
 
             if (overloaded) {
                 this.healthyStreak = 0;
+                this.probing = false;
                 const next = Math.max(this.opts.floor, Math.floor(playing * this.opts.shrinkFactor));
                 if (next < this.limit) this._setLimit(next, dropRatio > this.opts.dropRatioHigh ? 'drops' : 'stalls');
             } else if (this.limit < this.ceiling && playing >= this.limit) {
                 // Only count a sample as evidence for growth when we are actually at the limit.
                 this.healthyStreak++;
-                if (this.healthyStreak >= this.opts.growAfter) {
+                if (this.healthyStreak >= (this.probing ? this.opts.probeGrowAfter : this.opts.growAfter)) {
                     this.healthyStreak = 0;
-                    const step = Math.max(2, Math.ceil(this.limit * this.opts.growFactor));
-                    this._setLimit(Math.min(this.ceiling, this.limit + step), 'healthy');
+                    const step = this.probing ? this.limit : Math.max(2, Math.ceil(this.limit * this.opts.growFactor));
+                    this._setLimit(Math.min(this.ceiling, this.limit + step), this.probing ? 'probe' : 'healthy');
                 }
             }
         }

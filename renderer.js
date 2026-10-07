@@ -1176,6 +1176,7 @@ function _vsScrollSettleCallback() {
  */
 function vsOnScroll() {
     if (!vsState.enabled || isWindowMinimized) return;
+    noteMediaActivity();
 
     document.body.classList.add('is-scrolling'); // Perf: pause skeleton shimmer during scroll
 
@@ -6811,6 +6812,11 @@ function createMediaForCard(card, mediaUrl) {
 // the same path, which also spreads the initial burst over a few frames.
 const VIDEO_ATTACH_PER_FRAME = 2;
 const _videoAttachQueue = new Map(); // card -> mediaUrl
+// When grid media last changed (attach, proxy swap, release, scroll): the
+// playback budget treats the seconds after as settling, not as evidence.
+let _mediaActivityAt = 0;
+const MEDIA_SETTLE_MS = 2500;
+function noteMediaActivity() { _mediaActivityAt = performance.now(); }
 let _videoAttachRaf = 0;
 
 function isGridScrolling() {
@@ -6867,6 +6873,7 @@ function drainVideoAttachQueue() {
         pendingMediaCreations.add(card);
         createVideoForCard(card, url);
         attached++;
+        noteMediaActivity();
     }
     if (_videoAttachQueue.size) _videoAttachRaf = requestAnimationFrame(drainVideoAttachQueue);
 }
@@ -7035,6 +7042,7 @@ function drainParkedVideos() {
     for (const video of _parkedVideos) {
         _parkedVideos.delete(video);
         releaseVideoPipeline(video);
+        noteMediaActivity();
         if (++released >= PARKED_RELEASE_PER_FRAME) break;
     }
     if (_parkedVideos.size) _parkedDrainRaf = requestAnimationFrame(drainParkedVideos);
@@ -7351,6 +7359,7 @@ function requestGridVideoProxy(card, video) {
             const position = video.currentTime;
             video.dataset.proxy = '1';
             video._proxySwapped = true;
+            noteMediaActivity();
             video.addEventListener('loadedmetadata', () => {
                 if (video._destroyed) return;
                 try { if (position > 0 && position < video.duration) video.currentTime = position; } catch { /* not seekable yet */ }
@@ -8116,11 +8125,16 @@ const playbackBudget = new PlaybackBudget({
     getCandidates: getPlaybackCandidates,
     canPlay: canAutoplayNow,
     isScrolling: () => document.body.classList.contains('is-scrolling'),
+    // Loading a folder, attaching videos or releasing parked ones: not the decoders' fault.
+    isBusy: () => isGridScrolling() || _videoAttachQueue.size > 0 || _parkedVideos.size > 0 || _navBusy
+        || performance.now() - _mediaActivityAt < MEDIA_SETTLE_MS,
     persistHint: (n) => deferLocalStorageWrite('playbackBudgetHint', String(n)),
 }, {
     ceiling: MAX_VIDEOS,
     growAfter: 3,
-    initialLimit: (() => { try { const n = parseInt(localStorage.getItem('playbackBudgetHint'), 10); return n > 0 ? n : undefined; } catch { return undefined; } })(),
+    // The remembered limit is a starting point for probing (doubling while healthy),
+    // never below 32: a limit learned on a bad day must not keep a screen half-paused.
+    initialLimit: (() => { try { const n = parseInt(localStorage.getItem('playbackBudgetHint'), 10); return n > 0 ? Math.max(32, n) : 32; } catch { return 32; } })(),
 });
 playbackBudget.start();
 window.__playbackBudget = playbackBudget; // perf dashboard and scripts/perf-smoke.js read status()

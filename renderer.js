@@ -1179,6 +1179,7 @@ function vsOnScroll() {
     if (!vsState.enabled || isWindowMinimized) return;
     noteMediaActivity();
 
+    if (!document.body.classList.contains('is-scrolling')) WcEngine.setHidden(true); // the sheet waits for the settle
     document.body.classList.add('is-scrolling'); // Perf: pause skeleton shimmer during scroll
 
     if (vsState.scrollRafId) return; // Already scheduled
@@ -1308,6 +1309,7 @@ function vsInit(items) {
  * Recalculate positions (after resize, zoom change, or filter change).
  */
 function vsRecalculate() {
+    WcEngine.requestLayout(); // cells follow the new layout (coalesced to the next frame, after this pass)
     if (!vsState.enabled) return;
 
     // Remember which item is at the top of viewport
@@ -5090,7 +5092,7 @@ function pauseWhenMinimized() {
 
     // Destroy all videos in the grid to release VRAM
     // Simply pausing videos doesn't release GPU memory - we need to destroy them
-    const allVideos = gridContainer.querySelectorAll('video, canvas.wc-video');
+    const allVideos = gridContainer.querySelectorAll('video, .wc-video');
     allVideos.forEach(video => {
         destroyVideoElement(video);
         activeVideoCount = Math.max(0, activeVideoCount - 1);
@@ -5262,7 +5264,7 @@ function unfreezeAnimatedImages(root = gridContainer) {
 function pauseThumbnailVideos() {
     isLightboxOpen = true;
     if (!pauseOnLightbox) return;
-    const allVideos = gridContainer.querySelectorAll('video, canvas.wc-video');
+    const allVideos = gridContainer.querySelectorAll('video, .wc-video');
     allVideos.forEach(video => {
         video.pause();
     });
@@ -6631,6 +6633,7 @@ function renderItems(items, preservedScrollTop = null) {
 
     gridContainer.replaceChildren();
     currentHoveredCard = null;
+    WcEngine.setHover(null);
     focusedCardIndex = -1;
     _lastFocusedCard = null;
     gridContainer.classList.remove('masonry');
@@ -6894,6 +6897,16 @@ function drainVideoAttachQueue() {
             if (!mediaToRetry.has(card)) mediaToRetry.set(card, { url, attempts: 0, nextRetryTime: Date.now() + 500, reason: 'capacity' });
             continue;
         }
+        if (WcEngine.enabled && card.dataset.wcFailed !== '1' && card.dataset.proxySrc) {
+            // Engine: the poster stays as the player's host; the picture goes on the sheet.
+            delete card.dataset.posterOnly;
+            delete card.dataset.proxyPending;
+            pendingMediaCreations.add(card);
+            createWcPlayerForCard(card, url, card.dataset.proxySrc);
+            attached++;
+            noteMediaActivity();
+            continue;
+        }
         if (existing) { // the poster
             destroyImageElement(existing);
             activeImageCount = Math.max(0, activeImageCount - 1);
@@ -7094,6 +7107,7 @@ function scheduleParkedDrain() {
 // Called when the grid comes to rest: attach queued videos, upgrade posters,
 // release parked pipelines.
 function onGridSettled() {
+    WcEngine.setHidden(false);
     queuePosterUpgrades();
     if (_videoAttachQueue.size && !_videoAttachRaf) _videoAttachRaf = requestAnimationFrame(drainVideoAttachQueue);
     scheduleParkedDrain();
@@ -7383,12 +7397,39 @@ function createSoundLabel(card) {
 // WebCodecs engine: the card's proxy plays on a canvas driven by a worker. The
 // canvas carries a video facade, so the budget, scrubber and teardown see a video.
 function createWcPlayerForCard(card, videoUrl, proxySrc) {
+    // The card's poster <img> becomes the player's host: the picture itself is
+    // painted on the engine's sheet underneath the card. Without one, make one.
+    let host = card._mediaEl;
+    if (host && host.tagName === 'IMG' && !host._wc) {
+        activeImageCount = Math.max(0, activeImageCount - 1); // counted as a video from here on
+    } else {
+        host = document.createElement('img');
+        host.className = 'media-thumbnail poster-only';
+        host.decoding = 'async';
+        host.addEventListener('error', () => {});
+        const info = card.querySelector('.video-info');
+        card.insertBefore(host, info);
+        if (card.dataset.path && hasFfmpegAvailable) {
+            const cachedPoster = videoPosterUrlCache.get(card.dataset.path);
+            if (cachedPoster) host.src = cachedPoster;
+            else requestVideoPosterUrl(card.dataset.path).then(url => { if (url && !host._destroyed && host.isConnected) host.src = url; }).catch(() => {});
+        }
+    }
     activeVideoCount++;
     cachedMediaCounts.timestamp = 0;
-    const canvas = WcEngine.createPlayer(proxySrc, { playing: false });
-    canvas.dataset.proxy = '1';
-    canvas.draggable = true;
-    canvas.addEventListener('dragstart', (e) => {
+    const player = WcEngine.createPlayer(host, proxySrc, card, { playing: false });
+    if (!player) {
+        // The engine could not start (no grid, no worker): the classic path.
+        card.dataset.wcFailed = '1';
+        activeVideoCount = Math.max(0, activeVideoCount - 1);
+        destroyImageElement(host);
+        card._mediaEl = null;
+        delete card.dataset.hasMedia;
+        return createVideoForCard(card, videoUrl);
+    }
+    host.dataset.proxy = '1';
+    host.draggable = true;
+    host.addEventListener('dragstart', (e) => {
         const filePath = card.dataset.path;
         if (filePath) {
             e.dataTransfer.effectAllowed = 'copyMove';
@@ -7397,22 +7438,22 @@ function createWcPlayerForCard(card, videoUrl, proxySrc) {
             e.dataTransfer.setData('application/x-thumbnail-animator-path', filePath);
         }
     });
-    canvas.addEventListener('loadedmetadata', () => {
-        if (canvas._destroyed) return;
+    host.addEventListener('loadedmetadata', () => {
+        if (host._destroyed) return;
         mediaToRetry.delete(card);
         const skel = card.querySelector('.card-skeleton');
         if (skel) skel.remove();
         // The proxy is scaled down: the card keeps the source's dimensions when the scan knows them.
         const srcItem = getMediaItemForCard(card);
-        const w = (srcItem && srcItem.width) || canvas.videoWidth;
-        const hgt = (srcItem && srcItem.height) || canvas.videoHeight;
+        const w = (srcItem && srcItem.width) || host.videoWidth;
+        const hgt = (srcItem && srcItem.height) || host.videoHeight;
         if (w && hgt) {
             applyAspectRatioToCard(card, getClosestAspectRatio(w, hgt), 'metadata');
             card.dataset.width = w;
             card.dataset.height = hgt;
             createResolutionLabel(card, w, hgt);
         }
-        const dur = isFinite(canvas.duration) && canvas.duration > 0 ? canvas.duration : null;
+        const dur = isFinite(host.duration) && host.duration > 0 ? host.duration : null;
         if (dur) {
             card.dataset.mediaDuration = String(dur);
             syncCardMetaRow(card, srcItem, dur);
@@ -7420,21 +7461,20 @@ function createWcPlayerForCard(card, videoUrl, proxySrc) {
         scheduleMediaLoadSettle();
         playbackBudget.schedule();
     }, { once: true });
-    canvas.addEventListener('error', () => {
-        if (canvas._destroyed) return;
-        // The engine could not play this proxy: this card falls back to a <video>.
+    host.addEventListener('error', () => {
+        // The poster image's own load errors are not the engine's; those set _wc.error.
+        if (host._destroyed || !host._wc || !host._wc.error) return;
         card.dataset.wcFailed = '1';
         scheduleMediaLoadSettle();
-        destroyVideoElement(canvas);
+        destroyVideoElement(host);
         activeVideoCount = Math.max(0, activeVideoCount - 1);
         pendingMediaCreations.delete(card);
         mediaToRetry.set(card, { url: videoUrl, attempts: 0, nextRetryTime: Date.now(), reason: 'wc-fallback' });
     });
-    const info = card.querySelector('.video-info');
-    card.insertBefore(canvas, info);
     card.dataset.hasMedia = '1';
     delete card.dataset.posterOnly;
-    card._mediaEl = canvas;
+    delete card.dataset.proxyPending;
+    card._mediaEl = host;
     playCardVideoIfVisible(card);
     pendingMediaCreations.delete(card);
     return true;
@@ -8025,6 +8065,7 @@ function destroyVideoElement(video) {
     // A WebCodecs player: its worker owns the decoder; nothing to park or release here.
     if (video._wc) {
         WcEngine.destroyPlayer(video);
+        if (card) { delete card.dataset.hasMedia; if (card._mediaEl === video) card._mediaEl = null; }
         try { video.remove(); } catch (e) { /* already detached */ }
         return;
     }
@@ -8230,6 +8271,7 @@ function getPlaybackCandidates() {
     const centerY = gridContainer.scrollTop + gridContainer.clientHeight / 2;
     const centerX = (gridContainer.scrollLeft || 0) + gridContainer.clientWidth / 2;
     const positions = vsState.enabled ? vsState.positions : null;
+    const vpTop = gridContainer.scrollTop, vpBottom = vpTop + gridContainer.clientHeight;
     const cards = vsState.enabled ? vsState.activeCards.values() : gridContainer.querySelectorAll('.video-card');
     for (const card of cards) {
         const el = card._mediaEl;
@@ -8237,13 +8279,15 @@ function getPlaybackCandidates() {
         let distance;
         if (positions && card._vsItemIndex != null) {
             const i = card._vsItemIndex * 4;
+            // Off screen (in the preload buffer): nothing to show, nothing to decode.
+            if (positions[i + 1] + positions[i + 3] < vpTop || positions[i + 1] > vpBottom) continue;
             // Content coordinates straight from the layout array: no layout reads.
             distance = Math.abs(positions[i + 1] + positions[i + 3] / 2 - centerY) * 2
                 + Math.abs(positions[i] + positions[i + 2] / 2 - centerX);
         } else {
             distance = Math.abs(card.offsetTop + card.offsetHeight / 2 - centerY);
         }
-        out.push({ video: el, distance });
+        out.push({ video: el, distance, fps: el.frameRate || 30 });
     }
     return out;
 }
@@ -8258,6 +8302,10 @@ const playbackBudget = new PlaybackBudget({
 }, {
     ceiling: MAX_VIDEOS,
     growAfter: 3,
+    // Decoded frames per second across everything playing (a setting). The GPU
+    // process handles each decoded frame on one thread, uploads included, at
+    // roughly 5,000-6,000 a second on a fast machine before the whole UI lags.
+    frameBudget: (() => { try { const n = parseInt(localStorage.getItem('decodeFrameBudget'), 10); return Number.isFinite(n) && n >= 0 ? n : 3000; } catch { return 3000; } })(),
     // The remembered limit is a starting point for probing (doubling while healthy),
     // never below 32: a limit learned on a bad day must not keep a screen half-paused.
     initialLimit: (() => { try { const n = parseInt(localStorage.getItem('playbackBudgetHint'), 10); return n > 0 ? Math.max(32, n) : 32; } catch { return 32; } })(),
@@ -8959,6 +9007,7 @@ gridContainer.addEventListener('mouseover', (e) => {
         // An animated image playing as a proxy <video> scrubs like a video.
         if (card.dataset.mediaType === 'video' || (card.dataset.proxySrc && getCardVideo(card))) {
             currentHoveredCard = card;
+            WcEngine.setHover(card);
             showPreviewStrip(card);
             const video = getCardVideo(card);
             if (video) {
@@ -8973,6 +9022,7 @@ gridContainer.addEventListener('mouseover', (e) => {
             }
         } else if (card.dataset.gifDuration && Number(card.dataset.gifDuration) > 0) {
             currentHoveredCard = card;
+            WcEngine.setHover(card);
             showPreviewStrip(card);
             showGifProgress(card);
             if (gifHoverScrubEnabled) {
@@ -8985,6 +9035,7 @@ gridContainer.addEventListener('mouseover', (e) => {
             const srcLower = card.dataset.src.toLowerCase();
             if (srcLower.endsWith('.gif') || srcLower.endsWith('.webp')) {
                 currentHoveredCard = card;
+                WcEngine.setHover(card);
                 showPreviewStrip(card);
                 initGifScrub(card);
             }
@@ -9190,6 +9241,7 @@ gridContainer.addEventListener('mouseout', (e) => {
         hideScrubber(currentHoveredCard);
         hideGifProgress(currentHoveredCard);
         currentHoveredCard = null;
+        WcEngine.setHover(null);
     }
 });
 

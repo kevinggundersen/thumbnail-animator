@@ -55,6 +55,7 @@
         softCeilingMs: 60000,    // ... for this long (doubling on every repeat, up to softCeilingMaxMs)
         softCeilingMaxMs: 600000,
         overloadSamples: 2,      // consecutive overloaded samples before shrinking (start-up drops outlast one sample)
+        frameBudget: 0,          // total decoded frames per second allowed across the playing set (0 = no cap)
         longFrameMs: 50,        // a main-thread frame slower than this counts as a stall
         longFramesHigh: 3,      // stalls per sample that count as overloaded
         growAfter: 5,           // healthy samples in a row before raising the limit
@@ -114,6 +115,11 @@
             if (this._applyRaf != null) { (this.host.caf || cancelAnimationFrame)(this._applyRaf); this._applyRaf = null; }
         }
 
+        setFrameBudget(n) {
+            this.opts.frameBudget = Math.max(0, Math.floor(n) || 0);
+            this.schedule();
+        }
+
         setCeiling(n) {
             this.ceiling = Math.max(this.opts.floor, Math.floor(n) || this.opts.floor);
             if (this.limit > this.ceiling) this.limit = this.ceiling;
@@ -125,6 +131,7 @@
                 limit: this.limit,
                 ceiling: this.ceiling,
                 softCeiling: this._softCeiling === Infinity ? null : this._softCeiling,
+                frameBudget: this.opts.frameBudget,
                 playing: this.playing.size,
                 probing: this.probing,
                 dropRatio: this.lastSample.dropRatio,
@@ -151,9 +158,15 @@
             const stillPlaying = new Set();
             if (allowed) {
                 candidates.sort((a, b) => a.distance - b.distance);
+                // Every decoded frame costs the same on the GPU process main thread
+                // whatever the stream: the frame budget caps their sum, nearest first.
+                let framesUsed = 0;
+                const frameBudget = this.opts.frameBudget > 0 ? this.opts.frameBudget : Infinity;
                 for (let i = 0; i < candidates.length; i++) {
                     const v = candidates[i].video;
-                    if (i < this.limit) {
+                    const fps = candidates[i].fps || v.frameRate || 30;
+                    if (i < this.limit && framesUsed + fps <= frameBudget) {
+                        framesUsed += fps;
                         stillPlaying.add(v);
                         if (v.paused) {
                             const p = v.play();

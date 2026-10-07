@@ -2115,6 +2115,21 @@
                         <div class="settings-item">
                             <label class="settings-label">
                                 <div class="settings-item-info">
+                                    <div class="settings-item-title">Decode Budget</div>
+                                    <div class="settings-item-description">Decoded frames per second across everything playing in the grid. The GPU process handles every frame on one thread, so past a point the whole interface lags: lower this if it does, raise it on a stronger machine. Lower-rate proxies fit more videos into the same budget.</div>
+                                </div>
+                                <select id="decode-frame-budget" class="settings-select">
+                                    <option value="1500">1,500 frames/s</option>
+                                    <option value="3000" selected>3,000 frames/s (default)</option>
+                                    <option value="4500">4,500 frames/s</option>
+                                    <option value="6000">6,000 frames/s</option>
+                                    <option value="0">No cap</option>
+                                </select>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <div class="settings-item-info">
                                     <div class="settings-item-title">Grid Video Proxies</div>
                                     <div class="settings-item-description">Play small H.264 renditions in the grid instead of the original files, so many videos and large GIFs can animate at once without saturating the video decoder or the image cache. Made by ffmpeg the first time a large video or GIF is shown and cached on disk; the fullscreen viewer always plays the original.</div>
                                 </div>

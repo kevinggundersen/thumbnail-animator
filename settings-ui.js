@@ -1967,6 +1967,10 @@ wireSelectStorage('video-proxy-edge', 'videoProxyEdge', (val) => {
     videoProxyUrlCache.clear();
     if (window.electronAPI?.updateMainSetting) window.electronAPI.updateMainSetting('videoProxyEdge', val);
 });
+wireSelectStorage('decode-frame-budget', 'decodeFrameBudget', (val) => {
+    const n = parseInt(val, 10);
+    playbackBudget.setFrameBudget(Number.isFinite(n) && n >= 0 ? n : 3000);
+});
 wireSelectStorage('playback-engine', 'playbackEngine', (val) => {
     playbackEngine = val === 'video' ? 'video' : 'webcodecs';
     WcEngine.enabled = WcEngine.supported && playbackEngine === 'webcodecs';

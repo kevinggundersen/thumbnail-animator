@@ -182,9 +182,12 @@ body {
     to { opacity: 1; transform: scale(1); }
 }
 
+/* Shimmer as a transform: it runs on the compositor. The background-position
+   version repainted every skeleton layer every frame (92 paints a frame at
+   143 Hz with a screenful of cards waiting in the preload buffer). */
 @keyframes skeleton-shimmer {
-    0% { background-position: -200% 0; }
-    100% { background-position: 200% 0; }
+    0% { transform: translateX(-50%); }
+    100% { transform: translateX(0); }
 }
 
 @keyframes thumb-fade-in {
@@ -3296,6 +3299,30 @@ button:hover {
     image-rendering: auto;
 }
 
+/* WebCodecs engine: one sheet canvas under the cards carries every playing
+   picture (webcodecs-player.js). A live card goes transparent so the picture
+   shows through under its chrome; while the grid scrolls the sheet is hidden
+   and the posters show until the cells are laid out again. */
+.wc-sheet-canvas {
+    position: absolute;
+    left: 0;
+    top: 0;
+    pointer-events: none;
+    z-index: 0;
+}
+.video-card.wc-sheet {
+    background-color: transparent;
+}
+.video-card.wc-sheet img.media-thumbnail.wc-video {
+    visibility: hidden;
+}
+body.is-scrolling .wc-sheet-canvas {
+    visibility: hidden;
+}
+body.is-scrolling .video-card.wc-sheet img.media-thumbnail.wc-video {
+    visibility: visible;
+}
+
 /* Static frame overlay for pausing GIF/WEBP without flashing */
 .gif-static-overlay {
     position: absolute;
@@ -3353,9 +3380,13 @@ button:hover {
 .card-skeleton::after {
     content: '';
     position: absolute;
-    inset: 0;
-    background: linear-gradient(90deg, transparent 0%, var(--bg-hover) 50%, transparent 100%);
-    background-size: 200% 100%;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 200%;
+    background: linear-gradient(90deg, transparent 0%, var(--bg-hover) 25%, transparent 50%, transparent 100%);
+    transform: translateX(-50%);
+    will-change: transform;
     animation: skeleton-shimmer 1.5s ease-in-out infinite;
 }
 /* Perf: pause shimmer during scroll to reduce paint pressure */

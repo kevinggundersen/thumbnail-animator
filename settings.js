@@ -332,6 +332,7 @@ const SETTINGS_SCHEMA = {
     // Grid playback engine: 'webcodecs' (worker decode onto canvases) or 'video' (<video> elements)
     playbackEngine:          { type: 'string', default: 'webcodecs', storageKey: 'playbackEngine' },
     webcodecsDecoder:        { type: 'string', default: 'prefer-software', storageKey: 'webcodecsDecoder' },
+    decodeFrameBudget:       { type: 'int',    default: 3000,  storageKey: 'decodeFrameBudget' }, // decoded frames/s across the grid, 0 = no cap
     proxyCacheLimitMB:       { type: 'int',    default: 4000,  storageKey: 'proxyCacheLimitMB' },
     ioConcurrency:           { type: 'int',    default: 20,    storageKey: 'ioConcurrency' },
     // Sidebar / tabs

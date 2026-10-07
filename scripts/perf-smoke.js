@@ -46,12 +46,20 @@ for (let i = 0; i < args.length; i++) {
 }
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+// A trace of a busy renderer runs to hundreds of MB: write it in pieces (one JSON.stringify of the whole array overflows the string limit).
+function writeTrace(file, events) {
+    const fd = fs.openSync(file, 'w');
+    fs.writeSync(fd, '{"traceEvents":[');
+    for (let i = 0; i < events.length; i += 5000) fs.writeSync(fd, (i ? ',' : '') + events.slice(i, i + 5000).map(e => JSON.stringify(e)).join(','));
+    fs.writeSync(fd, ']}');
+    fs.closeSync(fd);
+}
 const pct = (arr, p) => { if (!arr.length) return 0; const s = [...arr].sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.floor(p * s.length))]; };
 
 // Grid video state: how many exist/play and what the decoders report.
 async function videoStats(page) {
     return page.evaluate(() => {
-        const vids = [...document.querySelectorAll('#grid-container video, #grid-container canvas.wc-video')];
+        const vids = [...document.querySelectorAll('#grid-container video, #grid-container .wc-video')];
         let total = 0, dropped = 0;
         for (const v of vids) {
             try { const q = v.getVideoPlaybackQuality(); total += q.totalVideoFrames; dropped += q.droppedVideoFrames; } catch {}
@@ -228,7 +236,7 @@ async function metrics(app) {
         }
         await new Promise(r => setTimeout(r, 800));
         running = false;
-        const vids = [...document.querySelectorAll('#grid-container video, #grid-container canvas.wc-video')];
+        const vids = [...document.querySelectorAll('#grid-container video, #grid-container .wc-video')];
         return { frames, playing: vids.filter(v => !v.paused).length, videos: vids.length, scrollTop: gc.scrollTop, scrollHeight: gc.scrollHeight };
     }, scrolls);
     scrollLongTasks = await page.evaluate(() => { const r = window.__lt.slice(); window.__lt.length = 0; return r; });
@@ -242,7 +250,7 @@ async function metrics(app) {
         const done = new Promise((resolve) => traceCdp.once('Tracing.tracingComplete', resolve));
         await traceCdp.send('Tracing.end');
         await done;
-        fs.writeFileSync(traceFile, JSON.stringify({ traceEvents }));
+        writeTrace(traceFile, traceEvents);
         await traceCdp.detach();
     }
     const fr = scroll.frames.slice(1);
@@ -289,7 +297,7 @@ async function metrics(app) {
     if (traceFile && tracePhase === 'steady') {
         steadyTraceCdp = await page.context().newCDPSession(page);
         steadyTraceCdp.on('Tracing.dataCollected', (e) => { for (const ev of e.value) steadyTraceEvents.push(ev); });
-        await steadyTraceCdp.send('Tracing.start', { transferMode: 'ReportEvents', categories: 'toplevel,media,v8,devtools.timeline,renderer.scheduler' });
+        await steadyTraceCdp.send('Tracing.start', { transferMode: 'ReportEvents', categories: 'toplevel,media,v8,devtools.timeline,disabled-by-default-devtools.timeline,disabled-by-default-devtools.timeline.stack,disabled-by-default-devtools.timeline.invalidationTracking,renderer.scheduler' });
     }
     const steadyBefore = await videoStats(page);
     // Stutter as the eye sees it: page frame pacing (rAF intervals) and, per playing
@@ -297,7 +305,7 @@ async function metrics(app) {
     // against the video's own frame interval. A video whose presented frames are
     // late more than 10% of the time is counted as stuttering.
     const stutterPromise = page.evaluate(async (seconds) => {
-        const vids = [...document.querySelectorAll('#grid-container video, #grid-container canvas.wc-video')].filter(v => !v.paused);
+        const vids = [...document.querySelectorAll('#grid-container video, #grid-container .wc-video')].filter(v => !v.paused);
         const per = new Map(); // video -> { intervals: [], mediaDeltas: [] }
         const handles = [];
         for (const v of vids) {
@@ -348,7 +356,7 @@ async function metrics(app) {
         const done = new Promise((resolve) => steadyTraceCdp.once('Tracing.tracingComplete', resolve));
         await steadyTraceCdp.send('Tracing.end');
         await done;
-        fs.writeFileSync(traceFile, JSON.stringify({ traceEvents: steadyTraceEvents }));
+        writeTrace(traceFile, steadyTraceEvents);
         await steadyTraceCdp.detach();
     }
     const steadyAfter = await videoStats(page);
@@ -362,11 +370,12 @@ async function metrics(app) {
         droppedFrames: steadyAfter.droppedFrames - steadyBefore.droppedFrames,
         budget: steadyAfter.budget,
         cpuTotal: steadyMetrics.cpuTotal,
+        rows: steadyMetrics.rows,
         stutter,
     };
 
     const frames = scroll.frames.slice(1);
-    let gpu = null; try { const gi = await mainEval(app, async ({ app: a }) => { const g = await a.getGPUInfo('basic'); const d = (g.gpuDevice || [])[0] || {}; return JSON.stringify({ vendorId: d.vendorId, deviceId: d.deviceId, active: d.active }); }); gpu = JSON.parse(gi); } catch {}
+    let gpu = null; try { const gi = await mainEval(app, async ({ app: a }) => { const g = await a.getGPUInfo('basic'); const devs = (g.gpuDevice || []).map(d => ({ vendorId: d.vendorId, deviceId: d.deviceId, active: d.active })); const fs2 = a.getGPUFeatureStatus(); return JSON.stringify({ devices: devs, features: { gpu_compositing: fs2.gpu_compositing, '2d_canvas': fs2['2d_canvas'], video_decode: fs2.video_decode, video_encode: fs2.video_encode, webgl: fs2.webgl, rasterization: fs2.rasterization, opengl: fs2.opengl } }); }); gpu = JSON.parse(gi); } catch {}
     const result = {
         app: appDir, profile: profileDir, folder, when: new Date().toISOString(), gpu,
         settings: settingsSnapshot,

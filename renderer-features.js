@@ -5458,7 +5458,7 @@ function initWindowLifecycleHandlers() {
         if (!pauseOnBlur) return;
         playbackBudget.schedule(); // canAutoplayNow() is false now: pauses the playing set
         // Perf: use VS active cards when available instead of querySelectorAll
-        gridContainer.querySelectorAll('video, canvas.wc-video').forEach(v => v.pause());
+        gridContainer.querySelectorAll('video, .wc-video').forEach(v => v.pause());
         freezeAnimatedImages(gridContainer);
         // Pause MLT overlay media (videos + animated images)
         const mltOverlay = document.getElementById('mlt-overlay');

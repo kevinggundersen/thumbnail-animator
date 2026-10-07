@@ -46,13 +46,13 @@ module.exports = [
         languageOptions: {
             ecmaVersion: 'latest',
             sourceType: 'script',
-            globals: { ...globals.browser, ...sharedRendererGlobals, module: 'readonly', require: 'readonly', process: 'readonly', setImmediate: 'readonly', WebPXMux: 'readonly', gifuctJs: 'readonly', Fuse: 'readonly', PlaybackBudget: 'readonly' },
+            globals: { ...globals.browser, ...sharedRendererGlobals, module: 'readonly', require: 'readonly', process: 'readonly', setImmediate: 'readonly', WebPXMux: 'readonly', gifuctJs: 'readonly', Fuse: 'readonly', PlaybackBudget: 'readonly', WcEngine: 'readonly', Mp4Demux: 'readonly' },
         },
         rules: common,
     },
     // Web workers
     {
-        files: ['filter-sort-worker.js', 'filter-sort-helpers.js'],
+        files: ['filter-sort-worker.js', 'filter-sort-helpers.js', 'webcodecs-worker.js'],
         languageOptions: { ecmaVersion: 'latest', sourceType: 'script', globals: { ...globals.worker, ...workerHelperGlobals, module: 'readonly', require: 'readonly' } },
         rules: common,
     },

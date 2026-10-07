@@ -1967,6 +1967,13 @@ wireSelectStorage('video-proxy-edge', 'videoProxyEdge', (val) => {
     videoProxyUrlCache.clear();
     if (window.electronAPI?.updateMainSetting) window.electronAPI.updateMainSetting('videoProxyEdge', val);
 });
+wireSelectStorage('playback-engine', 'playbackEngine', (val) => {
+    playbackEngine = val === 'video' ? 'video' : 'webcodecs';
+    WcEngine.enabled = WcEngine.supported && playbackEngine === 'webcodecs';
+});
+wireSelectStorage('webcodecs-decoder', 'webcodecsDecoder', (val) => {
+    if (val === 'prefer-hardware' || val === 'prefer-software' || val === 'no-preference') WcEngine.setHardwarePreference(val);
+});
 wireSelectStorage('video-proxy-fps', 'videoProxyFps', (val) => {
     videoProxyFps = Math.min(60, Math.max(10, parseInt(val, 10) || 30));
     videoProxyUrlCache.clear();

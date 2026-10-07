@@ -2090,6 +2090,31 @@
                         <div class="settings-item">
                             <label class="settings-label">
                                 <div class="settings-item-info">
+                                    <div class="settings-item-title">Playback Engine</div>
+                                    <div class="settings-item-description">How proxied videos and GIFs play in the grid. WebCodecs decodes in worker threads onto canvases, which lifts Chromium's limit of roughly a hundred playing &lt;video&gt; elements. Applies to cards as they load.</div>
+                                </div>
+                                <select id="playback-engine" class="settings-select">
+                                    <option value="webcodecs" selected>WebCodecs (many at once)</option>
+                                    <option value="video">Video elements (classic)</option>
+                                </select>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">WebCodecs Decoder</div>
+                                    <div class="settings-item-description">Software decoding runs each proxy on CPU threads and scales to a whole screen of them (measured: 200 at once at 12% CPU); hardware decoding goes through the GPU process one frame at a time and tops out far lower.</div>
+                                </div>
+                                <select id="webcodecs-decoder" class="settings-select">
+                                    <option value="prefer-hardware">Prefer hardware (GPU)</option>
+                                    <option value="prefer-software" selected>Prefer software (CPU, scales best)</option>
+                                    <option value="no-preference">No preference</option>
+                                </select>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <div class="settings-item-info">
                                     <div class="settings-item-title">Grid Video Proxies</div>
                                     <div class="settings-item-description">Play small H.264 renditions in the grid instead of the original files, so many videos and large GIFs can animate at once without saturating the video decoder or the image cache. Made by ffmpeg the first time a large video or GIF is shown and cached on disk; the fullscreen viewer always plays the original.</div>
                                 </div>

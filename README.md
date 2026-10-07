@@ -29,6 +29,7 @@ A desktop application built with Electron for browsing and viewing media files (
 - **Auto-Repeat**: Optionally loop videos automatically
 - **Pause Behaviors**: Pause on lightbox open or window blur
 - **Grid Video Proxies**: Large videos and GIFs animate in the grid as small H.264 renditions made by ffmpeg on first view and cached (Settings → Performance: resolution, frame rate, length, on/off; cache limit under Data), so a screen full of them plays without saturating the decoder. The fullscreen viewer always plays the original.
+- **WebCodecs Playback Engine**: Proxied videos and GIFs in the grid are decoded in worker threads with WebCodecs and painted onto canvases, which lifts Chromium's limit of roughly a hundred playing `<video>` elements (measured: a 2560×1440 screen of 200 cards all animating at 30 fps at 9% CPU). Settings → Performance: engine (WebCodecs or classic video elements) and decoder (software scales best; hardware and no-preference available).
 - **Adaptive Playback Budget**: The grid plays as many videos at once as the machine sustains, measured from the decoders' dropped frames, stalled media clocks and frame pacing, and remembers the level that overloaded so it does not probe back into stutter.
 
 ### File Management

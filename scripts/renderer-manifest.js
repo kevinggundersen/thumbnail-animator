@@ -6,7 +6,7 @@
 module.exports = {
     sync: [
         'settings.js', 'ipc-result.js', 'icons.js', 'perf-dashboard.js', 'gif-duration-parser.js',
-        'playback-budget.js', 'playback-controller.js', 'themes.js', 'command-palette.js',
+        'playback-budget.js', 'mp4-demux.js', 'webcodecs-player.js', 'playback-controller.js', 'themes.js', 'command-palette.js',
         'filmstrip-scrubber.js', 'filter-worker-bridge.js', 'selection-manager.js', 'renderer.js',
     ],
     vendorDeferred: ['webgpu-hamming.js', 'gifuct-js-bundle.js', 'webpxmux.min.js', 'fuse.vendor.js'],

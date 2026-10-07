@@ -51,13 +51,14 @@ const pct = (arr, p) => { if (!arr.length) return 0; const s = [...arr].sort((a,
 // Grid video state: how many exist/play and what the decoders report.
 async function videoStats(page) {
     return page.evaluate(() => {
-        const vids = [...document.querySelectorAll('#grid-container video')];
+        const vids = [...document.querySelectorAll('#grid-container video, #grid-container canvas.wc-video')];
         let total = 0, dropped = 0;
         for (const v of vids) {
             try { const q = v.getVideoPlaybackQuality(); total += q.totalVideoFrames; dropped += q.droppedVideoFrames; } catch {}
         }
         const budget = window.__playbackBudget ? window.__playbackBudget.status() : null;
-        return { videos: vids.length, playing: vids.filter(v => !v.paused).length, proxied: vids.filter(v => v.dataset.proxy === '1').length, decodedFrames: total, droppedFrames: dropped, budget };
+        const wc = window.WcEngine ? window.WcEngine.status() : null;
+        return { videos: vids.length, playing: vids.filter(v => !v.paused).length, proxied: vids.filter(v => v.dataset.proxy === '1').length, webcodecs: vids.filter(v => !!v._wc).length, decodedFrames: total, droppedFrames: dropped, budget, wc };
     });
 }
 
@@ -227,7 +228,7 @@ async function metrics(app) {
         }
         await new Promise(r => setTimeout(r, 800));
         running = false;
-        const vids = [...document.querySelectorAll('#grid-container video')];
+        const vids = [...document.querySelectorAll('#grid-container video, #grid-container canvas.wc-video')];
         return { frames, playing: vids.filter(v => !v.paused).length, videos: vids.length, scrollTop: gc.scrollTop, scrollHeight: gc.scrollHeight };
     }, scrolls);
     scrollLongTasks = await page.evaluate(() => { const r = window.__lt.slice(); window.__lt.length = 0; return r; });
@@ -296,7 +297,7 @@ async function metrics(app) {
     // against the video's own frame interval. A video whose presented frames are
     // late more than 10% of the time is counted as stuttering.
     const stutterPromise = page.evaluate(async (seconds) => {
-        const vids = [...document.querySelectorAll('#grid-container video')].filter(v => !v.paused);
+        const vids = [...document.querySelectorAll('#grid-container video, #grid-container canvas.wc-video')].filter(v => !v.paused);
         const per = new Map(); // video -> { intervals: [], mediaDeltas: [] }
         const handles = [];
         for (const v of vids) {

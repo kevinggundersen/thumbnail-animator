@@ -329,6 +329,9 @@ const SETTINGS_SCHEMA = {
     videoProxyEdge:          { type: 'int',    default: 480,   storageKey: 'videoProxyEdge' },
     videoProxyMaxSeconds:    { type: 'int',    default: 120,   storageKey: 'videoProxyMaxSeconds' },
     videoProxyFps:           { type: 'int',    default: 30,    storageKey: 'videoProxyFps' },
+    // Grid playback engine: 'webcodecs' (worker decode onto canvases) or 'video' (<video> elements)
+    playbackEngine:          { type: 'string', default: 'webcodecs', storageKey: 'playbackEngine' },
+    webcodecsDecoder:        { type: 'string', default: 'prefer-software', storageKey: 'webcodecsDecoder' },
     proxyCacheLimitMB:       { type: 'int',    default: 4000,  storageKey: 'proxyCacheLimitMB' },
     ioConcurrency:           { type: 'int',    default: 20,    storageKey: 'ioConcurrency' },
     // Sidebar / tabs

@@ -3369,7 +3369,9 @@ ipcMain.handle('generate-video-thumbnail', async (event, filePath) => {
 // request first (it is what the user is looking at now); a request still
 // waiting can be cancelled when its card scrolls away. A running encode is
 // left to finish: it is bounded and the result is cached.
-const PROXY_MAX_CONCURRENT = 2;
+// Two encodes at a time on small machines, up to four on big ones (a 16-thread
+// CPU gives each encode two threads and still leaves most of it free).
+const PROXY_MAX_CONCURRENT = Math.max(2, Math.min(4, Math.floor(require('os').cpus().length / 4)));
 const pendingProxyJobs = new Map();   // proxyPath -> Promise<{ status, url? }>
 const proxyWaitQueue = [];            // [{ proxyPath, start, resolve }] not started yet
 const proxyCancelled = new Set();     // proxyPaths whose waiting request was cancelled

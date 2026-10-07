@@ -34,7 +34,8 @@ class ThumbnailWorkerPool {
         }
 
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 30000);
+        // Thumbnails finish in well under 30 s; a proxy encode may legitimately take minutes.
+        const timeout = setTimeout(() => controller.abort(), item.timeoutMs || 30000);
 
         const promise = this.pool.run(
             item,

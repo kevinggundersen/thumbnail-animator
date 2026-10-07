@@ -27,6 +27,7 @@ const trials = parseInt(opt('--trials', '1'), 10);
 const keepSettings = args.includes('--keep-settings');
 const steadySeconds = parseInt(opt('--steady', '6'), 10);
 const cpuProfileFile = opt('--cpuprofile', null); // write a .cpuprofile of the first scroll trial
+const traceFile = opt('--trace', null); // write a Chrome trace (JSON) of the first scroll trial; see scripts/trace-top.js
 const cpuProfileLoadFile = opt('--cpuprofile-load', null);
 const cpuProfileHoverFile = opt('--cpuprofile-hover', null); // write a .cpuprofile of the hover test // write a .cpuprofile of the folder load (reload -> cards + settle)
 const profileDir = path.resolve(opt('--profile', path.join(require('os').tmpdir(), 'thumbnail-animator-perf', path.basename(appDir))));
@@ -54,7 +55,7 @@ async function videoStats(page) {
             try { const q = v.getVideoPlaybackQuality(); total += q.totalVideoFrames; dropped += q.droppedVideoFrames; } catch {}
         }
         const budget = window.__playbackBudget ? window.__playbackBudget.status() : null;
-        return { videos: vids.length, playing: vids.filter(v => !v.paused).length, decodedFrames: total, droppedFrames: dropped, budget };
+        return { videos: vids.length, playing: vids.filter(v => !v.paused).length, proxied: vids.filter(v => v.dataset.proxy === '1').length, decodedFrames: total, droppedFrames: dropped, budget };
     });
 }
 
@@ -105,9 +106,18 @@ async function metrics(app) {
 
     // Point the app at the folder and restart the renderer.
     if (keepSettings) {
-        if (folder !== '-') await page.evaluate((f) => localStorage.setItem('lastFolderPath', f), folder);
         const explicit = {};
         for (let i = 0; i < args.length; i++) if (args[i] === '--set') { const [k, v] = String(args[i + 1]).split('='); explicit[k] = v; }
+        // Written from an init script, i.e. before the app's scripts run on the reload
+        // below: the already-running page keeps flushing its own deferred writes
+        // (remembered folder, saved tabs) and would overwrite values set now. An
+        // explicit folder also drops the saved tabs, which otherwise restore the
+        // previous folder.
+        await page.addInitScript(({ f, o }) => {
+            if (f !== '-') { localStorage.setItem('lastFolderPath', f); localStorage.removeItem('tabs'); localStorage.removeItem('activeTabId'); }
+            for (const [k, v] of Object.entries(o)) localStorage.setItem(k, v);
+        }, { f: folder, o: explicit });
+        if (folder !== '-') await page.evaluate((f) => localStorage.setItem('lastFolderPath', f), folder);
         if (Object.keys(explicit).length) await page.evaluate((o) => { for (const [k, v] of Object.entries(o)) localStorage.setItem(k, v); }, explicit);
     } else {
         await page.evaluate(({ f, pinned }) => {
@@ -187,6 +197,17 @@ async function metrics(app) {
         await cdp.send('Profiler.setSamplingInterval', { interval: 500 });
         await cdp.send('Profiler.start');
     }
+    // --trace: a Chrome trace of the first scroll trial (what the native "(program)"
+    // time in a CPU profile actually is: layout, media pipeline, GC ...). Read with scripts/trace-top.js.
+    let traceCdp = null; const traceEvents = [];
+    if (t === 0 && traceFile) {
+        traceCdp = await page.context().newCDPSession(page);
+        traceCdp.on('Tracing.dataCollected', (e) => { for (const ev of e.value) traceEvents.push(ev); });
+        await traceCdp.send('Tracing.start', {
+            transferMode: 'ReportEvents',
+            categories: 'toplevel,devtools.timeline,disabled-by-default-devtools.timeline,blink,blink.user_timing,media,v8,disabled-by-default-v8.gc,blink_gc,disabled-by-default-cppgc,renderer.scheduler,loading',
+        });
+    }
     if (t > 0) {
         await page.evaluate(async () => { const gc = document.getElementById('grid-container'); gc.scrollTop = 0; await new Promise(r => setTimeout(r, 2000)); });
         await page.evaluate(() => { window.__lt.length = 0; });
@@ -213,6 +234,13 @@ async function metrics(app) {
         fs.writeFileSync(cpuProfileFile, JSON.stringify(profile));
         await cdp.detach();
         cdp = null;
+    }
+    if (traceCdp) {
+        const done = new Promise((resolve) => traceCdp.once('Tracing.tracingComplete', resolve));
+        await traceCdp.send('Tracing.end');
+        await done;
+        fs.writeFileSync(traceFile, JSON.stringify({ traceEvents }));
+        await traceCdp.detach();
     }
     const fr = scroll.frames.slice(1);
     trialResults.push({ avgFrameMs: Math.round(fr.reduce((a, b) => a + b, 0) / Math.max(1, fr.length) * 10) / 10, p95FrameMs: Math.round(pct(fr, 0.95) * 10) / 10, p99FrameMs: Math.round(pct(fr, 0.99) * 10) / 10, framesOver33ms: fr.filter(f => f > 33).length, framesOver100ms: fr.filter(f => f > 100).length, longTaskMs: scrollLongTasks.reduce((a, b) => a + b, 0), playing: scroll.playing });
@@ -262,6 +290,7 @@ async function metrics(app) {
         seconds: steadySeconds,
         playing: steadyAfter.playing,
         videos: steadyAfter.videos,
+        proxied: steadyAfter.proxied,
         decodedFrames: steadyAfter.decodedFrames - steadyBefore.decodedFrames,
         droppedFrames: steadyAfter.droppedFrames - steadyBefore.droppedFrames,
         budget: steadyAfter.budget,

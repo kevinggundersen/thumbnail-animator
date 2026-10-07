@@ -5397,6 +5397,9 @@ function initPreferences() {
     restoreToggle('hoverScrub', v => { hoverScrubEnabled = v; }, hoverScrubToggle, hoverScrubLabel);
     restoreToggle('gifHoverScrub', v => { gifHoverScrubEnabled = v; }, gifHoverScrubToggle, gifHoverScrubLabel);
     restoreToggle('hoverPreviewStrip', v => { hoverPreviewStripEnabled = v; }, hoverPreviewStripToggle, hoverPreviewStripLabel);
+    restoreToggle('videoProxies', v => { videoProxiesEnabled = v; }, videoProxiesToggle, videoProxiesLabel, v => {
+        if (window.electronAPI?.updateMainSetting) window.electronAPI.updateMainSetting('videoProxies', v);
+    });
     restoreToggle('zoomToFit', v => { zoomToFit = v; }, zoomToFitToggle, zoomToFitLabel, v => {
         if (lightboxZoomToFitToggle) lightboxZoomToFitToggle.checked = v;
     });
@@ -5575,6 +5578,7 @@ async function initApplication() {
     // 3. Fire-and-forget: ffmpeg check (result used lazily when needed)
     const ffmpegPromise = window.electronAPI.hasFfmpeg().then(r => {
         hasFfmpegAvailable = r && r.ok && r.value && r.value.ffmpeg;
+        hasProxyEncoder = !!(r && r.ok && r.value && r.value.proxyEncoder);
     }).catch(() => { /* ffmpeg not available */ });
 
     // 4. SQLite migration must complete before data loads, but can overlap with sidebar + folder nav.

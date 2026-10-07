@@ -324,6 +324,11 @@ const SETTINGS_SCHEMA = {
     controlBarHideDelay:     { type: 'int',    default: 3000,  storageKey: 'controlBarHideDelay' },
     videoThumbSeekPct:       { type: 'int',    default: 25,    storageKey: 'videoThumbSeekPct' },
     videoThumbWidth:         { type: 'int',    default: 512,   storageKey: 'videoThumbWidth' },
+    // Grid playback proxies (small H.264 renditions played in the grid instead of the originals)
+    videoProxies:            { type: 'bool',   default: true,  storageKey: 'videoProxies' },
+    videoProxyEdge:          { type: 'int',    default: 480,   storageKey: 'videoProxyEdge' },
+    videoProxyMaxSeconds:    { type: 'int',    default: 120,   storageKey: 'videoProxyMaxSeconds' },
+    proxyCacheLimitMB:       { type: 'int',    default: 4000,  storageKey: 'proxyCacheLimitMB' },
     ioConcurrency:           { type: 'int',    default: 20,    storageKey: 'ioConcurrency' },
     // Sidebar / tabs
     sidebarWidth:            { type: 'int',    default: 260,   storageKey: 'sidebarWidth' },

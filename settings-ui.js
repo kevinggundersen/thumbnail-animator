@@ -267,14 +267,27 @@ document.getElementById('import-settings-btn').addEventListener('click', importS
         const opt = imageCacheSelect.querySelector(`option[value="${savedImageLimit}"]`);
         if (opt) imageCacheSelect.value = savedImageLimit;
     }
+    const proxyCacheSelect = document.getElementById('proxy-cache-limit');
+    const savedProxyLimit = localStorage.getItem('proxyCacheLimitMB');
+    if (savedProxyLimit && proxyCacheSelect) {
+        const opt = proxyCacheSelect.querySelector(`option[value="${savedProxyLimit}"]`);
+        if (opt) proxyCacheSelect.value = savedProxyLimit;
+    }
 
     // Save on change and sync to main process
     function syncCacheLimits() {
         const videoMB = parseInt(videoCacheSelect?.value || '500', 10);
         const imageMB = parseInt(imageCacheSelect?.value || '1000', 10);
+        const proxyMB = parseInt(proxyCacheSelect?.value || '4000', 10);
         if (window.electronAPI?.setCacheLimits) {
-            window.electronAPI.setCacheLimits(videoMB, imageMB);
+            window.electronAPI.setCacheLimits(videoMB, imageMB, proxyMB);
         }
+    }
+    if (proxyCacheSelect) {
+        proxyCacheSelect.addEventListener('change', () => {
+            deferLocalStorageWrite('proxyCacheLimitMB', proxyCacheSelect.value);
+            syncCacheLimits();
+        });
     }
     if (videoCacheSelect) {
         videoCacheSelect.addEventListener('change', () => {
@@ -301,6 +314,8 @@ document.getElementById('import-settings-btn').addEventListener('click', importS
             const imageEl = document.getElementById('image-cache-usage');
             if (videoEl) videoEl.textContent = `Currently using ${fmt(info.video.size)} (${info.video.files} files)`;
             if (imageEl) imageEl.textContent = `Currently using ${fmt(info.image.size)} (${info.image.files} files)`;
+            const proxyEl = document.getElementById('proxy-cache-usage');
+            if (proxyEl && info.proxy) proxyEl.textContent = `Currently using ${fmt(info.proxy.size)} (${info.proxy.files} files)`;
         } catch {}
     }
 
@@ -918,6 +933,13 @@ hoverPreviewStripToggle.addEventListener('change', () => {
     hoverPreviewStripEnabled = hoverPreviewStripToggle.checked;
     hoverPreviewStripLabel.textContent = hoverPreviewStripEnabled ? 'On' : 'Off';
     deferLocalStorageWrite('hoverPreviewStrip', hoverPreviewStripEnabled.toString());
+});
+
+if (videoProxiesToggle) videoProxiesToggle.addEventListener('change', () => {
+    videoProxiesEnabled = videoProxiesToggle.checked;
+    if (videoProxiesLabel) videoProxiesLabel.textContent = videoProxiesEnabled ? 'On' : 'Off';
+    deferLocalStorageWrite('videoProxies', videoProxiesEnabled.toString());
+    if (window.electronAPI?.updateMainSetting) window.electronAPI.updateMainSetting('videoProxies', videoProxiesEnabled);
 });
 
 // Lightbox filmstrip toggle
@@ -1937,6 +1959,19 @@ wireSelectStorage('idb-cache-ttl', 'idbCacheTTL', (val) => { INDEXEDDB_CACHE_TTL
 wireSelectStorage('image-thumb-max-edge', 'imageThumbMaxEdge', (val) => { IMAGE_THUMBNAIL_MAX_EDGE = parseInt(val, 10); });
 wireSelectStorage('video-thumb-width', 'videoThumbWidth', (val) => {
     if (window.electronAPI?.updateMainSetting) window.electronAPI.updateMainSetting('videoThumbWidth', val);
+});
+// Grid video proxies: a changed size or length means different cache entries, so
+// forget the URLs resolved so far (cards pick up the new rendition as they reload).
+wireSelectStorage('video-proxy-edge', 'videoProxyEdge', (val) => {
+    videoProxyEdge = parseInt(val, 10) || 480;
+    videoProxyUrlCache.clear();
+    if (window.electronAPI?.updateMainSetting) window.electronAPI.updateMainSetting('videoProxyEdge', val);
+});
+wireSelectStorage('video-proxy-max-seconds', 'videoProxyMaxSeconds', (val) => {
+    const s = parseInt(val, 10);
+    videoProxyMaxSeconds = Number.isFinite(s) && s >= 0 ? s : 120;
+    videoProxyUrlCache.clear();
+    if (window.electronAPI?.updateMainSetting) window.electronAPI.updateMainSetting('videoProxyMaxSeconds', val);
 });
 
 // Lightbox

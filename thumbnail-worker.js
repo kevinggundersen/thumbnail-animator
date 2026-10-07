@@ -94,6 +94,93 @@ async function generateVideoThumbnail(filePath, thumbPath) {
     }
 }
 
+// ── Grid playback proxies ───────────────────────────────────────────────────
+// A small H.264 rendition (long edge `edge` px, at most `maxFps`, no audio, the
+// first `maxSeconds` seconds) that the grid plays instead of the original file.
+// Decoding dozens of 1080p/4K 60 fps originals at thumbnail size saturates the
+// hardware decoder long before the CPU is busy; a 480p/30 rendition costs a
+// fraction of that per card.
+
+function probeVideoStream(filePath) {
+    if (!ffprobePath) return Promise.resolve(null);
+    return new Promise((resolve) => {
+        execFile(ffprobePath, [
+            '-v', 'error',
+            '-show_entries', 'stream=codec_type,width,height,r_frame_rate,avg_frame_rate:format=duration',
+            '-of', 'json', filePath
+        ], { timeout: 5000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
+            if (err || !stdout) return resolve(null);
+            try {
+                const j = JSON.parse(stdout);
+                const streams = Array.isArray(j.streams) ? j.streams : [];
+                const v = streams.find(s => s.codec_type === 'video') || {};
+                const fpsOf = (r) => { if (!r || typeof r !== 'string') return 0; const [n, d] = r.split('/').map(Number); return d ? n / d : (n || 0); };
+                const fps = fpsOf(v.avg_frame_rate) || fpsOf(v.r_frame_rate) || 0;
+                const duration = parseFloat(j.format && j.format.duration);
+                resolve({
+                    width: v.width | 0, height: v.height | 0, fps,
+                    duration: isFinite(duration) && duration > 0 ? duration : null,
+                    hasAudio: streams.some(s => s.codec_type === 'audio'),
+                });
+            } catch { resolve(null); }
+        });
+    });
+}
+
+async function generateVideoProxy(filePath, outPath, { edge = 480, maxSeconds = 120, maxFps = 30, encoder = 'libx264', animated = false } = {}) {
+    if (!ffmpegPath) return false;
+    // Encode to a temporary name and rename at the end so a half-written file is
+    // never served as a finished proxy.
+    const partPath = `${outPath}.part.mp4`;
+    try {
+        await fs.promises.mkdir(path.dirname(outPath), { recursive: true });
+        const info = await probeVideoStream(filePath);
+        const filters = [];
+        if (info && info.width > 0 && info.height > 0) {
+            const longEdge = Math.max(info.width, info.height);
+            if (longEdge > edge) {
+                // Long edge to `edge`, aspect kept, even dimensions for yuv420p.
+                const scale = edge / longEdge;
+                const w = Math.max(2, Math.round(info.width * scale / 2) * 2);
+                const h = Math.max(2, Math.round(info.height * scale / 2) * 2);
+                filters.push(`scale=${w}:${h}:flags=bicubic`);
+            }
+        } else {
+            // Size unknown: cap both edges without upscaling.
+            filters.push(`scale='min(${edge},iw)':'min(${edge},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2`);
+        }
+        // GIF/WebP frames carry their own delays; the mp4 gets a constant rate.
+        if (animated) filters.push(`fps=${Math.min(maxFps, Math.max(5, Math.round((info && info.fps) || maxFps)))}`);
+        else if (!info || !info.fps || info.fps > maxFps + 0.5) filters.push(`fps=${maxFps}`);
+        filters.push('format=yuv420p');
+        const codecArgs = encoder === 'libopenh264'
+            ? ['-c:v', 'libopenh264', '-b:v', '1200k', '-maxrate', '1600k', '-bufsize', '2400k']
+            : ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26', '-profile:v', 'main', '-tune', 'fastdecode', '-x264-params', 'threads=2'];
+        const args = [
+            '-hide_banner', '-loglevel', 'error', '-nostdin',
+            '-threads', '2',                 // decoder threads: keep the machine usable while encoding
+            '-i', filePath,
+            '-map', '0:v:0', '-an', '-sn', '-dn',
+            ...(maxSeconds > 0 ? ['-t', String(maxSeconds)] : []),
+            '-vf', filters.join(','),
+            ...codecArgs,
+            '-threads', '2',
+            '-g', String(maxFps * 2),
+            '-movflags', '+faststart',
+            '-f', 'mp4', '-y', partPath
+        ];
+        const coveredSeconds = maxSeconds > 0 ? maxSeconds : ((info && info.duration) || 600);
+        const timeoutMs = Math.min(600000, 60000 + coveredSeconds * 1000);
+        const success = await runFfmpegBounded(args, timeoutMs);
+        if (!success) { fs.promises.unlink(partPath).catch(() => {}); return false; }
+        await fs.promises.rename(partPath, outPath);
+        return true;
+    } catch {
+        fs.promises.unlink(partPath).catch(() => {});
+        return false;
+    }
+}
+
 async function generatePreviewStripFrames(filePath, thumbPaths, positions) {
     if (!ffmpegPath) return { success: false, thumbPaths: [] };
     const results = [];
@@ -191,6 +278,15 @@ module.exports = async function(item) {
         if (item.type === 'preview-strip') {
             const result = await generatePreviewStripFrames(item.filePath, item.thumbPaths, item.positions);
             return { success: result.success, thumbPaths: result.thumbPaths };
+        }
+
+        if (item.type === 'video-proxy') {
+            try {
+                await fs.promises.access(item.thumbPath);
+                return { success: true, thumbPath: item.thumbPath, dHash: null };
+            } catch { /* generate */ }
+            const ok = await generateVideoProxy(item.filePath, item.thumbPath, item.proxy || {});
+            return { success: ok, thumbPath: ok ? item.thumbPath : null, dHash: null };
         }
 
         // Check if already cached

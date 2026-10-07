@@ -989,6 +989,9 @@ function vsResetCard(card) {
     delete dataset.idx;
     delete dataset.animatedSrc;
     delete dataset.hasOverlay;
+    delete dataset.posterOnly;
+    delete dataset.proxyPending;
+    delete dataset.proxySrc;
 
     // Reset classes
     card.className = '';
@@ -1165,6 +1168,7 @@ function _vsScrollSettleCallback() {
     runCleanupCycle();
     // Catch up on any visible cards whose media was deferred during fast scroll
     vsEnsureVisibleMedia(gridContainer.scrollTop, gridContainer.clientHeight);
+    onGridSettled();
 }
 
 /**
@@ -1221,7 +1225,7 @@ function vsEnsureVisibleMedia(scrollTop, viewportHeight) {
 
         // Check if the card has a media element with an actual src set.
         const el = card._mediaEl;
-        if (el && el.src) continue; // media element exists with src — all good
+        if (el && (el.src || card.dataset.posterOnly === '1' || card.dataset.proxyPending === '1')) continue; // media with src, or a poster waiting for its url/proxy — all good
 
         // Card is visible with no working media — tear down stale state and reload
         if (el) {
@@ -2290,6 +2294,8 @@ const gifHoverScrubToggle = document.getElementById('gif-hover-scrub-toggle');
 const gifHoverScrubLabel = document.getElementById('gif-hover-scrub-label');
 const hoverPreviewStripToggle = document.getElementById('hover-preview-strip-toggle');
 const hoverPreviewStripLabel = document.getElementById('hover-preview-strip-label');
+const videoProxiesToggle = document.getElementById('video-proxies-toggle');
+const videoProxiesLabel = document.getElementById('video-proxies-label');
 const lightboxZoomToFitToggle = document.getElementById('lightbox-zoom-to-fit-toggle');
 const zoomSlider = document.getElementById('zoom-slider');
 const zoomValue = document.getElementById('zoom-value');
@@ -2764,6 +2770,18 @@ let thumbnailQuality = 'medium'; // 'low', 'medium', 'high'
 
 // Track ffmpeg availability for video thumbnail generation
 let hasFfmpegAvailable = false;
+let hasProxyEncoder = false; // main found an H.264 encoder: grid video proxies possible
+// Grid video proxies (see requestGridVideoProxy): the grid plays a small H.264
+// rendition of videos larger than videoProxyEdge instead of the original file.
+let videoProxiesEnabled = true;
+let videoProxyEdge = 480;
+let videoProxyMaxSeconds = 120;
+try {
+    const e = parseInt(localStorage.getItem('videoProxyEdge'), 10);
+    if (e > 0) videoProxyEdge = e;
+    const s = parseInt(localStorage.getItem('videoProxyMaxSeconds'), 10);
+    if (Number.isFinite(s) && s >= 0) videoProxyMaxSeconds = s;
+} catch { /* defaults */ }
 
 // Track zoom level
 let zoomLevel = 100; // Percentage
@@ -5266,6 +5284,9 @@ const imageThumbnailUrlCache = new Map();
 const imageThumbnailRequests = new Map();
 const videoPosterUrlCache = new Map();
 const videoPosterRequests = new Map();
+const videoProxyUrlCache = new Map();   // filePath -> url, or null when generation failed
+const videoProxyRequests = new Map();   // filePath -> in-flight Promise
+const videoProxyWaiters = new Map();    // filePath -> number of grid videos waiting on it
 const folderPreviewCache = new Map(); // folderPath → { urls: string[], ts: number }
 const folderPreviewRequests = new Map(); // folderPath → Promise (in-flight dedup)
 const FOLDER_PREVIEW_CACHE_TTL = 120000; // 2 minutes
@@ -5435,6 +5456,28 @@ function requestImageThumbnailUrl(filePath, maxSize) {
         });
 
     imageThumbnailRequests.set(key, request);
+    return request;
+}
+
+// Grid playback proxy: a small H.264 rendition of the file (main: get-video-proxy).
+// Resolves to a file URL, or null when the proxy is unavailable, cancelled or
+// failed. A failure is remembered so the file is not re-encoded every time it
+// scrolls into view; "unavailable" and "cancelled" may be asked again later.
+function requestVideoProxyUrl(filePath) {
+    const cached = getCachedUrl(videoProxyUrlCache, filePath);
+    if (cached !== undefined) return Promise.resolve(cached);
+    if (videoProxyRequests.has(filePath)) return videoProxyRequests.get(filePath);
+    if (!window.electronAPI || !window.electronAPI.getVideoProxy) return Promise.resolve(null);
+    const request = window.electronAPI.getVideoProxy(filePath, { edge: videoProxyEdge, maxSeconds: videoProxyMaxSeconds })
+        .then(r => {
+            const v = r && r.ok ? r.value : null;
+            if (v && v.status === 'ready' && v.url) { setCachedUrl(videoProxyUrlCache, filePath, v.url, 2000); return v.url; }
+            if (v && v.status === 'failed') setCachedUrl(videoProxyUrlCache, filePath, null, 2000);
+            return null;
+        })
+        .catch(() => null)
+        .finally(() => videoProxyRequests.delete(filePath));
+    videoProxyRequests.set(filePath, request);
     return request;
 }
 
@@ -6746,10 +6789,267 @@ function createMediaForCard(card, mediaUrl) {
     _mediaDirty = true;
 
     if (fileType === 'image') {
+        if (shouldProxyAnimatedImage(card, mediaUrl)) return createAnimatedProxyCard(card, mediaUrl);
         return createImageForCard(card, mediaUrl);
-    } else {
-        return createVideoForCard(card, mediaUrl);
     }
+    // Videos: a poster while the grid is moving, the <video> itself only once the
+    // viewport is at rest, and never more than a couple per frame (queueVideoAttach).
+    if (isGridScrolling() && hasFfmpegAvailable && card.dataset.path) {
+        return createPosterForCard(card, mediaUrl);
+    }
+    queueVideoAttach(card, mediaUrl);
+    return true;
+}
+
+// ── Video attach queue ──────────────────────────────────────────────────────
+// Creating a <video> starts a media pipeline and tearing it down runs a
+// destructor in the next full GC; dozens of either inside one scroll were the
+// 0.5-1.2 s frames on video-heavy folders (trace: V8.GC_MARK_COMPACTOR 777 ms).
+// So: while the grid scrolls, video cards show their poster frame as an <img>;
+// once it settles, poster cards in and near the viewport get their <video>,
+// closest to the centre first, a couple per animation frame. Folder loads take
+// the same path, which also spreads the initial burst over a few frames.
+const VIDEO_ATTACH_PER_FRAME = 2;
+const _videoAttachQueue = new Map(); // card -> mediaUrl
+let _videoAttachRaf = 0;
+
+function isGridScrolling() {
+    return document.body.classList.contains('is-scrolling');
+}
+
+function queueVideoAttach(card, mediaUrl) {
+    _videoAttachQueue.set(card, mediaUrl);
+    if (!_videoAttachRaf && !isGridScrolling()) _videoAttachRaf = requestAnimationFrame(drainVideoAttachQueue);
+}
+
+function drainVideoAttachQueue() {
+    _videoAttachRaf = 0;
+    if (_videoAttachQueue.size === 0) return;
+    if (isGridScrolling()) return; // the settle callback restarts the drain
+    const vpCenter = gridContainer.scrollTop + gridContainer.clientHeight / 2;
+    const usePositions = vsState.enabled && vsState.positions;
+    const queued = [];
+    for (const [card, url] of _videoAttachQueue) {
+        // Recycled for another item, or scrolled out of the preload zone meanwhile:
+        // forget it, the observer queues it again when it comes back.
+        if (!card.isConnected || card.dataset.src !== url || !isCardInPreloadZone(card)) {
+            _videoAttachQueue.delete(card);
+            pendingMediaCreations.delete(card);
+            continue;
+        }
+        let distance = 0;
+        if (usePositions && card._vsItemIndex != null) {
+            const i = card._vsItemIndex * 4;
+            distance = Math.abs(vsState.positions[i + 1] + vsState.positions[i + 3] / 2 - vpCenter);
+        }
+        queued.push({ card, url, distance });
+    }
+    queued.sort((a, b) => a.distance - b.distance);
+    let attached = 0;
+    for (const { card, url } of queued) {
+        if (attached >= VIDEO_ATTACH_PER_FRAME) break;
+        _videoAttachQueue.delete(card);
+        const existing = card._mediaEl;
+        if (existing && existing.tagName === 'VIDEO') { pendingMediaCreations.delete(card); continue; }
+        if (activeVideoCount >= MAX_VIDEOS) {
+            pendingMediaCreations.delete(card);
+            if (!mediaToRetry.has(card)) mediaToRetry.set(card, { url, attempts: 0, nextRetryTime: Date.now() + 500, reason: 'capacity' });
+            continue;
+        }
+        if (existing) { // the poster
+            destroyImageElement(existing);
+            activeImageCount = Math.max(0, activeImageCount - 1);
+            card._mediaEl = null;
+        }
+        delete card.dataset.posterOnly;
+        delete card.dataset.proxyPending;
+        delete card.dataset.hasMedia;
+        pendingMediaCreations.add(card);
+        createVideoForCard(card, url);
+        attached++;
+    }
+    if (_videoAttachQueue.size) _videoAttachRaf = requestAnimationFrame(drainVideoAttachQueue);
+}
+
+// Once the grid is at rest: poster-only cards inside the viewport plus half a
+// screen above and below get their <video>.
+function queuePosterUpgrades() {
+    if (!vsState.enabled || !vsState.positions) {
+        for (const card of gridContainer.querySelectorAll('.video-card[data-poster-only="1"]')) {
+            if (card.dataset.src && !pendingMediaCreations.has(card) && isCardInPreloadZone(card)) {
+                pendingMediaCreations.add(card);
+                queueVideoAttach(card, card.dataset.src);
+            }
+        }
+        return;
+    }
+    const margin = gridContainer.clientHeight / 2;
+    const top = gridContainer.scrollTop - margin;
+    const bottom = gridContainer.scrollTop + gridContainer.clientHeight + margin;
+    for (const [idx, card] of vsState.activeCards) {
+        if (card.dataset.posterOnly !== '1' || !card.dataset.src || pendingMediaCreations.has(card)) continue;
+        const i = idx * 4;
+        const cardTop = vsState.positions[i + 1];
+        if (cardTop + vsState.positions[i + 3] < top || cardTop > bottom) continue;
+        pendingMediaCreations.add(card);
+        queueVideoAttach(card, card.dataset.src);
+    }
+}
+
+// ── Animated images as proxies ──────────────────────────────────────────────
+// A large GIF or animated WebP as an <img> is the original file in Blink's
+// image cache, decoded in full (a 90 MB GIF is thousands of full-size frames);
+// scrolling a folder of them evicted and re-inflated those resources inside
+// every full GC (traced as 0.3-1 s ParkableImage/MemoryCache pauses). Such
+// files play in the grid as the same small H.264 proxy videos get. Small ones
+// stay <img>: they animate cheaply and keep their exact frame timing.
+const ANIMATED_PROXY_MIN_BYTES = 1.5 * 1024 * 1024;
+
+function shouldProxyAnimatedImage(card, mediaUrl) {
+    if (!videoProxiesEnabled || !hasProxyEncoder || !card.dataset.path) return false;
+    const lower = mediaUrl.toLowerCase();
+    const item = getMediaItemForCard(card);
+    const isGif = lower.endsWith('.gif');
+    const isAnimatedWebp = lower.endsWith('.webp') && !!(item && item.animated);
+    if (!isGif && !isAnimatedWebp) return false;
+    if (videoProxyUrlCache.get(card.dataset.path) === null) return false; // the proxy failed before: plain <img>
+    const size = item && item.size > 0 ? item.size : 0;
+    if (size) return size >= ANIMATED_PROXY_MIN_BYTES;
+    const w = item ? item.width : 0, h = item ? item.height : 0;
+    if (w && h) return Math.max(w, h) > videoProxyEdge;
+    return true; // size and dimensions unknown: assume large
+}
+
+// A static first-frame thumbnail now; the proxy as a <video> through the attach
+// queue once ffmpeg has made it. Without a proxy the animated original loads as
+// an <img>, as before.
+function createAnimatedProxyCard(card, mediaUrl) {
+    const filePath = card.dataset.path;
+    activeImageCount++;
+    cachedMediaCounts.timestamp = 0;
+    const img = document.createElement('img');
+    img.className = 'media-thumbnail poster-only';
+    img.decoding = 'async';
+    img.draggable = true;
+    img.addEventListener('dragstart', (e) => {
+        e.dataTransfer.effectAllowed = 'copyMove';
+        e.dataTransfer.setData('text/plain', filePath);
+        e.dataTransfer.setData('text/uri-list', mediaUrl);
+        e.dataTransfer.setData('application/x-thumbnail-animator-path', filePath);
+    });
+    img.addEventListener('load', () => {
+        const skel = card.querySelector('.card-skeleton');
+        if (skel) skel.remove();
+    }, { once: true });
+    img.addEventListener('error', () => {});
+    const info = card.querySelector('.video-info');
+    card.insertBefore(img, info);
+    card.dataset.hasMedia = '1';
+    card.dataset.proxyPending = '1';
+    card._mediaEl = img;
+    pendingMediaCreations.delete(card);
+
+    // First frame from the thumbnail pipeline (sharp reads one frame of a GIF/WebP).
+    const rect = getCardSizeFast(card);
+    const dpr = Math.min(3, window.devicePixelRatio || 1);
+    const edge = Math.max(rect.width, rect.height) * dpr * getThumbnailQualityMultiplier();
+    const thumbMaxSize = Math.max(256, Math.min(getThumbnailMaxEdge(), Math.ceil(edge * 1.25 / 256) * 256));
+    requestImageThumbnailUrl(filePath, thumbMaxSize)
+        .then(url => { if (url && !img._destroyed && img.isConnected && card._mediaEl === img) img.src = url; })
+        .catch(() => {});
+
+    requestVideoProxyUrl(filePath).then(url => {
+        if (card._mediaEl !== img || img._destroyed || !img.isConnected || card.dataset.path !== filePath) return;
+        delete card.dataset.proxyPending;
+        if (!url) {
+            // No proxy for this file: the animated original as an <img>.
+            destroyImageElement(img);
+            activeImageCount = Math.max(0, activeImageCount - 1);
+            card._mediaEl = null;
+            delete card.dataset.hasMedia;
+            pendingMediaCreations.add(card);
+            createImageForCard(card, mediaUrl);
+            return;
+        }
+        card.dataset.proxySrc = url;
+        card.dataset.posterOnly = '1'; // the attach queue swaps the <video> in (after the next settle if scrolling)
+        pendingMediaCreations.add(card);
+        queueVideoAttach(card, mediaUrl);
+    }).catch(() => {});
+    return true;
+}
+
+// A video card while the grid is moving: just its poster frame as an <img>, no
+// media pipeline. Counted as an image until queuePosterUpgrades() swaps the
+// <video> in. Without a poster (no ffmpeg) createMediaForCard attaches directly.
+function createPosterForCard(card, mediaUrl) {
+    activeImageCount++;
+    cachedMediaCounts.timestamp = 0;
+    const filePath = card.dataset.path;
+    const img = document.createElement('img');
+    img.className = 'media-thumbnail poster-only';
+    img.decoding = 'async';
+    img.draggable = false;
+    img.addEventListener('load', () => {
+        const skel = card.querySelector('.card-skeleton');
+        if (skel) skel.remove();
+    }, { once: true });
+    // A failed poster keeps the skeleton; the <video> replaces both once the grid settles.
+    img.addEventListener('error', () => {});
+    const info = card.querySelector('.video-info');
+    card.insertBefore(img, info);
+    card.dataset.hasMedia = '1';
+    card.dataset.posterOnly = '1';
+    card._mediaEl = img;
+    const apply = (url) => { if (url && !img._destroyed && img.isConnected) img.src = url; };
+    const cached = videoPosterUrlCache.get(filePath);
+    if (cached) apply(cached);
+    else requestVideoPosterUrl(filePath).then(apply).catch(() => {});
+    pendingMediaCreations.delete(card);
+    void mediaUrl;
+    return true;
+}
+
+// ── Deferred media-pipeline release ─────────────────────────────────────────
+// destroyVideoElement() parks elements while the grid scrolls instead of
+// clearing src + load() (the synchronous pipeline teardown); they are released
+// three per frame once it settles. Bounded so a long scroll cannot hoard them.
+const PARKED_VIDEO_MAX = 64;
+const PARKED_RELEASE_PER_FRAME = 3;
+const _parkedVideos = new Set();
+let _parkedDrainRaf = 0;
+
+function releaseVideoPipeline(video) {
+    try {
+        video.removeAttribute('src');
+        video.src = '';
+        video.load(); // single load() releases the decoder
+    } catch { /* already released */ }
+}
+
+function drainParkedVideos() {
+    _parkedDrainRaf = 0;
+    if (_parkedVideos.size === 0) return;
+    if (isGridScrolling()) return; // the settle callback restarts the drain
+    let released = 0;
+    for (const video of _parkedVideos) {
+        _parkedVideos.delete(video);
+        releaseVideoPipeline(video);
+        if (++released >= PARKED_RELEASE_PER_FRAME) break;
+    }
+    if (_parkedVideos.size) _parkedDrainRaf = requestAnimationFrame(drainParkedVideos);
+}
+
+function scheduleParkedDrain() {
+    if (!_parkedDrainRaf && _parkedVideos.size) _parkedDrainRaf = requestAnimationFrame(drainParkedVideos);
+}
+
+// Called when the grid comes to rest: attach queued videos, upgrade posters,
+// release parked pipelines.
+function onGridSettled() {
+    queuePosterUpgrades();
+    if (_videoAttachQueue.size && !_videoAttachRaf) _videoAttachRaf = requestAnimationFrame(drainVideoAttachQueue);
+    scheduleParkedDrain();
 }
 
 function createImageForCard(card, imageUrl) {
@@ -7033,6 +7333,54 @@ function createSoundLabel(card) {
     }
 }
 
+// Ask main for a grid rendition of the card's video and swap it in once it is
+// ready, keeping the playback position and play state. The swap waits for the
+// original's first 'canplay' (or 1.5 s) so the audio-track check that runs
+// there still sees the original; the proxy has no audio track.
+function requestGridVideoProxy(card, video) {
+    const filePath = card.dataset.path;
+    video._proxyRequested = true;
+    video._proxyWaitingFor = filePath;
+    videoProxyWaiters.set(filePath, (videoProxyWaiters.get(filePath) || 0) + 1);
+    requestVideoProxyUrl(filePath).then(url => {
+        releaseVideoProxyWaiter(video);
+        if (!url || video._destroyed || !video.isConnected || card.dataset.path !== filePath) return;
+        const swap = () => {
+            if (video._destroyed || !video.isConnected || video.dataset.proxy === '1') return;
+            const wasPlaying = !video.paused && !video.ended;
+            const position = video.currentTime;
+            video.dataset.proxy = '1';
+            video._proxySwapped = true;
+            video.addEventListener('loadedmetadata', () => {
+                if (video._destroyed) return;
+                try { if (position > 0 && position < video.duration) video.currentTime = position; } catch { /* not seekable yet */ }
+                if (wasPlaying) video.play().catch(() => {});
+                playbackBudget.schedule();
+            }, { once: true });
+            video.src = url;
+        };
+        if (video._canPlayFired || video.readyState >= 3) { swap(); return; }
+        let done = false;
+        const go = () => { if (done) return; done = true; video.removeEventListener('canplay', go); swap(); };
+        video.addEventListener('canplay', go, { once: true });
+        setTimeout(go, 1500);
+    }).catch(() => releaseVideoProxyWaiter(video));
+}
+
+// A grid video stopped waiting for its proxy (it arrived, or the card scrolled
+// away). When nobody else waits on that file, a request still queued in main is cancelled.
+function releaseVideoProxyWaiter(video) {
+    const filePath = video._proxyWaitingFor;
+    if (!filePath) return;
+    video._proxyWaitingFor = null;
+    const n = (videoProxyWaiters.get(filePath) || 1) - 1;
+    if (n > 0) { videoProxyWaiters.set(filePath, n); return; }
+    videoProxyWaiters.delete(filePath);
+    if (video._destroyed && videoProxyRequests.has(filePath) && window.electronAPI && window.electronAPI.cancelVideoProxy) {
+        window.electronAPI.cancelVideoProxy(filePath, { edge: videoProxyEdge, maxSeconds: videoProxyMaxSeconds }).catch(() => {});
+    }
+}
+
 function createVideoForCard(card, videoUrl) {
     activeVideoCount++;
     // Invalidate media count cache since we're adding a video
@@ -7049,7 +7397,11 @@ function createVideoForCard(card, videoUrl) {
     if (card.dataset.path && videoPosterUrlCache.has(card.dataset.path)) {
         video.poster = videoPosterUrlCache.get(card.dataset.path);
     }
-    video.src = videoUrl;
+    // An animated image card plays its proxy; the original URL stays the card's
+    // identity (drag, lightbox, retry).
+    const proxySrc = card.dataset.proxySrc || null;
+    if (proxySrc) video.dataset.proxy = '1';
+    video.src = proxySrc || videoUrl;
     video.muted = true;
     video.loop = true;
     // Use 'metadata' for balance - loads quickly without downloading entire video
@@ -7096,6 +7448,9 @@ function createVideoForCard(card, videoUrl) {
     // Track loading state
     let hasLoaded = false;
     video.addEventListener('loadedmetadata', () => {
+        // A swapped-in proxy's metadata is handled by requestGridVideoProxy; the
+        // card's dimensions, labels and duration came from the original.
+        if (video._proxySwapped) return;
         hasLoaded = true;
         mediaToRetry.delete(card); // Perf: clear retry entry on successful load
 
@@ -7105,21 +7460,27 @@ function createVideoForCard(card, videoUrl) {
 
         // Detect and apply aspect ratio to card
         if (video.videoWidth && video.videoHeight) {
-            const aspectRatioName = getClosestAspectRatio(video.videoWidth, video.videoHeight);
+            // A proxy is scaled down: the card keeps the source's dimensions when
+            // the scan knows them, and never writes proxy dimensions into the caches.
+            const isProxyMedia = video.dataset.proxy === '1';
+            const srcItem = isProxyMedia ? getMediaItemForCard(card) : null;
+            const srcW = (srcItem && srcItem.width) || video.videoWidth;
+            const srcH = (srcItem && srcItem.height) || video.videoHeight;
+            const aspectRatioName = getClosestAspectRatio(srcW, srcH);
             applyAspectRatioToCard(card, aspectRatioName, 'metadata');
-            card.dataset.width = video.videoWidth;
-            card.dataset.height = video.videoHeight;
+            card.dataset.width = srcW;
+            card.dataset.height = srcH;
 
             // Create resolution label
-            createResolutionLabel(card, video.videoWidth, video.videoHeight);
+            createResolutionLabel(card, srcW, srcH);
 
-            if (updateItemDimensionsByPath(card.dataset.path, video.videoWidth, video.videoHeight)) {
+            if (!isProxyMedia && updateItemDimensionsByPath(card.dataset.path, video.videoWidth, video.videoHeight)) {
                 cacheCurrentFolderDimensions();
                 scheduleVsRecalculateForDimensions();
             }
 
             // Cache discovered dimensions for future visits
-            if (card.dataset.path && !card.dataset.dimCached) {
+            if (!isProxyMedia && card.dataset.path && !card.dataset.dimCached) {
                 card.dataset.dimCached = '1';
                 cacheDimensions([{
                     path: card.dataset.path,
@@ -7127,6 +7488,13 @@ function createVideoForCard(card, videoUrl) {
                     width: video.videoWidth,
                     height: video.videoHeight
                 }]).catch(() => {});
+            }
+
+            // Grid playback proxy: a source larger than the proxy edge is swapped for a
+            // small rendition once ffmpeg has made one (the lightbox keeps the original).
+            if (!isProxyMedia && videoProxiesEnabled && hasProxyEncoder && card.dataset.path && !video._proxyRequested
+                && Math.max(video.videoWidth, video.videoHeight) > videoProxyEdge * 1.25) {
+                requestGridVideoProxy(card, video);
             }
         }
 
@@ -7166,13 +7534,13 @@ function createVideoForCard(card, videoUrl) {
         checkAudio();
 
         // Also check when video can play (more reliable for some browsers)
-        video.addEventListener('canplay', checkAudio, { once: true });
+        video.addEventListener('canplay', () => { video._canPlayFired = true; checkAudio(); }, { once: true });
 
         const itemForMeta = getMediaItemForCard(card);
         const dur = isFinite(video.duration) && video.duration > 0 ? video.duration : null;
         if (dur) {
             card.dataset.mediaDuration = String(dur);
-            if (itemForMeta && itemForMeta.type === 'video') {
+            if (itemForMeta && itemForMeta.type === 'video' && video.dataset.proxy !== '1') {
                 itemForMeta.duration = dur;
             }
         }
@@ -7184,6 +7552,10 @@ function createVideoForCard(card, videoUrl) {
     // Add error handler - retry on error with exponential backoff
     video.addEventListener('error', () => {
         if (video._destroyed) return;
+        // A proxy that does not decode is forgotten; the retry below plays the
+        // original (for an animated image: as an <img> again).
+        if (video.dataset.proxy === '1' && card.dataset.path) setCachedUrl(videoProxyUrlCache, card.dataset.path, null, 2000);
+        delete card.dataset.proxySrc;
         scheduleMediaLoadSettle();
         destroyVideoElement(video);
         activeVideoCount = Math.max(0, activeVideoCount - 1);
@@ -7214,6 +7586,7 @@ function createVideoForCard(card, videoUrl) {
     const info = card.querySelector('.video-info');
     card.insertBefore(video, info);
     card.dataset.hasMedia = '1';
+    delete card.dataset.posterOnly;
     card._mediaEl = video;
 
     // Play only if the card is actually inside the viewport (not merely in the
@@ -7509,6 +7882,7 @@ function destroyVideoElement(video) {
     if (!video) return;
     // See destroyImageElement: clearing src fires 'error'; the listener must ignore it.
     video._destroyed = true;
+    if (video._proxyWaitingFor) releaseVideoProxyWaiter(video);
     if (typeof playbackBudget !== 'undefined') playbackBudget.schedule();
 
     // Store parent reference before we start cleanup
@@ -7521,14 +7895,10 @@ function destroyVideoElement(video) {
     }
 
     try {
-        // 1. Stop playback FIRST before removing from DOM
+        // 1. Stop playback FIRST before removing from DOM (no seek to 0: that
+        //    decodes a frame for an element about to be released)
         try {
             video.pause();
-            video.currentTime = 0;
-            // Cancel any pending operations
-            if (video.requestVideoFrameCallback) {
-                // Cancel any frame callbacks if supported
-            }
         } catch (e) {
             // Ignore if already paused/stopped
         }
@@ -7550,14 +7920,11 @@ function destroyVideoElement(video) {
             // Ignore srcObject errors
         }
         
-        // 3. Clear src BEFORE removing from DOM to release decoder
-        try {
-            video.removeAttribute('src');
-            video.src = '';
-            video.load(); // Single load() call to release decoder
-        } catch (e) {
-            // Ignore src errors
-        }
+        // 3. Release the decoder, or park the element while the grid scrolls
+        //    (see releaseVideoPipeline / drainParkedVideos)
+        const parked = isGridScrolling() && _parkedVideos.size < PARKED_VIDEO_MAX;
+        if (parked) _parkedVideos.add(video);
+        else releaseVideoPipeline(video);
         
         // 4. Remove from DOM to stop rendering
         if (parent) {
@@ -7574,12 +7941,12 @@ function destroyVideoElement(video) {
             }
         }
         
-        // 5. Clear all attributes and properties
+        // 5. Clear remaining attributes (src only once released: setting it runs
+        //    the load algorithm, which is the teardown being deferred)
         try {
-            video.removeAttribute('src');
             video.removeAttribute('playsinline');
             if (video.srcObject) video.srcObject = null;
-            if (video.src) video.src = '';
+            if (!parked) { video.removeAttribute('src'); if (video.src) video.src = ''; }
         } catch (e) {
             // Ignore
         }
@@ -7615,6 +7982,7 @@ function destroyImageElement(img) {
         delete card.dataset.hasMedia;
         if (card._mediaEl === img) card._mediaEl = null;
     }
+    if (card && img.classList.contains('poster-only')) { delete card.dataset.posterOnly; delete card.dataset.proxyPending; }
 
     // Also remove the static overlay if this is an animated image
     if (parent && img.dataset.hasOverlay) {
@@ -8448,7 +8816,8 @@ gridContainer.addEventListener('mouseover', (e) => {
     if (marqueeState.active) return;
     const card = e.target.closest('.video-card');
     if (card && card !== currentHoveredCard) {
-        if (card.dataset.mediaType === 'video') {
+        // An animated image playing as a proxy <video> scrubs like a video.
+        if (card.dataset.mediaType === 'video' || (card.dataset.proxySrc && card.querySelector('video'))) {
             currentHoveredCard = card;
             showPreviewStrip(card);
             const video = card.querySelector('video');

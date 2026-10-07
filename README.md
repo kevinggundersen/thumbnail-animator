@@ -28,6 +28,7 @@ A desktop application built with Electron for browsing and viewing media files (
 - **Scrubber Preview**: Hover over the video timeline to preview frames
 - **Auto-Repeat**: Optionally loop videos automatically
 - **Pause Behaviors**: Pause on lightbox open or window blur
+- **Grid Video Proxies**: Large videos and GIFs animate in the grid as small H.264 renditions made by ffmpeg on first view and cached (Settings → Performance: resolution, length, on/off; cache limit under Data), so a screen full of them plays without saturating the decoder. The fullscreen viewer always plays the original.
 
 ### File Management
 - **Context Menu**: Right-click files for options:
@@ -138,7 +139,7 @@ thumnail-animator/
 - `npm start` - Run the application in development mode (builds the renderer bundles first)
 - `npm test` - Unit tests (vitest); `npm run lint` - ESLint; `npm run typecheck` - JSDoc type check (advisory)
 - `npm run build:renderer` - Bundle and minify the renderer scripts into `dist-renderer/` (`--dev` for a readable build)
-- `node scripts/perf-smoke.js <folder>` - Launch the app on an isolated profile and measure first render, scroll frame pacing, playback budget and background CPU
+- `node scripts/perf-smoke.js <folder>` - Launch the app on an isolated profile and measure first render, scroll frame pacing, playback budget and background CPU (`--keep-settings` measures a real profile as it is; `--cpuprofile`, `--cpuprofile-load`, `--cpuprofile-hover` write V8 profiles; `--trace` writes a Chrome trace of the scroll, summarized by `node scripts/trace-top.js <trace.json>`)
 - `node scripts/nav-smoke.js <profile> <tree>` / `node scripts/nav-stress.js <profile> <tree>` - Navigation correctness: plain navigation, history, tabs, and adversarial timing (rapid clicks, double back, tab switches and closes while a folder is still scanning) checked against invariants
 - `npm run build` - Build the application
 - `npm run build:win` - Build Windows installer

@@ -1898,6 +1898,19 @@
                             </div>
                             <div class="settings-data-action-row">
                                 <div>
+                                    <div class="settings-data-action-title">Video Proxy Limit</div>
+                                    <div class="settings-data-action-desc" id="proxy-cache-usage"></div>
+                                </div>
+                                <select id="proxy-cache-limit" class="settings-select">
+                                    <option value="1000">1 GB</option>
+                                    <option value="2000">2 GB</option>
+                                    <option value="4000" selected>4 GB</option>
+                                    <option value="10000">10 GB</option>
+                                    <option value="0">Unlimited</option>
+                                </select>
+                            </div>
+                            <div class="settings-data-action-row">
+                                <div>
                                     <div class="settings-data-action-title">Clear All Thumbnails</div>
                                     <div class="settings-data-action-desc">Remove all cached thumbnails to free disk space</div>
                                 </div>
@@ -2071,6 +2084,48 @@
                                     <option value="240">240px</option>
                                     <option value="320" selected>320px (balanced)</option>
                                     <option value="480">480px (sharpest)</option>
+                                </select>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Grid Video Proxies</div>
+                                    <div class="settings-item-description">Play small H.264 renditions in the grid instead of the original files, so many videos and large GIFs can animate at once without saturating the video decoder or the image cache. Made by ffmpeg the first time a large video or GIF is shown and cached on disk; the fullscreen viewer always plays the original.</div>
+                                </div>
+                                <div class="toggle-switch">
+                                    <input type="checkbox" id="video-proxies-toggle" checked>
+                                    <span class="toggle-slider"></span>
+                                </div>
+                                <span class="toggle-label" id="video-proxies-label">On</span>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Proxy Resolution</div>
+                                    <div class="settings-item-description">Long edge of the grid rendition. Videos at or below this size play as they are.</div>
+                                </div>
+                                <select id="video-proxy-edge" class="settings-select">
+                                    <option value="360">360px (lightest)</option>
+                                    <option value="480" selected>480px (balanced)</option>
+                                    <option value="640">640px</option>
+                                    <option value="720">720px (sharpest)</option>
+                                </select>
+                            </label>
+                        </div>
+                        <div class="settings-item">
+                            <label class="settings-label">
+                                <div class="settings-item-info">
+                                    <div class="settings-item-title">Proxy Length</div>
+                                    <div class="settings-item-description">Longer videos loop this much of their start in the grid. Whole-video proxies take longer to make and use more disk.</div>
+                                </div>
+                                <select id="video-proxy-max-seconds" class="settings-select">
+                                    <option value="30">First 30 seconds</option>
+                                    <option value="60">First minute</option>
+                                    <option value="120" selected>First 2 minutes</option>
+                                    <option value="300">First 5 minutes</option>
+                                    <option value="0">Whole video</option>
                                 </select>
                             </label>
                         </div>

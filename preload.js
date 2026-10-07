@@ -19,7 +19,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getMemoryInfo: () => ipcRenderer.invoke('get-memory-info'),
     getCacheInfo: () => ipcRenderer.invoke('get-cache-info'),
     evictCache: (type) => ipcRenderer.invoke('evict-cache', type),
-    setCacheLimits: (videoMB, imageMB) => ipcRenderer.invoke('set-cache-limits', videoMB, imageMB),
+    setCacheLimits: (videoMB, imageMB, proxyMB) => ipcRenderer.invoke('set-cache-limits', videoMB, imageMB, proxyMB),
     revealInExplorer: (filePath) => ipcRenderer.invoke('reveal-in-explorer', filePath),
     renameFile: (filePath, newName) => ipcRenderer.invoke('rename-file', filePath, newName),
     batchRename: (filePaths, patternType, patternOptions) => ipcRenderer.invoke('batch-rename', filePaths, patternType, patternOptions),
@@ -57,6 +57,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     removeFolderChangedListener: () => ipcRenderer.removeAllListeners('folder-changed'),
     generateVideoThumbnail: (filePath) => ipcRenderer.invoke('generate-video-thumbnail', filePath),
     generatePreviewStrip: (filePath) => ipcRenderer.invoke('generate-preview-strip', filePath),
+    // Grid playback proxies: { status: 'ready'|'failed'|'cancelled'|'unavailable', url? }
+    getVideoProxy: (filePath, opts) => ipcRenderer.invoke('get-video-proxy', filePath, opts),
+    cancelVideoProxy: (filePath, opts) => ipcRenderer.invoke('cancel-video-proxy', filePath, opts),
     generateImageThumbnail: (filePath, maxSize) => ipcRenderer.invoke('generate-image-thumbnail', filePath, maxSize),
     scanFileDimensions: (files) => ipcRenderer.invoke('scan-file-dimensions', files),
     hasFfmpeg: () => ipcRenderer.invoke('has-ffmpeg'),

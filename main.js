@@ -102,6 +102,7 @@ async function readImageHeader(filePath, maxBytes = 16 * 1024) {
 // guard with `if (dimensionPool)` / `if (thumbnailPool)` so null is safe.
 let ffprobePath = null;
 let ffmpegPath = null;
+let proxyEncoder = null; // 'libx264' | 'libopenh264' | null (grid video proxies need an H.264 encoder)
 let ffToolsReady = false;
 
 // Worker pool for parallel dimension scanning (created after fftools detected)
@@ -177,6 +178,16 @@ let thumbnailPool = null;
         await fs.promises.mkdir(cacheDir, { recursive: true });
         await fs.promises.writeFile(cachePath, JSON.stringify({ ffprobe: ffprobePath, ffmpeg: ffmpegPath }));
     } catch { /* cache write failed, not critical */ }
+
+    // Grid video proxies need an H.264 encoder: prefer libx264 (fast presets), accept libopenh264.
+    if (ffmpegPath) {
+        try {
+            const { stdout } = await execFileAsync(ffmpegPath, ['-hide_banner', '-encoders'], { timeout: 5000, maxBuffer: 4 * 1024 * 1024 });
+            if (/^\s*V\S*\s+libx264\s/m.test(stdout)) proxyEncoder = 'libx264';
+            else if (/^\s*V\S*\s+libopenh264\s/m.test(stdout)) proxyEncoder = 'libopenh264';
+            console.log(proxyEncoder ? `proxy encoder: ${proxyEncoder}` : 'no H.264 encoder in ffmpeg — grid video proxies disabled');
+        } catch { /* no encoder list: proxies stay disabled */ }
+    }
 
     // Create worker pools now that paths are known
     dimensionPool = new DimensionWorkerPool(ffprobePath);
@@ -747,10 +758,24 @@ markStartup('db-initialized');
 videoThumbDir = path.join(userDataPath, 'video-thumbnails');
 imageThumbDir = path.join(userDataPath, 'image-thumbnails');
 let folderPreviewDir = path.join(userDataPath, 'folder-previews');
+let videoProxyDir = path.join(userDataPath, 'video-proxies');
+// An encode interrupted by app exit leaves a .part.mp4 behind (the rename never
+// ran); sweep those at startup so they neither get served nor count forever.
+setTimeout(() => {
+    fs.promises.readdir(videoProxyDir).then(names => {
+        const cutoff = Date.now() - 10 * 60 * 1000;
+        for (const name of names) {
+            if (!name.endsWith('.part.mp4')) continue;
+            const p = path.join(videoProxyDir, name);
+            fs.promises.stat(p).then(st => { if (st.mtimeMs < cutoff) return fs.promises.unlink(p); }).catch(() => {});
+        }
+    }).catch(() => { /* no proxy dir yet */ });
+}, 5000).unref();
 
 // Cache size limits (bytes). 0 = unlimited. User-configurable via settings.
 let VIDEO_CACHE_MAX_BYTES = 500 * 1024 * 1024;  // default 500 MB
 let IMAGE_CACHE_MAX_BYTES = 1000 * 1024 * 1024;  // default 1 GB
+let PROXY_CACHE_MAX_BYTES = 4000 * 1024 * 1024;  // default 4 GB (a 2-minute 480p proxy is ~10-20 MB)
 
 // Load saved cache limits from config file (async to avoid blocking startup)
 const cacheLimitsFile = path.join(userDataPath, 'cache-limits.json');
@@ -758,6 +783,7 @@ const _cacheLimitsReady = fs.promises.readFile(cacheLimitsFile, 'utf8').then(dat
     const saved = JSON.parse(data);
     if (typeof saved.videoCacheMB === 'number') VIDEO_CACHE_MAX_BYTES = saved.videoCacheMB * 1024 * 1024;
     if (typeof saved.imageCacheMB === 'number') IMAGE_CACHE_MAX_BYTES = saved.imageCacheMB * 1024 * 1024;
+    if (typeof saved.proxyCacheMB === 'number') PROXY_CACHE_MAX_BYTES = saved.proxyCacheMB * 1024 * 1024;
 }).catch(() => { /* no saved limits, use defaults */ });
 
 // Thumbnail cache eviction. Runs once shortly after startup and then
@@ -773,6 +799,7 @@ async function evictThumbnailCaches() {
         for (const [dir, maxBytes, label] of [
             [videoThumbDir, VIDEO_CACHE_MAX_BYTES, 'video'],
             [imageThumbDir, IMAGE_CACHE_MAX_BYTES, 'image'],
+            [videoProxyDir, PROXY_CACHE_MAX_BYTES, 'video proxy'],
         ]) {
             if (maxBytes === 0) continue; // 0 = unlimited
             try {
@@ -862,6 +889,12 @@ if (process.env.THUMBNAIL_ANIMATOR_EXTRA_SWITCHES) {
 // test from 13-19 frames over 33 ms down to 1; the other legacy raster switches
 // added nothing on top of it.
 app.commandLine.appendSwitch('enable-low-res-tiling');
+// Blink parks (compresses, and with this feature writes to disk) encoded image
+// data of images not on screen and reads it back on demand. In a thumbnail grid
+// that scrolls back and forth the read-back happens on the main thread, inside
+// GC-time cache eviction: traced at up to 339 ms per image on a GIF-heavy folder,
+// 20 ms with disk parking off. The in-memory compression stays enabled.
+app.commandLine.appendSwitch('disable-features', 'ParkableImagesToDisk');
 
 // Deliberately NOT set (see MODERNIZATION.md, Phase 1):
 // - disable-zero-copy / disable-partial-raster / disable-accelerated-2d-canvas /
@@ -1495,22 +1528,24 @@ ipcMain.handle('get-memory-info', () => {
 
 wrapIpc('get-cache-info', async () => {
     if (!nativeScanner || !nativeScanner.getCacheInfo) return null;
-    const [video, image, folder] = await Promise.all([
+    const [video, image, folder, proxy] = await Promise.all([
         nativeScanner.getCacheInfo(videoThumbDir || ''),
         nativeScanner.getCacheInfo(imageThumbDir || ''),
         nativeScanner.getCacheInfo(folderPreviewDir || ''),
+        nativeScanner.getCacheInfo(videoProxyDir || ''),
     ]);
     return {
         video: { size: video.totalSize, files: video.fileCount, maxSize: VIDEO_CACHE_MAX_BYTES },
         image: { size: image.totalSize, files: image.fileCount, maxSize: IMAGE_CACHE_MAX_BYTES },
         folder: { size: folder.totalSize, files: folder.fileCount },
+        proxy: { size: proxy.totalSize, files: proxy.fileCount, maxSize: PROXY_CACHE_MAX_BYTES },
     };
 });
 
 wrapIpc('evict-cache', async (cacheType) => {
     if (!nativeScanner || !nativeScanner.planCacheEviction) return { deleted: 0, freed: 0 };
-    const dir = cacheType === 'video' ? videoThumbDir : imageThumbDir;
-    const maxBytes = cacheType === 'video' ? VIDEO_CACHE_MAX_BYTES : IMAGE_CACHE_MAX_BYTES;
+    const dir = cacheType === 'video' ? videoThumbDir : cacheType === 'proxy' ? videoProxyDir : imageThumbDir;
+    const maxBytes = cacheType === 'video' ? VIDEO_CACHE_MAX_BYTES : cacheType === 'proxy' ? PROXY_CACHE_MAX_BYTES : IMAGE_CACHE_MAX_BYTES;
     if (maxBytes === 0) return { deleted: 0, freed: 0 }; // unlimited
     // Force evict to 80% of max to avoid re-evicting on every call
     const plan = await nativeScanner.planCacheEviction(dir, Math.floor(maxBytes * 0.8));
@@ -1519,11 +1554,12 @@ wrapIpc('evict-cache', async (cacheType) => {
     return { deleted, freed: plan.bytesToFree };
 });
 
-ipcMain.handle('set-cache-limits', (event, videoCacheMB, imageCacheMB) => {
+ipcMain.handle('set-cache-limits', (event, videoCacheMB, imageCacheMB, proxyCacheMB) => {
     VIDEO_CACHE_MAX_BYTES = videoCacheMB * 1024 * 1024;
     IMAGE_CACHE_MAX_BYTES = imageCacheMB * 1024 * 1024;
+    if (typeof proxyCacheMB === 'number' && Number.isFinite(proxyCacheMB)) PROXY_CACHE_MAX_BYTES = proxyCacheMB * 1024 * 1024;
     try {
-        fs.writeFileSync(cacheLimitsFile, JSON.stringify({ videoCacheMB, imageCacheMB }));
+        fs.writeFileSync(cacheLimitsFile, JSON.stringify({ videoCacheMB, imageCacheMB, proxyCacheMB: PROXY_CACHE_MAX_BYTES / 1024 / 1024 }));
     } catch { /* non-critical */ }
     return { ok: true, value: null };
 });
@@ -1541,12 +1577,18 @@ let IO_CONCURRENCY_LIMIT = 20;
 // ── Runtime settings from renderer ──
 let mainVideoThumbWidth = 320;
 let mainVideoThumbSeekPct = 0.25;
+let mainVideoProxiesEnabled = true;
+let mainVideoProxyEdge = 480;
+let mainVideoProxyMaxSeconds = 120;
 
 ipcMain.handle('update-main-setting', (event, key, value) => {
     switch (key) {
         case 'ioConcurrency': IO_CONCURRENCY_LIMIT = parseInt(value) || 20; break;
         case 'videoThumbWidth': mainVideoThumbWidth = parseInt(value) || 320; break;
         case 'videoThumbSeekPct': mainVideoThumbSeekPct = parseFloat(value) / 100 || 0.25; break;
+        case 'videoProxies': mainVideoProxiesEnabled = value === true || value === 'true'; break;
+        case 'videoProxyEdge': mainVideoProxyEdge = Math.min(1080, Math.max(240, parseInt(value) || 480)); break;
+        case 'videoProxyMaxSeconds': { const s = parseInt(value); mainVideoProxyMaxSeconds = Number.isFinite(s) && s >= 0 ? s : 120; break; }
     }
     return { ok: true, value: null };
 });
@@ -3319,6 +3361,84 @@ ipcMain.handle('generate-video-thumbnail', async (event, filePath) => {
     }
 });
 
+// ── Grid playback proxies ────────────────────────────────────────────────────
+// Small H.264 renditions (thumbnail-worker.js generateVideoProxy) cached in
+// video-proxies/. At most PROXY_MAX_CONCURRENT encodes run at once, newest
+// request first (it is what the user is looking at now); a request still
+// waiting can be cancelled when its card scrolls away. A running encode is
+// left to finish: it is bounded and the result is cached.
+const PROXY_MAX_CONCURRENT = 2;
+const pendingProxyJobs = new Map();   // proxyPath -> Promise<{ status, url? }>
+const proxyWaitQueue = [];            // [{ proxyPath, start, resolve }] not started yet
+const proxyCancelled = new Set();     // proxyPaths whose waiting request was cancelled
+let proxyRunning = 0;
+
+function getProxyCachePath(filePath, mtimeMs, edge, maxSeconds) {
+    return path.join(videoProxyDir, `${createThumbCacheKey(filePath, mtimeMs, `proxy:${edge}:${maxSeconds}`)}.mp4`);
+}
+
+function proxyOptions(opts) {
+    const edge = Math.min(1080, Math.max(240, parseInt(opts && opts.edge) || mainVideoProxyEdge));
+    const s = opts && opts.maxSeconds != null ? parseInt(opts.maxSeconds) : mainVideoProxyMaxSeconds;
+    const maxSeconds = Number.isFinite(s) && s >= 0 ? s : mainVideoProxyMaxSeconds;
+    return { edge, maxSeconds };
+}
+
+function pumpProxyQueue() {
+    while (proxyRunning < PROXY_MAX_CONCURRENT && proxyWaitQueue.length > 0) {
+        const next = proxyWaitQueue.pop(); // LIFO: the newest request is what is on screen
+        if (proxyCancelled.delete(next.proxyPath)) { next.resolve({ status: 'cancelled' }); continue; }
+        proxyRunning++;
+        next.start().then(next.resolve, () => next.resolve({ status: 'failed' }))
+            .finally(() => { proxyRunning--; pumpProxyQueue(); });
+    }
+}
+
+wrapIpc('get-video-proxy', async (filePath, opts) => {
+    if (!mainVideoProxiesEnabled || !proxyEncoder || !thumbnailPool || !videoProxyDir) return { status: 'unavailable' };
+    const p = validateUserPath(filePath, { mustExist: true });
+    const { edge, maxSeconds } = proxyOptions(opts);
+    const stats = await fs.promises.stat(p);
+    const proxyPath = getProxyCachePath(p, stats.mtimeMs, edge, maxSeconds);
+    try {
+        await fs.promises.access(proxyPath);
+        return { status: 'ready', url: pathToFileUrl(proxyPath) };
+    } catch { /* not cached yet */ }
+    if (pendingProxyJobs.has(proxyPath)) return pendingProxyJobs.get(proxyPath);
+    proxyCancelled.delete(proxyPath);
+    const job = new Promise((resolve) => {
+        proxyWaitQueue.push({
+            proxyPath,
+            resolve,
+            start: async () => {
+                const t0 = performance.now();
+                await fs.promises.mkdir(videoProxyDir, { recursive: true });
+                const result = await thumbnailPool.generate({
+                    type: 'video-proxy', filePath: p, thumbPath: proxyPath,
+                    proxy: { edge, maxSeconds, maxFps: 30, encoder: proxyEncoder, animated: /\.(gif|webp|apng|png)$/i.test(p) },
+                    timeoutMs: 600000,
+                });
+                logPerf('generate-video-proxy', t0, { success: result.success ? 1 : 0, edge, maxSeconds });
+                return result.success ? { status: 'ready', url: pathToFileUrl(proxyPath) } : { status: 'failed' };
+            },
+        });
+        pumpProxyQueue();
+    }).finally(() => pendingProxyJobs.delete(proxyPath));
+    pendingProxyJobs.set(proxyPath, job);
+    return job;
+});
+
+wrapIpc('cancel-video-proxy', async (filePath, opts) => {
+    try {
+        const p = validateUserPath(filePath, { mustExist: true });
+        const { edge, maxSeconds } = proxyOptions(opts);
+        const stats = await fs.promises.stat(p);
+        const proxyPath = getProxyCachePath(p, stats.mtimeMs, edge, maxSeconds);
+        if (proxyWaitQueue.some(j => j.proxyPath === proxyPath)) proxyCancelled.add(proxyPath);
+    } catch { /* nothing to cancel */ }
+    return null;
+});
+
 // Generate a preview strip of 5 evenly-spaced keyframes for a video file.
 // Returns file:// URLs to cached JPEGs. Used for hover preview filmstrip on cards.
 ipcMain.handle('generate-preview-strip', async (event, filePath) => {
@@ -4286,7 +4406,7 @@ ipcMain.handle('delete-files-batch', async (event, filePaths) => {
 
 // Check if ffmpeg is available (renderer can adapt UI accordingly)
 ipcMain.handle('has-ffmpeg', async () => {
-    return { ok: true, value: { ffmpeg: !!ffmpegPath, ffprobe: !!ffprobePath } };
+    return { ok: true, value: { ffmpeg: !!ffmpegPath, ffprobe: !!ffprobePath, proxyEncoder } };
 });
 
 // ─── Video Trimming & File Conversion (ffmpeg-backed) ──────────────────

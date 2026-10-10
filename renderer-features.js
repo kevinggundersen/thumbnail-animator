@@ -5373,6 +5373,64 @@ function clearDuplicateHighlights() {
 // INITIALIZATION
 // ═══════════════════════════════════════════════════════════════════════════
 
+// ── Lag recorder ─────────────────────────────────────────────────────────────
+// What the perf harness cannot see on the owner's machine: when the main thread
+// stalls (long tasks, slow input events) for a few seconds, ask main for a
+// 10 s Chrome trace of every process plus a snapshot of the grid's state, once
+// per ten minutes at most; also on request from Settings → Performance.
+const lagRecorder = {
+    longTasks: 0, longTaskMs: 0, slowEvents: 0, worstEventMs: 0,
+    lastTrace: 0, running: false, auto: true, minGapMs: 10 * 60 * 1000,
+    snapshot() {
+        return {
+            folder: typeof currentFolderPath !== 'undefined' ? currentFolderPath : null,
+            items: typeof currentItems !== 'undefined' ? currentItems.length : 0,
+            cards: vsState.enabled ? vsState.activeCards.size : gridContainer.querySelectorAll('.video-card').length,
+            engine: typeof WcEngine !== 'undefined' ? WcEngine.status() : null,
+            budget: typeof playbackBudget !== 'undefined' ? playbackBudget.status() : null,
+            activeVideoCount, activeImageCount,
+            animatedImgs: gridContainer.querySelectorAll('img[data-animated-src]').length,
+            skeletons: gridContainer.querySelectorAll('.card-skeleton').length,
+            settings: { zoom: zoomLevel, perfProfile: localStorage.getItem('perfProfile'), thumbnailQuality, playbackEngine, videoProxies: videoProxiesEnabled, decoder: typeof WcEngine !== 'undefined' ? WcEngine.hw : null, frameBudget: localStorage.getItem('decodeFrameBudget'), aiAutoScan: localStorage.getItem('aiAutoScan'), linkedDuplicates: localStorage.getItem('linkedDuplicates') },
+            window: { w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio },
+            lightbox: isLightboxOpen, scrolling: isGridScrolling(), blurred: isWindowBlurred, hidden: document.hidden,
+            recent: { longTasks: this.longTasks, longTaskMs: this.longTaskMs, slowEvents: this.slowEvents, worstEventMs: this.worstEventMs },
+        };
+    },
+    async record(reason, seconds = 10) {
+        if (this.running || !window.electronAPI || !window.electronAPI.recordPerfTrace) return null;
+        this.running = true;
+        try {
+            const r = await window.electronAPI.recordPerfTrace({ seconds, reason, snapshot: this.snapshot() });
+            const v = r && r.ok ? r.value : null;
+            if (v && v.status === 'ok') {
+                this.lastTrace = Date.now();
+                showToast(`Performance trace saved to the logs folder (${reason})`, 'info');
+            }
+            return v;
+        } finally {
+            this.running = false;
+        }
+    },
+    start() {
+        try {
+            new PerformanceObserver((list) => { for (const e of list.getEntries()) { this.longTasks++; this.longTaskMs += e.duration; } }).observe({ entryTypes: ['longtask'] });
+        } catch { /* no longtask support */ }
+        try {
+            new PerformanceObserver((list) => { for (const e of list.getEntries()) { if (e.duration >= 150) { this.slowEvents++; if (e.duration > this.worstEventMs) this.worstEventMs = e.duration; } } }).observe({ type: 'event', buffered: false, durationThreshold: 150 });
+        } catch { /* no event timing */ }
+        setInterval(() => {
+            const stalled = this.longTaskMs >= 600 || this.longTasks >= 4 || this.slowEvents >= 2;
+            if (stalled && this.auto && !this.running && Date.now() - this.lastTrace > this.minGapMs && !document.hidden) {
+                perfLog(`[lag] stalled: ${this.longTasks} long tasks (${Math.round(this.longTaskMs)} ms), ${this.slowEvents} slow events -> recording a trace`);
+                this.record('auto');
+            }
+            this.longTasks = 0; this.longTaskMs = 0; this.slowEvents = 0; this.worstEventMs = 0;
+        }, 5000);
+    },
+};
+lagRecorder.start();
+
 // ── Restore UI preferences from localStorage ──
 function initPreferences() {
     initCompareSlider();

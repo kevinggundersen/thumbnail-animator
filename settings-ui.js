@@ -1967,6 +1967,20 @@ wireSelectStorage('video-proxy-edge', 'videoProxyEdge', (val) => {
     videoProxyUrlCache.clear();
     if (window.electronAPI?.updateMainSetting) window.electronAPI.updateMainSetting('videoProxyEdge', val);
 });
+{
+    const btn = document.getElementById('record-perf-trace-btn');
+    if (btn) btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        const label = btn.textContent;
+        btn.textContent = 'Recording 10 s...';
+        try {
+            const v = await lagRecorder.record('manual');
+            btn.textContent = v && v.status === 'ok' ? 'Saved to logs' : v && v.status === 'busy' ? 'Already recording' : 'Failed';
+        } finally {
+            setTimeout(() => { btn.textContent = label; btn.disabled = false; }, 3000);
+        }
+    });
+}
 wireSelectStorage('decode-frame-budget', 'decodeFrameBudget', (val) => {
     const n = parseInt(val, 10);
     playbackBudget.setFrameBudget(Number.isFinite(n) && n >= 0 ? n : 3000);

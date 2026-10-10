@@ -59,6 +59,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     generatePreviewStrip: (filePath) => ipcRenderer.invoke('generate-preview-strip', filePath),
     // Grid playback proxies: { status: 'ready'|'failed'|'cancelled'|'unavailable', url? }
     getVideoProxy: (filePath, opts) => ipcRenderer.invoke('get-video-proxy', filePath, opts),
+    // Performance trace of all processes for a few seconds, written to the logs folder
+    recordPerfTrace: (opts) => ipcRenderer.invoke('record-perf-trace', opts),
     cancelVideoProxy: (filePath, opts) => ipcRenderer.invoke('cancel-video-proxy', filePath, opts),
     generateImageThumbnail: (filePath, maxSize) => ipcRenderer.invoke('generate-image-thumbnail', filePath, maxSize),
     scanFileDimensions: (files) => ipcRenderer.invoke('scan-file-dimensions', files),

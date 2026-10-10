@@ -17,7 +17,7 @@ process.on('unhandledRejection', (err) => {
     console.error('UNHANDLED REJECTION:', err);
 });
 
-const { app, BrowserWindow, Menu, ipcMain, dialog, shell, screen, nativeImage, clipboard } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, dialog, shell, screen, nativeImage, clipboard, contentTracing } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const DimensionWorkerPool = require('./worker-pool');
@@ -1306,6 +1306,52 @@ wrapIpc('get-app-info', () => ({
     platform: process.platform,
     arch: process.arch
 }));
+
+// ── Performance trace on demand ─────────────────────────────────────────────
+// A Chrome trace of every process for a few seconds (contentTracing), with the
+// app's process metrics, GPU info, displays, window bounds and the renderer's
+// own snapshot of the grid, written to the logs folder. The renderer asks for
+// one when it sees the UI stall (lagRecorder in renderer-features.js) or when
+// the owner presses the button in Settings → Performance. Read with
+// scripts/trace-threads.js and scripts/trace-top.js.
+let _perfTraceActive = false;
+wrapIpc('record-perf-trace', async (opts) => {
+    if (_perfTraceActive) return { status: 'busy' };
+    const seconds = Math.min(30, Math.max(3, parseInt(opts && opts.seconds) || 10));
+    _perfTraceActive = true;
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const tracePath = path.join(logsDir, `perf-trace-${stamp}.json`);
+    const metaPath = path.join(logsDir, `perf-trace-${stamp}.meta.json`);
+    try {
+        // Older traces go first: they are large.
+        try {
+            const old = (await fs.promises.readdir(logsDir)).filter(n => n.startsWith('perf-trace-')).sort();
+            while (old.length > 4) { const n = old.shift(); await fs.promises.unlink(path.join(logsDir, n)).catch(() => {}); }
+        } catch { /* ignore */ }
+        const metricsBefore = app.getAppMetrics();
+        await contentTracing.startRecording({
+            included_categories: ['toplevel', 'renderer.scheduler', 'v8', 'disabled-by-default-v8.gc', 'blink', 'cc', 'viz', 'gpu', 'media', 'disabled-by-default-devtools.timeline'],
+            excluded_categories: [],
+        });
+        await new Promise(r => setTimeout(r, seconds * 1000));
+        const resultPath = await contentTracing.stopRecording(tracePath);
+        const metricsAfter = app.getAppMetrics();
+        let gpu = null; try { gpu = await app.getGPUInfo('complete'); } catch { /* unavailable */ }
+        const meta = {
+            when: new Date().toISOString(), seconds, reason: opts && opts.reason, renderer: opts && opts.snapshot,
+            metricsBefore, metricsAfter, gpu, gpuFeatures: app.getGPUFeatureStatus(),
+            displays: screen.getAllDisplays().map(d => ({ id: d.id, bounds: d.bounds, scaleFactor: d.scaleFactor, refresh: d.displayFrequency, internal: d.internal })),
+            window: mainWindow ? { bounds: mainWindow.getBounds(), display: screen.getDisplayMatching(mainWindow.getBounds()).id } : null,
+            versions: process.versions, cpus: require('os').cpus().length, totalMemMB: Math.round(require('os').totalmem() / 1048576),
+            switches: process.argv.slice(1),
+        };
+        await fs.promises.writeFile(metaPath, JSON.stringify(meta, null, 1));
+        console.log(`[perf] trace recorded: ${resultPath} (${opts && opts.reason})`);
+        return { status: 'ok', tracePath: resultPath, metaPath };
+    } finally {
+        _perfTraceActive = false;
+    }
+});
 
 wrapIpc('get-logs', async () => {
     const files = await fs.promises.readdir(logsDir);

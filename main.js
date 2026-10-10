@@ -104,6 +104,12 @@ let ffprobePath = null;
 let ffmpegPath = null;
 let proxyEncoder = null; // 'libx264' | 'libopenh264' | null (grid video proxies need an H.264 encoder)
 let ffToolsReady = false;
+// Resolves when ffmpeg/ffprobe detection (and the encoder check) is done: the
+// renderer's "is ffmpeg available?" waits for it. Answering from the current
+// state during start-up told the first folder load "no ffmpeg, no encoder" and
+// that session then played every original file in the grid.
+let _ffToolsResolve = null;
+const _ffToolsPromise = new Promise((resolve) => { _ffToolsResolve = resolve; });
 
 // Worker pool for parallel dimension scanning (created after fftools detected)
 let dimensionPool = null;
@@ -193,6 +199,7 @@ let thumbnailPool = null;
     dimensionPool = new DimensionWorkerPool(ffprobePath);
     thumbnailPool = new ThumbnailWorkerPool({ ffmpegPath, ffprobePath });
     ffToolsReady = true;
+    _ffToolsResolve();
     markStartup('fftools-detected');
     console.log(`[startup] fftools detection complete (async) — ffprobe: ${!!ffprobePath}, ffmpeg: ${!!ffmpegPath}`);
 })();
@@ -3447,6 +3454,7 @@ function pumpProxyQueue() {
 }
 
 wrapIpc('get-video-proxy', async (filePath, opts) => {
+    if (!ffToolsReady) await Promise.race([_ffToolsPromise, new Promise(r => setTimeout(r, 20000))]); // not before detection: 'unavailable' would be wrong
     if (!mainVideoProxiesEnabled || !proxyEncoder || !thumbnailPool || !videoProxyDir) return { status: 'unavailable' };
     const p = validateUserPath(filePath, { mustExist: true });
     const { edge, maxSeconds, fps } = proxyOptions(opts);
@@ -4458,7 +4466,9 @@ ipcMain.handle('delete-files-batch', async (event, filePaths) => {
 
 // Check if ffmpeg is available (renderer can adapt UI accordingly)
 ipcMain.handle('has-ffmpeg', async () => {
-    return { ok: true, value: { ffmpeg: !!ffmpegPath, ffprobe: !!ffprobePath, proxyEncoder } };
+    // Wait for detection (bounded): an early answer is a wrong answer.
+    if (!ffToolsReady) await Promise.race([_ffToolsPromise, new Promise(r => setTimeout(r, 20000))]);
+    return { ok: true, value: { ffmpeg: !!ffmpegPath, ffprobe: !!ffprobePath, proxyEncoder, ready: ffToolsReady } };
 });
 
 // ─── Video Trimming & File Conversion (ffmpeg-backed) ──────────────────

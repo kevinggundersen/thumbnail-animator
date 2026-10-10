@@ -2774,7 +2774,9 @@ let thumbnailQuality = 'medium'; // 'low', 'medium', 'high'
 
 // Track ffmpeg availability for video thumbnail generation
 let hasFfmpegAvailable = false;
-let hasProxyEncoder = false; // main found an H.264 encoder: grid video proxies possible
+// null until main has answered: an unknown encoder is tried (the proxy request
+// falls back to the original when there is none), a known absence is not.
+let hasProxyEncoder = null;
 // Playback engine for proxies: 'webcodecs' (worker decode onto canvases, see
 // webcodecs-player.js) or 'video' (<video> elements, ~100 at once at most).
 let playbackEngine = 'webcodecs';
@@ -6812,7 +6814,7 @@ function createMediaForCard(card, mediaUrl) {
     }
     // WebCodecs engine: never a <video> pipeline for a card that will get a proxy.
     // The poster shows meanwhile; the player arrives through the attach queue.
-    if (WcEngine.enabled && videoProxiesEnabled && hasProxyEncoder && card.dataset.path && card.dataset.wcFailed !== '1'
+    if (WcEngine.enabled && videoProxiesEnabled && hasProxyEncoder !== false && card.dataset.path && card.dataset.wcFailed !== '1'
         && videoProxyUrlCache.get(card.dataset.path) !== null) {
         return createAnimatedProxyCard(card, mediaUrl, 'video');
     }
@@ -6958,13 +6960,17 @@ function queuePosterUpgrades() {
 const ANIMATED_PROXY_MIN_BYTES = 1.5 * 1024 * 1024;
 
 function shouldProxyAnimatedImage(card, mediaUrl) {
-    if (!videoProxiesEnabled || !hasProxyEncoder || !card.dataset.path) return false;
+    if (!videoProxiesEnabled || hasProxyEncoder === false || !card.dataset.path) return false;
     const lower = mediaUrl.toLowerCase();
     const item = getMediaItemForCard(card);
     const isGif = lower.endsWith('.gif');
     const isAnimatedWebp = lower.endsWith('.webp') && !!(item && item.animated);
     if (!isGif && !isAnimatedWebp) return false;
     if (videoProxyUrlCache.get(card.dataset.path) === null) return false; // the proxy failed before: plain <img>
+    // With the engine on, every animated image is a proxy: an animated <img>
+    // decodes each frame on the raster threads (~7 ms a frame) and the commit
+    // waits for it; 28 small GIFs stalled the main thread for up to 380 ms.
+    if (WcEngine.enabled) return true;
     const size = item && item.size > 0 ? item.size : 0;
     if (size) return size >= ANIMATED_PROXY_MIN_BYTES;
     const w = item ? item.width : 0, h = item ? item.height : 0;
@@ -7660,7 +7666,7 @@ function createVideoForCard(card, videoUrl) {
             // Grid playback proxy: a source larger than the proxy edge is swapped for a
             // small rendition once ffmpeg has made one (the lightbox keeps the original).
             // With the WebCodecs engine every video gets a proxy: the engine plays proxies only.
-            if (!isProxyMedia && videoProxiesEnabled && hasProxyEncoder && card.dataset.path && !video._proxyRequested
+            if (!isProxyMedia && videoProxiesEnabled && hasProxyEncoder !== false && card.dataset.path && !video._proxyRequested
                 && (WcEngine.enabled || Math.max(video.videoWidth, video.videoHeight) > videoProxyEdge * 1.25)) {
                 requestGridVideoProxy(card, video);
             }

@@ -5394,6 +5394,8 @@ const lagRecorder = {
             settings: { zoom: zoomLevel, perfProfile: localStorage.getItem('perfProfile'), thumbnailQuality, playbackEngine, videoProxies: videoProxiesEnabled, decoder: typeof WcEngine !== 'undefined' ? WcEngine.hw : null, frameBudget: localStorage.getItem('decodeFrameBudget'), aiAutoScan: localStorage.getItem('aiAutoScan'), linkedDuplicates: localStorage.getItem('linkedDuplicates') },
             window: { w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio },
             lightbox: isLightboxOpen, scrolling: isGridScrolling(), blurred: isWindowBlurred, hidden: document.hidden,
+            ffmpeg: hasFfmpegAvailable, proxyEncoder: hasProxyEncoder,
+            videoElements: gridContainer.querySelectorAll('video').length,
             recent: { longTasks: this.longTasks, longTaskMs: this.longTaskMs, slowEvents: this.slowEvents, worstEventMs: this.worstEventMs },
         };
     },
@@ -5635,8 +5637,9 @@ async function initApplication() {
 
     // 3. Fire-and-forget: ffmpeg check (result used lazily when needed)
     const ffmpegPromise = window.electronAPI.hasFfmpeg().then(r => {
-        hasFfmpegAvailable = r && r.ok && r.value && r.value.ffmpeg;
+        hasFfmpegAvailable = !!(r && r.ok && r.value && r.value.ffmpeg);
         hasProxyEncoder = !!(r && r.ok && r.value && r.value.proxyEncoder);
+        if (!hasProxyEncoder) videoProxyUrlCache.clear(); // nothing cached from the optimistic phase is worth keeping
     }).catch(() => { /* ffmpeg not available */ });
 
     // 4. SQLite migration must complete before data loads, but can overlap with sidebar + folder nav.

@@ -135,6 +135,21 @@ describe('PlaybackBudget', () => {
         expect(b.limit).toBe(44);                                   // 39 + 6, capped by the soft ceiling (85% of 52)
     });
 
+    it('ignores main-thread stalls when the host says playback is off the main thread', () => {
+        const host = makeHost(10);
+        host.stallsAttributable = () => false;
+        const b = new PlaybackBudget(host, { ceiling: 10, floor: 2, longFramesHigh: 2, minDecoded: 10 });
+        b.start();
+        host.flushRaf();
+        decodeFrames(host, 20, 0); b._sample();
+        b._longFrames = 5; decodeFrames(host, 20, 0); b._sample();
+        b._longFrames = 5; decodeFrames(host, 20, 0); b._sample();
+        expect(b.limit).toBe(10);                    // stalls are not playback's fault here
+        decodeFrames(host, 20, 10); b._sample();
+        decodeFrames(host, 20, 10); b._sample();
+        expect(b.limit).toBe(7);                     // decoder drops still are
+    });
+
     it('ignores main-thread stalls while scrolling but not decoder drops', () => {
         const host = makeHost(10, { scrolling: true });
         const b = new PlaybackBudget(host, { ceiling: 10, floor: 2, longFramesHigh: 2, minDecoded: 10 });

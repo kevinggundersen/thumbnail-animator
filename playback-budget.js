@@ -24,6 +24,7 @@
  *   canPlay(): boolean,
  *   isScrolling(): boolean,           // frame drops during scroll are not the decoder's fault
  *   isBusy(): boolean,                // optional: grid still loading/attaching media; samples are not evidence
+ *   stallsAttributable(): boolean,    // optional: false when playback does not run on the main thread (WebCodecs engine)
  *
  * Three overload signals: decoder dropped-frame ratio, main-thread stalls, and
  * media-clock underrun (a video's currentTime advancing slower than wall time:
@@ -52,7 +53,7 @@
         clockRatioLow: 0.9,     // media clocks advancing under 90% of wall time = overloaded (underrun)
         clockRatioHealthy: 0.97, // growth only while clocks run at (nearly) full speed
         softCeilingFactor: 0.85, // after an overload at N playing, stay at the last healthy level, or under 0.85 * N ...
-        softCeilingMs: 60000,    // ... for this long (doubling on every repeat, up to softCeilingMaxMs)
+        softCeilingMs: 30000,    // ... for this long (doubling on every repeat, up to softCeilingMaxMs)
         softCeilingMaxMs: 600000,
         overloadSamples: 2,      // consecutive overloaded samples before shrinking (start-up drops outlast one sample)
         frameBudget: 0,          // total decoded frames per second allowed across the playing set (0 = no cap)
@@ -248,15 +249,17 @@
             // neither sample is evidence about the decoders.
             if (changed || (typeof this.host.isBusy === 'function' && this.host.isBusy())) return;
             const scrolling = typeof this.host.isScrolling === 'function' && this.host.isScrolling();
+            // Main-thread stalls are only playback's fault when playback runs there
+            // (<video> elements). With the engine, pausing players cannot fix a stall.
+            const stallsMatter = typeof this.host.stallsAttributable !== 'function' || this.host.stallsAttributable();
             // Decoder drops are always evidence. Main-thread stalls only count when
             // the playing set is at the limit: below it, stalls come from loading or
             // layout, and pausing videos would not fix them.
             const atLimit = playing >= Math.min(this.limit, this._candidateCount || this.limit);
             const underrun = clockRatio != null && clockRatio < this.opts.clockRatioLow;
-            const overloaded = dropRatio > this.opts.dropRatioHigh || underrun
-                || (!scrolling && atLimit && longFrames >= this.opts.longFramesHigh);
-            const healthy = dropRatio <= this.opts.dropRatioLow && (clockRatio == null || clockRatio >= this.opts.clockRatioHealthy)
-                && (scrolling || !atLimit || longFrames < this.opts.longFramesHigh);
+            const stalled = stallsMatter && !scrolling && atLimit && longFrames >= this.opts.longFramesHigh;
+            const overloaded = dropRatio > this.opts.dropRatioHigh || underrun || stalled;
+            const healthy = dropRatio <= this.opts.dropRatioLow && (clockRatio == null || clockRatio >= this.opts.clockRatioHealthy) && !stalled;
 
             if (overloaded) {
                 this.healthyStreak = 0;

@@ -8301,6 +8301,9 @@ const playbackBudget = new PlaybackBudget({
     getCandidates: getPlaybackCandidates,
     canPlay: canAutoplayNow,
     isScrolling: () => document.body.classList.contains('is-scrolling'),
+    // With the WebCodecs engine the main thread does not play anything: its stalls
+    // come from elsewhere, and pausing players would not fix them.
+    stallsAttributable: () => !(WcEngine.enabled && WcEngine.players.size > 0),
     // Loading a folder, attaching videos or releasing parked ones: not the decoders' fault.
     isBusy: () => isGridScrolling() || _videoAttachQueue.size > 0 || _parkedVideos.size > 0 || _navBusy
         || performance.now() - _mediaActivityAt < MEDIA_SETTLE_MS,
@@ -9222,6 +9225,7 @@ gridContainer.addEventListener('mouseout', (e) => {
         if (currentHoveredCard._scrubbing) {
             const video = currentHoveredCard._scrubVideo || getCardVideo(currentHoveredCard);
             if (video && !(isWindowBlurred && pauseOnBlur) && !(isLightboxOpen && pauseOnLightbox)) video.play().catch(() => {});
+            playbackBudget.schedule(); // the budget decides whether it stays playing
             currentHoveredCard._scrubbing = false;
             delete currentHoveredCard._scrubRect; // Invalidate cached rect
             delete currentHoveredCard._scrubVideo; // Perf: cleanup cached video ref

@@ -1139,6 +1139,7 @@ function _vsScrollRafCallback() {
     const scrollTop = gridContainer.scrollTop;
     const viewportHeight = gridContainer.clientHeight;
     vsGetVisibleRange(scrollTop, viewportHeight);
+    WcEngine.onScroll(); // the sheet follows the content; relayout only near its edge
     const startIndex = _vsVisibleStartIndex;
     const endIndex = _vsVisibleEndIndex;
 
@@ -1179,7 +1180,6 @@ function vsOnScroll() {
     if (!vsState.enabled || isWindowMinimized) return;
     noteMediaActivity();
 
-    if (!document.body.classList.contains('is-scrolling')) WcEngine.setHidden(true); // the sheet waits for the settle
     document.body.classList.add('is-scrolling'); // Perf: pause skeleton shimmer during scroll
 
     if (vsState.scrollRafId) return; // Already scheduled
@@ -6867,13 +6867,15 @@ function getCardVideo(card) {
 
 function queueVideoAttach(card, mediaUrl) {
     _videoAttachQueue.set(card, mediaUrl);
-    if (!_videoAttachRaf && !isGridScrolling()) _videoAttachRaf = requestAnimationFrame(drainVideoAttachQueue);
+    if (!_videoAttachRaf && (!isGridScrolling() || WcEngine.enabled)) _videoAttachRaf = requestAnimationFrame(drainVideoAttachQueue);
 }
 
 function drainVideoAttachQueue() {
     _videoAttachRaf = 0;
     if (_videoAttachQueue.size === 0) return;
-    if (isGridScrolling()) return; // the settle callback restarts the drain
+    // With the engine, attaching is a fetch and a message: fine mid-scroll. A
+    // <video> pipeline is not; those wait for the settle callback.
+    if (isGridScrolling() && !WcEngine.enabled) return;
     const vpCenter = gridContainer.scrollTop + gridContainer.clientHeight / 2;
     const usePositions = vsState.enabled && vsState.positions;
     const queued = [];

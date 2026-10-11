@@ -14,10 +14,14 @@
  * after pausing (hundreds of idle decoders starve the few that play) and
  * recreated on play, resuming from the keyframe before the paused position.
  *
- * Protocol (main -> worker): init {sheet, hw}, layout {w, h, dpr, cells:[{id,x,y,w,h,r}]},
+ * Two sheets: cells are presented on the active one; a relayout is painted into
+ * the other, which then becomes active and main shows it (and hides the old one)
+ * in a single frame, so repositioning never shows stale pixels.
+ *
+ * Protocol (main -> worker): init {sheets: [a, b], hw}, layout {sheet, seq, w, h, dpr, cells:[{id,x,y,w,h,r}]},
  * create {id, buffer, playing}, play {id}, pause {id}, seek {id, time, seq},
  * destroy {id}, hover {id, rect|null}, hidden {hidden}.
- * (worker -> main): meta {id, width, height, duration, codec, hardware},
+ * (worker -> main): layout-done {sheet, seq}, meta {id, width, height, duration, codec, hardware},
  * error {id, message}, stats {items:[{id, currentTime, decoded, dropped, playing, seq}]}.
  */
 'use strict';
@@ -38,7 +42,10 @@ const supportCache = new Map(); // codec|hw -> Promise<boolean>
 let rafId = 0;
 let statsTimer = 0;
 
-// The sheet: one canvas for every cell.
+// The sheets: one canvas for every cell, double-buffered across relayouts.
+const sheets = [null, null];   // OffscreenCanvas
+const ctxs = [null, null];
+let active = 0;
 let sheet = null, ctx = null, sheetW = 0, sheetH = 0, dpr = 1;
 let hidden = false;            // the grid is scrolling: cards show posters, nothing is painted
 let hover = null;              // { id, rect }: the hovered card's cell, drawn last at its scaled rect
@@ -321,13 +328,16 @@ function ensureLoop() {
 }
 
 function applyLayout(m) {
-    if (!sheet) return;
+    const target = m.sheet === 1 ? 1 : 0;
+    if (!sheets[target]) return;
     dpr = m.dpr || 1;
-    if (sheetW !== m.w || sheetH !== m.h || sheet.width !== Math.round(m.w * dpr) || sheet.height !== Math.round(m.h * dpr)) {
-        sheetW = m.w; sheetH = m.h;
-        sheet.width = Math.round(m.w * dpr);
-        sheet.height = Math.round(m.h * dpr);
-    }
+    // Switch to the target sheet, size it, lay the cells out and paint them all now:
+    // main shows it only once this has happened.
+    active = target;
+    sheet = sheets[target]; ctx = ctxs[target];
+    sheetW = m.w; sheetH = m.h;
+    const pw = Math.round(m.w * dpr), ph = Math.round(m.h * dpr);
+    if (sheet.width !== pw || sheet.height !== ph) { sheet.width = pw; sheet.height = ph; }
     const seen = new Set();
     for (const c of m.cells) {
         const p = players.get(c.id);
@@ -335,8 +345,9 @@ function applyLayout(m) {
         p.cell = { x: c.x, y: c.y, w: c.w, h: c.h, r: c.r || 0 };
         seen.add(c.id);
     }
-    for (const p of players.values()) if (!seen.has(p.id)) p.cell = null; // off the sheet (outside the viewport)
-    needsFullRedraw = true;
+    for (const p of players.values()) if (!seen.has(p.id)) p.cell = null; // off the sheet
+    redrawAll();
+    post({ t: 'layout-done', sheet: target, seq: m.seq });
     ensureLoop();
 }
 
@@ -355,7 +366,10 @@ self.onmessage = (e) => {
     switch (m.t) {
         case 'init':
             if (m.hw) hwPreference = m.hw;
-            if (m.sheet) { sheet = m.sheet; ctx = sheet.getContext('2d', { alpha: true }); }
+            if (m.sheets) {
+                for (let i = 0; i < 2; i++) { sheets[i] = m.sheets[i]; ctxs[i] = sheets[i].getContext('2d', { alpha: true }); }
+                active = 0; sheet = sheets[0]; ctx = ctxs[0];
+            }
             if (!statsTimer) statsTimer = setInterval(sendStats, STATS_MS);
             break;
         case 'layout': applyLayout(m); break;

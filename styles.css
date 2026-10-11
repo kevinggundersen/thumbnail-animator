@@ -3316,12 +3316,7 @@ button:hover {
 .video-card.wc-sheet img.media-thumbnail.wc-video {
     visibility: hidden;
 }
-body.is-scrolling .wc-sheet-canvas {
-    visibility: hidden;
-}
-body.is-scrolling .video-card.wc-sheet img.media-thumbnail.wc-video {
-    visibility: visible;
-}
+/* The sheet scrolls with the content: cells stay on their cards through a scroll. */
 
 /* Static frame overlay for pausing GIF/WEBP without flashing */
 .gif-static-overlay {

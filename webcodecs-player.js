@@ -27,7 +27,11 @@
         hw: 'prefer-software',
         workerUrl: 'webcodecs-worker.js',
         worker: null,
-        sheet: null,            // the <canvas class="wc-sheet-canvas"> in the grid
+        sheets: [null, null],   // the two <canvas class="wc-sheet-canvas"> in the grid (one shown)
+        shown: 0,               // index of the sheet on screen
+        sheetOrigin: null,      // { top, left, w, h } of the shown sheet in grid content coordinates
+        _layoutSeq: 0,
+        _pending: null,         // layout sent to the worker, applied on layout-done
         container: null,        // #grid-container
         players: new Map(),     // id -> host element
         cards: new Map(),       // id -> card
@@ -44,16 +48,20 @@
             if (this.worker) return true;
             this.container = document.getElementById('grid-container');
             if (!this.container) return false;
-            const sheet = document.createElement('canvas');
-            sheet.className = 'wc-sheet-canvas';
-            sheet.width = 1; sheet.height = 1;
-            this.container.insertBefore(sheet, this.container.firstChild);
-            this.sheet = sheet;
-            const offscreen = sheet.transferControlToOffscreen();
+            const offscreens = [];
+            for (let i = 0; i < 2; i++) {
+                const sheet = document.createElement('canvas');
+                sheet.className = 'wc-sheet-canvas';
+                sheet.width = 1; sheet.height = 1;
+                if (i !== 0) sheet.style.visibility = 'hidden';
+                this.container.insertBefore(sheet, this.container.firstChild);
+                this.sheets[i] = sheet;
+                offscreens.push(sheet.transferControlToOffscreen());
+            }
             const w = new Worker(this.workerUrl);
             w.onmessage = (e) => this._onMessage(e.data);
             w.onerror = (e) => { this.stats.errors++; this.stats.lastError = e.message || 'worker error'; };
-            w.postMessage({ t: 'init', hw: this.hw, sheet: offscreen }, [offscreen]);
+            w.postMessage({ t: 'init', hw: this.hw, sheets: offscreens }, offscreens);
             this.worker = w;
             // Safety net for cards that leave the document without a teardown.
             this._sweepTimer = setInterval(() => { if (this.sweep() > 0) this.requestLayout(); }, 2000);
@@ -95,6 +103,24 @@
         },
 
         _onMessage(m) {
+            if (m.t === 'layout-done') {
+                // The worker has painted the new layout into the other sheet: show
+                // it where it belongs and hide the old one, in one frame.
+                const p = this._pending;
+                if (!p || p.seq !== m.seq) return;
+                this._pending = null;
+                const next = this.sheets[p.sheet], prev = this.sheets[this.shown];
+                next.style.left = `${p.left}px`;
+                next.style.top = `${p.top}px`;
+                next.style.width = `${p.w}px`;
+                next.style.height = `${p.h}px`;
+                next.style.visibility = 'visible';
+                if (prev !== next) prev.style.visibility = 'hidden';
+                this.shown = p.sheet;
+                this.sheetOrigin = { top: p.top, left: p.left, w: p.w, h: p.h };
+                if (this._layoutAgain) { this._layoutAgain = false; this.requestLayout(); }
+                return;
+            }
             if (m.t === 'stats') {
                 for (const it of m.items) {
                     const h = this.players.get(it.id);
@@ -160,6 +186,19 @@
             for (const host of [...this.players.values()]) this.destroyPlayer(host);
         },
 
+        /**
+         * Scrolling: the shown sheet moves with the content, so its cells stay on
+         * their cards. Only when the viewport drifts near the sheet's edge is a
+         * relayout needed (painted off screen, then swapped in).
+         */
+        onScroll() {
+            const o = this.sheetOrigin, c = this.container;
+            if (!o || !c) { this.requestLayout(); return; }
+            const vh = c.clientHeight, top = c.scrollTop;
+            const margin = (o.h - vh) / 2;
+            if (top < o.top + margin * 0.4 || top + vh > o.top + o.h - margin * 0.4 || c.clientWidth !== o.w) this.requestLayout();
+        },
+
         /** The grid started or stopped scrolling: nothing is painted while it moves. */
         setHidden(hidden) {
             hidden = !!hidden;
@@ -185,16 +224,23 @@
         },
 
         layout() {
-            const c = this.container, sheet = this.sheet;
-            if (!c || !sheet || !this.worker) return;
-            if (!sheet.isConnected) c.insertBefore(sheet, c.firstChild); // the grid was emptied (folder change)
-            const w = c.clientWidth, h = c.clientHeight;
-            sheet.style.left = `${c.scrollLeft || 0}px`;
-            sheet.style.top = `${c.scrollTop}px`;
-            sheet.style.width = `${w}px`;
-            sheet.style.height = `${h}px`;
+            const c = this.container;
+            if (!c || !this.worker || !this.sheets[0]) return;
+            if (this._pending) { this._layoutAgain = true; return; } // one at a time; run again when it lands
+            for (const s of this.sheets) if (!s.isConnected) c.insertBefore(s, c.firstChild); // the grid was emptied (folder change)
+            const vw = c.clientWidth, vh = c.clientHeight;
+            // The sheet spans the viewport plus half a viewport above and below
+            // (clamped to the content), so a scroll within that band needs no relayout.
+            const contentH = Math.max(c.scrollHeight, vh);
+            const top = Math.max(0, Math.min(Math.round(c.scrollTop - vh / 2), Math.max(0, contentH - vh * 2)));
+            const h = Math.min(vh * 2, contentH - top);
+            const left = c.scrollLeft || 0, w = vw;
             const dpr = Math.min(3, window.devicePixelRatio || 1);
-            const sr = sheet.getBoundingClientRect();
+            if (this._border == null) { const cs = getComputedStyle(c); this._border = { top: parseFloat(cs.borderTopWidth) || 0, left: parseFloat(cs.borderLeftWidth) || 0 }; }
+            const cr = c.getBoundingClientRect();
+            // Where the sheet's top-left will be on screen once shown.
+            const originX = cr.left + this._border.left + left - (c.scrollLeft || 0);
+            const originY = cr.top + this._border.top + top - c.scrollTop;
             if (this._radius == null) {
                 const first = this.cards.values().next().value;
                 this._radius = first ? parseFloat(getComputedStyle(first).borderRadius) || 0 : 0;
@@ -204,14 +250,18 @@
             for (const [id, card] of this.cards) {
                 if (!card.isConnected) continue;
                 const r = card.getBoundingClientRect();
-                if (r.right <= sr.left || r.left >= sr.right || r.bottom <= sr.top || r.top >= sr.bottom) continue;
-                const cell = { id, x: r.left - sr.left + 1, y: r.top - sr.top + 1, w: r.width - 2, h: r.height - 2, r: this._radius };
+                const x = r.left - originX + 1, y = r.top - originY + 1;
+                if (x + r.width <= 0 || x >= w || y + r.height <= 0 || y >= h) continue;
+                const cell = { id, x, y, w: r.width - 2, h: r.height - 2, r: this._radius };
                 cells.push(cell);
                 if (card === this.hoverCard) { hoverId = id; hoverRect = { x: cell.x, y: cell.y, w: cell.w, h: cell.h, r: cell.r }; }
             }
             this.stats.layouts++;
-            this.worker.postMessage({ t: 'layout', w, h, dpr, cells });
+            const target = this.sheetOrigin ? 1 - this.shown : 0;
+            const seq = ++this._layoutSeq;
+            this._pending = { seq, sheet: target, top, left, w, h };
             this.worker.postMessage({ t: 'hover', id: hoverId, rect: hoverRect });
+            this.worker.postMessage({ t: 'layout', sheet: target, seq, w, h, dpr, cells });
         },
 
         status() {

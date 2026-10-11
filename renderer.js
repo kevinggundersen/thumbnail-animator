@@ -6835,7 +6835,7 @@ function createMediaForCard(card, mediaUrl) {
 // once it settles, poster cards in and near the viewport get their <video>,
 // closest to the centre first, a couple per animation frame. Folder loads take
 // the same path, which also spreads the initial burst over a few frames.
-const VIDEO_ATTACH_PER_FRAME = 2;
+const VIDEO_ATTACH_PER_FRAME = 4;
 const _videoAttachQueue = new Map(); // card -> mediaUrl
 // When grid media last changed (attach, proxy swap, release, scroll): the
 // playback budget treats the seconds after as settling, not as evidence.
@@ -8317,7 +8317,13 @@ const playbackBudget = new PlaybackBudget({
     frameBudget: (() => { try { const n = parseInt(localStorage.getItem('decodeFrameBudget'), 10); return Number.isFinite(n) && n >= 0 ? n : 3000; } catch { return 3000; } })(),
     // The remembered limit is a starting point for probing (doubling while healthy),
     // never below 32: a limit learned on a bad day must not keep a screen half-paused.
-    initialLimit: (() => { try { const n = parseInt(localStorage.getItem('playbackBudgetHint'), 10); return n > 0 ? Math.max(32, n) : 32; } catch { return 32; } })(),
+    // With the engine the frame budget is the real cap and the probe is cheap
+    // (software decoders, nothing on the main thread): start at the ceiling so a
+    // screen of videos plays at once and shrink only on measured trouble.
+    initialLimit: (() => {
+        if (WcEngine.enabled) return MAX_VIDEOS;
+        try { const n = parseInt(localStorage.getItem('playbackBudgetHint'), 10); return n > 0 ? Math.max(32, n) : 32; } catch { return 32; }
+    })(),
 });
 playbackBudget.start();
 window.__playbackBudget = playbackBudget; // perf dashboard and scripts/perf-smoke.js read status()

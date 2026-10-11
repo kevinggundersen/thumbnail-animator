@@ -136,18 +136,15 @@ let thumbnailPool = null;
     // async exec only for bare names (on PATH)
     try {
         const cached = JSON.parse(await fs.promises.readFile(cachePath, 'utf8'));
-        const probeOk = cached.ffprobe && (
-            path.isAbsolute(cached.ffprobe)
-                ? fs.existsSync(cached.ffprobe)
-                : await testBinary(cached.ffprobe, 1000)
-        );
-        const mpegOk = cached.ffmpeg && (
-            path.isAbsolute(cached.ffmpeg)
-                ? fs.existsSync(cached.ffmpeg)
-                : await testBinary(cached.ffmpeg, 1000)
-        );
+        // Absolute paths are checked without spawning anything; bare names are
+        // tested in parallel. The first folder's proxies wait for this.
+        const [probeOk, mpegOk] = await Promise.all([
+            cached.ffprobe ? (path.isAbsolute(cached.ffprobe) ? fs.existsSync(cached.ffprobe) : testBinary(cached.ffprobe, 1000)) : false,
+            cached.ffmpeg ? (path.isAbsolute(cached.ffmpeg) ? fs.existsSync(cached.ffmpeg) : testBinary(cached.ffmpeg, 1000)) : false,
+        ]);
         if (probeOk) ffprobePath = cached.ffprobe;
         if (mpegOk) ffmpegPath = cached.ffmpeg;
+        if (mpegOk && (cached.proxyEncoder === 'libx264' || cached.proxyEncoder === 'libopenh264')) proxyEncoder = cached.proxyEncoder;
         if (ffprobePath && ffmpegPath) {
             console.log('ffprobe found (cached):', ffprobePath);
             console.log('ffmpeg found (cached):', ffmpegPath);
@@ -179,19 +176,35 @@ let thumbnailPool = null;
         if (!ffmpegPath) console.log('ffmpeg not found — video thumbnails will not be generated');
     }
 
-    // Cache results for next launch
+    // Cache results for the next launch, as absolute paths where the shell can
+    // resolve them: an absolute path is checked with one stat instead of a spawn.
+    const resolveOnPath = async (name) => {
+        if (!name || path.isAbsolute(name)) return name;
+        try {
+            const { stdout } = await execFileAsync(process.platform === 'win32' ? 'where' : 'which', [name], { timeout: 3000 });
+            const first = String(stdout).split(/\r?\n/).map(l => l.trim()).find(l => l && path.isAbsolute(l));
+            return first && fs.existsSync(first) ? first : name;
+        } catch { return name; }
+    };
     try {
+        const [ffprobeAbs, ffmpegAbs] = await Promise.all([resolveOnPath(ffprobePath), resolveOnPath(ffmpegPath)]);
         await fs.promises.mkdir(cacheDir, { recursive: true });
-        await fs.promises.writeFile(cachePath, JSON.stringify({ ffprobe: ffprobePath, ffmpeg: ffmpegPath }));
+        await fs.promises.writeFile(cachePath, JSON.stringify({ ffprobe: ffprobeAbs, ffmpeg: ffmpegAbs, proxyEncoder }));
     } catch { /* cache write failed, not critical */ }
 
     // Grid video proxies need an H.264 encoder: prefer libx264 (fast presets), accept libopenh264.
-    if (ffmpegPath) {
+    if (ffmpegPath && !proxyEncoder) {
         try {
             const { stdout } = await execFileAsync(ffmpegPath, ['-hide_banner', '-encoders'], { timeout: 5000, maxBuffer: 4 * 1024 * 1024 });
             if (/^\s*V\S*\s+libx264\s/m.test(stdout)) proxyEncoder = 'libx264';
             else if (/^\s*V\S*\s+libopenh264\s/m.test(stdout)) proxyEncoder = 'libopenh264';
             console.log(proxyEncoder ? `proxy encoder: ${proxyEncoder}` : 'no H.264 encoder in ffmpeg — grid video proxies disabled');
+            // Remember it: the next launch skips the encoder listing.
+            try {
+                const cached = JSON.parse(await fs.promises.readFile(cachePath, 'utf8'));
+                cached.proxyEncoder = proxyEncoder;
+                await fs.promises.writeFile(cachePath, JSON.stringify(cached));
+            } catch { /* cache write failed, not critical */ }
         } catch { /* no encoder list: proxies stay disabled */ }
     }
 
@@ -3424,7 +3437,7 @@ ipcMain.handle('generate-video-thumbnail', async (event, filePath) => {
 // left to finish: it is bounded and the result is cached.
 // Two encodes at a time on small machines, up to four on big ones (a 16-thread
 // CPU gives each encode two threads and still leaves most of it free).
-const PROXY_MAX_CONCURRENT = Math.max(2, Math.min(4, Math.floor(require('os').cpus().length / 4)));
+const PROXY_MAX_CONCURRENT = Math.max(2, Math.min(8, Math.floor(require('os').cpus().length / 4)));
 const pendingProxyJobs = new Map();   // proxyPath -> Promise<{ status, url? }>
 const proxyWaitQueue = [];            // [{ proxyPath, start, resolve }] not started yet
 const proxyCancelled = new Set();     // proxyPaths whose waiting request was cancelled

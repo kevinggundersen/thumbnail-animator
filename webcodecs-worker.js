@@ -243,7 +243,15 @@ function present(p, nowMs) {
         let i = -1;
         for (let k = 0; k < q.length; k++) { if (q[k].timestamp <= targetUs) i = k; else break; }
         if (i < 0) return; // the next frame is not due yet
-        for (let k = 0; k < i; k++) { q[k].close(); p.dropped++; } // due but superseded: dropped
+        // Superseded frames: a drop only when clearly late (more than two frame
+        // durations overdue). Two frames coming due inside one presentation
+        // interval is normal cadence on a high-refresh display, not trouble;
+        // counting it as 2% drops held the budget forever.
+        for (let k = 0; k < i; k++) {
+            const f = q[k];
+            if (targetUs - f.timestamp > 2.5 * (f.duration || 33333)) p.dropped++;
+            f.close();
+        }
         frame = q[i];
         q.splice(0, i + 1);
     }

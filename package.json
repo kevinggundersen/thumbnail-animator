@@ -1,6 +1,6 @@
 {
   "name": "thumbnail-animator",
-  "version": "1.11.3",
+  "version": "1.12.0",
   "main": "main.js",
   "scripts": {
     "test": "vitest run",

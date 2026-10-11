@@ -5071,8 +5071,12 @@ function stopPeriodicCleanup() {
         cleanupCheckInterval = null;
     }
     if (cleanupScrollTimeout) {
+        // A navigation cancels the pending settle: settle now, or the grid
+        // stays "scrolling" (sheet hidden, posters showing) until the next scroll.
         clearTimeout(cleanupScrollTimeout);
         cleanupScrollTimeout = null;
+        document.body.classList.remove('is-scrolling');
+        WcEngine.setHidden(false);
     }
     if (cleanupAnimationFrame !== null) {
         cancelAnimationFrame(cleanupAnimationFrame);
@@ -6633,6 +6637,7 @@ function renderItems(items, preservedScrollTop = null) {
         spacer.remove();
     }
 
+    WcEngine.destroyAll();
     gridContainer.replaceChildren();
     currentHoveredCard = null;
     WcEngine.setHover(null);

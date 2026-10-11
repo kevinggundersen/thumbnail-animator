@@ -1464,6 +1464,9 @@ function snapshotCurrentTabDom() {
     if (currentFolderPath) {
         getTabScrollMap(activeTabId).set(normalizePath(currentFolderPath), scrollTop);
     }
+    // The snapshot is only consumed, never shown again: the engine's players
+    // for these cards would otherwise keep decoding off screen for good.
+    WcEngine.destroyAll();
     const fragment = document.createDocumentFragment();
     // Move children to fragment (detaches from DOM without destroying)
     while (gridContainer.firstChild) {
@@ -1631,6 +1634,7 @@ function switchToTab(tabId) {
                 _collectionLoadToken++;
                 highlightActiveCollection(null);
             }
+            WcEngine.destroyAll();
             gridContainer.innerHTML = '';
             currentHoveredCard = null;
             currentFolderPath = null;

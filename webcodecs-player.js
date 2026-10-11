@@ -55,6 +55,8 @@
             w.onerror = (e) => { this.stats.errors++; this.stats.lastError = e.message || 'worker error'; };
             w.postMessage({ t: 'init', hw: this.hw, sheet: offscreen }, [offscreen]);
             this.worker = w;
+            // Safety net for cards that leave the document without a teardown.
+            this._sweepTimer = setInterval(() => { if (this.sweep() > 0) this.requestLayout(); }, 2000);
             return true;
         },
 
@@ -138,6 +140,26 @@
             this.requestLayout();
         },
 
+        /**
+         * Destroy every player whose card left the document or no longer holds
+         * its host (grid cleared, tab snapshot taken, card recycled by a path
+         * that did not go through destroyVideoElement). Returns how many.
+         */
+        sweep() {
+            let n = 0;
+            for (const [id, card] of [...this.cards]) {
+                const host = this.players.get(id);
+                if (!host) continue;
+                if (!card.isConnected || card._mediaEl !== host || !host.isConnected) { this.destroyPlayer(host); n++; }
+            }
+            return n;
+        },
+
+        /** Destroy every player (the grid is being torn down or snapshotted). */
+        destroyAll() {
+            for (const host of [...this.players.values()]) this.destroyPlayer(host);
+        },
+
         /** The grid started or stopped scrolling: nothing is painted while it moves. */
         setHidden(hidden) {
             hidden = !!hidden;
@@ -195,7 +217,9 @@
         status() {
             let playing = 0;
             for (const h of this.players.values()) if (h._wc.playing) playing++;
-            return { supported: this.supported, enabled: this.enabled, worker: !!this.worker, players: this.players.size, playing, hw: this.hw, hidden: this.hidden, ...this.stats };
+            let detached = 0;
+            for (const card of this.cards.values()) if (!card.isConnected) detached++;
+            return { supported: this.supported, enabled: this.enabled, worker: !!this.worker, players: this.players.size, playing, detached, hw: this.hw, hidden: this.hidden, ...this.stats };
         },
     };
 

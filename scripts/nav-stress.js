@@ -12,7 +12,7 @@
 // The fixture tree is the one scripts/make-fixtures.js builds (A, B, C, C/deep,
 // C/deep/deeper, D-empty, plus media in the root) with an extra BIG folder
 // of a few thousand files so scans take long enough to interleave.
-/* global navigateToFolder, goBack, goForward, createTab, switchToTab, closeTab, tabs, activeTabId, currentFolderPath, vsState, navigationHistory, _navBusy, _pendingNav, tabContentCache, normalizePath, document */
+/* global navigateToFolder, goBack, goForward, createTab, switchToTab, closeTab, tabs, activeTabId, currentFolderPath, vsState, navigationHistory, _navBusy, _pendingNav, tabContentCache, normalizePath, WcEngine, document */
 const { _electron: electron } = require('playwright-core');
 const fs = require('fs'); const path = require('path');
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -45,6 +45,7 @@ const norm = (p) => String(p).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCas
 
     const state = () => page.evaluate(() => {
         const tab = tabs.find(t => t.id === activeTabId) || {};
+        const wc = typeof WcEngine !== 'undefined' ? WcEngine.status() : null;
         const cacheMismatch = [];
         for (const t of tabs) {
             const c = tabContentCache.get(t.id);
@@ -60,6 +61,7 @@ const norm = (p) => String(p).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCas
             canBack: navigationHistory.canGoBack(), canForward: navigationHistory.canGoForward(),
             navBusy: _navBusy, pending: !!_pendingNav,
             cacheMismatch,
+            wcDetached: wc ? wc.detached : 0, wcPlayers: wc ? wc.players : 0, sheetHidden: wc ? wc.hidden : false, scrollingClass: document.body.classList.contains('is-scrolling'),
             breadcrumb: (document.getElementById('breadcrumb') || {}).textContent?.replace(/\s+/g, ' ').trim().slice(0, 100),
         };
     });
@@ -89,6 +91,8 @@ const norm = (p) => String(p).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCas
         if (s.folders !== ed) problems.push(`folders=${s.folders} expected ${ed}`);
         if (s.historyTop === undefined || norm(s.historyTop) !== norm(dir)) problems.push(`history[${s.historyIndex}]=${s.historyTop} expected ${dir}`);
         if (s.cacheMismatch.length) problems.push('tab cache holds another folder: ' + s.cacheMismatch.join('; '));
+        if (s.wcDetached > 0) problems.push(`${s.wcDetached} engine players belong to cards that left the document`);
+        if (s.sheetHidden || s.scrollingClass) problems.push('grid still marked scrolling after settling (sheet hidden)');
         for (const [k, v] of Object.entries(extra)) if (s[k] !== v) problems.push(`${k}=${JSON.stringify(s[k])} expected ${JSON.stringify(v)}`);
         findings.push({ step: label, ok: problems.length === 0, problems, history: `${s.historyIndex + 1}/${s.historyLen}`, log: problems.length ? log.slice(-60) : undefined });
         if (problems.length) console.log('FAIL', label, problems, '\n  ' + log.slice(-60).join('\n  '));

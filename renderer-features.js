@@ -4651,7 +4651,12 @@ function initNewFeatures() {
                 if (activePlaybackController) activePlaybackController.stepFrame('next');
             } else if (matchesShortcut(e, 'lb_playPause')) {
                 e.preventDefault();
-                if (activePlaybackController) activePlaybackController.togglePlay();
+                if (!activePlaybackController && lightboxImage.style.display === 'block') {
+                    // Static image: Space toggles 1:1 (actual pixels) <-> fit-to-window
+                    zoomToActualPixelsAtPointer(lightboxLastPointerX, lightboxLastPointerY);
+                } else if (activePlaybackController) {
+                    activePlaybackController.togglePlay();
+                }
             } else if (matchesShortcut(e, 'lb_speedDown')) {
                 e.preventDefault();
                 if (activePlaybackController && mediaControlBarInstance) {

@@ -891,21 +891,21 @@ function applyZoomToFitNow() {
     const isImageVisible = lightboxImage.style.display === 'block';
     const isVideoVisible = lightboxVideo.style.display === 'block';
     const isCanvasVisible = lightboxGifCanvas.style.display === 'block';
+    let dims = null;
+    if (isCanvasVisible && activePlaybackController && activePlaybackController.gifWidth > 0) {
+        dims = getRotatedMediaDimensions(activePlaybackController.gifWidth, activePlaybackController.gifHeight);
+    } else if (isImageVisible && lightboxImage.naturalWidth > 0) {
+        dims = getRotatedMediaDimensions(lightboxImage.naturalWidth, lightboxImage.naturalHeight);
+    } else if (isVideoVisible && lightboxVideo.videoWidth > 0) {
+        dims = getRotatedMediaDimensions(lightboxVideo.videoWidth, lightboxVideo.videoHeight);
+    }
+
     if (zoomToFit) {
-        let fitLevel = 100;
-        if (isCanvasVisible && activePlaybackController && activePlaybackController.gifWidth > 0) {
-            const dims = getRotatedMediaDimensions(activePlaybackController.gifWidth, activePlaybackController.gifHeight);
-            fitLevel = calculateFitZoomLevel(dims.width, dims.height);
-        } else if (isImageVisible && lightboxImage.naturalWidth > 0) {
-            const dims = getRotatedMediaDimensions(lightboxImage.naturalWidth, lightboxImage.naturalHeight);
-            fitLevel = calculateFitZoomLevel(dims.width, dims.height);
-        } else if (isVideoVisible && lightboxVideo.videoWidth > 0) {
-            const dims = getRotatedMediaDimensions(lightboxVideo.videoWidth, lightboxVideo.videoHeight);
-            fitLevel = calculateFitZoomLevel(dims.width, dims.height);
-        }
-        applyLightboxZoom(Math.max(100, fitLevel));
+        const fitLevel = dims ? calculateFitZoomLevel(dims.width, dims.height) : 100;
+        applyLightboxZoom(fitLevel);
     } else {
-        resetZoom();
+        // Fit off: level 100 = 1:1 (actual pixels), overflowing the window when larger
+        applyLightboxZoom(100);
     }
 }
 
@@ -1874,18 +1874,38 @@ applyAnimationSpeed(animationSpeedSetting);
 })();
 
 // ── Phase 5: Playback ──
-(function initControlBarDelay() {
-    const input = document.getElementById('control-bar-hide-delay');
-    const display = document.getElementById('control-bar-hide-delay-value');
+// Auto-hide delay sliders (Control Bar + Filmstrip). The slider ticks are
+// seconds 1..10 plus a final "Off" tick at 11 that disables auto-hide.
+// localStorage keeps milliseconds (0 = Off) so existing saved values and the
+// playback-controller consumers stay compatible.
+function _sliderSecondsFromStoredMs(raw) {
+    const ms = parseInt(raw, 10);
+    if (Number.isNaN(ms)) return null;
+    if (ms <= 0) return 11;                 // Off
+    const secs = Math.round(ms / 1000);     // legacy ms (1000..10000) or new ms
+    return Math.min(10, Math.max(1, secs));
+}
+
+function wireAutoHideDelaySlider(inputId, displayId, storageKey) {
+    const input = document.getElementById(inputId);
+    const display = document.getElementById(displayId);
     if (!input || !display) return;
-    const saved = localStorage.getItem('controlBarHideDelay');
-    if (saved !== null) input.value = saved;
-    const update = () => { display.textContent = (parseInt(input.value) / 1000) + 's'; };
-    input.addEventListener('input', () => {
-        update();
-        deferLocalStorageWrite('controlBarHideDelay', input.value);
-    });
+    const saved = localStorage.getItem(storageKey);
+    const savedSecs = _sliderSecondsFromStoredMs(saved);
+    if (savedSecs !== null) input.value = String(savedSecs);
+    const update = () => {
+        const secs = parseInt(input.value, 10);
+        const off = secs >= 11;
+        display.textContent = off ? 'Off' : secs + 's';
+        deferLocalStorageWrite(storageKey, off ? '0' : String(secs * 1000));
+    };
+    input.addEventListener('input', update);
     update();
+}
+
+(function initAutoHideSliders() {
+    wireAutoHideDelaySlider('control-bar-hide-delay', 'control-bar-hide-delay-value', 'controlBarHideDelay');
+    wireAutoHideDelaySlider('filmstrip-hide-delay', 'filmstrip-hide-delay-value', 'filmstripHideDelay');
 })();
 
 wireSelectStorage('default-slideshow-speed', 'defaultSlideshowSpeed', (val) => {

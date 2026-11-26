@@ -1430,10 +1430,28 @@ wrapIpc('get-release-notes', async (version) => {
     return result;
 });
 
+// Native dialogs must be owned by the window that requested them; without an
+// owner, Windows can place the modal on the wrong monitor or behind the app
+// window (which may live on a secondary monitor), so the user never sees it.
+function _dialogOwnerWindow(event) {
+    const fromEvent = event ? BrowserWindow.fromWebContents(event.sender) : null;
+    return fromEvent || BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0] || null;
+}
+
+function _showOpenDialog(event, options) {
+    const owner = _dialogOwnerWindow(event);
+    return owner ? dialog.showOpenDialog(owner, options) : dialog.showOpenDialog(options);
+}
+
+function _showSaveDialog(event, options) {
+    const owner = _dialogOwnerWindow(event);
+    return owner ? dialog.showSaveDialog(owner, options) : dialog.showSaveDialog(options);
+}
+
 // IPC Handlers
 ipcMain.handle('select-folder', async (event, defaultPath) => {
     try {
-        const result = await dialog.showOpenDialog({
+        const result = await _showOpenDialog(event, {
             properties: ['openDirectory'],
             defaultPath: defaultPath || undefined
         });
@@ -1449,7 +1467,7 @@ ipcMain.handle('save-frame-as', async (event, opts) => {
         if (!dataBase64) return { ok: false, error:'No image data' };
         let targetPath = defaultPath;
         if (promptDialog) {
-            const result = await dialog.showSaveDialog({
+            const result = await _showSaveDialog(event, {
                 title: 'Save Frame',
                 defaultPath: defaultPath || 'frame.png',
                 filters: [{ name: 'PNG Image', extensions: ['png'] }]
@@ -1530,7 +1548,7 @@ ipcMain.handle('crop-image', async (_event, opts) => {
 
 ipcMain.handle('export-settings-dialog', async (event, jsonString) => {
     try {
-        const result = await dialog.showSaveDialog({
+        const result = await _showSaveDialog(event, {
             title: 'Export Settings',
             defaultPath: 'thumbnail-animator-settings.json',
             filters: [{ name: 'JSON Files', extensions: ['json'] }]
@@ -1543,9 +1561,9 @@ ipcMain.handle('export-settings-dialog', async (event, jsonString) => {
     }
 });
 
-ipcMain.handle('import-settings-dialog', async () => {
+ipcMain.handle('import-settings-dialog', async (event) => {
     try {
-        const result = await dialog.showOpenDialog({
+        const result = await _showOpenDialog(event, {
             title: 'Import Settings',
             filters: [{ name: 'JSON Files', extensions: ['json'] }],
             properties: ['openFile']
@@ -4495,8 +4513,8 @@ ipcMain.handle('has-ffmpeg', async () => {
 
 const _ffmpegJobs = new Map(); // jobId -> { child, outputPath, canceled }
 
-function _pickSaveAsDialog(defaultPath, filters) {
-    return dialog.showSaveDialog({
+function _pickSaveAsDialog(event, defaultPath, filters) {
+    return _showSaveDialog(event, {
         title: 'Save As',
         defaultPath: defaultPath || undefined,
         filters: filters || [],
@@ -4505,7 +4523,7 @@ function _pickSaveAsDialog(defaultPath, filters) {
 
 ipcMain.handle('show-save-dialog', async (_event, opts) => {
     try {
-        const result = await _pickSaveAsDialog(opts?.defaultPath, opts?.filters);
+        const result = await _pickSaveAsDialog(_event, opts?.defaultPath, opts?.filters);
         if (result.canceled || !result.filePath) return { ok: true, value: { canceled: true } };
         return { ok: true, value: { canceled: false, filePath: result.filePath } };
     } catch (err) {
@@ -4515,7 +4533,7 @@ ipcMain.handle('show-save-dialog', async (_event, opts) => {
 
 ipcMain.handle('show-folder-picker', async (_event, opts) => {
     try {
-        const result = await dialog.showOpenDialog({
+        const result = await _showOpenDialog(_event, {
             title: opts?.title || 'Choose folder',
             defaultPath: opts?.defaultPath || undefined,
             properties: ['openDirectory', 'createDirectory'],
@@ -5658,9 +5676,9 @@ ipcMain.handle('set-plugin-enabled', (event, pluginId, enabled) => {
     }
 });
 
-ipcMain.handle('install-plugin-from-folder', async () => {
+ipcMain.handle('install-plugin-from-folder', async (event) => {
     try {
-        const result = await dialog.showOpenDialog({
+        const result = await _showOpenDialog(event, {
             title: 'Select Plugin Folder',
             properties: ['openDirectory'],
         });

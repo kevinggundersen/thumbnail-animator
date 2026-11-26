@@ -13,6 +13,19 @@ global.syncAbLoop = vi.fn();
 global.requestAnimationFrame = vi.fn(() => 1);
 global.cancelAnimationFrame = vi.fn();
 
+// Auto-hide delay helper lives in playback-controller.js; in the bundled
+// renderer both scripts share one global scope. Tests back it with a plain
+// store (this suite runs in the node environment, which has no localStorage).
+const autoHideStore = {};
+global._autoHideDelayMs = vi.fn((storageKey, fallbackMs = 3000) => {
+    const raw = parseInt(autoHideStore[storageKey], 10);
+    if (Number.isNaN(raw)) return fallbackMs;
+    return raw <= 0 ? 0 : raw; // stored ms; 0 means "Off"
+});
+
+// Transform-bar positioning helper, also defined in playback-controller.js.
+global.positionLightboxTransformBar = vi.fn();
+
 // ── DOM mock factory ─────────────────────────────────────────────────────────
 
 function createMockElement(overrides = {}) {
@@ -285,6 +298,146 @@ describe('FilmstripScrubber — bind and unbind', () => {
 
         await scrubber.bind(controller, 'test.png');
         expect(root.classList.add).toHaveBeenCalledWith('hidden');
+    });
+
+    it('bind, hide and unbind reposition the transform bar', async () => {
+        global.positionLightboxTransformBar.mockClear();
+        const { root } = createMockRoot();
+        const scrubber = new FilmstripScrubber(root);
+        const controller = createMockController(10);
+        controller.mediaType = 'video';
+
+        await scrubber.bind(controller, 'test.mp4');
+        // bind() starts with unbind(), so the bar is repositioned twice here
+        expect(global.positionLightboxTransformBar).toHaveBeenCalledTimes(2);
+        scrubber.hide();
+        expect(global.positionLightboxTransformBar).toHaveBeenCalledTimes(3);
+        scrubber.unbind();
+        expect(global.positionLightboxTransformBar).toHaveBeenCalledTimes(4);
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// auto-hide (mirrors MediaControlBar)
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('FilmstripScrubber — auto-hide', () => {
+    afterEach(() => {
+        delete autoHideStore.filmstripHideDelay;
+        vi.useRealTimers();
+    });
+
+    it('_showStrip restores the strip and restarts the timer', () => {
+        vi.useFakeTimers();
+        const { root } = createMockRoot();
+        const scrubber = new FilmstripScrubber(root);
+        scrubber._controller = { isPlaying: false };
+        scrubber._visible = false;
+        scrubber._showStrip();
+        expect(scrubber._visible).toBe(true);
+        expect(root.classList.remove).toHaveBeenCalledWith('mc-hidden');
+        expect(scrubber._hideTimer).not.toBeNull();
+        scrubber._stopHideTimer();
+    });
+
+    it('"Off" (stored delay 0) never schedules a hide', () => {
+        vi.useFakeTimers();
+        autoHideStore.filmstripHideDelay = '0';
+        const { root } = createMockRoot();
+        const scrubber = new FilmstripScrubber(root);
+        scrubber._controller = { isPlaying: true };
+        scrubber._startHideTimer();
+        expect(scrubber._hideTimer).toBeNull();
+        vi.advanceTimersByTime(100000);
+        expect(root.classList.add).not.toHaveBeenCalledWith('mc-hidden');
+    });
+
+    it('fades out after the delay while playing', () => {
+        vi.useFakeTimers();
+        autoHideStore.filmstripHideDelay = '2000';
+        const { root } = createMockRoot();
+        const scrubber = new FilmstripScrubber(root);
+        scrubber._controller = { isPlaying: true };
+        scrubber._startHideTimer();
+        vi.advanceTimersByTime(2000);
+        expect(root.classList.add).toHaveBeenCalledWith('mc-hidden');
+        expect(scrubber._visible).toBe(false);
+    });
+
+    it('stays visible while dragging or hovering the strip', () => {
+        vi.useFakeTimers();
+        autoHideStore.filmstripHideDelay = '1000';
+        const { root } = createMockRoot();
+
+        const scrubber = new FilmstripScrubber(root);
+        scrubber._controller = { isPlaying: true };
+        scrubber._isDragging = true;
+        scrubber._startHideTimer();
+        vi.advanceTimersByTime(1000);
+        expect(root.classList.add).not.toHaveBeenCalledWith('mc-hidden');
+
+        const scrubber2 = new FilmstripScrubber(root);
+        scrubber2._controller = { isPlaying: true };
+        scrubber2._isHoveringStrip = true;
+        scrubber2._startHideTimer();
+        vi.advanceTimersByTime(1000);
+        expect(root.classList.add).not.toHaveBeenCalledWith('mc-hidden');
+    });
+
+    it('does not fade out when paused', () => {
+        vi.useFakeTimers();
+        autoHideStore.filmstripHideDelay = '1000';
+        const { root } = createMockRoot();
+        const scrubber = new FilmstripScrubber(root);
+        scrubber._controller = { isPlaying: false };
+        scrubber._startHideTimer();
+        vi.advanceTimersByTime(1000);
+        expect(root.classList.add).not.toHaveBeenCalledWith('mc-hidden');
+    });
+
+    it('hide stops the timer and resets the fade state', () => {
+        vi.useFakeTimers();
+        const { root } = createMockRoot();
+        const scrubber = new FilmstripScrubber(root);
+        scrubber._controller = { isPlaying: true };
+        scrubber._startHideTimer();
+        scrubber.hide();
+        expect(scrubber._hideTimer).toBeNull();
+        expect(scrubber._visible).toBe(true);
+        expect(root.classList.remove).toHaveBeenCalledWith('mc-hidden');
+    });
+
+    it('attachAutoHide wires mousemove/mouseleave and detach removes them', () => {
+        const { root } = createMockRoot();
+        const scrubber = new FilmstripScrubber(root);
+        const lightbox = createMockElement();
+
+        scrubber.attachAutoHide(lightbox);
+        expect(lightbox.addEventListener).toHaveBeenCalledWith('mousemove', expect.any(Function));
+        expect(lightbox.addEventListener).toHaveBeenCalledWith('mouseleave', expect.any(Function));
+
+        // >10px movement re-shows a faded strip
+        scrubber._controller = { isPlaying: true };
+        scrubber._visible = false;
+        lightbox._listeners.mousemove[0]({ clientX: 40, clientY: 40 });
+        expect(scrubber._visible).toBe(true);
+
+        scrubber.detachAutoHide();
+        expect(lightbox.removeEventListener).toHaveBeenCalledWith('mousemove', expect.any(Function));
+        expect(lightbox.removeEventListener).toHaveBeenCalledWith('mouseleave', expect.any(Function));
+        expect(scrubber._autoHideEl).toBeNull();
+    });
+
+    it('attachAutoHide ignores tiny movements (dead zone)', () => {
+        const { root } = createMockRoot();
+        const scrubber = new FilmstripScrubber(root);
+        const lightbox = createMockElement();
+        scrubber.attachAutoHide(lightbox);
+        scrubber._controller = { isPlaying: true };
+        scrubber._visible = false;
+        lightbox._listeners.mousemove[0]({ clientX: 2, clientY: 2 });
+        expect(scrubber._visible).toBe(false);
+        scrubber.detachAutoHide();
     });
 });
 

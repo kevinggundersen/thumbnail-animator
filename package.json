@@ -109,6 +109,12 @@
           "arch": [
             "x64"
           ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "build/icon.ico"
@@ -150,6 +156,9 @@
       "createStartMenuShortcut": true,
       "artifactName": "Thumbnail-Animator-Setup-${version}.${ext}",
       "include": "build/installer.nsh"
+    },
+    "portable": {
+      "artifactName": "Thumbnail-Animator-Portable-${version}.${ext}"
     }
   }
 }

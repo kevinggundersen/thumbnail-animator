@@ -322,6 +322,7 @@ const SETTINGS_SCHEMA = {
     videoCacheLimitMB:       { type: 'int',    default: 1024,  storageKey: 'videoCacheLimitMB' },
     imageCacheLimitMB:       { type: 'int',    default: 1024,  storageKey: 'imageCacheLimitMB' },
     controlBarHideDelay:     { type: 'int',    default: 3000,  storageKey: 'controlBarHideDelay' },
+    filmstripHideDelay:      { type: 'int',    default: 3000,  storageKey: 'filmstripHideDelay' },
     videoThumbSeekPct:       { type: 'int',    default: 25,    storageKey: 'videoThumbSeekPct' },
     videoThumbWidth:         { type: 'int',    default: 512,   storageKey: 'videoThumbWidth' },
     // Grid playback proxies (small H.264 renditions played in the grid instead of the originals)

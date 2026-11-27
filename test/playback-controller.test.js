@@ -829,7 +829,7 @@ describe('AnimatedImagePlaybackController', () => {
 
 // ── MediaControlBar ─────────────────────────────────────────────────────
 
-const { MediaControlBar } = require('../playback-controller');
+const { MediaControlBar, positionLightboxTransformBar } = require('../playback-controller');
 
 // Mock formatTime globally (it's a renderer global, not in playback-controller)
 global.formatTime = (s) => {
@@ -1114,6 +1114,143 @@ describe('MediaControlBar', () => {
             bar._hideTimer = setTimeout(() => {}, 10000);
             bar._stopHideTimer();
             expect(bar._hideTimer).toBeNull();
+        });
+
+        it('hide delay 0 ("Off") disables auto-hide', () => {
+            localStorage.setItem('controlBarHideDelay', '0');
+            const { container } = makeMockContainer();
+            const bar = new MediaControlBar(container);
+            expect(bar._hideDelay).toBe(0);
+            bar._startHideTimer();
+            expect(bar._hideTimer).toBeNull();
+        });
+
+        it('_startHideTimer re-reads the delay live', () => {
+            localStorage.setItem('controlBarHideDelay', '4000');
+            const { container } = makeMockContainer();
+            const bar = new MediaControlBar(container);
+            localStorage.setItem('controlBarHideDelay', '6000');
+            bar._startHideTimer();
+            expect(bar._hideDelay).toBe(6000);
+            bar._stopHideTimer();
+            localStorage.removeItem('controlBarHideDelay');
+        });
+    });
+
+    describe('transform bar sync (rotate/flip bar)', () => {
+        beforeEach(() => {
+            document.body.innerHTML = '<div id="lb-transform-bar" class="lb-transform-bar"></div>'
+                + '<div id="lightbox-filmstrip" class="lightbox-filmstrip hidden"></div>';
+        });
+        afterEach(() => {
+            document.body.innerHTML = '';
+            vi.useRealTimers();
+        });
+
+        const tfBar = () => document.getElementById('lb-transform-bar');
+        const playingCtrl = () => {
+            const ctrl = new MediaPlaybackController();
+            Object.defineProperty(ctrl, 'isPlaying', { get: () => true, configurable: true });
+            return ctrl;
+        };
+
+        it('sits above the timeline when visible, above controls when not, at the bottom when neither', () => {
+            const controls = document.createElement('div');
+            controls.style.display = 'none'; // images: no controls at all
+            positionLightboxTransformBar(controls);
+            expect(tfBar().classList.contains('above-mc')).toBe(false);
+            expect(tfBar().classList.contains('above-filmstrip')).toBe(false);
+
+            controls.style.display = 'flex'; // controls only
+            positionLightboxTransformBar(controls);
+            expect(tfBar().classList.contains('above-mc')).toBe(true);
+            expect(tfBar().classList.contains('above-filmstrip')).toBe(false);
+
+            document.getElementById('lightbox-filmstrip').classList.remove('hidden'); // timeline + controls
+            positionLightboxTransformBar(controls);
+            expect(tfBar().classList.contains('above-filmstrip')).toBe(true);
+            expect(tfBar().classList.contains('above-mc')).toBe(false);
+        });
+
+        it('bind positions the bar and clears a stale fade state', () => {
+            tfBar().classList.add('mc-hidden');
+            document.getElementById('lightbox-filmstrip').classList.remove('hidden');
+
+            const { container } = makeMockContainer();
+            const bar = new MediaControlBar(container);
+            bar.bind(new MediaPlaybackController());
+            expect(tfBar().classList.contains('mc-hidden')).toBe(false);
+            expect(tfBar().classList.contains('above-filmstrip')).toBe(true);
+        });
+
+        it('fades out at the same moment as the controls', () => {
+            vi.useFakeTimers();
+            localStorage.setItem('controlBarHideDelay', '1000');
+            const { container } = makeMockContainer();
+            const bar = new MediaControlBar(container);
+            bar.bind(playingCtrl());
+            expect(tfBar().classList.contains('mc-hidden')).toBe(false);
+
+            vi.advanceTimersByTime(1000);
+            expect(container.classList.contains('mc-hidden')).toBe(true);
+            expect(tfBar().classList.contains('mc-hidden')).toBe(true);
+        });
+
+        it('mouse movement brings the bar and controls back together', () => {
+            vi.useFakeTimers();
+            localStorage.setItem('controlBarHideDelay', '1000');
+            const { container } = makeMockContainer();
+            const bar = new MediaControlBar(container);
+            bar.bind(playingCtrl());
+            vi.advanceTimersByTime(1000);
+            expect(tfBar().classList.contains('mc-hidden')).toBe(true);
+
+            bar._mouseMoveHandler({ clientX: 120, clientY: 90 });
+            expect(tfBar().classList.contains('mc-hidden')).toBe(false);
+            expect(container.classList.contains('mc-hidden')).toBe(false);
+        });
+
+        it('"Off" keeps the bar visible', () => {
+            vi.useFakeTimers();
+            localStorage.setItem('controlBarHideDelay', '0');
+            const { container } = makeMockContainer();
+            const bar = new MediaControlBar(container);
+            bar.bind(playingCtrl());
+            vi.advanceTimersByTime(30000);
+            expect(tfBar().classList.contains('mc-hidden')).toBe(false);
+            expect(container.classList.contains('mc-hidden')).toBe(false);
+        });
+
+        it('hovering the bar keeps it and the controls visible', () => {
+            vi.useFakeTimers();
+            localStorage.setItem('controlBarHideDelay', '1000');
+            const { container } = makeMockContainer();
+            const bar = new MediaControlBar(container);
+            bar.bind(playingCtrl());
+            vi.advanceTimersByTime(1000);
+            expect(tfBar().classList.contains('mc-hidden')).toBe(true);
+
+            tfBar().dispatchEvent(new Event('mouseenter'));
+            expect(bar._isHoveringControls).toBe(true);
+            expect(tfBar().classList.contains('mc-hidden')).toBe(false);
+            vi.advanceTimersByTime(5000);
+            expect(tfBar().classList.contains('mc-hidden')).toBe(false);
+
+            tfBar().dispatchEvent(new Event('mouseleave'));
+            expect(bar._isHoveringControls).toBe(false);
+            vi.advanceTimersByTime(1000);
+            expect(tfBar().classList.contains('mc-hidden')).toBe(true);
+        });
+
+        it('hide() restores the bar and drops its positioning', () => {
+            tfBar().classList.add('mc-hidden');
+            const { container } = makeMockContainer();
+            const bar = new MediaControlBar(container);
+            bar.bind(new MediaPlaybackController());
+            bar.hide();
+            expect(tfBar().classList.contains('mc-hidden')).toBe(false);
+            expect(tfBar().classList.contains('above-filmstrip')).toBe(false);
+            expect(tfBar().classList.contains('above-mc')).toBe(false);
         });
     });
 

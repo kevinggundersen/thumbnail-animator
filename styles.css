@@ -3787,6 +3787,10 @@ video.blow-up-media {
     opacity: 1;
     transition: opacity var(--duration-normal) var(--ease-in-out);
     contain: strict;
+    /* Shared geometry for the bottom stack: media controls, filmstrip timeline,
+       and the rotate/flip transform bar (used by .lb-transform-bar below). */
+    --lb-filmstrip-bottom: 80px;
+    --lb-filmstrip-height: 78px; // full border-box height (tiles + padding + border)
 }
 
 
@@ -3869,7 +3873,15 @@ video.blow-up-media {
     background-color: black;
     transform-origin: center center;
     will-change: transform;
+    /* Media is always draggable in the lightbox */
+    cursor: grab;
     /* Remove transition during dragging for better performance */
+}
+
+#lightbox-video:active,
+#lightbox-image:active,
+#lightbox-gif-canvas:active {
+    cursor: grabbing;
 }
 
 #lightbox-video.zoomed,
@@ -7741,14 +7753,34 @@ video.blow-up-media {
     display: none !important;
 }
 
-/* When media controls are visible, push transform bar above them */
+/* When media controls are visible and no filmstrip timeline is shown, push the
+   transform bar above the controls. */
 .lb-transform-bar.above-mc {
     bottom: calc(var(--space-5) + 52px);
+}
+
+/* With the filmstrip timeline visible, sit just above it instead. */
+.lb-transform-bar.above-filmstrip {
+    bottom: calc(var(--lb-filmstrip-bottom, 80px) + var(--lb-filmstrip-height, 78px) + var(--space-2));
+}
+
+/* Fades out together with the control bar (same Control Bar Auto-Hide delay). */
+.lb-transform-bar.mc-hidden {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
 }
 
 .lb-tf-btn {
     padding: 5px;
     border-radius: 5px;
+}
+
+/* Unicode glyph icons (↺ ↻ ↔ ↕) instead of SVG paths */
+.lb-tf-glyph {
+    font-size: 20px;
+    line-height: 1;
+    font-family: "Segoe UI Symbol", "Segoe UI", system-ui, sans-serif;
 }
 
 .lb-tf-btn.active {
@@ -10958,11 +10990,12 @@ body.reduce-motion *::after {
 /* ── Timeline Filmstrip ──────────────────────────────────────────── */
 .lightbox-filmstrip {
     position: fixed;
-    bottom: 80px;
+    bottom: var(--lb-filmstrip-bottom, 80px);
     left: calc(50% - (var(--lb-inspector-width, 0px) / 2));
     transform: translateX(-50%);
     width: min(calc(100vw - 80px - var(--lb-inspector-width, 0px)), 1200px);
-    height: 68px;
+    height: var(--lb-filmstrip-height, 78px);
+    box-sizing: border-box; // var is the full box height, so positioning math matches
     z-index: 1002;
     background: rgba(13, 13, 15, 0.94);
     border: 1px solid var(--border-default);

@@ -1106,6 +1106,41 @@ function createAnimatedImageController(canvas, buffer, opts = {}) {
 
 // ==================== CONTROL BAR MANAGER ====================
 
+/** Seconds the playhead moves per mouse-wheel notch over the seek bar (video). */
+const SEEK_WHEEL_SECONDS = 1;
+/** Volume change per mouse-wheel notch over the volume slider. */
+const VOLUME_WHEEL_STEP = 0.05;
+
+/**
+ * Auto-hide delay in milliseconds for a Settings slider storage key.
+ * Stored as ms; 0 means "Off" (slider dragged past 10s), which disables
+ * auto-hiding entirely. Re-read on every timer start so slider changes take
+ * effect without reopening the lightbox.
+ */
+function _autoHideDelayMs(storageKey, fallbackMs = 3000) {
+    const raw = parseInt(localStorage.getItem(storageKey), 10);
+    if (Number.isNaN(raw)) return fallbackMs;
+    return raw <= 0 ? 0 : raw;
+}
+
+/**
+ * Position the lightbox rotate/flip transform bar: just above the filmstrip
+ * timeline when both the timeline and the media controls are shown, otherwise
+ * above the controls, otherwise at the bottom (images have no controls).
+ * @param {HTMLElement} [controlsEl] container to read visibility from
+ *   (MediaControlBar passes its own; defaults to #media-controls).
+ */
+function positionLightboxTransformBar(controlsEl) {
+    const tfBar = document.getElementById('lb-transform-bar');
+    if (!tfBar) return;
+    const controls = controlsEl || document.getElementById('media-controls');
+    const controlsShown = !!controls && controls.style.display === 'flex';
+    const strip = document.getElementById('lightbox-filmstrip');
+    const stripShown = !!strip && !strip.classList.contains('hidden') && controlsShown;
+    tfBar.classList.toggle('above-filmstrip', stripShown);
+    tfBar.classList.toggle('above-mc', controlsShown && !stripShown);
+}
+
 /**
  * Manages the custom control bar UI and binds it to a MediaPlaybackController.
  */
@@ -1117,7 +1152,7 @@ class MediaControlBar {
         this._isDragging = false;
         this._isHoveringControls = false;
         this._isVisible = true;
-        this._hideDelay = parseInt(localStorage.getItem('controlBarHideDelay')) || 3000;
+        this._hideDelay = _autoHideDelayMs('controlBarHideDelay');
 
         // Cache DOM references
         this._playBtn = containerEl.querySelector('.mc-play-btn');
@@ -1136,6 +1171,8 @@ class MediaControlBar {
         this._volumeGroup = containerEl.querySelector('.mc-volume-group');
         this._saveFrameBtn = containerEl.querySelector('.mc-save-frame');
         this._trimBtn = containerEl.querySelector('.mc-trim-btn');
+        // Rotate/flip bar fades with this control bar (same auto-hide delay)
+        this._transformBar = document.getElementById('lb-transform-bar');
 
         try {
             const customSpeeds = JSON.parse(localStorage.getItem('playbackSpeeds'));
@@ -1153,12 +1190,30 @@ class MediaControlBar {
         // Seek bar click
         this._seekBar?.addEventListener('mousedown', (e) => this._startSeek(e));
 
+        // Mouse-wheel scrubbing over the seek bar (passive:false to preventDefault)
+        this._seekBar?.addEventListener('wheel', (e) => this._onSeekWheel(e), { passive: false });
+
         // Frame step buttons
         this._framePrevBtn?.addEventListener('click', () => this._controller?.stepFrame('prev'));
         this._frameNextBtn?.addEventListener('click', () => this._controller?.stepFrame('next'));
 
+        // Mouse-wheel frame stepping while hovering either frame button:
+        // scroll up advances one frame, scroll down rewinds one frame.
+        const frameWheel = (e) => {
+            if (!this._controller) return;
+            e.preventDefault();
+            e.stopPropagation();
+            this._controller.stepFrame(e.deltaY < 0 ? 'next' : 'prev');
+        };
+        this._framePrevBtn?.addEventListener('wheel', frameWheel, { passive: false });
+        this._frameNextBtn?.addEventListener('wheel', frameWheel, { passive: false });
+
         // Speed button
         this._speedBtn?.addEventListener('click', () => this._cycleSpeed());
+
+        // Mouse-wheel over the speed button steps through the speed list
+        // (scroll up = faster, scroll down = slower); clamped at the ends.
+        this._speedBtn?.addEventListener('wheel', (e) => this._onSpeedWheel(e), { passive: false });
 
         // Loop button
         this._loopBtn?.addEventListener('click', () => this._toggleLoop());
@@ -1194,6 +1249,9 @@ class MediaControlBar {
             }
         });
 
+        // Mouse-wheel over the volume slider adjusts volume (passive:false to preventDefault)
+        this._volumeSlider?.addEventListener('wheel', (e) => this._onVolumeWheel(e), { passive: false });
+
         // Auto-hide: mouse move on lightbox shows controls, resets timer
         // Use dead-zone to avoid flickering on micro mouse movements
         this._lastMouseX = 0;
@@ -1215,6 +1273,16 @@ class MediaControlBar {
             this._stopHideTimer();
         });
         this._container.addEventListener('mouseleave', () => {
+            this._isHoveringControls = false;
+            this._startHideTimer();
+        });
+
+        // Hovering the transform bar keeps it (and the controls) visible too
+        this._transformBar?.addEventListener('mouseenter', () => {
+            this._isHoveringControls = true;
+            this._showControls();
+        });
+        this._transformBar?.addEventListener('mouseleave', () => {
             this._isHoveringControls = false;
             this._startHideTimer();
         });
@@ -1257,9 +1325,10 @@ class MediaControlBar {
         this._container.style.display = 'flex';
         this._showControls();
 
-        // Push transform bar above media controls
-        const tfBar = document.getElementById('lb-transform-bar');
-        if (tfBar) tfBar.classList.add('above-mc');
+        // Transform bar: above the filmstrip timeline when it is visible,
+        // above the controls otherwise; fades with this control bar.
+        this._transformBar?.classList.remove('mc-hidden');
+        positionLightboxTransformBar(this._container);
     }
 
     unbind() {
@@ -1273,15 +1342,16 @@ class MediaControlBar {
             this._controller = null;
         }
         this._stopHideTimer();
+        this._transformBar?.classList.remove('mc-hidden');
     }
 
     hide() {
         this._container.style.display = 'none';
         this._stopHideTimer();
 
-        // Drop transform bar back to default position
-        const tfBar = document.getElementById('lb-transform-bar');
-        if (tfBar) tfBar.classList.remove('above-mc');
+        // Transform bar: default position, restored (never left faded)
+        const tfBar = this._transformBar || document.getElementById('lb-transform-bar');
+        if (tfBar) tfBar.classList.remove('above-mc', 'above-filmstrip', 'mc-hidden');
     }
 
     // --- Seek bar ---
@@ -1322,6 +1392,44 @@ class MediaControlBar {
         const rect = this._seekBar.getBoundingClientRect();
         const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
         this._controller.seekPercent(pct);
+    }
+
+    /**
+     * Mouse-wheel scrubbing while hovering the seek bar: scroll up advances,
+     * scroll down rewinds. Animated GIF/WebP step one frame per notch; video
+     * steps SEEK_WHEEL_SECONDS per notch.
+     */
+    _onSeekWheel(e) {
+        if (!this._controller) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const forward = e.deltaY < 0;
+        const mt = this._controller.mediaType;
+        if (mt === 'gif' || mt === 'webp') {
+            this._controller.stepFrame(forward ? 'next' : 'prev');
+            return;
+        }
+        const dur = this._controller.duration;
+        if (dur <= 0) return;
+        const step = forward ? SEEK_WHEEL_SECONDS : -SEEK_WHEEL_SECONDS;
+        this._controller.seek(Math.max(0, Math.min(dur, this._controller.currentTime + step)));
+    }
+
+    /**
+     * Mouse-wheel volume control while hovering the volume slider: scroll up
+     * = louder, scroll down = quieter, ±VOLUME_WHEEL_STEP per notch. Reaching
+     * 0 mutes; wheeling up from 0 unmutes.
+     */
+    _onVolumeWheel(e) {
+        if (!this._controller) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const dir = e.deltaY < 0 ? VOLUME_WHEEL_STEP : -VOLUME_WHEEL_STEP;
+        const cur = this._controller.getMuted() ? 0 : this._controller.getVolume();
+        const val = Math.max(0, Math.min(1, cur + dir));
+        this._controller.setVolume(val);
+        this._controller.setMuted(val === 0);
+        this._updateVolumeUI();
     }
 
     // --- UI updates ---
@@ -1371,6 +1479,23 @@ class MediaControlBar {
         this._speedIndex = (this._speedIndex + 1) % this._speedValues.length;
         const speed = this._speedValues[this._speedIndex];
         if (this._controller) this._controller.setSpeed(speed);
+        this._updateSpeedUI();
+    }
+
+    /**
+     * Mouse-wheel over the speed button: scroll up steps to the next higher
+     * speed, scroll down to the next lower one. Unlike _cycleSpeed this does
+     * not wrap around — the ends of the speed list stay clamped.
+     */
+    _onSpeedWheel(e) {
+        if (!this._controller) return;
+        e.preventDefault();
+        e.stopPropagation();
+        this.reloadSpeeds();
+        const dir = e.deltaY < 0 ? 1 : -1;
+        this._speedIndex = Math.max(0, Math.min(this._speedValues.length - 1, this._speedIndex + dir));
+        const speed = this._speedValues[this._speedIndex];
+        this._controller.setSpeed(speed);
         this._updateSpeedUI();
     }
 
@@ -1435,16 +1560,22 @@ class MediaControlBar {
             this._isVisible = true;
             this._container.classList.remove('mc-hidden');
         }
+        this._transformBar?.classList.remove('mc-hidden');
         this._startHideTimer();
     }
 
     _startHideTimer() {
         this._stopHideTimer();
+        // Re-read so the Settings slider applies live; 0 ("Off") keeps controls visible.
+        this._hideDelay = _autoHideDelayMs('controlBarHideDelay');
+        if (this._hideDelay <= 0) return;
         this._hideTimer = setTimeout(() => {
             // Don't hide while dragging or paused
             if (!this._isDragging && !this._isHoveringControls && this._controller?.isPlaying) {
                 this._isVisible = false;
                 this._container.classList.add('mc-hidden');
+                // The rotate/flip bar fades at the same moment
+                this._transformBar?.classList.add('mc-hidden');
             }
         }, this._hideDelay);
     }
@@ -1494,5 +1625,5 @@ class MediaControlBar {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { MediaPlaybackController, VideoPlaybackController, AnimatedImagePlaybackController, ImageDecoderPlaybackController, createAnimatedImageController, sniffAnimatedImageType, MediaControlBar };
+    module.exports = { MediaPlaybackController, VideoPlaybackController, AnimatedImagePlaybackController, ImageDecoderPlaybackController, createAnimatedImageController, sniffAnimatedImageType, MediaControlBar, positionLightboxTransformBar };
 }

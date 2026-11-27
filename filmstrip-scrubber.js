@@ -5,6 +5,8 @@
 const SCRUBBER_TILE_WIDTH = 160;
 const SCRUBBER_TILE_HEIGHT = 90;
 const SCRUBBER_TILE_COUNT = 18;
+/** Seconds the playhead moves per mouse-wheel notch over the strip (video). */
+const SCRUBBER_WHEEL_SECONDS = 1;
 
 class FilmstripScrubber {
     constructor(rootEl) {
@@ -32,6 +34,15 @@ class FilmstripScrubber {
         this._tooltipRaf = null;
         this._pendingTooltipTime = null;
         this._tooltipSeekBusy = false;
+        // Auto-hide state (mirrors MediaControlBar)
+        this._visible = true;
+        this._hideTimer = null;
+        this._isHoveringStrip = false;
+        this._lastMouseX = 0;
+        this._lastMouseY = 0;
+        this._mouseMoveHandler = null;
+        this._mouseLeaveHandler = null;
+        this._autoHideEl = null;
         this._bindEvents();
     }
 
@@ -40,6 +51,15 @@ class FilmstripScrubber {
         this._track.addEventListener('mousemove', (e) => this._onMouseMove(e));
         this._track.addEventListener('mouseenter', () => { this._tooltip.hidden = false; });
         this._track.addEventListener('mouseleave', () => { this._tooltip.hidden = true; this._hoverTime = null; });
+        // Keep the strip visible while the cursor is over it (auto-hide)
+        this._root.addEventListener('mouseenter', () => {
+            this._isHoveringStrip = true;
+            this._stopHideTimer();
+        });
+        this._root.addEventListener('mouseleave', () => {
+            this._isHoveringStrip = false;
+            this._startHideTimer();
+        });
         // Draggable markers
         this._markerIn.addEventListener('mousedown', (e) => this._onMarkerMouseDown(e, 'in'));
         this._markerOut.addEventListener('mousedown', (e) => this._onMarkerMouseDown(e, 'out'));
@@ -48,13 +68,105 @@ class FilmstripScrubber {
         this._markerOut.style.pointerEvents = 'auto';
         this._markerIn.style.cursor = 'ew-resize';
         this._markerOut.style.cursor = 'ew-resize';
+        // Mouse-wheel scrubbing over the strip (needs passive:false to preventDefault)
+        this._track.addEventListener('wheel', (e) => this._onWheel(e), { passive: false });
     }
 
     /** Current hover time in seconds over the track, or null if cursor is not over the strip. */
     getHoverTime() { return this._hoverTime; }
 
+    /**
+     * Mouse-wheel scrubbing while hovering the strip: scroll up advances the
+     * playhead, scroll down rewinds it. Animated GIF/WebP step one frame per
+     * notch; video steps SCRUBBER_WHEEL_SECONDS per notch.
+     */
+    _onWheel(e) {
+        if (!this._controller) return;
+        this._showStrip();
+        e.preventDefault();
+        e.stopPropagation();
+        const forward = e.deltaY < 0;
+        const type = this._controller.mediaType;
+        if (type === 'gif' || type === 'webp') {
+            this._controller.stepFrame(forward ? 'next' : 'prev');
+            return;
+        }
+        const dur = this._controller.duration;
+        if (dur <= 0) return;
+        const step = forward ? SCRUBBER_WHEEL_SECONDS : -SCRUBBER_WHEEL_SECONDS;
+        this._scrubTo(Math.max(0, Math.min(dur, this._controller.currentTime + step)));
+    }
+
     show() { this._root.classList.remove('hidden'); }
-    hide() { this._root.classList.add('hidden'); this._tooltip.hidden = true; }
+    hide() {
+        this._root.classList.add('hidden');
+        this._tooltip.hidden = true;
+        this._stopHideTimer();
+        this._visible = true;
+        this._root.classList.remove('mc-hidden');
+        positionLightboxTransformBar(); // timeline gone -> bar drops back above controls
+    }
+
+    // --- Auto-hide (mirrors MediaControlBar) ---
+    // Fade the strip out while playing after the configured delay; mouse
+    // movement over the lightbox re-shows it. Delay 0 ("Off") disables it.
+    _showStrip() {
+        if (!this._controller) return;
+        if (!this._visible) {
+            this._visible = true;
+            this._root.classList.remove('mc-hidden');
+        }
+        this._startHideTimer();
+    }
+
+    _startHideTimer() {
+        this._stopHideTimer();
+        const delay = _autoHideDelayMs('filmstripHideDelay');
+        if (delay <= 0) return; // "Off": never fade out
+        this._hideTimer = setTimeout(() => {
+            // Don't hide while dragging, hovering the strip, or paused
+            if (!this._isDragging && !this._isHoveringStrip && this._controller?.isPlaying) {
+                this._visible = false;
+                this._root.classList.add('mc-hidden');
+            }
+        }, delay);
+    }
+
+    _stopHideTimer() {
+        if (this._hideTimer) {
+            clearTimeout(this._hideTimer);
+            this._hideTimer = null;
+        }
+    }
+
+    /** Call from the lightbox to wire up mouse move/leave for auto-hide */
+    attachAutoHide(lightboxEl) {
+        if (this._autoHideEl === lightboxEl) return;
+        this.detachAutoHide();
+        this._mouseMoveHandler = (e) => {
+            const dx = e.clientX - this._lastMouseX;
+            const dy = e.clientY - this._lastMouseY;
+            if (dx * dx + dy * dy > 100) { // >10px movement (same dead-zone as control bar)
+                this._lastMouseX = e.clientX;
+                this._lastMouseY = e.clientY;
+                this._showStrip();
+            }
+        };
+        this._mouseLeaveHandler = () => this._startHideTimer();
+        lightboxEl.addEventListener('mousemove', this._mouseMoveHandler);
+        lightboxEl.addEventListener('mouseleave', this._mouseLeaveHandler);
+        this._autoHideEl = lightboxEl;
+    }
+
+    detachAutoHide() {
+        if (this._autoHideEl) {
+            this._autoHideEl.removeEventListener('mousemove', this._mouseMoveHandler);
+            this._autoHideEl.removeEventListener('mouseleave', this._mouseLeaveHandler);
+            this._autoHideEl = null;
+        }
+        this._lastMouseX = 0;
+        this._lastMouseY = 0;
+    }
 
     async bind(controller, mediaUrl) {
         this.unbind();
@@ -69,6 +181,10 @@ class FilmstripScrubber {
         if (!isVideo && !isAnimated) { this.hide(); return; }
 
         this.show();
+        this._visible = true;
+        this._root.classList.remove('mc-hidden');
+        this._startHideTimer();
+        positionLightboxTransformBar(); // keep the transform bar above the timeline
         this._buildTiles();
         this._updatePlayhead();
 
@@ -107,6 +223,10 @@ class FilmstripScrubber {
         this._seekBusy = false;
         this._pendingTooltipTime = null;
         this._tooltipSeekBusy = false;
+        this._stopHideTimer();
+        this._visible = true;
+        this._root.classList.remove('mc-hidden');
+        positionLightboxTransformBar();
     }
 
     _buildTiles() {
@@ -242,6 +362,7 @@ class FilmstripScrubber {
         const upHandler = () => {
             this._isDragging = false;
             this._pendingScrubTime = null;
+            this._startHideTimer();
             document.removeEventListener('mousemove', moveHandler);
             document.removeEventListener('mouseup', upHandler);
         };

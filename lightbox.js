@@ -106,16 +106,50 @@ function calculateFitZoomLevel(naturalWidth, naturalHeight) {
     const inspectorW = getLightboxInspectorWidth();
     const availableW = Math.min(window.innerWidth * vpFrac, window.innerWidth - inspectorW - 80);
     const availableH = window.innerHeight * vpFrac;
-    const scaleX = availableW / naturalWidth;
-    const scaleY = availableH / naturalHeight;
-    const fitScale = Math.min(scaleX, scaleY);
+    // Zoom levels are anchored to NATURAL pixels: level 100 = 1:1 (actual resolution).
+    // Fit is the exact contain scale: portrait media fills the available height,
+    // landscape media fills the available width, and media smaller than the
+    // viewport scales UP (level > 100) so it always fills one dimension.
+    const fitScale = Math.min(availableW / naturalWidth, availableH / naturalHeight);
+    if (!isFinite(fitScale) || fitScale <= 0) return 100;
+    // 1% precision (slider step is 1): portrait/landscape fill within 1% of the window
+    if (fitScale <= 1) return Math.max(5, Math.round(fitScale * 100));
+    // Above 1:1 the exponential curve maps scale -> level
+    return Math.min(Math.round(100 + 5 * Math.log(fitScale) / Math.log(1.06)), lightboxMaxZoomSetting);
+}
 
-    if (fitScale <= 1) return 100; // Already fits or larger
+let lightboxLastPointerX = null;
+let lightboxLastPointerY = null;
 
-    // Inverse of exponential zoom curve: fitScale = 1.06^((zoomLevel - 100) / 5)
-    const zoomLevel = 100 + 5 * Math.log(fitScale) / Math.log(1.06);
-    // Snap to nearest step of 5, cap at slider max
-    return Math.min(Math.round(zoomLevel / 5) * 5, lightboxMaxZoomSetting);
+/** Natural (rotation-aware) dimensions of whichever media is visible in the lightbox. */
+function getVisibleLightboxMediaDims() {
+    if (lightboxGifCanvas.style.display === 'block') {
+        return getRotatedMediaDimensions(activePlaybackController?.gifWidth || 0, activePlaybackController?.gifHeight || 0);
+    }
+    if (lightboxImage.style.display === 'block') {
+        return getRotatedMediaDimensions(lightboxImage.naturalWidth, lightboxImage.naturalHeight);
+    }
+    if (lightboxVideo.style.display === 'block') {
+        return getRotatedMediaDimensions(lightboxVideo.videoWidth, lightboxVideo.videoHeight);
+    }
+    return null;
+}
+
+
+/**
+ * Toggle between 1:1 (level 100 = actual pixels) and fit-to-window.
+ * Pointer-anchored so the pixel under the cursor stays fixed in both directions.
+ */
+function zoomToActualPixelsAtPointer(mouseX = null, mouseY = null) {
+    const dims = getVisibleLightboxMediaDims();
+    if (!dims || !dims.width || !dims.height) return;
+    const px = mouseX !== null ? mouseX : lightboxLastPointerX;
+    const py = mouseY !== null ? mouseY : lightboxLastPointerY;
+    if (currentZoomLevel === 100) {
+        applyLightboxZoom(calculateFitZoomLevel(dims.width, dims.height), px, py);
+    } else {
+        applyLightboxZoom(100, px, py);
+    }
 }
 
 /**
@@ -194,9 +228,12 @@ function refreshLightboxRotationControls() {
     // Show/hide the bottom transform bar
     if (lbTransformBar) {
         lbTransformBar.classList.toggle('hidden', !shouldShow);
-        // Position above media controls if they are visible
-        const mcVisible = document.getElementById('media-controls')?.style.display === 'flex';
-        lbTransformBar.classList.toggle('above-mc', mcVisible);
+        // Above the filmstrip timeline when visible, otherwise above controls
+        positionLightboxTransformBar();
+        // Rotating while the bars are faded: bring the bar and controls back together
+        if (shouldShow && lbTransformBar.classList.contains('mc-hidden')) {
+            mediaControlBarInstance?._showControls();
+        }
     }
     // Sync active state on bottom bar buttons
     lbTfFlipHBtn?.classList.toggle('active', currentLightboxFlipH);
@@ -240,8 +277,9 @@ function _showStaticImage(mediaUrl, lightboxImage, lightboxGifCanvas, lightbox, 
     lightbox.classList.remove('hidden');
     lightboxImage.style.transform = getLightboxRotationString();
     // Clear inline overrides — let CSS var(--lightbox-max-w) handle constraints
-    lightboxImage.style.maxWidth = '';
-    lightboxImage.style.maxHeight = '';
+    // Fit on: CSS constraint fits immediately during load; Fit off: natural 1:1
+    lightboxImage.style.maxWidth = zoomToFit ? '' : 'none';
+    lightboxImage.style.maxHeight = zoomToFit ? '' : 'none';
     lightboxImage.style.width = 'auto';
     lightboxImage.style.height = 'auto';
 
@@ -250,18 +288,9 @@ function _showStaticImage(mediaUrl, lightboxImage, lightboxGifCanvas, lightbox, 
             // Guard: if src changed since this rAF was scheduled, bail out —
             // another handleImageLoad will fire for the correct image.
             if (lightboxImage.src !== mediaUrl && lightboxImage.dataset.src !== mediaUrl) return;
-            const baseRect = getDisplayedUnrotatedMediaRect(lightboxImage);
-            if (baseRect) {
-                lightboxImage.dataset.baseWidth = baseRect.width.toString();
-                lightboxImage.dataset.baseHeight = baseRect.height.toString();
-            }
             const dims = getRotatedMediaDimensions(lightboxImage.naturalWidth, lightboxImage.naturalHeight);
-            const fitLevel = calculateFitZoomLevel(dims.width, dims.height);
-            if (zoomToFit && fitLevel > 100) {
-                applyLightboxZoom(fitLevel);
-            } else {
-                applyCurrentLightboxTransform();
-            }
+            // Fit on: open fitted immediately (real % below 100); Fit off: open at 1:1
+            applyLightboxZoom(zoomToFit ? calculateFitZoomLevel(dims.width, dims.height) : 100);
         });
         lightboxImage.removeEventListener('load', handleImageLoad);
     };
@@ -465,6 +494,17 @@ function enterLightboxCropMode() {
 
     hideContextMenu();
     resetZoom();
+    // Crop needs the WHOLE image visible so the selection maps to real source
+    // pixels. A 1:1 reset of an image larger than the viewport overflows the
+    // window and hides most of it (and used to make the toolbar clicks start a
+    // crop drag), so oversized media enters crop mode fitted to the viewport
+    // regardless of the Fit toggle. sourceRect maps screen -> natural pixels,
+    // so cropping at fit zoom still outputs full-resolution crops.
+    const dims = getVisibleLightboxMediaDims();
+    if (dims && dims.width > 0 && dims.height > 0) {
+        const fitLevel = calculateFitZoomLevel(dims.width, dims.height);
+        if (fitLevel < 100) applyLightboxZoom(fitLevel);
+    }
     const imageRect = getDisplayedLightboxImageRect();
     if (!imageRect) {
         showToast('Image is not ready to crop yet', 'info');
@@ -573,6 +613,13 @@ async function applyLightboxCrop() {
 
 function handleLightboxCropPointerDown(e) {
     if (!lightboxCropState.active || lightboxCropState.saving) return;
+
+    // The toolbar lives inside the overlay; a pointerdown on Apply/Cancel must
+    // not start a crop drag. Without this guard, pressing Apply on an image
+    // whose displayed rect covers the toolbar (e.g. a huge image zoomed to 1:1)
+    // resets the selection to zero-size before the button's click handler runs,
+    // so applyLightboxCrop sees a null sourceRect and never opens the dialog.
+    if (e.target.closest('.lightbox-crop-toolbar')) return;
 
     if (e.button === 1) {
         if (currentZoomLevel <= 100) return;
@@ -839,8 +886,9 @@ function openLightbox(mediaUrl, filePath, fileName) {
             lightboxGifCanvas.style.display = 'none';
             lightboxImage.style.display = 'block';
             lightboxImage.style.transform = getLightboxRotationString();
-            lightboxImage.style.maxWidth = '';
-            lightboxImage.style.maxHeight = '';
+            // Fit on: CSS constraint fits immediately during load; Fit off: natural 1:1
+            lightboxImage.style.maxWidth = zoomToFit ? '' : 'none';
+            lightboxImage.style.maxHeight = zoomToFit ? '' : 'none';
             lightboxImage.style.width = 'auto';
             lightboxImage.style.height = 'auto';
             lightboxImage.dataset.src = mediaUrl;
@@ -849,7 +897,17 @@ function openLightbox(mediaUrl, filePath, fileName) {
             try { _enhancedLightboxOnOpen(filePath, null, mediaUrl); } catch (e) { console.warn('enhanced lightbox open failed:', e); }
             // Track when the <img> actually starts animating (on load, not on src set)
             let imgAnimStart = 0;
-            const onImgLoad = () => { imgAnimStart = performance.now(); };
+            const onImgLoad = () => {
+                imgAnimStart = performance.now();
+                // Display the preview <img> at the correct zoom level (real fit %
+                // with Fit on, 1:1 with Fit off). Animated media re-applies zoom when
+                // the canvas swaps in; static WebP/GIF stays on this <img> forever.
+                requestAnimationFrame(() => {
+                    if (lightboxGifCanvas.style.display === 'block') return; // canvas already swapped in
+                    const dims = getRotatedMediaDimensions(lightboxImage.naturalWidth, lightboxImage.naturalHeight);
+                    applyLightboxZoom(zoomToFit ? calculateFitZoomLevel(dims.width, dims.height) : 100);
+                });
+            };
             lightboxImage.addEventListener('load', onImgLoad, { once: true });
             lightboxImage.src = mediaUrl;
 
@@ -862,9 +920,14 @@ function openLightbox(mediaUrl, filePath, fileName) {
                     const parsed = parseWebpDuration(buffer);
                     if (!parsed || parsed.frameCount <= 1) {
                         // Static WebP — already showing as <img> (and the inspector was
-                        // opened above), just hide controls
+                        // opened above), just hide controls. Apply zoom from the <img>
+                        // dimensions (onImgLoad covers it if the load hasn't fired yet).
                         if (mediaControlBarInstance) mediaControlBarInstance.hide();
                         setLightboxCropAvailability(filePath, true);
+                        if (lightboxImage.naturalWidth > 0) {
+                            const dims = getRotatedMediaDimensions(lightboxImage.naturalWidth, lightboxImage.naturalHeight);
+                            applyLightboxZoom(zoomToFit ? calculateFitZoomLevel(dims.width, dims.height) : 100);
+                        }
                         return;
                     }
                 }
@@ -879,8 +942,9 @@ function openLightbox(mediaUrl, filePath, fileName) {
                 lightboxImage.style.display = 'none';
                 lightboxGifCanvas.style.display = 'block';
                 lightboxGifCanvas.style.transform = getLightboxRotationString();
-                lightboxGifCanvas.style.maxWidth = '';
-                lightboxGifCanvas.style.maxHeight = '';
+                // Fit on: CSS constraint fits until zoom applies; Fit off: natural 1:1
+                lightboxGifCanvas.style.maxWidth = zoomToFit ? '' : 'none';
+                lightboxGifCanvas.style.maxHeight = zoomToFit ? '' : 'none';
                 activePlaybackController = controller;
 
                 // Bind control bar
@@ -891,18 +955,9 @@ function openLightbox(mediaUrl, filePath, fileName) {
 
                 // Zoom to fit using decoded dimensions
                 requestAnimationFrame(() => {
-                    const baseRect = getDisplayedUnrotatedMediaRect(lightboxGifCanvas);
-                    if (baseRect) {
-                        lightboxGifCanvas.dataset.baseWidth = baseRect.width.toString();
-                        lightboxGifCanvas.dataset.baseHeight = baseRect.height.toString();
-                    }
                     const dims = getRotatedMediaDimensions(controller.gifWidth, controller.gifHeight);
-                    const fitLevel = calculateFitZoomLevel(dims.width, dims.height);
-                    if (zoomToFit && fitLevel > 100) {
-                        applyLightboxZoom(fitLevel);
-                    } else {
-                        applyCurrentLightboxTransform();
-                    }
+                    // Fit on: open fitted immediately (real % below 100); Fit off: open at 1:1
+                    applyLightboxZoom(zoomToFit ? calculateFitZoomLevel(dims.width, dims.height) : 100);
                 });
 
                 // Seek to match where the <img> animation was to avoid a visible restart
@@ -965,8 +1020,9 @@ function openLightbox(mediaUrl, filePath, fileName) {
         lightboxVideo.dataset.src = mediaUrl;
         lightbox.classList.remove('hidden');
         lightboxVideo.style.transform = getLightboxRotationString();
-        lightboxVideo.style.maxWidth = '';
-        lightboxVideo.style.maxHeight = '';
+        // Fit on: CSS constraint fits until zoom applies; Fit off: natural 1:1
+        lightboxVideo.style.maxWidth = zoomToFit ? '' : 'none';
+        lightboxVideo.style.maxHeight = zoomToFit ? '' : 'none';
 
         // Create video playback controller
         const controller = new VideoPlaybackController(lightboxVideo);
@@ -986,17 +1042,8 @@ function openLightbox(mediaUrl, filePath, fileName) {
         const handleVideoMeta = () => {
             requestAnimationFrame(() => {
                 const dims = getRotatedMediaDimensions(lightboxVideo.videoWidth, lightboxVideo.videoHeight);
-                const fitLevel = calculateFitZoomLevel(dims.width, dims.height);
-                if (zoomToFit && fitLevel > 100) {
-                    const baseRect = getDisplayedUnrotatedMediaRect(lightboxVideo);
-                    if (baseRect) {
-                        lightboxVideo.dataset.baseWidth = baseRect.width.toString();
-                        lightboxVideo.dataset.baseHeight = baseRect.height.toString();
-                    }
-                    applyLightboxZoom(fitLevel);
-                } else {
-                    applyCurrentLightboxTransform();
-                }
+                // Fit on: open fitted immediately (real % below 100); Fit off: open at 1:1
+                applyLightboxZoom(zoomToFit ? calculateFitZoomLevel(dims.width, dims.height) : 100);
             });
             lightboxVideo.removeEventListener('loadedmetadata', handleVideoMeta);
         };
@@ -1045,29 +1092,20 @@ function applyLightboxZoom(zoomLevel, mouseX = null, mouseY = null) {
         previousZoomValue = Math.pow(1.06, (previousZoomLevel - 100) / 5);
     }
     currentZoomLevel = zoomLevel;
-    
-    // Use exponential scaling for consistent visual zoom steps
-    // Each step multiplies the visual size by the same factor
-    // This makes 100%→110% feel the same as 400%→410%
+
+    // Zoom is anchored to NATURAL pixels: zoomValue = displayed / natural size.
+    // Level 100 => scale 1 (1:1). Below: linear downscale. Above: exponential
+    // upscale, each 5% step multiplying size by ~6% (same curve as before).
     let zoomValue;
-    
     if (zoomLevel <= 100) {
-        // Linear scaling for zoom out (0-100%)
         zoomValue = zoomLevel / 100;
     } else {
-        // Exponential scaling: scale = base^((zoomLevel - 100) / stepSize)
-        // Each slider step (5%) multiplies size by the base factor
-        // This ensures consistent visual zoom increments at all levels
-        const base = 1.06; // Each 5% step multiplies by ~6% visually (more noticeable)
-        const stepSize = 5; // Slider step size (matches HTML step="5")
+        const base = 1.06;
+        const stepSize = 5;
         const steps = (zoomLevel - 100) / stepSize;
         zoomValue = Math.pow(base, steps);
-        
-        // At 500%: 1.06^80 ≈ 108x zoom (very high zoom capability)
-        // Each 5% step always feels like the same visual increase (~6%)
     }
-    
-    // Cache the zoom value for efficient panning
+
     cachedZoomValue = zoomValue;
 
     // Check which media is currently visible
@@ -1081,84 +1119,78 @@ function applyLightboxZoom(zoomLevel, mouseX = null, mouseY = null) {
     const isCanvasVisible = canvasInlineDisplay === 'block' ||
                           (canvasInlineDisplay === '' && window.getComputedStyle(lightboxGifCanvas).display !== 'none');
 
-    // Reset translation when zooming back to 100% or below
-    if (zoomLevel <= 100) {
+    const visibleElement = isCanvasVisible ? lightboxGifCanvas : (isImageVisible ? lightboxImage : (isVideoVisible ? lightboxVideo : null));
+
+    if (mouseX !== null && mouseY !== null && visibleElement && zoomValue !== previousZoomValue) {
+        // Zoom at pointer position: keep the pixel under the cursor fixed.
+        // Measure the rendered rect BEFORE restyling; the rect center equals
+        // the layout center plus the current pan translate.
+        const rect = visibleElement.getBoundingClientRect();
+        const layoutCenterX = rect.left + rect.width / 2 - currentTranslateX;
+        const layoutCenterY = rect.top + rect.height / 2 - currentTranslateY;
+        const mouseOffsetX = mouseX - layoutCenterX;
+        const mouseOffsetY = mouseY - layoutCenterY;
+
+        const zoomRatio = zoomValue / previousZoomValue;
+        // tx_new = (1 - ratio) * mouseOffset + ratio * tx_old
+        currentTranslateX = (1 - zoomRatio) * mouseOffsetX + zoomRatio * currentTranslateX;
+        currentTranslateY = (1 - zoomRatio) * mouseOffsetY + zoomRatio * currentTranslateY;
+
+        // Edge-aware clamp: keep the cursor over image pixels. If the pointer
+        // sits beyond the media edge, snap the nearest edge pixel under it.
+        const natW = rect.width / previousZoomValue;
+        const natH = rect.height / previousZoomValue;
+        const halfW = (natW * zoomValue) / 2;
+        const halfH = (natH * zoomValue) / 2;
+        if (currentTranslateX < mouseOffsetX - halfW) currentTranslateX = mouseOffsetX - halfW;
+        else if (currentTranslateX > mouseOffsetX + halfW) currentTranslateX = mouseOffsetX + halfW;
+        if (currentTranslateY < mouseOffsetY - halfH) currentTranslateY = mouseOffsetY - halfH;
+        else if (currentTranslateY > mouseOffsetY + halfH) currentTranslateY = mouseOffsetY + halfH;
+    } else if (zoomLevel <= 100 && mouseX === null && mouseY === null) {
+        // Unanchored zoom-out back to fit/1:1 recenters the view
         currentTranslateX = 0;
         currentTranslateY = 0;
-    } else if (mouseX !== null && mouseY !== null && zoomLevel > 100) {
-        // Zoom at pointer position: adjust translate to keep the point under cursor fixed
-        // Get the visible element
-        const visibleElement = isCanvasVisible ? lightboxGifCanvas : (isImageVisible ? lightboxImage : (isVideoVisible ? lightboxVideo : null));
-        if (visibleElement) {
-            // Get the viewport center (where the element is naturally centered)
-            const viewportCenterX = window.innerWidth / 2;
-            const viewportCenterY = window.innerHeight / 2;
-
-            // Calculate mouse position relative to viewport center
-            const mouseOffsetX = mouseX - viewportCenterX;
-            const mouseOffsetY = mouseY - viewportCenterY;
-
-            // Calculate zoom ratio (new zoom / old zoom)
-            const zoomRatio = zoomValue / previousZoomValue;
-
-            // Adjust translate to keep the point under cursor fixed
-            // Formula derived: tx_new = (1 - zoomRatio) * mouseOffset + zoomRatio * tx_old
-            // This keeps the point under the cursor stationary during zoom
-            currentTranslateX = (1 - zoomRatio) * mouseOffsetX + zoomRatio * currentTranslateX;
-            currentTranslateY = (1 - zoomRatio) * mouseOffsetY + zoomRatio * currentTranslateY;
-        }
     }
 
-    // Special handling for the transition from 100% to >100% on images/canvas
-    // Capture the current displayed size before removing constraints
-    const zoomableImageEl = isCanvasVisible ? lightboxGifCanvas : lightboxImage;
-    if ((isImageVisible || isCanvasVisible) && previousZoomLevel === 100 && zoomLevel > 100) {
-        const baseRect = getDisplayedUnrotatedMediaRect(zoomableImageEl);
-        if (baseRect) {
-            zoomableImageEl.dataset.baseWidth = baseRect.width.toString();
-            zoomableImageEl.dataset.baseHeight = baseRect.height.toString();
-        }
+    // Natural dimensions of the visible media
+    let natW = 0, natH = 0;
+    if (isImageVisible) {
+        natW = lightboxImage.naturalWidth;
+        natH = lightboxImage.naturalHeight;
+    } else if (isCanvasVisible) {
+        natW = activePlaybackController?.gifWidth || lightboxGifCanvas.width || 0;
+        natH = activePlaybackController?.gifHeight || lightboxGifCanvas.height || 0;
+    } else if (isVideoVisible) {
+        natW = lightboxVideo.videoWidth;
+        natH = lightboxVideo.videoHeight;
     }
 
-    // ── Hi-res zoom: compute layout partition for <img> elements ──
-    // Instead of locking the <img> to its fitted size and using scale() to magnify
-    // (which causes blurry GPU upscaling), we increase the layout dimensions up to
-    // the image's natural resolution so the browser rasterizes at full fidelity.
+    // Hi-res layout partition for <img>: layout size = natural * zoomValue,
+    // capped at natural resolution and 4x viewport so the browser rasterizes
+    // at fidelity instead of GPU-scaling a fitted bitmap.
     let imgLayoutWidth = null, imgLayoutHeight = null, imgRemainingScale = null;
-    if (isImageVisible && zoomLevel > 100) {
-        const bw = parseFloat(zoomableImageEl.dataset.baseWidth || '0');
-        const bh = parseFloat(zoomableImageEl.dataset.baseHeight || '0');
-        const nw = lightboxImage.naturalWidth;
-        const nh = lightboxImage.naturalHeight;
-        if (bw > 0 && bh > 0 && nw > 0 && nh > 0) {
-            const result = computeZoomLayoutDimensions(bw, bh, nw, nh, zoomValue);
-            imgLayoutWidth = result.layoutWidth;
-            imgLayoutHeight = result.layoutHeight;
-            imgRemainingScale = result.remainingScale;
-        }
+    if (isImageVisible && natW > 0 && natH > 0) {
+        const result = computeZoomLayoutDimensions(natW, natH, natW, natH, zoomValue);
+        imgLayoutWidth = result.layoutWidth;
+        imgLayoutHeight = result.layoutHeight;
+        imgRemainingScale = result.remainingScale;
     }
     cachedImgRemainingScale = imgRemainingScale;
 
-    // Build transform strings — <img> may use a reduced scale (layout handles the rest)
+    // Transforms carry pan/rotation/flip only; the zoom itself lives in the
+    // layout/CSS size. Beyond 1:1, video/canvas keep a natural-size layout box
+    // and magnify via the transform scale (same as HEAD's hi-res strategy).
     const rotation = getLightboxRotationString();
     const flip = getLightboxFlipString();
     const flipPart = flip ? ` ${flip}` : '';
-    let baseTransformString; // For video, canvas
-    let imgTransformString;  // For <img> (may use reduced scale for hi-res rendering)
+    const translatePart = (currentTranslateX || currentTranslateY)
+        ? `translate(${currentTranslateX}px, ${currentTranslateY}px) ` : '';
+    const mediaScale = zoomLevel > 100 ? zoomValue : 1;
+    const layoutScale = zoomLevel > 100 ? 1 : zoomValue;
+    const baseTransformString = `${translatePart}${rotation}${flipPart} scale(${mediaScale})`;
+    const imgScale = imgRemainingScale !== null ? imgRemainingScale : 1;
+    const imgTransformString = `${translatePart}${rotation}${flipPart} scale(${imgScale})`;
 
-    if (zoomLevel <= 100) {
-        baseTransformString = `${rotation}${flipPart} scale(${zoomValue})`;
-        imgTransformString = baseTransformString;
-    } else {
-        baseTransformString = `translate(${currentTranslateX}px, ${currentTranslateY}px) ${rotation}${flipPart} scale(${zoomValue})`;
-        if (imgRemainingScale !== null) {
-            imgTransformString = `translate(${currentTranslateX}px, ${currentTranslateY}px) ${rotation}${flipPart} scale(${imgRemainingScale})`;
-        } else {
-            imgTransformString = baseTransformString;
-        }
-    }
-
-    // Apply transforms — <img> gets its own for hi-res zoom
     lightboxImage.style.transform = imgTransformString;
     lightboxVideo.style.transform = baseTransformString;
     lightboxGifCanvas.style.transform = baseTransformString;
@@ -1167,91 +1199,56 @@ function applyLightboxZoom(zoomLevel, mouseX = null, mouseY = null) {
         lightboxImage.classList.add('zoomed');
         lightboxVideo.classList.add('zoomed');
         lightboxGifCanvas.classList.add('zoomed');
-
-        if (isImageVisible && imgLayoutWidth !== null) {
-            // Hi-res zoom: set layout dimensions larger than fitted size
-            lightboxImage.style.width = `${imgLayoutWidth}px`;
-            lightboxImage.style.height = `${imgLayoutHeight}px`;
-            lightboxImage.style.maxWidth = 'none';
-            lightboxImage.style.maxHeight = 'none';
-            // Manage will-change to limit VRAM for very large layouts
-            if (imgLayoutWidth > window.innerWidth * 2 || imgLayoutHeight > window.innerHeight * 2) {
-                lightboxImage.style.willChange = 'auto';
-            } else {
-                lightboxImage.style.willChange = '';
-            }
-        } else if ((isImageVisible || isCanvasVisible) && zoomableImageEl.dataset.baseWidth) {
-            const baseWidth = parseFloat(zoomableImageEl.dataset.baseWidth);
-            const baseHeight = parseFloat(zoomableImageEl.dataset.baseHeight);
-            zoomableImageEl.style.width = `${baseWidth}px`;
-            zoomableImageEl.style.height = `${baseHeight}px`;
-            zoomableImageEl.style.maxWidth = 'none';
-            zoomableImageEl.style.maxHeight = 'none';
-        } else if (isImageVisible || isCanvasVisible) {
-            // Fallback: compute base dimensions from natural size constrained to
-            // the viewport box so we don't jump to full natural size.
-            const natW = isImageVisible ? lightboxImage.naturalWidth : (activePlaybackController?.gifWidth || 0);
-            const natH = isImageVisible ? lightboxImage.naturalHeight : (activePlaybackController?.gifHeight || 0);
-            if (natW > 0 && natH > 0) {
-                const vpFrac = (lightboxViewportSetting || 90) / 100;
-                const inspW = getLightboxInspectorWidth();
-                const maxW = Math.min(window.innerWidth * vpFrac, window.innerWidth - inspW - 80);
-                const maxH = window.innerHeight * vpFrac;
-                const fitScale = Math.min(1, maxW / natW, maxH / natH);
-                const bw = natW * fitScale;
-                const bh = natH * fitScale;
-                zoomableImageEl.dataset.baseWidth = bw.toString();
-                zoomableImageEl.dataset.baseHeight = bh.toString();
-                if (isImageVisible) {
-                    // Apply hi-res layout partition for <img>
-                    const result = computeZoomLayoutDimensions(bw, bh, natW, natH, zoomValue);
-                    lightboxImage.style.width = `${result.layoutWidth}px`;
-                    lightboxImage.style.height = `${result.layoutHeight}px`;
-                    cachedImgRemainingScale = result.remainingScale;
-                    imgTransformString = `translate(${currentTranslateX}px, ${currentTranslateY}px) ${rotation} scale(${result.remainingScale})`;
-                    lightboxImage.style.transform = imgTransformString;
-                } else {
-                    zoomableImageEl.style.width = `${bw}px`;
-                    zoomableImageEl.style.height = `${bh}px`;
-                }
-            }
-            zoomableImageEl.style.maxWidth = 'none';
-            zoomableImageEl.style.maxHeight = 'none';
-        } else {
-            lightboxVideo.style.maxWidth = 'none';
-            lightboxVideo.style.maxHeight = 'none';
-        }
     } else {
         lightboxImage.classList.remove('zoomed');
         lightboxVideo.classList.remove('zoomed');
         lightboxGifCanvas.classList.remove('zoomed');
-        cachedImgRemainingScale = null;
-        lightboxImage.style.willChange = '';
-        // Clear inline overrides — let CSS var(--lightbox-max-w) handle constraints
-        lightboxImage.style.maxWidth = '';
-        lightboxImage.style.maxHeight = '';
+    }
+
+    // Apply displayed sizes: displayed = natural * zoomValue at every level.
+    if (isImageVisible && imgLayoutWidth !== null) {
+        lightboxImage.style.width = `${imgLayoutWidth}px`;
+        lightboxImage.style.height = `${imgLayoutHeight}px`;
+        lightboxImage.style.maxWidth = 'none';
+        lightboxImage.style.maxHeight = 'none';
+        if (imgLayoutWidth > window.innerWidth * 2 || imgLayoutHeight > window.innerHeight * 2) {
+            lightboxImage.style.willChange = 'auto';
+        } else {
+            lightboxImage.style.willChange = '';
+        }
+    } else if (isImageVisible) {
         lightboxImage.style.width = 'auto';
         lightboxImage.style.height = 'auto';
-        delete lightboxImage.dataset.baseWidth;
-        delete lightboxImage.dataset.baseHeight;
-        lightboxVideo.style.maxWidth = '';
-        lightboxVideo.style.maxHeight = '';
-        lightboxGifCanvas.style.maxWidth = '';
-        lightboxGifCanvas.style.maxHeight = '';
-        lightboxGifCanvas.style.width = '';
-        lightboxGifCanvas.style.height = '';
-        delete lightboxGifCanvas.dataset.baseWidth;
-        delete lightboxGifCanvas.dataset.baseHeight;
+        lightboxImage.style.maxWidth = 'none';
+        lightboxImage.style.maxHeight = 'none';
+        lightboxImage.style.willChange = '';
     }
-    
-    // Update slider and value display
+    if (isCanvasVisible && natW > 0 && natH > 0) {
+        // Canvas bitmap stays at native resolution. Up to 1:1 the CSS size
+        // carries the zoom; beyond it the layout box is natural-size and the
+        // transform scale magnifies (keeps layout from exploding offscreen).
+        lightboxGifCanvas.style.width = `${natW * layoutScale}px`;
+        lightboxGifCanvas.style.height = `${natH * layoutScale}px`;
+        lightboxGifCanvas.style.maxWidth = 'none';
+        lightboxGifCanvas.style.maxHeight = 'none';
+    }
+    if (isVideoVisible && natW > 0 && natH > 0) {
+        lightboxVideo.style.width = `${natW * layoutScale}px`;
+        lightboxVideo.style.height = `${natH * layoutScale}px`;
+        lightboxVideo.style.maxWidth = 'none';
+        lightboxVideo.style.maxHeight = 'none';
+    }
+
+    // Update slider and value display (fit levels can be fractional; the
+    // slider snaps to its 5% step grid, the label shows the rounded value)
     const slider = document.getElementById('lightbox-zoom-slider');
     const zoomValueDisplay = document.getElementById('lightbox-zoom-value');
+    const roundedLevel = Math.round(zoomLevel);
     if (slider) {
-        slider.value = zoomLevel;
+        slider.value = roundedLevel;
     }
     if (zoomValueDisplay) {
-        zoomValueDisplay.textContent = `${zoomLevel}%`;
+        zoomValueDisplay.textContent = `${roundedLevel}%`;
     }
     if (lightboxCropState.active) {
         syncLightboxCropToViewport();
@@ -1259,30 +1256,32 @@ function applyLightboxZoom(zoomLevel, mouseX = null, mouseY = null) {
 }
 
 function applyCurrentLightboxTransform() {
-    const zoomValue = cachedZoomValue;
     const rotation = getLightboxRotationString();
     const flip = getLightboxFlipString();
     const flipPart = flip ? ` ${flip}` : '';
+    const translatePart = (currentTranslateX || currentTranslateY)
+        ? `translate(${currentTranslateX}px, ${currentTranslateY}px) ` : '';
 
-    const baseTransform = currentZoomLevel <= 100
-        ? `${rotation}${flipPart} scale(${zoomValue})`
-        : `translate(${currentTranslateX}px, ${currentTranslateY}px) ${rotation}${flipPart} scale(${zoomValue})`;
+    // Displayed size lives in layout/CSS up to 1:1; beyond it video/canvas
+    // magnify through the transform scale. Transform also pans, rotates, flips.
+    const mediaScale = currentZoomLevel > 100 ? cachedZoomValue : 1;
+    const baseTransform = `${translatePart}${rotation}${flipPart} scale(${mediaScale})`;
 
-    // For <img> hi-res zoom, use the reduced scale (layout handles the rest)
+    // For <img> beyond the raster cap, use the reduced scale (layout handles the rest)
     let imgTransform = baseTransform;
-    if (currentZoomLevel > 100 && cachedImgRemainingScale !== null) {
-        imgTransform = `translate(${currentTranslateX}px, ${currentTranslateY}px) ${rotation}${flipPart} scale(${cachedImgRemainingScale})`;
+    if (cachedImgRemainingScale !== null) {
+        imgTransform = `${translatePart}${rotation}${flipPart} scale(${cachedImgRemainingScale})`;
     }
 
     const imageDisplay = lightboxImage.style.display;
     const videoDisplay = lightboxVideo.style.display;
     const canvasDisplay = lightboxGifCanvas.style.display;
     const isImageVisible = imageDisplay === 'block' ||
-                          (imageDisplay === '' && window.getComputedStyle(lightboxImage).display !== 'none');
+                           (imageDisplay === '' && window.getComputedStyle(lightboxImage).display !== 'none');
     const isVideoVisible = videoDisplay === 'block' ||
-                          (videoDisplay === '' && window.getComputedStyle(lightboxVideo).display !== 'none');
+                           (videoDisplay === '' && window.getComputedStyle(lightboxVideo).display !== 'none');
     const isCanvasVisible = canvasDisplay === 'block' ||
-                          (canvasDisplay === '' && window.getComputedStyle(lightboxGifCanvas).display !== 'none');
+                           (canvasDisplay === '' && window.getComputedStyle(lightboxGifCanvas).display !== 'none');
 
     if (isImageVisible) lightboxImage.style.transform = imgTransform;
     if (isVideoVisible) lightboxVideo.style.transform = baseTransform;
@@ -1294,8 +1293,6 @@ function applyCurrentLightboxTransform() {
 }
 
 function applyPan(deltaX, deltaY) {
-    if (currentZoomLevel <= 100) return;
-    
     currentTranslateX += deltaX;
     currentTranslateY += deltaY;
     applyCurrentLightboxTransform();
@@ -1314,16 +1311,18 @@ function resetZoom() {
     lightboxImage.classList.remove('zoomed');
     lightboxVideo.classList.remove('zoomed');
     lightboxGifCanvas.classList.remove('zoomed');
-    // Clear inline overrides — let CSS var(--lightbox-max-w) handle constraints
+    // Level 100 displays natural pixels (1:1); no fit constraint here
     lightboxImage.style.willChange = '';
-    lightboxImage.style.maxWidth = '';
-    lightboxImage.style.maxHeight = '';
+    lightboxImage.style.maxWidth = 'none';
+    lightboxImage.style.maxHeight = 'none';
     lightboxImage.style.width = 'auto';
     lightboxImage.style.height = 'auto';
-    lightboxVideo.style.maxWidth = '';
-    lightboxVideo.style.maxHeight = '';
-    lightboxGifCanvas.style.maxWidth = '';
-    lightboxGifCanvas.style.maxHeight = '';
+    lightboxVideo.style.maxWidth = 'none';
+    lightboxVideo.style.maxHeight = 'none';
+    lightboxVideo.style.width = '';
+    lightboxVideo.style.height = '';
+    lightboxGifCanvas.style.maxWidth = 'none';
+    lightboxGifCanvas.style.maxHeight = 'none';
     lightboxGifCanvas.style.width = '';
     lightboxGifCanvas.style.height = '';
     // Clear stored base dimensions
@@ -1507,12 +1506,12 @@ document.addEventListener('keydown', (e) => {
     } else if (matchesShortcut(e, 'zoomIn')) {
         e.preventDefault();
         e.stopPropagation();
-        const newZoom = Math.max(30, Math.min(lightboxMaxZoomSetting, currentZoomLevel + 10));
+        const newZoom = Math.max(5, Math.min(lightboxMaxZoomSetting, currentZoomLevel + 5));
         applyLightboxZoom(newZoom);
     } else if (matchesShortcut(e, 'zoomOut')) {
         e.preventDefault();
         e.stopPropagation();
-        const newZoom = Math.max(30, Math.min(lightboxMaxZoomSetting, currentZoomLevel - 10));
+        const newZoom = Math.max(5, Math.min(lightboxMaxZoomSetting, currentZoomLevel - 5));
         applyLightboxZoom(newZoom);
     } else if (matchesShortcut(e, 'zoomReset')) {
         e.preventDefault();
@@ -1569,6 +1568,17 @@ function attachZoomSliderListeners() {
             lightboxDebugLog('Slider change:', zoomLevel);
             applyLightboxZoom(zoomLevel);
         });
+        // Mouse-wheel over the zoom slider adjusts zoom (scroll up = zoom in,
+        // scroll down = zoom out), same ±5 step as wheel over the media.
+        // stopPropagation keeps handleLightboxWheel from treating it as media zoom.
+        slider.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const zoomDelta = e.deltaY > 0 ? -5 : 5;
+            const zoomLevel = Math.max(5, Math.min(lightboxMaxZoomSetting, currentZoomLevel + zoomDelta));
+            lightboxDebugLog('Slider wheel zoom:', currentZoomLevel, '->', zoomLevel);
+            applyLightboxZoom(zoomLevel);
+        }, { passive: false });
         slider.dataset.listenersAttached = 'true';
     }
 }
@@ -1606,8 +1616,8 @@ function handleLightboxWheel(e) {
     e.stopPropagation();
     
     // Determine zoom direction
-    const zoomDelta = e.deltaY > 0 ? -10 : 10;
-    const newZoomLevel = Math.max(30, Math.min(lightboxMaxZoomSetting, currentZoomLevel + zoomDelta));
+    const zoomDelta = e.deltaY > 0 ? -5 : 5;
+    const newZoomLevel = Math.max(5, Math.min(lightboxMaxZoomSetting, currentZoomLevel + zoomDelta));
     
     // Get mouse position for zooming at pointer
     const mouseX = e.clientX;
@@ -1648,6 +1658,23 @@ if (lightboxGifCanvas) {
     lightboxGifCanvas.addEventListener('wheel', handleLightboxWheel, { passive: false });
 }
 
+// Track the last pointer position so Space can zoom there
+lightbox.addEventListener('mousemove', (e) => {
+    lightboxLastPointerX = e.clientX;
+    lightboxLastPointerY = e.clientY;
+});
+
+// Double-click toggles between fit-to-window (100%) and 1:1 (actual pixels)
+function _lightboxDoubleZoom(e) {
+    if (lightboxCropState.active) return;
+    e.preventDefault();
+    e.stopPropagation();
+    zoomToActualPixelsAtPointer(e.clientX, e.clientY);
+}
+lightboxImage.addEventListener('dblclick', _lightboxDoubleZoom);
+lightboxVideo.addEventListener('dblclick', _lightboxDoubleZoom);
+lightboxGifCanvas.addEventListener('dblclick', _lightboxDoubleZoom);
+
 // Pan/drag functionality when zoomed
 // Panning functionality - optimized with requestAnimationFrame
 const panState = {
@@ -1663,18 +1690,18 @@ const panState = {
 };
 
 function applyPanTransform() {
-    if (!isDragging || currentZoomLevel <= 100) {
+    if (!isDragging) {
         panState.rafId = null;
         panState.pendingUpdate = false;
         return;
     }
 
     // Apply transform with translate first (applied last, so in screen space)
-    const zoomValue = cachedZoomValue;
+    const mediaScale = currentZoomLevel > 100 ? cachedZoomValue : 1;
     const rotation = getLightboxRotationString();
-    const baseTransform = `translate(${currentTranslateX}px, ${currentTranslateY}px) ${rotation} scale(${zoomValue})`;
+    const baseTransform = `translate(${currentTranslateX}px, ${currentTranslateY}px) ${rotation} scale(${mediaScale})`;
 
-    // For <img> hi-res zoom, use the reduced scale (layout handles the rest)
+    // For <img> beyond the raster cap, use the reduced scale (layout handles the rest)
     let imgTransform = baseTransform;
     if (cachedImgRemainingScale !== null) {
         imgTransform = `translate(${currentTranslateX}px, ${currentTranslateY}px) ${rotation} scale(${cachedImgRemainingScale})`;
@@ -1704,7 +1731,7 @@ function applyPanTransform() {
 
 lightboxImage.addEventListener('mousedown', (e) => {
     if (lightboxCropState.active) return;
-    if (currentZoomLevel > 100 && e.button === 0) {
+    if (e.button === 0) {
         isDragging = true;
         panState.hasDragged = false; // Reset drag flag
         // Store initial positions
@@ -1721,7 +1748,7 @@ lightboxImage.addEventListener('mousedown', (e) => {
 
 lightboxVideo.addEventListener('mousedown', (e) => {
     if (lightboxCropState.active) return;
-    if (currentZoomLevel > 100 && e.button === 0) {
+    if (e.button === 0) {
         isDragging = true;
         panState.hasDragged = false;
         panState.initMouseX = e.clientX;
@@ -1737,7 +1764,7 @@ lightboxVideo.addEventListener('mousedown', (e) => {
 
 lightboxGifCanvas.addEventListener('mousedown', (e) => {
     if (lightboxCropState.active) return;
-    if (currentZoomLevel > 100 && e.button === 0) {
+    if (e.button === 0) {
         isDragging = true;
         panState.hasDragged = false;
         panState.initMouseX = e.clientX;
@@ -1753,7 +1780,7 @@ lightboxGifCanvas.addEventListener('mousedown', (e) => {
 
 document.addEventListener('mousemove', (e) => {
     if (lightboxCropState.active) return;
-    if (isDragging && currentZoomLevel > 100) {
+    if (isDragging) {
         // Calculate total mouse movement from initial click
         const totalDeltaX = e.clientX - panState.initMouseX;
         const totalDeltaY = e.clientY - panState.initMouseY;
@@ -1792,7 +1819,7 @@ document.addEventListener('mouseup', (e) => {
         applyPanTransform();
         
         // If we dragged (not just clicked), prevent video play/pause
-        if (panState.hasDragged && currentZoomLevel > 100) {
+        if (panState.hasDragged) {
             e.preventDefault();
             e.stopPropagation();
             // Also prevent the click event that might fire after mouseup
@@ -1814,7 +1841,7 @@ lightboxVideo.addEventListener('click', (e) => {
         e.stopPropagation();
         return;
     }
-    if (panState.hasDragged && currentZoomLevel > 100) {
+    if (panState.hasDragged) {
         e.preventDefault();
         e.stopPropagation();
         panState.hasDragged = false;
@@ -1831,7 +1858,7 @@ lightboxGifCanvas.addEventListener('click', (e) => {
         e.stopPropagation();
         return;
     }
-    if (panState.hasDragged && currentZoomLevel > 100) {
+    if (panState.hasDragged) {
         e.preventDefault();
         e.stopPropagation();
         panState.hasDragged = false;
@@ -1977,7 +2004,10 @@ if (copyImageBtn) {
 function ensureEnhancedLightboxInstances() {
     if (!filmstripInstance) {
         const el = document.getElementById('lightbox-filmstrip');
-        if (el) filmstripInstance = new FilmstripScrubber(el);
+        if (el) {
+            filmstripInstance = new FilmstripScrubber(el);
+            filmstripInstance.attachAutoHide(lightbox);
+        }
     }
     if (!inspectorPanelInstance) {
         const el = document.getElementById('lb-inspector');
